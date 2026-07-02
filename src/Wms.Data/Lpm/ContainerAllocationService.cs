@@ -515,16 +515,16 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                 if (int.TryParse(cfg, out var t) && t > 0) fillRRTopN = t;
             }
 
-            // Division Priority per (StoreID, DivCode) — lower priorityranking = higher priority.
+            // Division Priority per (StoreID, DivCode) — lower PriorityRank = higher priority.
             var nowGst = DateTime.UtcNow.AddHours(4);
-            var pRows = await c.QueryAsync<(string StoreID, int DivCode, int? priorityranking)>(new CommandDefinition(
-                @"SELECT StoreId AS StoreID, DivCode, priorityranking
+            var pRows = await c.QueryAsync<(string StoreID, int DivCode, int? PriorityRank)>(new CommandDefinition(
+                @"SELECT StoreId AS StoreID, DivCode, PriorityRank
                     FROM LPMSIM.dbo.LPM_EOM_Output WITH (NOLOCK)
                    WHERE Month1 = @m AND Year1 = @y",
                 new { m = nowGst.Month, y = nowGst.Year },
                 commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
             foreach (var p in pRows)
-                priorityByStoreDiv[(p.StoreID, p.DivCode)] = p.priorityranking;
+                priorityByStoreDiv[(p.StoreID, p.DivCode)] = p.PriorityRank;
 
             // Container receipt date from bfldata.dbo.contreceipt (receiptdt column).
             containerReceiptDt = await c.ExecuteScalarAsync<DateTime?>(new CommandDefinition(
@@ -686,7 +686,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
 
                     if (conditionA)
                     {
-                        // 1. Priority rank by LPM_EOM_Output.priorityranking for
+                        // 1. Priority rank by LPM_EOM_Output.PriorityRank for
                         //    (StoreID, DivCode). Lower rank number = higher priority.
                         //    Stores with no ranking sink to the bottom.
                         var ranked = stores
