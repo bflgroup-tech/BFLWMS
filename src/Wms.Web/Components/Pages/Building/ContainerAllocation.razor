@@ -290,6 +290,7 @@
                         <th style="cursor:pointer" @onclick='() => Sort("VolumeGroup")'>VolumeGroup @SortArrow("VolumeGroup")</th>
                         <th style="cursor:pointer; text-align:right" @onclick='() => Sort("MerchNeedMonth")'>MerchNeed/Mo @SortArrow("MerchNeedMonth")</th>
                         <th style="cursor:pointer; text-align:right" @onclick='() => Sort("OTS")'>OTS @SortArrow("OTS")</th>
+                        <th style="cursor:pointer; text-align:right" @onclick='() => Sort("PriorityRank")'>Priority @SortArrow("PriorityRank")</th>
                         <th style="cursor:pointer; text-align:right" @onclick='() => Sort("SkuMax")'>SKUMax @SortArrow("SkuMax")</th>
                         <th style="cursor:pointer; text-align:right" @onclick='() => Sort("AllocQty")'>Alloc Qty @SortArrow("AllocQty")</th>
                         <th style="text-align:right">RR Extra</th>
@@ -305,6 +306,7 @@
                             <td>@r.StoreID</td><td>@r.StoreName</td><td>@r.Country</td>
                             <td>@r.VolumeGroup</td><td style="text-align:right">@r.MerchNeedMonth</td>
                             <td style="text-align:right">@r.OTS?.ToString("F4")</td>
+                            <td style="text-align:right">@r.PriorityRank</td>
                             <td style="text-align:right">@r.SkuMax</td>
                             <td style="text-align:right">@r.AllocQty</td>
                             <td style="text-align:right">@(r.RoundRobinExtra > 0 ? r.RoundRobinExtra.ToString() : "")</td>
@@ -764,7 +766,7 @@
     private async Task ExportCsvAsync()
     {
         var sb = new StringBuilder();
-        sb.AppendLine("Contno,OraPONo,ItemCode,ItemName,Brand,PoQty,StoreID,StoreName,Country,Division,VolumeGroup,OTS,SkuMax,AllocQty,RoundRobinExtra,MerchNeedMonth,LPM,LPMDt");
+        sb.AppendLine("Contno,OraPONo,ItemCode,ItemName,Brand,PoQty,StoreID,StoreName,Country,Division,VolumeGroup,OTS,PriorityRank,SkuMax,AllocQty,RoundRobinExtra,MerchNeedMonth,LPM,LPMDt");
         // Export the entire sorted result, not just the current page.
         foreach (var r in FilteredSorted)
         {
@@ -773,6 +775,7 @@
               .Append(Csv(r.StoreID)).Append(',').Append(Csv(r.StoreName)).Append(',').Append(Csv(r.Country)).Append(',')
               .Append(Csv(r.Division)).Append(',').Append(Csv(r.VolumeGroup)).Append(',')
               .Append(r.OTS?.ToString("F4")).Append(',')
+              .Append(r.PriorityRank).Append(',')
               .Append(r.SkuMax).Append(',').Append(r.AllocQty).Append(',').Append(r.RoundRobinExtra).Append(',')
               .Append(r.MerchNeedMonth).Append(',').Append(Csv(r.LPM)).Append(',').Append(r.LPMDt?.ToString("yyyy-MM-dd"))
               .AppendLine();
@@ -845,6 +848,7 @@
                     "VolumeGroup" => r => r.VolumeGroup,
                     "MerchNeedMonth" => r => r.MerchNeedMonth,
                     "OTS" => r => r.OTS,
+                    "PriorityRank" => r => r.PriorityRank ?? int.MaxValue,
                     "SkuMax" => r => r.SkuMax,
                     "AllocQty" => r => r.AllocQty,
                     "LPMDt" => r => r.LPMDt,
@@ -940,15 +944,22 @@
                 .GroupBy(r => r.Country)
                 .ToDictionary(g => g.Key, g => g.Select(r => r.StoreID).Distinct().Count());
 
+            // PO Qty per (PONo, Division) = the PO's TOTAL qty for that division,
+            // uniform across every country row — computed once from the full
+            // _allocation (unfiltered) as sum of distinct-item PoQty.
+            var poDivTotals = _allocation
+                .GroupBy(r => new { r.OraPONo, r.Division })
+                .ToDictionary(
+                    g => (g.Key.OraPONo, g.Key.Division),
+                    g => g.GroupBy(x => x.ItemCode).Sum(ig => ig.First().PoQty));
+
             var rows = all
                 .GroupBy(r => new { r.Country, r.OraPONo, r.Division })
                 .Select(g => new CountrySummaryRowVm(
                     g.Key.Country,
                     storesPerCountry.TryGetValue(g.Key.Country, out var n) ? n : 0,
                     g.Key.OraPONo, g.Key.Division,
-                    // PO Qty per (Country, PO, Division) = sum of distinct PoQty per ItemCode
-                    // (raw .Sum multi-counts because each item × store row repeats the same PoQty)
-                    g.GroupBy(x => x.ItemCode).Sum(ig => ig.First().PoQty),
+                    poDivTotals.TryGetValue((g.Key.OraPONo, g.Key.Division), out var t) ? t : 0,
                     g.Sum(x => x.AllocQty),
                     g.Where(x => x.LPMDt.HasValue).Min(x => x.LPMDt)));
             if (_sortKey is null)
