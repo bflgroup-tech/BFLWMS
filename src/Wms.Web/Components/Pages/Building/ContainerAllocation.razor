@@ -505,9 +505,8 @@
                 _warehouse = CurrentUser.Warehouse!;
         }
 
-        // Default Allocation Countries to user's SIM country (single-pick); user can add more.
-        if (!string.IsNullOrWhiteSpace(CurrentUser.Country) && _simCountries.Contains(CurrentUser.Country!))
-            _allocCountries = new HashSet<string> { CurrentUser.Country! };
+        // Default Allocation Countries to ALL SIM countries; user can trim.
+        _allocCountries = new HashSet<string>(_simCountries, StringComparer.OrdinalIgnoreCase);
 
         await RefreshProcessedContnosAsync();
     }

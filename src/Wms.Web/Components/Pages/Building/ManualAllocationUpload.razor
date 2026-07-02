@@ -25,6 +25,30 @@
     <div class="aiwms-alert @(_isError ? "error" : "info")">@_message</div>
 }
 
+@if (_busy)
+{
+    <div class="aiwms-alloc-progress">
+        <div class="aiwms-alloc-progress-label">@(_busyMsg ?? "Working...")</div>
+        <div class="aiwms-alloc-progress-bar"><span></span></div>
+    </div>
+}
+
+<style>
+.aiwms-alloc-progress { margin: 8px 0 12px 0; padding: 10px 12px; background: #f7fafd; border: 1px solid var(--border-default); border-radius: var(--r-sm); }
+.aiwms-alloc-progress-label { font-size: 12px; font-weight: 600; color: var(--text-secondary); margin-bottom: 6px; }
+.aiwms-alloc-progress-bar { position: relative; height: 8px; background: #e5eaf0; border-radius: 4px; overflow: hidden; }
+.aiwms-alloc-progress-bar > span {
+    position: absolute; top: 0; left: 0; height: 100%; width: 30%;
+    background: linear-gradient(90deg, #3b82f6, #06b6d4);
+    border-radius: 4px;
+    animation: aiwms-alloc-progress-slide 1.1s ease-in-out infinite;
+}
+@@keyframes aiwms-alloc-progress-slide {
+    0%   { left: -30%; }
+    100% { left: 100%; }
+}
+</style>
+
 <div class="aiwms-section">
     <div class="aiwms-card-header">Container + Store</div>
     <div style="display:grid; grid-template-columns: 1fr 1fr 2fr auto; gap:12px; align-items:end">
@@ -130,6 +154,7 @@
     private string _country = "";
     private string _storeId = "";
     private bool _busy;
+    private string? _busyMsg;
     private bool _validated;
     private string _message = "";
     private bool _isError;
@@ -163,7 +188,8 @@
 
     private async Task ValidateAsync()
     {
-        _busy = true; _message = ""; _rows = new(); _validated = false;
+        _busy = true; _busyMsg = "Validating container..."; _message = ""; _rows = new(); _validated = false;
+        StateHasChanged();
         try
         {
             var result = await Svc.ValidateContainerAsync(_contno.Trim());
@@ -172,7 +198,7 @@
             ShowInfo($"Container {_contno.Trim()} ok — building not started. Upload your Excel below.");
         }
         catch (Exception ex) { ShowError($"Validation failed: {ex.Message}"); }
-        finally { _busy = false; }
+        finally { _busy = false; _busyMsg = null; }
     }
 
     private async Task OnFileSelected(InputFileChangeEventArgs e)
@@ -184,7 +210,8 @@
             ShowError("File must be .xlsx");
             return;
         }
-        _busy = true; _message = ""; _rows = new();
+        _busy = true; _busyMsg = "Reading Excel..."; _message = ""; _rows = new();
+        StateHasChanged();
         try
         {
             List<ManualAllocationUploadRow> parsed;
@@ -209,11 +236,15 @@
                 return;
             }
 
+            _busyMsg = $"Enriching {parsed.Count:N0} row(s) — DivCode, POQty, SOH, SKU Max, EOM...";
+            StateHasChanged();
+            await Task.Yield();
+
             _rows = await Svc.EnrichRowsAsync(contno, storeId, _country, parsed);
             ShowInfo($"Loaded and enriched {_rows.Count} row(s). Review below, then click Save.");
         }
         catch (Exception ex) { ShowError($"Excel parse / enrichment failed: {ex.Message}"); }
-        finally { _busy = false; }
+        finally { _busy = false; _busyMsg = null; }
     }
 
     private async Task SaveAsync()
@@ -222,7 +253,8 @@
             $"Save {_rows.Count} row(s) into dbo.WmsManualAllocation for container {_contno.Trim()}? " +
             "Any prior rows for this container will be deleted first.");
         if (!confirm) return;
-        _busy = true; _message = "";
+        _busy = true; _busyMsg = $"Saving {_rows.Count:N0} row(s) to WmsManualAllocation..."; _message = "";
+        StateHasChanged();
         try
         {
             var result = await Svc.SaveAsync(_contno.Trim(), _rows);
@@ -230,7 +262,7 @@
             else           ShowError(result.Error ?? "Save failed.");
         }
         catch (Exception ex) { ShowError($"Save failed: {ex.Message}"); }
-        finally { _busy = false; }
+        finally { _busy = false; _busyMsg = null; }
     }
 
     private static List<ManualAllocationUploadRow> ParseXlsx(Stream stream)
