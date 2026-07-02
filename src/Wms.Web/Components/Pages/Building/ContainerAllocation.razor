@@ -288,7 +288,7 @@
                         <th style="cursor:pointer" @onclick='() => Sort("StoreName")'>Store Name @SortArrow("StoreName")</th>
                         <th style="cursor:pointer" @onclick='() => Sort("Country")'>Country @SortArrow("Country")</th>
                         <th style="cursor:pointer" @onclick='() => Sort("VolumeGroup")'>VolumeGroup @SortArrow("VolumeGroup")</th>
-                        <th style="cursor:pointer; text-align:right" @onclick='() => Sort("MerchNeedMonth")'>MerchNeed/Mo @SortArrow("MerchNeedMonth")</th>
+                        <th style="cursor:pointer; text-align:right" @onclick='() => Sort("MnwToday")'>MNW Today @SortArrow("MnwToday")</th>
                         <th style="cursor:pointer; text-align:right" @onclick='() => Sort("OTS")'>OTS @SortArrow("OTS")</th>
                         <th style="cursor:pointer; text-align:right" @onclick='() => Sort("PriorityRank")'>Priority @SortArrow("PriorityRank")</th>
                         <th style="cursor:pointer; text-align:right" @onclick='() => Sort("SkuMax")'>SKUMax @SortArrow("SkuMax")</th>
@@ -304,7 +304,7 @@
                             <td>@r.OraPONo</td><td>@r.ItemCode</td><td>@r.ItemName</td><td>@r.Brand</td><td>@r.Division</td>
                             <td style="text-align:right">@r.PoQty</td>
                             <td>@r.StoreID</td><td>@r.StoreName</td><td>@r.Country</td>
-                            <td>@r.VolumeGroup</td><td style="text-align:right">@r.MerchNeedMonth</td>
+                            <td>@r.VolumeGroup</td><td style="text-align:right">@r.MnwToday</td>
                             <td style="text-align:right">@r.OTS?.ToString("F4")</td>
                             <td style="text-align:right">@r.PriorityRank</td>
                             <td style="text-align:right">@r.SkuMax</td>
@@ -338,6 +338,7 @@
                         <th style="cursor:pointer; text-align:right" @onclick='() => Sort("TotalAlloc")'>Total Alloc @SortArrow("TotalAlloc")</th>
                         <th style="cursor:pointer; text-align:right" @onclick='() => Sort("Stores")'>Stores @SortArrow("Stores")</th>
                         <th style="cursor:pointer; text-align:right" @onclick='() => Sort("PriorityRank")' title="Best (lowest) PriorityRank across the item's stores">Priority @SortArrow("PriorityRank")</th>
+                        <th style="cursor:pointer; text-align:right" @onclick='() => Sort("MnwToday")' title="Highest MNW-Today across the item's stores">MNW Today @SortArrow("MnwToday")</th>
                         <th style="cursor:pointer" @onclick='() => Sort("LPMDt")'>LPM Dt @SortArrow("LPMDt")</th>
                     </tr>
                 </thead>
@@ -350,6 +351,7 @@
                             <td style="text-align:right">@g.TotalAlloc</td>
                             <td style="text-align:right">@g.Stores</td>
                             <td style="text-align:right">@g.PriorityRank</td>
+                            <td style="text-align:right">@g.MnwToday</td>
                             <td>@g.LPMDt?.ToString("yyyy-MM-dd")</td>
                         </tr>
                     }
@@ -365,7 +367,7 @@
                         <th style="cursor:pointer" @onclick='() => Sort("StoreName")'>Store Name @SortArrow("StoreName")</th>
                         <th style="cursor:pointer" @onclick='() => Sort("Country")'>Country @SortArrow("Country")</th>
                         <th style="cursor:pointer" @onclick='() => Sort("VolumeGroup")'>VolumeGroup @SortArrow("VolumeGroup")</th>
-                        <th style="cursor:pointer; text-align:right" @onclick='() => Sort("MerchNeedMonth")'>MerchNeed/Mo @SortArrow("MerchNeedMonth")</th>
+                        <th style="cursor:pointer; text-align:right" @onclick='() => Sort("MnwToday")'>MNW Today @SortArrow("MnwToday")</th>
                         <th style="cursor:pointer" @onclick='() => Sort("Division")'>Division @SortArrow("Division")</th>
                         <th style="cursor:pointer" @onclick='() => Sort("Brand")'>Brand @SortArrow("Brand")</th>
                         <th style="cursor:pointer" @onclick='() => Sort("OraPONo")'>PO No @SortArrow("OraPONo")</th>
@@ -381,7 +383,7 @@
                     {
                         <tr>
                             <td>@g.StoreID</td><td>@g.StoreName</td><td>@g.Country</td><td>@g.VolumeGroup</td>
-                            <td style="text-align:right">@g.MerchNeedMonth</td><td>@g.Division</td><td>@g.Brand</td>
+                            <td style="text-align:right">@g.MnwToday</td><td>@g.Division</td><td>@g.Brand</td>
                             <td>@g.OraPONo</td>
                             <td style="text-align:right">@g.PoQtySum</td>
                             <td style="text-align:right">@g.AllocSum</td>
@@ -405,6 +407,7 @@
                         <th style="cursor:pointer; text-align:right" @onclick='() => Sort("PoQty")'>PO Qty @SortArrow("PoQty")</th>
                         <th style="cursor:pointer; text-align:right" @onclick='() => Sort("AllocQty")'>Allocated Qty @SortArrow("AllocQty")</th>
                         <th style="cursor:pointer; text-align:right" @onclick='() => Sort("PriorityRank")' title="Best (lowest) PriorityRank across the country's stores for this Division">Priority @SortArrow("PriorityRank")</th>
+                        <th style="cursor:pointer; text-align:right" @onclick='() => Sort("MnwToday")' title="Highest MNW-Today across the country's stores for this Division">MNW Today @SortArrow("MnwToday")</th>
                         <th style="cursor:pointer" @onclick='() => Sort("LPMDt")'>LPM Dt @SortArrow("LPMDt")</th>
                     </tr>
                 </thead>
@@ -419,6 +422,7 @@
                             <td style="text-align:right">@g.PoQty</td>
                             <td style="text-align:right">@g.AllocQty</td>
                             <td style="text-align:right">@g.PriorityRank</td>
+                            <td style="text-align:right">@g.MnwToday</td>
                             <td>@g.LPMDt?.ToString("yyyy-MM-dd")</td>
                         </tr>
                     }
@@ -795,7 +799,7 @@
     private async Task ExportCsvAsync()
     {
         var sb = new StringBuilder();
-        sb.AppendLine("Contno,OraPONo,ItemCode,ItemName,Brand,PoQty,StoreID,StoreName,Country,Division,VolumeGroup,OTS,PriorityRank,SkuMax,AllocQty,RoundRobinExtra,MerchNeedMonth,LPM,LPMDt");
+        sb.AppendLine("Contno,OraPONo,ItemCode,ItemName,Brand,PoQty,StoreID,StoreName,Country,Division,VolumeGroup,OTS,PriorityRank,SkuMax,AllocQty,RoundRobinExtra,MnwToday,LPM,LPMDt");
         // Export the entire sorted result, not just the current page.
         foreach (var r in FilteredSorted)
         {
@@ -806,7 +810,7 @@
               .Append(r.OTS?.ToString("F4")).Append(',')
               .Append(r.PriorityRank).Append(',')
               .Append(r.SkuMax).Append(',').Append(r.AllocQty).Append(',').Append(r.RoundRobinExtra).Append(',')
-              .Append(r.MerchNeedMonth).Append(',').Append(Csv(r.LPM)).Append(',').Append(r.LPMDt?.ToString("yyyy-MM-dd"))
+              .Append(r.MnwToday).Append(',').Append(Csv(r.LPM)).Append(',').Append(r.LPMDt?.ToString("yyyy-MM-dd"))
               .AppendLine();
         }
         var b64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(sb.ToString()));
@@ -875,7 +879,7 @@
                     "StoreName" => r => r.StoreName,
                     "Country" => r => r.Country,
                     "VolumeGroup" => r => r.VolumeGroup,
-                    "MerchNeedMonth" => r => r.MerchNeedMonth,
+                    "MnwToday" => r => r.MnwToday ?? int.MinValue,
                     "OTS" => r => r.OTS,
                     "PriorityRank" => r => r.PriorityRank ?? int.MaxValue,
                     "SkuMax" => r => r.SkuMax,
@@ -904,9 +908,9 @@
 
     // --- Grouped view row types + getters (sorted by _sortKey if applicable) ---
     // LPMDt on grouped views = earliest LPMDt within the group (Min, ignoring nulls).
-    private record ItemSummaryRowVm(string OraPONo, string ItemCode, string? ItemName, string? Brand, string? Division, int PoQty, int TotalAlloc, int Stores, DateTime? LPMDt, int? PriorityRank);
-    private record StoreRowVm(string StoreID, string? StoreName, string Country, string VolumeGroup, int MerchNeedMonth, string? Division, string Brand, string OraPONo, int PoQtySum, int AllocSum, double? OTS, DateTime? LPMDt, int? PriorityRank);
-    private record CountrySummaryRowVm(string Country, int StoresCount, string OraPONo, string? Division, int PoQty, int AllocQty, DateTime? LPMDt, int? PriorityRank);
+    private record ItemSummaryRowVm(string OraPONo, string ItemCode, string? ItemName, string? Brand, string? Division, int PoQty, int TotalAlloc, int Stores, DateTime? LPMDt, int? PriorityRank, int? MnwToday);
+    private record StoreRowVm(string StoreID, string? StoreName, string Country, string VolumeGroup, int? MnwToday, string? Division, string Brand, string OraPONo, int PoQtySum, int AllocSum, double? OTS, DateTime? LPMDt, int? PriorityRank);
+    private record CountrySummaryRowVm(string Country, int StoresCount, string OraPONo, string? Division, int PoQty, int AllocQty, DateTime? LPMDt, int? PriorityRank, int? MnwToday);
 
     private IEnumerable<ItemSummaryRowVm> ItemSummaryRows
     {
@@ -918,7 +922,8 @@
                     g.First().ItemName, g.First().Brand, g.First().Division,
                     g.First().PoQty, g.Sum(x => x.AllocQty), g.Count(),
                     g.Where(x => x.LPMDt.HasValue).Min(x => x.LPMDt),
-                    g.Where(x => x.PriorityRank.HasValue).Select(x => (int?)x.PriorityRank!.Value).Min()));
+                    g.Where(x => x.PriorityRank.HasValue).Select(x => (int?)x.PriorityRank!.Value).Min(),
+                    g.Where(x => x.MnwToday.HasValue).Select(x => (int?)x.MnwToday!.Value).Max()));
             if (_sortKey is null)
                 return rows.OrderBy(r => r.OraPONo).ThenBy(r => r.ItemCode);
             Func<ItemSummaryRowVm, object?> k = _sortKey switch {
@@ -926,6 +931,7 @@
                 "Brand" => r => r.Brand, "Division" => r => r.Division, "PoQty" => r => r.PoQty,
                 "TotalAlloc" => r => r.TotalAlloc, "Stores" => r => r.Stores, "LPMDt" => r => r.LPMDt,
                 "PriorityRank" => r => r.PriorityRank ?? int.MaxValue,
+                "MnwToday" => r => r.MnwToday ?? int.MinValue,
                 _ => r => r.OraPONo,
             };
             return _sortAsc ? rows.OrderBy(k) : rows.OrderByDescending(k);
@@ -943,7 +949,7 @@
                 .GroupBy(r => new { r.StoreID, r.OraPONo })
                 .Select(g => new StoreRowVm(
                     g.Key.StoreID, g.First().StoreName, g.First().Country, g.First().VolumeGroup,
-                    g.First().MerchNeedMonth, g.First().Division,
+                    g.Where(x => x.MnwToday.HasValue).Select(x => (int?)x.MnwToday!.Value).Max(), g.First().Division,
                     string.Join(", ", g.Select(x => x.Brand).Where(b => b is not null).Distinct()),
                     g.Key.OraPONo,
                     g.GroupBy(x => x.ItemCode).Sum(ig => ig.First().PoQty),
@@ -955,7 +961,7 @@
                 return rows.OrderBy(r => r.StoreID).ThenBy(r => r.OraPONo);
             Func<StoreRowVm, object?> k = _sortKey switch {
                 "StoreID" => r => r.StoreID, "StoreName" => r => r.StoreName, "Country" => r => r.Country,
-                "VolumeGroup" => r => r.VolumeGroup, "MerchNeedMonth" => r => r.MerchNeedMonth,
+                "VolumeGroup" => r => r.VolumeGroup, "MnwToday" => r => r.MnwToday ?? int.MinValue,
                 "Division" => r => r.Division, "Brand" => r => r.Brand, "OraPONo" => r => r.OraPONo,
                 "PoQtySum" => r => r.PoQtySum, "AllocSum" => r => r.AllocSum,
                 "OTS" => r => r.OTS, "LPMDt" => r => r.LPMDt,
@@ -995,7 +1001,8 @@
                     poDivTotals.TryGetValue((g.Key.OraPONo, g.Key.Division), out var t) ? t : 0,
                     g.Sum(x => x.AllocQty),
                     g.Where(x => x.LPMDt.HasValue).Min(x => x.LPMDt),
-                    g.Where(x => x.PriorityRank.HasValue).Select(x => (int?)x.PriorityRank!.Value).Min()));
+                    g.Where(x => x.PriorityRank.HasValue).Select(x => (int?)x.PriorityRank!.Value).Min(),
+                    g.Where(x => x.MnwToday.HasValue).Select(x => (int?)x.MnwToday!.Value).Max()));
             if (_sortKey is null)
                 return rows.OrderBy(r => r.Country).ThenBy(r => r.OraPONo).ThenBy(r => r.Division);
             Func<CountrySummaryRowVm, object?> k = _sortKey switch {
@@ -1003,6 +1010,7 @@
                 "OraPONo" => r => r.OraPONo, "Division" => r => r.Division,
                 "PoQty" => r => r.PoQty, "AllocQty" => r => r.AllocQty, "LPMDt" => r => r.LPMDt,
                 "PriorityRank" => r => r.PriorityRank ?? int.MaxValue,
+                "MnwToday" => r => r.MnwToday ?? int.MinValue,
                 _ => r => r.Country,
             };
             return _sortAsc ? rows.OrderBy(k) : rows.OrderByDescending(k);
