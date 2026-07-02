@@ -107,11 +107,13 @@ public class ManualAllocationService(IOnPremConnectionResolver resolver, ICurren
     // ========== Enrichment ==========
 
     public async Task<List<ManualAllocationRow>> EnrichRowsAsync(
-        string contno, string storeId, List<ManualAllocationUploadRow> uploaded,
+        string contno, string storeId, string simCountry,
+        List<ManualAllocationUploadRow> uploaded,
         CancellationToken ct = default)
     {
-        contno  = (contno  ?? "").Trim();
-        storeId = (storeId ?? "").Trim();
+        contno     = (contno     ?? "").Trim();
+        storeId    = (storeId    ?? "").Trim();
+        simCountry = (simCountry ?? "").Trim();
         if (uploaded.Count == 0) return new();
 
         // Distinct itemcodes across all uploaded rows — used as IN @codes for the
@@ -132,32 +134,59 @@ public class ManualAllocationService(IOnPremConnectionResolver resolver, ICurren
             .GroupBy(r => r.Itemcode, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
 
-        // 2) POQty aggregated per itemcode for this ContNo.
-        var poByItem = (await src.QueryAsync<(string Itemcode, int POQty)>(new CommandDefinition(
-            @"SELECT ItemCode, SUM(CAST(ISNULL(orgqty,0) AS INT)) AS POQty
+        // 2) POQty + GroupCode aggregated per itemcode for this ContNo.
+        //    GroupCode is later joined to LPM_SKUMaxRule bands.
+        var poAndGroup = (await src.QueryAsync<(string Itemcode, int POQty, string? GroupCode)>(new CommandDefinition(
+            @"SELECT ItemCode,
+                     SUM(CAST(ISNULL(orgqty,0) AS INT)) AS POQty,
+                     MAX(GroupCode)                     AS GroupCode
                 FROM usa.dbo.usaorgfile WITH (NOLOCK)
                WHERE ContNo = @c AND ItemCode IN @codes
                GROUP BY ItemCode",
             new { c = contno, codes }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
-            .ToDictionary(r => r.Itemcode, r => r.POQty, StringComparer.OrdinalIgnoreCase);
+            .ToDictionary(r => r.Itemcode, r => (r.POQty, r.GroupCode), StringComparer.OrdinalIgnoreCase);
 
-        // 3) eCom SOH per itemcode at StoreID.
-        var sohByItem = (await src.QueryAsync<(string Itemcode, int Qty)>(new CommandDefinition(
-            @"SELECT itemcode, SUM(CAST(ISNULL(Qty,0) AS INT)) AS Qty
+        // 3) eCom SOH per itemcode at StoreID. Column is racks.LPM_locstock.SOH.
+        var sohByItem = (await src.QueryAsync<(string Itemcode, int SOH)>(new CommandDefinition(
+            @"SELECT itemcode, SUM(CAST(ISNULL(SOH,0) AS INT)) AS SOH
                 FROM racks.dbo.LPM_locstock WITH (NOLOCK)
                WHERE storeid = @s AND itemcode IN @codes
                GROUP BY itemcode",
             new { s = storeId, codes }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
-            .ToDictionary(r => r.Itemcode, r => r.Qty, StringComparer.OrdinalIgnoreCase);
+            .ToDictionary(r => r.Itemcode, r => r.SOH, StringComparer.OrdinalIgnoreCase);
 
-        // 4) SkuMax per itemcode at StoreID.
-        var skuByItem = (await src.QueryAsync<(string Itemcode, int SkuMax)>(new CommandDefinition(
-            @"SELECT Itemcode, CAST(ISNULL(SkuMax,0) AS INT) AS SkuMax
-                FROM LPMSIM.dbo.LPM_SimItemSkuMax WITH (NOLOCK)
-               WHERE StoreId = @s AND Itemcode IN @codes",
-            new { s = storeId, codes }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
-            .GroupBy(r => r.Itemcode, StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(g => g.Key, g => g.Max(r => r.SkuMax), StringComparer.OrdinalIgnoreCase);
+        // 4) SkuMax via LPMSIM.dbo.LPM_SKUMaxRule — banded by
+        //    (Country, DivCode, GroupCode, WHStockFrom..WHStockTo). Rules
+        //    fetched once for the whole (Country, div-set), then per item
+        //    the band matching POQty is picked (same pattern as
+        //    ContainerAllocationService).
+        var divCodesForRules = divByItem.Values
+            .Select(v => v.DivCode ?? 0)
+            .Where(d => d != 0)
+            .Distinct()
+            .ToArray();
+        var skuBands = new List<(string Country, int DivCode, string? GroupCode, int WHStockFrom, int WHStockTo, int SKUMax)>();
+        if (!string.IsNullOrWhiteSpace(simCountry) && divCodesForRules.Length > 0)
+        {
+            skuBands = (await src.QueryAsync<(string Country, int DivCode, string? GroupCode, int WHStockFrom, int WHStockTo, int SKUMax)>(new CommandDefinition(
+                @"SELECT Country, DivCode, GroupCode, WHStockFrom, WHStockTo, SKUMax
+                    FROM LPMSIM.dbo.LPM_SKUMaxRule WITH (NOLOCK)
+                   WHERE Country = @country AND DivCode IN @divs AND IsActive = 1",
+                new { country = simCountry, divs = divCodesForRules },
+                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).AsList();
+        }
+        var skuBandsByKey = skuBands
+            .GroupBy(b => (b.DivCode, GroupCode: (b.GroupCode ?? "").Trim().ToUpperInvariant()))
+            .ToDictionary(g => g.Key, g => g.OrderBy(b => b.WHStockFrom).ToList());
+
+        int? SkuMaxFor(int divCode, string? groupCode, int poQty)
+        {
+            var gc = (groupCode ?? "").Trim().ToUpperInvariant();
+            if (!skuBandsByKey.TryGetValue((divCode, gc), out var bands)) return null;
+            foreach (var b in bands)
+                if (poQty >= b.WHStockFrom && poQty <= b.WHStockTo) return b.SKUMax;
+            return null;
+        }
 
         // 5) Div EOM aggregated per DivCode for this StoreID + current GST month/year.
         var eomByDivCode = (await src.QueryAsync<(int DivCode, int TargetEOM)>(new CommandDefinition(
@@ -168,28 +197,32 @@ public class ManualAllocationService(IOnPremConnectionResolver resolver, ICurren
             new { s = storeId, m = month, y = year }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
             .ToDictionary(r => r.DivCode, r => r.TargetEOM);
 
-        // 6) Div SOH per Division text for this StoreID. vupc_subclass carries
-        // Division text directly so no SubclassMaster join needed.
-        var sohByDiv = (await src.QueryAsync<(string Division, int Qty)>(new CommandDefinition(
-            @"SELECT v.Division, SUM(CAST(ISNULL(ls.Qty,0) AS INT)) AS Qty
+        // 6) Div SOH per Division text for this StoreID. Column is
+        // racks.LPM_locstock.SOH; vupc_subclass carries Division text
+        // directly so no SubclassMaster join needed.
+        var sohByDiv = (await src.QueryAsync<(string Division, int SOH)>(new CommandDefinition(
+            @"SELECT v.Division, SUM(CAST(ISNULL(ls.SOH,0) AS INT)) AS SOH
                 FROM racks.dbo.LPM_locstock ls WITH (NOLOCK)
                 JOIN datareporting.dbo.vupc_subclass v WITH (NOLOCK) ON v.itemcode = ls.itemcode
                WHERE ls.storeid = @s AND v.Division IS NOT NULL
                GROUP BY v.Division",
             new { s = storeId }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
             .Where(r => !string.IsNullOrEmpty(r.Division))
-            .ToDictionary(r => r.Division!, r => r.Qty, StringComparer.OrdinalIgnoreCase);
+            .ToDictionary(r => r.Division!, r => r.SOH, StringComparer.OrdinalIgnoreCase);
 
         // Merge everything row-by-row.
         var result = new List<ManualAllocationRow>(uploaded.Count);
         foreach (var u in uploaded)
         {
             divByItem.TryGetValue(u.Itemcode, out var div);
-            poByItem.TryGetValue(u.Itemcode, out var poQty);
-            sohByItem.TryGetValue(u.Itemcode, out var eSoh);
-            skuByItem.TryGetValue(u.Itemcode, out var skuMax);
+            var hasPo   = poAndGroup.TryGetValue(u.Itemcode, out var poEntry);
+            var hasSoh  = sohByItem.TryGetValue(u.Itemcode, out var eSoh);
 
-            int? skuBal   = skuByItem.ContainsKey(u.Itemcode) ? skuMax - eSoh : null;
+            int? skuMax = hasPo && div.DivCode.HasValue
+                ? SkuMaxFor(div.DivCode.Value, poEntry.GroupCode, poEntry.POQty)
+                : null;
+
+            int? skuBal   = skuMax.HasValue ? skuMax.Value - eSoh : (int?)null;
             int? qualified = skuBal.HasValue ? Math.Max(0, Math.Min(skuBal.Value, u.AllocationQty)) : null;
 
             int? divEom   = div.DivCode.HasValue && eomByDivCode.TryGetValue(div.DivCode.Value, out var e) ? e : null;
@@ -202,9 +235,9 @@ public class ManualAllocationService(IOnPremConnectionResolver resolver, ICurren
                 Itemcode:      u.Itemcode,
                 AllocationQty: u.AllocationQty,
                 Division:      div.Division,
-                POQty:         poByItem.ContainsKey(u.Itemcode) ? poQty  : null,
-                eComSOH:       sohByItem.ContainsKey(u.Itemcode) ? eSoh   : null,
-                SkuMax:        skuByItem.ContainsKey(u.Itemcode) ? skuMax : null,
+                POQty:         hasPo  ? poEntry.POQty : (int?)null,
+                eComSOH:       hasSoh ? eSoh          : (int?)null,
+                SkuMax:        skuMax,
                 SkuBalance:    skuBal,
                 QualifiedQty:  qualified,
                 DivEOM:        divEom,

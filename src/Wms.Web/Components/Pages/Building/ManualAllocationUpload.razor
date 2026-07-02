@@ -209,7 +209,7 @@
                 return;
             }
 
-            _rows = await Svc.EnrichRowsAsync(contno, storeId, parsed);
+            _rows = await Svc.EnrichRowsAsync(contno, storeId, _country, parsed);
             ShowInfo($"Loaded and enriched {_rows.Count} row(s). Review below, then click Save.");
         }
         catch (Exception ex) { ShowError($"Excel parse / enrichment failed: {ex.Message}"); }
