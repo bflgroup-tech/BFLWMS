@@ -10,7 +10,7 @@
 
 <div class="aiwms-page-header">
     <h2>Container Allocation Data Sync</h2>
-    <p>Copy an approved Container Allocation's detail rows to either the Azure WMS DB mirror or the on-prem WMS-Prod-DB (<code>online.dbo.PhotoCheckingResult</code>). One sync per container — once synced, the container is permanently locked.</p>
+    <p>Copy an approved Container Allocation's detail rows to either the Azure WMS DB mirror or the on-prem WMS-Prod-DB (<code>online.dbo.PhotoCheckingResult</code>). Allocation and KNB boxes each skip only if the destination already has rows for this container — after a re-approval, clear the mirror rows first, then re-sync.</p>
 </div>
 
 <div class="aiwms-section">

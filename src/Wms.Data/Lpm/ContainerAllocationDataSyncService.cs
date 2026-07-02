@@ -11,9 +11,12 @@ namespace Wms.Data.Lpm;
 ///   • the Azure WMS DB (mirror table dbo.WMS_ContAllocationData), or
 ///   • the on-prem WmsProductionDb (legacy table online.dbo.PhotoCheckingResult).
 ///
-/// One sync per ContNo, full stop — once any prior sync exists for this ContNo
-/// in WMS_ContAllocationDataSync_Log (regardless of destination, status, or
-/// BatchNo), no further sync is allowed (per spec Q4).
+/// Sync is gated on the actual mirror content, not on prior log entries: the
+/// allocation copy is skipped only if the destination table (dbo.WMS_ContAllocationData
+/// on Azure, online.dbo.PhotoCheckingResult on-prem) already has rows for this
+/// ContNo. That way a re-approved batch can be re-shipped after the previous
+/// mirror rows have been cleared. The KNB gate follows the same principle
+/// (dbo.WmsKNBBoxes for this Country+ContNo).
 ///
 /// Activity is logged to Azure WMS DB.WMS_ContAllocationDataSync_Log.
 /// </summary>
@@ -150,19 +153,35 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
         nameof(DataSyncDestination.WmsKnbBoxes),
     };
 
-    /// <summary>True if this ContNo has any prior allocation-destination sync log entry
-    /// (Q4 gate). KNB-box log rows are NOT counted — KNB sync has its own gate.</summary>
-    public async Task<bool> IsAlreadySyncedAsync(string contno, CancellationToken ct = default)
+    /// <summary>True if the destination mirror already holds rows for this ContNo.
+    /// The gate is now based on the actual mirror content (dbo.WMS_ContAllocationData
+    /// for Azure, online.dbo.PhotoCheckingResult for on-prem) so that after a
+    /// re-approval — where the Azure rows have been cleared / never populated — the
+    /// re-sync is allowed.</summary>
+    public async Task<bool> IsAlreadySyncedAsync(string contno, DataSyncDestination destination, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(contno)) return false;
-        await using var c = OpenWms();
-        var hit = await c.ExecuteScalarAsync<int?>(new CommandDefinition(
-            @"SELECT TOP 1 1
-                FROM dbo.WMS_ContAllocationDataSync_Log WITH (NOLOCK)
-               WHERE ContNo = @c
-                 AND Destination IN ('AzureWmsDb','WmsProductionDb')",
-            new { c = contno }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-        return hit == 1;
+        switch (destination)
+        {
+            case DataSyncDestination.AzureWmsDb:
+            {
+                await using var c = OpenWms();
+                var hit = await c.ExecuteScalarAsync<int?>(new CommandDefinition(
+                    @"SELECT TOP 1 1 FROM dbo.WMS_ContAllocationData WITH (NOLOCK) WHERE ContNo = @c",
+                    new { c = contno }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+                return hit == 1;
+            }
+            case DataSyncDestination.WmsProductionDb:
+            {
+                await using var c = OpenWmsProductionDb();
+                var hit = await c.ExecuteScalarAsync<int?>(new CommandDefinition(
+                    @"SELECT TOP 1 1 FROM online.dbo.PhotoCheckingResult WITH (NOLOCK) WHERE ContNo = @c",
+                    new { c = contno }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+                return hit == 1;
+            }
+            default:
+                return false;
+        }
     }
 
     /// <summary>True if dbo.WmsKNBBoxes already has rows for this Country + ContNo
@@ -206,10 +225,16 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
     // ----- pass 1: allocation copy (with Q4 gate) -----
     private async Task<DataSyncResult> TryCopyAllocationAsync(string contno, DataSyncDestination destination, CancellationToken ct)
     {
-        if (await IsAlreadySyncedAsync(contno, ct))
+        if (await IsAlreadySyncedAsync(contno, destination, ct))
+        {
+            var skipId = await WriteLogRowAsync(
+                contno, null, destination, 0,
+                status: "Skipped",
+                error: $"{DestinationLabel(destination)} already has rows for {contno}.", ct);
             return new DataSyncResult(false,
-                $"Allocation: container {contno} was already synced before — skipped.",
-                null, 0);
+                $"Allocation: {DestinationLabel(destination)} already has rows for {contno} — skipped.",
+                skipId, 0);
+        }
 
         // Source rows from LPMSIM — ALL approved batches for this ContNo. If a
         // container has both FillSKUMax + RoundRobin approved, both ship.
