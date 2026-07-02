@@ -509,11 +509,11 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         {
             var mRows = await c.QueryAsync<(string StoreID, int DivCode, int? MnwToday)>(new CommandDefinition(
                 @"WITH latest AS (
-                     SELECT StoreID, DivCode, Mnwtoday,
+                     SELECT StoreID, DivCode, mnwtoday,
                             rn = ROW_NUMBER() OVER (PARTITION BY StoreID, DivCode ORDER BY OTSDate DESC)
-                       FROM LPMSIM.dbo.OTSOutput WITH (NOLOCK)
+                       FROM dbo.LPM_OTS_Output WITH (NOLOCK)
                   )
-                  SELECT StoreID, DivCode, Mnwtoday AS MnwToday
+                  SELECT StoreID, DivCode, mnwtoday AS MnwToday
                     FROM latest WHERE rn = 1",
                 commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
             foreach (var m in mRows)
