@@ -337,6 +337,7 @@
                         <th style="cursor:pointer; text-align:right" @onclick='() => Sort("PoQty")'>PO Qty @SortArrow("PoQty")</th>
                         <th style="cursor:pointer; text-align:right" @onclick='() => Sort("TotalAlloc")'>Total Alloc @SortArrow("TotalAlloc")</th>
                         <th style="cursor:pointer; text-align:right" @onclick='() => Sort("Stores")'>Stores @SortArrow("Stores")</th>
+                        <th style="cursor:pointer; text-align:right" @onclick='() => Sort("PriorityRank")' title="Best (lowest) PriorityRank across the item's stores">Priority @SortArrow("PriorityRank")</th>
                         <th style="cursor:pointer" @onclick='() => Sort("LPMDt")'>LPM Dt @SortArrow("LPMDt")</th>
                     </tr>
                 </thead>
@@ -348,6 +349,7 @@
                             <td style="text-align:right">@g.PoQty</td>
                             <td style="text-align:right">@g.TotalAlloc</td>
                             <td style="text-align:right">@g.Stores</td>
+                            <td style="text-align:right">@g.PriorityRank</td>
                             <td>@g.LPMDt?.ToString("yyyy-MM-dd")</td>
                         </tr>
                     }
@@ -370,6 +372,7 @@
                         <th style="cursor:pointer; text-align:right" @onclick='() => Sort("PoQtySum")'>PO Qty (sum) @SortArrow("PoQtySum")</th>
                         <th style="cursor:pointer; text-align:right" @onclick='() => Sort("AllocSum")'>Allocated Qty @SortArrow("AllocSum")</th>
                         <th style="cursor:pointer; text-align:right" @onclick='() => Sort("OTS")'>OTS @SortArrow("OTS")</th>
+                        <th style="cursor:pointer; text-align:right" @onclick='() => Sort("PriorityRank")' title="Store's PriorityRank for its Division">Priority @SortArrow("PriorityRank")</th>
                         <th style="cursor:pointer" @onclick='() => Sort("LPMDt")'>LPM Dt @SortArrow("LPMDt")</th>
                     </tr>
                 </thead>
@@ -383,6 +386,7 @@
                             <td style="text-align:right">@g.PoQtySum</td>
                             <td style="text-align:right">@g.AllocSum</td>
                             <td style="text-align:right">@g.OTS?.ToString("F4")</td>
+                            <td style="text-align:right">@g.PriorityRank</td>
                             <td>@g.LPMDt?.ToString("yyyy-MM-dd")</td>
                         </tr>
                     }
@@ -400,6 +404,7 @@
                         <th style="cursor:pointer" @onclick='() => Sort("Division")'>Division @SortArrow("Division")</th>
                         <th style="cursor:pointer; text-align:right" @onclick='() => Sort("PoQty")'>PO Qty @SortArrow("PoQty")</th>
                         <th style="cursor:pointer; text-align:right" @onclick='() => Sort("AllocQty")'>Allocated Qty @SortArrow("AllocQty")</th>
+                        <th style="cursor:pointer; text-align:right" @onclick='() => Sort("PriorityRank")' title="Best (lowest) PriorityRank across the country's stores for this Division">Priority @SortArrow("PriorityRank")</th>
                         <th style="cursor:pointer" @onclick='() => Sort("LPMDt")'>LPM Dt @SortArrow("LPMDt")</th>
                     </tr>
                 </thead>
@@ -413,6 +418,7 @@
                             <td>@g.Division</td>
                             <td style="text-align:right">@g.PoQty</td>
                             <td style="text-align:right">@g.AllocQty</td>
+                            <td style="text-align:right">@g.PriorityRank</td>
                             <td>@g.LPMDt?.ToString("yyyy-MM-dd")</td>
                         </tr>
                     }
@@ -528,6 +534,17 @@
         if (string.IsNullOrWhiteSpace(_country)) { _processedContnos = new(); return; }
         try { _processedContnos = await Svc.GetProcessedContnosAsync(_country); }
         catch { _processedContnos = new(); }
+
+        // Auto-select the first processed container so the dropdown state matches
+        // what the browser would autofill, and mirror it into _contno + refresh
+        // status so Delete/Approve/one-process gate render on first render.
+        if (_processedContnos.Count > 0
+            && (string.IsNullOrWhiteSpace(_selectedProcessedContno)
+                || !_processedContnos.Contains(_selectedProcessedContno)))
+        {
+            _selectedProcessedContno = _processedContnos[0];
+            await OnProcessedContnoSelectedAsync();
+        }
     }
 
     // Picking a Container No from the Processed Contnos dropdown mirrors it
@@ -887,9 +904,9 @@
 
     // --- Grouped view row types + getters (sorted by _sortKey if applicable) ---
     // LPMDt on grouped views = earliest LPMDt within the group (Min, ignoring nulls).
-    private record ItemSummaryRowVm(string OraPONo, string ItemCode, string? ItemName, string? Brand, string? Division, int PoQty, int TotalAlloc, int Stores, DateTime? LPMDt);
-    private record StoreRowVm(string StoreID, string? StoreName, string Country, string VolumeGroup, int MerchNeedMonth, string? Division, string Brand, string OraPONo, int PoQtySum, int AllocSum, double? OTS, DateTime? LPMDt);
-    private record CountrySummaryRowVm(string Country, int StoresCount, string OraPONo, string? Division, int PoQty, int AllocQty, DateTime? LPMDt);
+    private record ItemSummaryRowVm(string OraPONo, string ItemCode, string? ItemName, string? Brand, string? Division, int PoQty, int TotalAlloc, int Stores, DateTime? LPMDt, int? PriorityRank);
+    private record StoreRowVm(string StoreID, string? StoreName, string Country, string VolumeGroup, int MerchNeedMonth, string? Division, string Brand, string OraPONo, int PoQtySum, int AllocSum, double? OTS, DateTime? LPMDt, int? PriorityRank);
+    private record CountrySummaryRowVm(string Country, int StoresCount, string OraPONo, string? Division, int PoQty, int AllocQty, DateTime? LPMDt, int? PriorityRank);
 
     private IEnumerable<ItemSummaryRowVm> ItemSummaryRows
     {
@@ -900,13 +917,15 @@
                 .Select(g => new ItemSummaryRowVm(g.Key.OraPONo, g.Key.ItemCode,
                     g.First().ItemName, g.First().Brand, g.First().Division,
                     g.First().PoQty, g.Sum(x => x.AllocQty), g.Count(),
-                    g.Where(x => x.LPMDt.HasValue).Min(x => x.LPMDt)));
+                    g.Where(x => x.LPMDt.HasValue).Min(x => x.LPMDt),
+                    g.Where(x => x.PriorityRank.HasValue).Select(x => (int?)x.PriorityRank!.Value).Min()));
             if (_sortKey is null)
                 return rows.OrderBy(r => r.OraPONo).ThenBy(r => r.ItemCode);
             Func<ItemSummaryRowVm, object?> k = _sortKey switch {
                 "OraPONo" => r => r.OraPONo, "ItemCode" => r => r.ItemCode, "ItemName" => r => r.ItemName,
                 "Brand" => r => r.Brand, "Division" => r => r.Division, "PoQty" => r => r.PoQty,
                 "TotalAlloc" => r => r.TotalAlloc, "Stores" => r => r.Stores, "LPMDt" => r => r.LPMDt,
+                "PriorityRank" => r => r.PriorityRank ?? int.MaxValue,
                 _ => r => r.OraPONo,
             };
             return _sortAsc ? rows.OrderBy(k) : rows.OrderByDescending(k);
@@ -930,7 +949,8 @@
                     g.GroupBy(x => x.ItemCode).Sum(ig => ig.First().PoQty),
                     g.Sum(x => x.AllocQty),
                     g.Min(x => x.OTS),
-                    g.Where(x => x.LPMDt.HasValue).Min(x => x.LPMDt)));
+                    g.Where(x => x.LPMDt.HasValue).Min(x => x.LPMDt),
+                    g.Where(x => x.PriorityRank.HasValue).Select(x => (int?)x.PriorityRank!.Value).Min()));
             if (_sortKey is null)
                 return rows.OrderBy(r => r.StoreID).ThenBy(r => r.OraPONo);
             Func<StoreRowVm, object?> k = _sortKey switch {
@@ -939,6 +959,7 @@
                 "Division" => r => r.Division, "Brand" => r => r.Brand, "OraPONo" => r => r.OraPONo,
                 "PoQtySum" => r => r.PoQtySum, "AllocSum" => r => r.AllocSum,
                 "OTS" => r => r.OTS, "LPMDt" => r => r.LPMDt,
+                "PriorityRank" => r => r.PriorityRank ?? int.MaxValue,
                 _ => r => r.StoreID,
             };
             return _sortAsc ? rows.OrderBy(k) : rows.OrderByDescending(k);
@@ -973,13 +994,15 @@
                     g.Key.OraPONo, g.Key.Division,
                     poDivTotals.TryGetValue((g.Key.OraPONo, g.Key.Division), out var t) ? t : 0,
                     g.Sum(x => x.AllocQty),
-                    g.Where(x => x.LPMDt.HasValue).Min(x => x.LPMDt)));
+                    g.Where(x => x.LPMDt.HasValue).Min(x => x.LPMDt),
+                    g.Where(x => x.PriorityRank.HasValue).Select(x => (int?)x.PriorityRank!.Value).Min()));
             if (_sortKey is null)
                 return rows.OrderBy(r => r.Country).ThenBy(r => r.OraPONo).ThenBy(r => r.Division);
             Func<CountrySummaryRowVm, object?> k = _sortKey switch {
                 "Country" => r => r.Country, "StoresCount" => r => r.StoresCount,
                 "OraPONo" => r => r.OraPONo, "Division" => r => r.Division,
                 "PoQty" => r => r.PoQty, "AllocQty" => r => r.AllocQty, "LPMDt" => r => r.LPMDt,
+                "PriorityRank" => r => r.PriorityRank ?? int.MaxValue,
                 _ => r => r.Country,
             };
             return _sortAsc ? rows.OrderBy(k) : rows.OrderByDescending(k);
