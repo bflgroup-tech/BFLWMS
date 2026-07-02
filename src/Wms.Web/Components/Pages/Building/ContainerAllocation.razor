@@ -728,7 +728,12 @@
     private async Task ApproveAsync()
     {
         if (_loadedBatch is null) return;
-        var ro = _loadedBatch.RunOption == "RoundRobin" ? RunOption.RoundRobin : RunOption.FillSKUMax;
+        var ro = _loadedBatch.RunOption switch
+        {
+            "RoundRobin"           => RunOption.RoundRobin,
+            "FillSKUMaxRoundRobin" => RunOption.FillSKUMaxRoundRobin,
+            _                      => RunOption.FillSKUMax,
+        };
         var ok = await JS.InvokeAsync<bool>("confirm",
             $"Approve {_loadedBatch.ContNo}#{_loadedBatch.BatchNo} ({_loadedBatch.RunOption})?\n\n" +
             "Once approved, Process and Delete are locked for this batch.");
