@@ -485,16 +485,31 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         // OTS refresh between items. Starts at zero; grows as we allocate.
         var runningAlloc = new Dictionary<(string StoreID, int DivCode), int>();
 
-        // ============ FillSKUMaxRoundRobin: extra prefetches ============
-        // Only paid when the operator actually picked this run option. Nothing
-        // for FillSKUMax / RoundRobin.
-        Dictionary<(string StoreID, string ItemCode), int> initialAllocByKey = new();  // keys normalised to UPPER on both insert + lookup
+        // ============ PriorityRank prefetch (always paid) ============
+        // Stashed on every AllocationRow (persisted column) so the report grid
+        // can show it regardless of run option; FillSKUMaxRoundRobin also uses
+        // it to rank stores for the Priority Fill pass.
         Dictionary<(string StoreID, int DivCode), int?> priorityByStoreDiv = new();
+        {
+            var nowGst = DateTime.UtcNow.AddHours(4);
+            var pRows = await c.QueryAsync<(string StoreID, int DivCode, int? PriorityRank)>(new CommandDefinition(
+                @"SELECT StoreId AS StoreID, DivCode, PriorityRank
+                    FROM LPMSIM.dbo.LPM_EOM_Output WITH (NOLOCK)
+                   WHERE Month1 = @m AND Year1 = @y",
+                new { m = nowGst.Month, y = nowGst.Year },
+                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            foreach (var p in pRows)
+                priorityByStoreDiv[(p.StoreID, p.DivCode)] = p.PriorityRank;
+        }
+
+        // ============ FillSKUMaxRoundRobin: extra prefetches ============
+        // Only paid when the operator actually picked this run option.
+        Dictionary<(string StoreID, string ItemCode), int> initialAllocByKey = new();  // keys normalised to UPPER on both insert + lookup
         DateTime? containerReceiptDt = null;
         int fillRRTopN = 25;
         if (runOption == RunOption.FillSKUMaxRoundRobin)
         {
-            progress?.Report(new AllocationProgress(0, 0, "Prefetching: Initial Allocation + EOM priority + receipt date"));
+            progress?.Report(new AllocationProgress(0, 0, "Prefetching: Initial Allocation + receipt date"));
 
             // Initial allocation per (StoreID, Itemcode) from Azure WMS.
             await using (var wms = new SqlConnection(resolver.GetWmsAzureConnectionString()))
@@ -514,17 +529,6 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                     commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
                 if (int.TryParse(cfg, out var t) && t > 0) fillRRTopN = t;
             }
-
-            // Division Priority per (StoreID, DivCode) — lower PriorityRank = higher priority.
-            var nowGst = DateTime.UtcNow.AddHours(4);
-            var pRows = await c.QueryAsync<(string StoreID, int DivCode, int? PriorityRank)>(new CommandDefinition(
-                @"SELECT StoreId AS StoreID, DivCode, PriorityRank
-                    FROM LPMSIM.dbo.LPM_EOM_Output WITH (NOLOCK)
-                   WHERE Month1 = @m AND Year1 = @y",
-                new { m = nowGst.Month, y = nowGst.Year },
-                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-            foreach (var p in pRows)
-                priorityByStoreDiv[(p.StoreID, p.DivCode)] = p.PriorityRank;
 
             // Container receipt date from bfldata.dbo.contreceipt (receiptdt column).
             containerReceiptDt = await c.ExecuteScalarAsync<DateTime?>(new CommandDefinition(
@@ -649,6 +653,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                 {
                     storeNameById.TryGetValue(sid, out var storeName);
                     pricesByCountryItem.TryGetValue((country, line.ItemCode), out var price);
+                    var priority = priorityByStoreDiv.TryGetValue((sid, divCode), out var pr) ? pr : null;
                     return new AllocationRow(
                         Contno: line.ContNo, OraPONo: line.OraPONo, ItemCode: line.ItemCode,
                         ItemName: orgRow.itemname, Brand: orgRow.vendor, PoQty: line.Qty,
@@ -659,7 +664,8 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                         Season: orgRow.season, Style: orgRow.Style, Size: orgRow.Size,
                         Department: itemRow.Department, SalesPrice: price,
                         PalletType: PalletFor(sid),
-                        PrevAllocatedQty: prevAllocatedSeed.GetValueOrDefault((sid, divCode), 0));
+                        PrevAllocatedQty: prevAllocatedSeed.GetValueOrDefault((sid, divCode), 0),
+                        PriorityRank: priority);
                 }
 
                 var allocs = new Dictionary<string, AllocationRow>(StringComparer.OrdinalIgnoreCase);
@@ -910,6 +916,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         dt.Columns.Add("ORAPONo",          typeof(string));
         dt.Columns.Add("Division",         typeof(string));
         dt.Columns.Add("Remarks",          typeof(string));
+        dt.Columns.Add("PriorityRank",     typeof(int));
 
         var now = DateTime.UtcNow.AddHours(4);  // GST stamp for Trndate/Time1
         var trnDate = now.Date;
@@ -935,7 +942,8 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                 (object?)r.LPMDt ?? DBNull.Value,
                 r.OraPONo,
                 (object?)r.Division ?? DBNull.Value,
-                (object?)(r.RoundRobinExtra > 0 ? $"RR+{r.RoundRobinExtra}" : null) ?? DBNull.Value);
+                (object?)(r.RoundRobinExtra > 0 ? $"RR+{r.RoundRobinExtra}" : null) ?? DBNull.Value,
+                (object?)r.PriorityRank ?? DBNull.Value);
         }
 
         // SqlBulkCopy.DestinationTableName needs the table to be in the connection's
@@ -968,8 +976,8 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         // grid still works, sums/totals stay correct.
         var rows = (await c.QueryAsync<(string ContNo, string? OraPONo, string? ItemCode, string? ItemName,
                                        int? Qty, int? PoQty, string? StoreID, string? GroupCode, string? Division,
-                                       string? Remarks, DateTime? LPMDt)>(new CommandDefinition(@"
-            SELECT ContNo, ORAPONo, Itemcode, Itemname, Qty, PoQty, StoreID, GroupCode, Division, Remarks, LPMDt
+                                       string? Remarks, DateTime? LPMDt, int? PriorityRank)>(new CommandDefinition(@"
+            SELECT ContNo, ORAPONo, Itemcode, Itemname, Qty, PoQty, StoreID, GroupCode, Division, Remarks, LPMDt, PriorityRank
             FROM LPMSIM.dbo.WMS_ContAllocationDraftDetail WITH (NOLOCK)
             WHERE Country = @ct AND ContNo = @c
             ORDER BY IdNo",
@@ -993,7 +1001,8 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
             DivCode: 0,
             RoundRobinExtra: ParseRoundRobin(r.Remarks),
             LPM: null,
-            LPMDt: r.LPMDt
+            LPMDt: r.LPMDt,
+            PriorityRank: r.PriorityRank
         )).ToList();
     }
 
@@ -1335,13 +1344,13 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                    Result, FinalResult, ResultType, Qty, QtyIssue, OrPrice, PrintFlag, RfidFlag,
                    Company, StoreID, Itemname, Barcode, SalesPrice, RefNo, Mark, Uid,
                    RStatus, RDateTime, PStatus, PDateTime, Excess, TcmContno, BuildingCategory,
-                   LPMDt, LPMBoxNO, ORAPONo, Style, Remarks)
+                   LPMDt, LPMBoxNO, ORAPONo, Style, Remarks, PriorityRank)
                 SELECT
                    ContNo, TrnDate, Time1, UPC, Itemcode, GroupCode, Season, Department, Division,
                    Result, FinalResult, ResultType, Qty, QtyIssue, OrPrice, PrintFlag, RfidFlag,
                    Company, StoreID, Itemname, Barcode, SalesPrice, RefNo, Mark, Uid,
                    RStatus, RDateTime, PStatus, PDateTime, Excess, TcmContno, BuildingCategory,
-                   LPMDt, LPMBoxNO, ORAPONo, Style, Remarks
+                   LPMDt, LPMBoxNO, ORAPONo, Style, Remarks, PriorityRank
                 FROM LPMSIM.dbo.WMS_ContAllocationDraftDetail
                 WHERE Country = @ct AND ContNo = @c;
 
@@ -1356,11 +1365,11 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         // Fallback path — no draft, insert in-memory rows directly.
         var insertSql = @"INSERT INTO LPMSIM.dbo.WMS_ContAllocationData
             (ContNo, TrnDate, Time1, UPC, Itemcode, GroupCode, Division, Qty, QtyIssue,
-             StoreID, TcmContno, ORAPONo, LPMDt, Itemname, BuildingCategory, Remarks)
+             StoreID, TcmContno, ORAPONo, LPMDt, Itemname, BuildingCategory, Remarks, PriorityRank)
           VALUES
             (@ContNo, CAST(DATEADD(hour, 4, SYSUTCDATETIME()) AS DATE), CAST(DATEADD(hour, 4, SYSUTCDATETIME()) AS TIME(0)),
              @UPC, @ItemCode, @GroupCode, @Division, @Qty, 0,
-             @StoreID, @ContNo, @OraPONo, @LPMDt, @ItemName, @Country, @Remarks);";
+             @StoreID, @ContNo, @OraPONo, @LPMDt, @ItemName, @Country, @Remarks, @PriorityRank);";
         var affected = 0;
         foreach (var r in rows)
         {
@@ -1371,6 +1380,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                 StoreID   = r.StoreID, OraPONo = r.OraPONo, LPMDt = r.LPMDt,
                 ItemName  = r.ItemName, Country = r.Country,
                 Remarks   = r.RoundRobinExtra > 0 ? $"RR+{r.RoundRobinExtra}" : null,
+                PriorityRank = (int?)r.PriorityRank,
             }, cancellationToken: ct));
         }
         return affected;
@@ -1501,9 +1511,9 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
     {
         var rows = (await c.QueryAsync<(string ContNo, string? OraPONo, string? ItemCode, string? ItemName, string? Brand,
                                        int? Qty, int? SkuMax, int? DivCode, string? StoreID, string? Country, string? GroupCode, string? Division,
-                                       string? Remarks, DateTime? LPMDt, double? OTS)>(new CommandDefinition($@"
+                                       string? Remarks, DateTime? LPMDt, double? OTS, int? PriorityRank)>(new CommandDefinition($@"
             SELECT d.ContNo, d.ORAPONo, d.Itemcode, d.Itemname, d.Brand, d.Qty, d.SkuMax, d.DivCode, d.StoreID, d.Country,
-                   d.GroupCode, d.Division, d.Remarks, d.LPMDt, d.OTS
+                   d.GroupCode, d.Division, d.Remarks, d.LPMDt, d.OTS, d.PriorityRank
               FROM LPMSIM.dbo.WMS_ContAllocationData d WITH (NOLOCK)
               {joinAndWhereSql}
              ORDER BY d.IdNo",
@@ -1591,7 +1601,8 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                 RoundRobinExtra: ParseRoundRobin(r.Remarks),
                 LPM: po.LPM,
                 LPMDt: r.LPMDt,
-                OTS: r.OTS);
+                OTS: r.OTS,
+                PriorityRank: r.PriorityRank);
         }).ToList();
     }
 }

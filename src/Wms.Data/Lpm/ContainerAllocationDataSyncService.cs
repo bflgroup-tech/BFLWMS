@@ -251,6 +251,7 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
                        d.ORAPONo, d.Division, d.Brand, d.DivCode, d.Department, d.Season, d.Style,
                        [Size] = d.Size,
                        d.SalesPrice, d.ResultType, d.FinalResult, d.Result, d.Remarks, d.OTS,
+                       d.PriorityRank,
                        Color    = u.color,
                        Gender   = u.GENDER,
                        HsCode   = u.hscode,
@@ -478,6 +479,7 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
         dt.Columns.Add("Class",            typeof(string));
         dt.Columns.Add("Family",           typeof(string));
         dt.Columns.Add("Subclass",         typeof(string));
+        dt.Columns.Add("PriorityRank",     typeof(int));
 
         foreach (var r in rows)
         {
@@ -521,7 +523,8 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
                 (object?)r.HsCode           ?? DBNull.Value,
                 (object?)r.Class            ?? DBNull.Value,
                 (object?)r.Family           ?? DBNull.Value,
-                (object?)r.Subclass         ?? DBNull.Value);
+                (object?)r.Subclass         ?? DBNull.Value,
+                (object?)r.PriorityRank     ?? DBNull.Value);
         }
         return dt;
     }
@@ -694,6 +697,7 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
         public string?   Class            { get; set; }
         public string?   Family           { get; set; }
         public string?   Subclass         { get; set; }
+        public int?      PriorityRank     { get; set; }
     }
 
     // ===================== Data Settings sync (standalone) =====================
