@@ -251,7 +251,7 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
                        d.ORAPONo, d.Division, d.Brand, d.DivCode, d.Department, d.Season, d.Style,
                        [Size] = d.Size,
                        d.SalesPrice, d.ResultType, d.FinalResult, d.Result, d.Remarks, d.OTS,
-                       d.PriorityRank,
+                       d.PriorityRank, d.MnwToday,
                        Color    = u.color,
                        Gender   = u.GENDER,
                        HsCode   = u.hscode,
@@ -480,6 +480,7 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
         dt.Columns.Add("Family",           typeof(string));
         dt.Columns.Add("Subclass",         typeof(string));
         dt.Columns.Add("PriorityRank",     typeof(int));
+        dt.Columns.Add("MnwToday",         typeof(int));
 
         foreach (var r in rows)
         {
@@ -524,7 +525,8 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
                 (object?)r.Class            ?? DBNull.Value,
                 (object?)r.Family           ?? DBNull.Value,
                 (object?)r.Subclass         ?? DBNull.Value,
-                (object?)r.PriorityRank     ?? DBNull.Value);
+                (object?)r.PriorityRank     ?? DBNull.Value,
+                (object?)r.MnwToday         ?? DBNull.Value);
         }
         return dt;
     }
@@ -698,6 +700,7 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
         public string?   Family           { get; set; }
         public string?   Subclass         { get; set; }
         public int?      PriorityRank     { get; set; }
+        public int?      MnwToday         { get; set; }
     }
 
     // ===================== Data Settings sync (standalone) =====================

@@ -54,7 +54,8 @@ public record AllocationRow(
     decimal? SalesPrice       = null,    // hodata.salesprice or <DataName>.RFSalesprice (per store country)
     string?  PalletType       = null,    // WMS_Building_PalletTypes.PalletTypeS (or PalletTypeW when season='W')
     int      PrevAllocatedQty = 0,       // (StoreID, DivCode) seed at allocation time
-    int?     PriorityRank     = null);   // LPM_EOM_Output.PriorityRank per (StoreID, DivCode) — lower = higher priority
+    int?     PriorityRank     = null,    // LPM_EOM_Output.PriorityRank per (StoreID, DivCode) — lower = higher priority
+    int?     MnwToday         = null);   // OTSOutput.Mnwtoday latest per (StoreID, DivCode) by OTSDate DESC
 
 /// <summary>One row in the blocked-items list: an (item, store) pair that was
 /// excluded from allocation by LPM_StoreDeptAccess or LPM_StoreDivAccess.</summary>
