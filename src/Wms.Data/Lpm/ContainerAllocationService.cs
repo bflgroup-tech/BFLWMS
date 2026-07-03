@@ -494,7 +494,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
             var nowGst = DateTime.UtcNow.AddHours(4);
             var pRows = await c.QueryAsync<(string StoreID, int DivCode, int? PriorityRank)>(new CommandDefinition(
                 @"SELECT StoreId AS StoreID, DivCode, PriorityRank
-                    FROM LPMSIM.dbo.LPM_EOM_Output WITH (NOLOCK)
+                    FROM dbo.LPM_EOM_Output WITH (NOLOCK)
                    WHERE Month1 = @m AND Year1 = @y",
                 new { m = nowGst.Month, y = nowGst.Year },
                 commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
