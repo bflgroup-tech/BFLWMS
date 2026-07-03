@@ -22,17 +22,19 @@
    Azure block on the Azure WMS DB.
    ============================================================================= */
 
-/* ---- LPMSIM (on-prem) ---- */
-IF COL_LENGTH('LPMSIM.dbo.WMS_ContAllocationData', 'POQty') IS NULL
-BEGIN
-    EXEC LPMSIM..sp_rename 'dbo.WMS_ContAllocationData.Qty', 'POQty', 'COLUMN';
-END
+/* ---- LPMSIM (on-prem) — MUST USE LPMSIM before sp_rename, because
+       sp_rename resolves 'dbo.Table.Column' against the current DB
+       context, not the three-part name passed in. ---- */
+USE LPMSIM;
 GO
-IF COL_LENGTH('LPMSIM.dbo.WMS_ContAllocationData', 'Phase2Qty') IS NULL
-    ALTER TABLE LPMSIM.dbo.WMS_ContAllocationData ADD Phase2Qty INT NULL;
+IF COL_LENGTH('dbo.WMS_ContAllocationData', 'POQty') IS NULL
+    EXEC sp_rename 'dbo.WMS_ContAllocationData.Qty', 'POQty', 'COLUMN';
 GO
-IF COL_LENGTH('LPMSIM.dbo.WMS_ContAllocationDraftDetail', 'Phase2Qty') IS NULL
-    ALTER TABLE LPMSIM.dbo.WMS_ContAllocationDraftDetail ADD Phase2Qty INT NULL;
+IF COL_LENGTH('dbo.WMS_ContAllocationData', 'Phase2Qty') IS NULL
+    ALTER TABLE dbo.WMS_ContAllocationData ADD Phase2Qty INT NULL;
+GO
+IF COL_LENGTH('dbo.WMS_ContAllocationDraftDetail', 'Phase2Qty') IS NULL
+    ALTER TABLE dbo.WMS_ContAllocationDraftDetail ADD Phase2Qty INT NULL;
 GO
 PRINT 'LPMSIM: WMS_ContAllocationData Qty renamed to POQty; Phase2Qty added on data + draft.';
 GO
