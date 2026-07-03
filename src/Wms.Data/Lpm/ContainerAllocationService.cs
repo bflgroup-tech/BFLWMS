@@ -209,7 +209,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
     // ===================== Process — preview allocation =====================
     // Walks each PO line item, looks up DivCode from vupc_subclass, finds
     // eligible stores via LPM_EOM_Output × LPM_SKUMaxRule (current month),
-    // orders by VolumeGroup A→B→C… then MerchNeedMonth DESC, and assigns
+    // orders eligible stores by current OTS DESC (nulls last), and assigns
     // min(SKUMax, remaining) per store. If qty remains after all stores
     // hit cap, does round-robin one piece per store in same order until
     // qty hits zero.
@@ -705,34 +705,49 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                 else if (runOption == RunOption.FillSKUMaxRoundRobin)
                 {
                     // ================= FillSKUMax + RoundRobin =================
-                    // Two conditions per line item, driven by whether the item's
-                    // LPMDt falls inside the container's LPM window (Scenario 1
-                    // = receipt<15 -> N=1, Scenario 2 = receipt>=15 -> N=2).
+                    // Eligibility filter: stores must have a POSITIVE PriorityRank
+                    // in LPM_EOM_Output. Stores with NULL or <= 0 rank are dropped
+                    // from BOTH conditions (they never receive allocation under
+                    // this run option). Two conditions per line item, driven by
+                    // whether the item's LPMDt falls inside the container's LPM
+                    // window (Scenario 1 = receipt<15 -> N=1, Scenario 2 =
+                    // receipt>=15 -> N=2).
+                    var eligibleWithPri = stores
+                        .Select(s => new {
+                            Store    = s,
+                            Priority = priorityByStoreDiv.TryGetValue((s.StoreID, divCode), out var pr) ? pr : null,
+                        })
+                        .Where(x => x.Priority.HasValue && x.Priority.Value > 0)
+                        .ToList();
+
+                    if (eligibleWithPri.Count == 0)
+                    {
+                        // No PriorityRank>0 store for this Division — skip this line.
+                        // (Blocked / no-rank stores are already recorded as blocked or dropped.)
+                        continue;
+                    }
+
                     var conditionA = IsWithinLpmWindow(line.LPMDt);
 
                     if (conditionA)
                     {
-                        // 1. Priority rank by LPM_EOM_Output.PriorityRank for
-                        //    (StoreID, DivCode). Lower rank number = higher priority.
-                        //    Stores with no ranking sink to the bottom.
-                        var ranked = stores
-                            .Select(s => new {
-                                Store = s,
-                                Priority = priorityByStoreDiv.TryGetValue((s.StoreID, divCode), out var pr) ? pr : null,
-                            })
-                            .OrderBy(x => x.Priority.HasValue ? 0 : 1)
-                            .ThenBy(x => x.Priority ?? int.MaxValue)
+                        // 1. Rank eligible stores by PriorityRank ASC.
+                        var ranked = eligibleWithPri
+                            .OrderBy(x => x.Priority!.Value)
                             .ToList();
 
-                        var top = ranked.Take(fillRRTopN).Select(x => x.Store).ToList();
+                        var top  = ranked.Take(fillRRTopN).ToList();
                         var rest = ranked.Skip(fillRRTopN).Select(x => x.Store).ToList();
 
-                        // 2. Fill Top-N by OTS DESC up to Effective SKU Max.
-                        var topByOts = top
-                            .OrderBy(s => s.Ots.HasValue ? 0 : 1)
-                            .ThenByDescending(s => s.Ots)
+                        // 2. Priority Fill Top-N by PriorityRank ASC, OTS DESC
+                        //    (nulls last), up to Effective SKU Max.
+                        var topByPri = top
+                            .OrderBy(x => x.Priority!.Value)
+                            .ThenBy(x => x.Store.Ots.HasValue ? 0 : 1)
+                            .ThenByDescending(x => x.Store.Ots)
+                            .Select(x => x.Store)
                             .ToList();
-                        foreach (var s in topByOts)
+                        foreach (var s in topByPri)
                         {
                             if (remaining <= 0) break;
                             var cap  = EffectiveSkuMax(s.SKUMax, s.StoreID, line.ItemCode);
@@ -742,7 +757,9 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                             remaining -= take;
                         }
 
-                        // 3. Round-Robin remaining stores by OTS DESC up to Effective SKU Max.
+                        // 3. Round-Robin remaining eligible stores by OTS DESC
+                        //    up to Effective SKU Max — runs only after Top-N is
+                        //    exhausted for this line.
                         var restByOts = rest
                             .OrderBy(s => s.Ots.HasValue ? 0 : 1)
                             .ThenByDescending(s => s.Ots)
@@ -766,10 +783,11 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                         }
 
                         // 4. Overflow: allocate leftover ignoring SKU Max caps —
-                        //    RR across ALL stores by OTS DESC.
+                        //    RR across eligible (PriorityRank>0) stores by OTS DESC.
                         if (remaining > 0)
                         {
-                            var allByOts = stores
+                            var allByOts = eligibleWithPri
+                                .Select(x => x.Store)
                                 .OrderBy(s => s.Ots.HasValue ? 0 : 1)
                                 .ThenByDescending(s => s.Ots)
                                 .ToList();
@@ -793,8 +811,10 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                     }
                     else
                     {
-                        // Condition B: RR ALL stores by OTS DESC up to Effective SKU Max.
-                        var allByOts = stores
+                        // Condition B: RR eligible (PriorityRank>0) stores by
+                        // OTS DESC up to Effective SKU Max.
+                        var allByOts = eligibleWithPri
+                            .Select(x => x.Store)
                             .OrderBy(s => s.Ots.HasValue ? 0 : 1)
                             .ThenByDescending(s => s.Ots)
                             .ToList();
