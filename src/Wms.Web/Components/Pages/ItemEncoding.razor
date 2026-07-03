@@ -1,13 +1,284 @@
 @page "/encoding"
+@rendermode RenderMode.InteractiveServer
+@using Wms.Core
+@using Wms.Data.Encoding
 @attribute [Authorize(Policy = Wms.Core.MenuKeys.ITEM_ENCODING)]
+@inject ItemEncodingService Svc
+@inject ICurrentUser Me
 
 <PageTitle>WMS — Item Encoding</PageTitle>
 
 <div class="aiwms-page-header">
     <h2>Item Encoding</h2>
-    <p>Add new items not yet in the item master. Scope to be defined in next iteration.</p>
+    <p>
+        Encode a new item against an open container. Pick a container to enable
+        Style / MH4 hierarchy for that container; Size becomes available after
+        Division is picked from MH4.
+    </p>
+</div>
+
+@if (!string.IsNullOrEmpty(_message))
+{
+    <div class="aiwms-alert @(_isError ? "error" : "info")">@_message</div>
+}
+
+<div class="aiwms-section">
+    <div class="aiwms-card-header">Item</div>
+    <div style="display:grid; grid-template-columns: minmax(0,240px) minmax(0,180px) minmax(0,1fr); gap:12px">
+        <div>
+            <label class="aiwms-input-lbl">CONTAINER <span class="req">*</span></label>
+            <select class="aiwms-input" @bind="_contno" @bind:after="OnContnoChangedAsync" disabled="@_busy">
+                <option value="">(pick an open container)</option>
+                @foreach (var c in _contnos)
+                {
+                    <option value="@c.ContNo">@c.ContNo@(string.IsNullOrEmpty(c.ContDesc) ? "" : $" — {c.ContDesc}")</option>
+                }
+            </select>
+        </div>
+        <div>
+            <label class="aiwms-input-lbl">ITEMCODE (barcode) <span class="req">*</span></label>
+            <input class="aiwms-input" @bind="_itemcode" placeholder="e.g. 6281073433214" disabled="@_busy" />
+        </div>
+        <div>
+            <label class="aiwms-input-lbl">ITEM NAME</label>
+            <input class="aiwms-input" @bind="_itemname" placeholder="Item name / description" disabled="@_busy" />
+        </div>
+    </div>
 </div>
 
 <div class="aiwms-section">
-    <div class="aiwms-alert info">This page is a stub — workflow will be added when scope is shared.</div>
+    <div class="aiwms-card-header">Attributes</div>
+    <div style="display:grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap:12px">
+        <div>
+            <label class="aiwms-input-lbl">BRAND</label>
+            <input class="aiwms-input" list="brands-list" @bind="_brand" placeholder="type to search…" disabled="@_busy" />
+            <datalist id="brands-list">
+                @foreach (var b in _brands) { <option value="@b.Brand"></option> }
+            </datalist>
+        </div>
+        <div>
+            <label class="aiwms-input-lbl">GENDER</label>
+            <select class="aiwms-input" @bind="_gender" disabled="@_busy">
+                <option value=""></option>
+                @foreach (var g in _genders) { <option value="@g.Gender">@g.Gender</option> }
+            </select>
+        </div>
+        <div>
+            <label class="aiwms-input-lbl">COLOR</label>
+            <select class="aiwms-input" @bind="_color" disabled="@_busy">
+                <option value=""></option>
+                @foreach (var col in _colors) { <option value="@col.Color">@col.Color</option> }
+            </select>
+        </div>
+    </div>
 </div>
+
+<div class="aiwms-section">
+    <div class="aiwms-card-header">MH4 Hierarchy</div>
+    <p style="margin:0 0 8px 0; color:var(--text-secondary); font-size:12px">
+        Only combinations that appear on the picked container's items are listed.
+        Pick top-down; each level filters the next.
+    </p>
+    <div style="display:grid; grid-template-columns: repeat(5, minmax(0,1fr)); gap:12px">
+        <div>
+            <label class="aiwms-input-lbl">DIVISION</label>
+            <select class="aiwms-input" @bind="_division" @bind:after="OnMh4ChangedAsync" disabled="@(_busy || _mh4All.Count == 0)">
+                <option value=""></option>
+                @foreach (var d in DivisionOptions) { <option value="@d.key">@d.label</option> }
+            </select>
+        </div>
+        <div>
+            <label class="aiwms-input-lbl">DEPARTMENT</label>
+            <select class="aiwms-input" @bind="_department" @bind:after="OnMh4ChangedAsync" disabled="@(_busy || string.IsNullOrEmpty(_division))">
+                <option value=""></option>
+                @foreach (var d in DepartmentOptions) { <option value="@d">@d</option> }
+            </select>
+        </div>
+        <div>
+            <label class="aiwms-input-lbl">CLASS</label>
+            <select class="aiwms-input" @bind="_class" @bind:after="OnMh4ChangedAsync" disabled="@(_busy || string.IsNullOrEmpty(_department))">
+                <option value=""></option>
+                @foreach (var d in ClassOptions) { <option value="@d">@d</option> }
+            </select>
+        </div>
+        <div>
+            <label class="aiwms-input-lbl">FAMILY</label>
+            <select class="aiwms-input" @bind="_family" @bind:after="OnMh4ChangedAsync" disabled="@(_busy || string.IsNullOrEmpty(_class))">
+                <option value=""></option>
+                @foreach (var d in FamilyOptions) { <option value="@d">@d</option> }
+            </select>
+        </div>
+        <div>
+            <label class="aiwms-input-lbl">SUBCLASS</label>
+            <select class="aiwms-input" @bind="_subclass" disabled="@(_busy || string.IsNullOrEmpty(_family))">
+                <option value=""></option>
+                @foreach (var d in SubclassOptions) { <option value="@d">@d</option> }
+            </select>
+        </div>
+    </div>
+</div>
+
+<div class="aiwms-section">
+    <div class="aiwms-card-header">Style + Size</div>
+    <div style="display:grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap:12px">
+        <div>
+            <label class="aiwms-input-lbl">STYLE</label>
+            <input class="aiwms-input" list="styles-list" @bind="_style"
+                   placeholder="pick from container styles or type a new one"
+                   disabled="@(_busy || string.IsNullOrEmpty(_contno))" />
+            <datalist id="styles-list">
+                @foreach (var s in _styles) { <option value="@s.Style"></option> }
+            </datalist>
+        </div>
+        <div>
+            <label class="aiwms-input-lbl">SIZE</label>
+            <select class="aiwms-input" @bind="_size" disabled="@(_busy || _sizes.Count == 0)">
+                <option value=""></option>
+                @foreach (var s in _sizes) { <option value="@s.Size">@s.Size</option> }
+            </select>
+            @if (string.IsNullOrEmpty(_division))
+            {
+                <div style="font-size:11px; color:var(--text-muted); margin-top:4px">
+                    Pick Division first to see sizes.
+                </div>
+            }
+        </div>
+    </div>
+</div>
+
+<div class="aiwms-section">
+    <div class="aiwms-alert info">
+        Phase 2: dropdowns only. Save is coming in Phase 3.
+    </div>
+</div>
+
+@code {
+    private string _contno = "";
+    private string _itemcode = "";
+    private string _itemname = "";
+    private string _brand = "";
+    private string _gender = "";
+    private string _color = "";
+    private string _division = "";      // "DivID|Division" — DivID first for cascade lookup
+    private string _department = "";
+    private string _class = "";
+    private string _family = "";
+    private string _subclass = "";
+    private string _style = "";
+    private string _size = "";
+    private bool   _busy;
+    private string _message = "";
+    private bool   _isError;
+
+    private List<OpenContnoRow> _contnos = new();
+    private List<BrandRow>      _brands  = new();
+    private List<GenderRow>     _genders = new();
+    private List<ColorRow>      _colors  = new();
+    private List<StyleRow>      _styles  = new();
+    private List<SizeRow>       _sizes   = new();
+    private List<Mh4Row>        _mh4All  = new();
+
+    // Division options built off _mh4All. Key = "DivID|Division", Label = "Division (DivID)".
+    private IEnumerable<(string key, string label)> DivisionOptions =>
+        _mh4All
+            .GroupBy(r => (r.DivID, r.Division))
+            .OrderBy(g => g.Key.Division)
+            .Select(g => ($"{g.Key.DivID}|{g.Key.Division}", $"{g.Key.Division} ({g.Key.DivID})"));
+
+    private int SelectedDivId
+    {
+        get
+        {
+            if (string.IsNullOrEmpty(_division)) return 0;
+            var parts = _division.Split('|', 2);
+            return int.TryParse(parts[0], out var id) ? id : 0;
+        }
+    }
+
+    private string SelectedDivisionName
+    {
+        get
+        {
+            if (string.IsNullOrEmpty(_division)) return "";
+            var parts = _division.Split('|', 2);
+            return parts.Length == 2 ? parts[1] : "";
+        }
+    }
+
+    private IEnumerable<string> DepartmentOptions =>
+        _mh4All.Where(r => r.DivID == SelectedDivId)
+               .Select(r => r.Department).Where(s => !string.IsNullOrEmpty(s))
+               .Distinct().OrderBy(s => s)!;
+
+    private IEnumerable<string> ClassOptions =>
+        _mh4All.Where(r => r.DivID == SelectedDivId && r.Department == _department)
+               .Select(r => r.Class).Where(s => !string.IsNullOrEmpty(s))
+               .Distinct().OrderBy(s => s)!;
+
+    private IEnumerable<string> FamilyOptions =>
+        _mh4All.Where(r => r.DivID == SelectedDivId && r.Department == _department && r.Class == _class)
+               .Select(r => r.Family).Where(s => !string.IsNullOrEmpty(s))
+               .Distinct().OrderBy(s => s)!;
+
+    private IEnumerable<string> SubclassOptions =>
+        _mh4All.Where(r => r.DivID == SelectedDivId && r.Department == _department && r.Class == _class && r.Family == _family)
+               .Select(r => r.Subclass).Where(s => !string.IsNullOrEmpty(s))
+               .Distinct().OrderBy(s => s)!;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await Me.EnsureLoadedAsync();
+        _busy = true;
+        try
+        {
+            _contnos = await Svc.GetOpenContainersAsync();
+            _brands  = await Svc.GetBrandsAsync();
+            _genders = await Svc.GetGendersAsync();
+            _colors  = await Svc.GetColorsAsync();
+        }
+        catch (Exception ex) { ShowError($"Load failed: {ex.Message}"); }
+        finally { _busy = false; }
+    }
+
+    private async Task OnContnoChangedAsync()
+    {
+        _mh4All  = new(); _division = ""; _department = ""; _class = ""; _family = ""; _subclass = "";
+        _styles  = new(); _style = "";
+        _sizes   = new(); _size = "";
+        if (string.IsNullOrWhiteSpace(_contno)) return;
+        _busy = true;
+        try
+        {
+            _mh4All = await Svc.GetMh4ForContnoAsync(_contno);
+            _styles = await Svc.GetStylesForContnoAsync(_contno);
+        }
+        catch (Exception ex) { ShowError($"Container lookup failed: {ex.Message}"); }
+        finally { _busy = false; }
+    }
+
+    private async Task OnMh4ChangedAsync()
+    {
+        // Reset the deeper cascade when a higher-level pick changes.
+        // Blazor's @bind:after only fires after the bound value is set, so
+        // we clear whatever no longer matches.
+        if (string.IsNullOrEmpty(_division)) { _department = _class = _family = _subclass = ""; }
+        if (!DepartmentOptions.Contains(_department)) _department = "";
+        if (!ClassOptions.Contains(_class))           _class = "";
+        if (!FamilyOptions.Contains(_family))         _family = "";
+        if (!SubclassOptions.Contains(_subclass))     _subclass = "";
+
+        // Sizes are DivID-scoped and only load when Division is picked.
+        if (SelectedDivId > 0)
+        {
+            try   { _sizes = await Svc.GetSizesForDivIdAsync(SelectedDivId); }
+            catch (Exception ex) { ShowError($"Size lookup failed: {ex.Message}"); }
+        }
+        else
+        {
+            _sizes = new(); _size = "";
+        }
+    }
+
+    private void ShowError(string m) { _message = m; _isError = true; }
+    private void ShowInfo(string m)  { _message = m; _isError = false; }
+}

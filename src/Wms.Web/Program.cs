@@ -60,6 +60,7 @@ public class Program
         builder.Services.AddScoped<ContainerAllocationDataSyncService>();
         builder.Services.AddScoped<OpenContainerService>();
         builder.Services.AddScoped<ManualAllocationService>();
+        builder.Services.AddScoped<Wms.Data.Encoding.ItemEncodingService>();
         builder.Services.AddScoped<ReportsService>();
         builder.Services.AddScoped<WarehouseBoxesService>();
         builder.Services.AddScoped<MissingExcessSnapshotService>();
