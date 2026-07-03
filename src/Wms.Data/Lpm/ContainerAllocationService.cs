@@ -370,7 +370,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         var prevAllocatedSeed = new Dictionary<(string StoreID, int DivCode), int>();
         {
             var approvedRows = (await c.QueryAsync<(string ContNo, string Country, string StoreID, string Itemcode, int? Qty)>(new CommandDefinition(@"
-                SELECT d.TcmContno AS ContNo, d.Country, d.StoreID, d.Itemcode, d.Qty
+                SELECT d.TcmContno AS ContNo, d.Country, d.StoreID, d.Itemcode, d.AllocatedQty AS Qty
                   FROM LPMSIM.dbo.WMS_Cont_Allocation_Header h WITH (NOLOCK)
                   JOIN LPMSIM.dbo.WMS_ContAllocationData d   WITH (NOLOCK) ON d.BatchNo = h.BatchNo
                  WHERE h.ApprovedDt IS NOT NULL",
