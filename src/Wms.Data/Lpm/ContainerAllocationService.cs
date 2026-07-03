@@ -1166,6 +1166,8 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         dt.Columns.Add("FinalResult",      typeof(string));
         dt.Columns.Add("Remarks",          typeof(string));
         dt.Columns.Add("OTS",              typeof(double));
+        dt.Columns.Add("PriorityRank",     typeof(int));
+        dt.Columns.Add("MnwToday",         typeof(int));
 
         var now = DateTime.UtcNow.AddHours(4);  // GST stamp for Trndate/Time1
         var trnDate = now.Date;
@@ -1194,7 +1196,9 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                 (object?)r.PalletType ?? DBNull.Value,        // ResultType
                 (object?)r.PalletType ?? DBNull.Value,        // FinalResult mirrors ResultType
                 (object?)(r.RoundRobinExtra > 0 ? $"RR+{r.RoundRobinExtra}" : null) ?? DBNull.Value,
-                (object?)r.OTS ?? DBNull.Value);
+                (object?)r.OTS ?? DBNull.Value,
+                (object?)r.PriorityRank ?? DBNull.Value,
+                (object?)r.MnwToday ?? DBNull.Value);
         }
 
         c.ChangeDatabase("LPMSIM");
