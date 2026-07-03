@@ -246,7 +246,7 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
             sourceRows = (await src.QueryAsync<SourceRow>(new CommandDefinition(@"
                 SELECT d.BatchNo,
                        d.ContNo, d.Country, d.TrnDate, d.Time1, d.UPC, d.Itemcode, d.Barcode,
-                       d.GroupCode, d.Qty, d.SkuMax, d.AllocatedQty, d.PrevAllocatedQty, d.QtyIssue,
+                       d.GroupCode, d.POQty, d.SkuMax, d.AllocatedQty, d.PrevAllocatedQty, d.QtyIssue, d.Phase2Qty,
                        d.StoreID, d.TcmContno, d.Itemname, d.BuildingCategory, d.LPMDt, d.LPMBoxNO,
                        d.ORAPONo, d.Division, d.Brand, d.DivCode, d.Department, d.Season, d.Style,
                        [Size] = d.Size,
@@ -277,7 +277,7 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
                 new { c = contno }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).ToList();
 
             primaryBatchNo    = sourceRows.FirstOrDefault()?.BatchNo;
-            totalAllocatedQty = sourceRows.Sum(r => r.AllocatedQty ?? r.Qty ?? 0);
+            totalAllocatedQty = sourceRows.Sum(r => r.AllocatedQty ?? r.POQty ?? 0);
         }
 
         if (sourceRows.Count == 0)
@@ -448,11 +448,12 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
         dt.Columns.Add("Itemcode",         typeof(string));
         dt.Columns.Add("Barcode",          typeof(string));
         dt.Columns.Add("GroupCode",        typeof(string));
-        dt.Columns.Add("Qty",              typeof(int));
+        dt.Columns.Add("POQty",            typeof(int));
         dt.Columns.Add("SkuMax",           typeof(int));
         dt.Columns.Add("AllocatedQty",     typeof(int));
         dt.Columns.Add("PrevAllocatedQty", typeof(int));
         dt.Columns.Add("QtyIssue",         typeof(int));
+        dt.Columns.Add("Phase2Qty",        typeof(int));
         dt.Columns.Add("StoreID",          typeof(string));
         dt.Columns.Add("TcmContno",        typeof(string));
         dt.Columns.Add("Itemname",         typeof(string));
@@ -494,11 +495,12 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
                 (object?)r.Itemcode         ?? DBNull.Value,
                 (object?)r.Barcode          ?? DBNull.Value,
                 (object?)r.GroupCode        ?? DBNull.Value,
-                (object?)r.Qty              ?? DBNull.Value,
+                (object?)r.POQty            ?? DBNull.Value,
                 (object?)r.SkuMax           ?? DBNull.Value,
                 (object?)r.AllocatedQty     ?? DBNull.Value,
                 (object?)r.PrevAllocatedQty ?? DBNull.Value,
                 (object?)r.QtyIssue         ?? DBNull.Value,
+                (object?)r.Phase2Qty        ?? DBNull.Value,
                 (object?)r.StoreID          ?? DBNull.Value,
                 (object?)r.TcmContno        ?? DBNull.Value,
                 (object?)r.Itemname         ?? DBNull.Value,
@@ -577,7 +579,7 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
                 (object?)r.Division         ?? DBNull.Value,
                 (object?)r.FinalResult      ?? DBNull.Value,
                 (object?)r.ResultType       ?? DBNull.Value,
-                (object?)r.Qty              ?? DBNull.Value,
+                (object?)(r.AllocatedQty ?? r.POQty) ?? DBNull.Value,   // legacy Qty column = allocation qty
                 (object?)r.QtyIssue         ?? DBNull.Value,
                 (object?)r.Itemname         ?? DBNull.Value,
                 (object?)r.Barcode          ?? DBNull.Value,
@@ -668,11 +670,12 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
         public string?   Itemcode         { get; set; }
         public string?   Barcode          { get; set; }
         public string?   GroupCode        { get; set; }
-        public int?      Qty              { get; set; }
+        public int?      POQty            { get; set; }
         public int?      SkuMax           { get; set; }
         public int?      AllocatedQty     { get; set; }
         public int?      PrevAllocatedQty { get; set; }
         public int?      QtyIssue         { get; set; }
+        public int?      Phase2Qty        { get; set; }
         public string?   StoreID          { get; set; }
         public string?   TcmContno        { get; set; }
         public string?   Itemname         { get; set; }

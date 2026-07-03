@@ -773,9 +773,10 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                                 var cap = EffectiveSkuMax(s.SKUMax, s.StoreID, line.ItemCode);
                                 var current = allocs.TryGetValue(s.StoreID, out var row) ? row.AllocQty : 0;
                                 if (current >= cap) continue;
+                                // Phase 2 — RR-Rest step. Every pc counts toward Phase2Qty.
                                 allocs[s.StoreID] = row is null
-                                    ? MakeRow(s.StoreID, s.Country, s.VolumeGroup, s.MerchNeedMonth, cap, 1, 0)
-                                    : row with { AllocQty = current + 1 };
+                                    ? MakeRow(s.StoreID, s.Country, s.VolumeGroup, s.MerchNeedMonth, cap, 1, 0) with { Phase2Qty = 1 }
+                                    : row with { AllocQty = current + 1, Phase2Qty = (row.Phase2Qty ?? 0) + 1 };
                                 remaining--;
                                 any = true;
                             }
@@ -784,6 +785,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
 
                         // 4. Overflow: allocate leftover ignoring SKU Max caps —
                         //    RR across eligible (PriorityRank>0) stores by OTS DESC.
+                        //    Also counts toward Phase 2.
                         if (remaining > 0)
                         {
                             var allByOts = eligibleWithPri
@@ -801,9 +803,10 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                                     {
                                         AllocQty        = row.AllocQty + 1,
                                         RoundRobinExtra = row.RoundRobinExtra + 1,
+                                        Phase2Qty       = (row.Phase2Qty ?? 0) + 1,
                                     };
                                 else
-                                    allocs[s.StoreID] = MakeRow(s.StoreID, s.Country, s.VolumeGroup, s.MerchNeedMonth, cap, 1, 1);
+                                    allocs[s.StoreID] = MakeRow(s.StoreID, s.Country, s.VolumeGroup, s.MerchNeedMonth, cap, 1, 1) with { Phase2Qty = 1 };
                                 remaining--;
                                 idx++;
                             }
@@ -1143,7 +1146,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         dt.Columns.Add("Itemcode",         typeof(string));
         dt.Columns.Add("Barcode",          typeof(string));
         dt.Columns.Add("GroupCode",        typeof(string));
-        dt.Columns.Add("Qty",              typeof(int));
+        dt.Columns.Add("POQty",            typeof(int));
         dt.Columns.Add("SkuMax",           typeof(int));
         dt.Columns.Add("AllocatedQty",     typeof(int));
         dt.Columns.Add("PrevAllocatedQty", typeof(int));
@@ -1168,6 +1171,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         dt.Columns.Add("OTS",              typeof(double));
         dt.Columns.Add("PriorityRank",     typeof(int));
         dt.Columns.Add("MnwToday",         typeof(int));
+        dt.Columns.Add("Phase2Qty",        typeof(int));
 
         var now = DateTime.UtcNow.AddHours(4);  // GST stamp for Trndate/Time1
         var trnDate = now.Date;
@@ -1180,7 +1184,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                 r.Contno, r.Country, trnDate, time1, r.ItemCode, r.ItemCode,
                 r.ItemCode,                                  // Barcode = ItemCode
                 r.VolumeGroup,
-                r.AllocQty, r.SkuMax, r.AllocQty, r.PrevAllocatedQty, 0,
+                r.PoQty, r.SkuMax, r.AllocQty, r.PrevAllocatedQty, 0,  // POQty = PO qty, AllocatedQty = alloc qty
                 r.StoreID, r.Contno,
                 (object?)r.ItemName ?? DBNull.Value,
                 (object?)r.Division ?? DBNull.Value,         // BuildingCategory = Division
@@ -1198,7 +1202,8 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                 (object?)(r.RoundRobinExtra > 0 ? $"RR+{r.RoundRobinExtra}" : null) ?? DBNull.Value,
                 (object?)r.OTS ?? DBNull.Value,
                 (object?)r.PriorityRank ?? DBNull.Value,
-                (object?)r.MnwToday ?? DBNull.Value);
+                (object?)r.MnwToday ?? DBNull.Value,
+                (object?)r.Phase2Qty ?? DBNull.Value);
         }
 
         c.ChangeDatabase("LPMSIM");
@@ -1558,9 +1563,9 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         SqlConnection c, string joinAndWhereSql, object filterParams, CancellationToken ct)
     {
         var rows = (await c.QueryAsync<(string ContNo, string? OraPONo, string? ItemCode, string? ItemName, string? Brand,
-                                       int? Qty, int? SkuMax, int? DivCode, string? StoreID, string? Country, string? GroupCode, string? Division,
+                                       int? POQty, int? AllocatedQty, int? Phase2Qty, int? SkuMax, int? DivCode, string? StoreID, string? Country, string? GroupCode, string? Division,
                                        string? Remarks, DateTime? LPMDt, double? OTS, int? PriorityRank, int? MnwToday)>(new CommandDefinition($@"
-            SELECT d.ContNo, d.ORAPONo, d.Itemcode, d.Itemname, d.Brand, d.Qty, d.SkuMax, d.DivCode, d.StoreID, d.Country,
+            SELECT d.ContNo, d.ORAPONo, d.Itemcode, d.Itemname, d.Brand, d.POQty, d.AllocatedQty, d.Phase2Qty, d.SkuMax, d.DivCode, d.StoreID, d.Country,
                    d.GroupCode, d.Division, d.Remarks, d.LPMDt, d.OTS, d.PriorityRank, d.MnwToday
               FROM LPMSIM.dbo.WMS_ContAllocationData d WITH (NOLOCK)
               {joinAndWhereSql}
@@ -1636,14 +1641,14 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                 ItemCode: item,
                 ItemName: r.ItemName,
                 Brand: r.Brand,
-                PoQty: po.Qty,
+                PoQty: po.Qty,                                // always from usaorgfile_LPM join (authoritative)
                 StoreID: store,
                 StoreName: storeName,
                 Country: r.Country ?? "",
                 Division: r.Division,
                 VolumeGroup: r.GroupCode ?? "",
                 SkuMax: r.SkuMax ?? 0,
-                AllocQty: r.Qty ?? 0,
+                AllocQty: r.AllocatedQty ?? r.POQty ?? 0,     // AllocatedQty is authoritative; fall back to POQty for legacy rows saved before AllocatedQty was populated
                 MerchNeedMonth: merch,
                 DivCode: divCode,
                 RoundRobinExtra: ParseRoundRobin(r.Remarks),
@@ -1651,7 +1656,8 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                 LPMDt: r.LPMDt,
                 OTS: r.OTS,
                 PriorityRank: r.PriorityRank,
-                MnwToday: r.MnwToday);
+                MnwToday: r.MnwToday,
+                Phase2Qty: r.Phase2Qty);
         }).ToList();
     }
 }

@@ -406,7 +406,6 @@
                         <th style="cursor:pointer" @onclick='() => Sort("Division")'>Division @SortArrow("Division")</th>
                         <th style="cursor:pointer; text-align:right" @onclick='() => Sort("PoQty")'>PO Qty @SortArrow("PoQty")</th>
                         <th style="cursor:pointer; text-align:right" @onclick='() => Sort("AllocQty")'>Allocated Qty @SortArrow("AllocQty")</th>
-                        <th style="cursor:pointer; text-align:right" @onclick='() => Sort("PriorityRank")' title="Best (lowest) PriorityRank across the country's stores for this Division">Priority @SortArrow("PriorityRank")</th>
                         <th style="cursor:pointer; text-align:right" @onclick='() => Sort("MnwToday")' title="Highest MNW-Today across the country's stores for this Division">MNW Today @SortArrow("MnwToday")</th>
                         <th style="cursor:pointer" @onclick='() => Sort("LPMDt")'>LPM Dt @SortArrow("LPMDt")</th>
                     </tr>
@@ -421,7 +420,6 @@
                             <td>@g.Division</td>
                             <td style="text-align:right">@g.PoQty</td>
                             <td style="text-align:right">@g.AllocQty</td>
-                            <td style="text-align:right">@g.PriorityRank</td>
                             <td style="text-align:right">@g.MnwToday</td>
                             <td>@g.LPMDt?.ToString("yyyy-MM-dd")</td>
                         </tr>
