@@ -1,5 +1,6 @@
 @page "/encoding"
 @rendermode RenderMode.InteractiveServer
+@using System.Text.RegularExpressions
 @using Wms.Core
 @using Wms.Data.Encoding
 @attribute [Authorize(Policy = Wms.Core.MenuKeys.ITEM_ENCODING)]
@@ -24,7 +25,7 @@
 
 <div class="aiwms-section">
     <div class="aiwms-card-header">Item</div>
-    <div style="display:grid; grid-template-columns: minmax(0,240px) minmax(0,180px) minmax(0,1fr); gap:12px">
+    <div style="display:grid; grid-template-columns: minmax(0,240px) minmax(0,180px) minmax(0,280px) auto minmax(0,300px); gap:12px; align-items:end">
         <div>
             <label class="aiwms-input-lbl">CONTAINER <span class="req">*</span></label>
             <select class="aiwms-input" @bind="_contno" @bind:after="OnContnoChangedAsync" disabled="@_busy">
@@ -36,12 +37,36 @@
             </select>
         </div>
         <div>
-            <label class="aiwms-input-lbl">ITEMCODE (barcode) <span class="req">*</span></label>
-            <input class="aiwms-input" @bind="_itemcode" placeholder="e.g. 6281073433214" disabled="@_busy" />
+            <label class="aiwms-input-lbl">PO NO</label>
+            <select class="aiwms-input" @bind="_pono" disabled="@(_busy || _ponos.Count == 0)">
+                <option value=""></option>
+                @foreach (var p in _ponos) { <option value="@p.PONo">@p.PONo</option> }
+            </select>
         </div>
         <div>
+            <label class="aiwms-input-lbl">ITEMCODE (barcode) <span class="req">*</span></label>
+            <input class="aiwms-input" @bind="_itemcode" @bind:after="OnItemcodeChangedAsync"
+                   maxlength="15" placeholder="e.g. 62810734"
+                   style="text-transform:uppercase" disabled="@_busy" />
+            @if (!string.IsNullOrEmpty(_itemcodeErr))
+            {
+                <div style="font-size:11px; color:#D1435B; margin-top:4px">@_itemcodeErr</div>
+            }
+        </div>
+        <button class="aiwms-btn aiwms-btn-secondary"
+                @onclick="GenerateBarcodeAsync"
+                disabled="@(_busy || string.IsNullOrWhiteSpace(_contno) || string.IsNullOrWhiteSpace(_pono))"
+                title="@(string.IsNullOrWhiteSpace(_pono) ? "Pick PONo first" : "Generate the next barcode for this Container + PONo")">
+            Generate Barcode
+        </button>
+        <div>
             <label class="aiwms-input-lbl">ITEM NAME</label>
-            <input class="aiwms-input" @bind="_itemname" placeholder="Item name / description" disabled="@_busy" />
+            <input class="aiwms-input" @bind="_itemname" @bind:after="OnItemnameChanged"
+                   maxlength="100" placeholder="Item name / description" disabled="@_busy" />
+            @if (!string.IsNullOrEmpty(_itemnameErr))
+            {
+                <div style="font-size:11px; color:#D1435B; margin-top:4px">@_itemnameErr</div>
+            }
         </div>
     </div>
 </div>
@@ -51,9 +76,12 @@
     <div style="display:grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap:12px">
         <div>
             <label class="aiwms-input-lbl">BRAND</label>
-            <input class="aiwms-input" list="brands-list" @bind="_brand" placeholder="type to search…" disabled="@_busy" />
+            <input class="aiwms-input" list="brands-list" @bind="_brand" placeholder="pick from manifest or type to search master…" disabled="@_busy" />
             <datalist id="brands-list">
-                @foreach (var b in _brands) { <option value="@b.Brand"></option> }
+                @* Manifest brands first (for the picked container), then master brands as fallback. *@
+                @foreach (var b in _manifestBrands) { <option value="@b.Brand">from manifest</option> }
+                @foreach (var b in _masterBrands.Where(x => !_manifestBrands.Any(m => string.Equals(m.Brand, x.Brand, StringComparison.OrdinalIgnoreCase))))
+                { <option value="@b.Brand">from master</option> }
             </datalist>
         </div>
         <div>
@@ -154,6 +182,7 @@
 
 @code {
     private string _contno = "";
+    private string _pono = "";
     private string _itemcode = "";
     private string _itemname = "";
     private string _brand = "";
@@ -170,13 +199,23 @@
     private string _message = "";
     private bool   _isError;
 
-    private List<OpenContnoRow> _contnos = new();
-    private List<BrandRow>      _brands  = new();
-    private List<GenderRow>     _genders = new();
-    private List<ColorRow>      _colors  = new();
-    private List<StyleRow>      _styles  = new();
-    private List<SizeRow>       _sizes   = new();
-    private List<Mh4Row>        _mh4All  = new();
+    // Per-field validation messages.
+    private string _itemcodeErr = "";
+    private string _itemnameErr = "";
+
+    private List<OpenContnoRow> _contnos        = new();
+    private List<PONoRow>       _ponos          = new();
+    private List<BrandRow>      _manifestBrands = new();
+    private List<BrandRow>      _masterBrands   = new();
+    private List<GenderRow>     _genders        = new();
+    private List<ColorRow>      _colors         = new();
+    private List<StyleRow>      _styles         = new();
+    private List<SizeRow>       _sizes          = new();
+    private List<Mh4Row>        _mh4All         = new();
+
+    // Regex helpers — Itemcode 0-9/A-Z/-  max 15; Itemname letters+digits+space, max 100.
+    private static readonly Regex _itemcodeRegex = new(@"^[0-9A-Z\-]{1,15}$", RegexOptions.Compiled);
+    private static readonly Regex _itemnameRegex = new(@"^[A-Za-z0-9 ]{1,100}$", RegexOptions.Compiled);
 
     // Division options built off _mh4All. Key = "DivID|Division", Label = "Division (DivID)".
     private IEnumerable<(string key, string label)> DivisionOptions =>
@@ -231,10 +270,10 @@
         _busy = true;
         try
         {
-            _contnos = await Svc.GetOpenContainersAsync();
-            _brands  = await Svc.GetBrandsAsync();
-            _genders = await Svc.GetGendersAsync();
-            _colors  = await Svc.GetColorsAsync();
+            _contnos      = await Svc.GetOpenContainersAsync();
+            _masterBrands = await Svc.GetMasterBrandsAsync();
+            _genders      = await Svc.GetGendersAsync();
+            _colors       = await Svc.GetColorsAsync();
         }
         catch (Exception ex) { ShowError($"Load failed: {ex.Message}"); }
         finally { _busy = false; }
@@ -242,17 +281,79 @@
 
     private async Task OnContnoChangedAsync()
     {
-        _mh4All  = new(); _division = ""; _department = ""; _class = ""; _family = ""; _subclass = "";
-        _styles  = new(); _style = "";
-        _sizes   = new(); _size = "";
+        _mh4All         = new(); _division = ""; _department = ""; _class = ""; _family = ""; _subclass = "";
+        _styles         = new(); _style = "";
+        _sizes          = new(); _size = "";
+        _ponos          = new(); _pono = "";
+        _manifestBrands = new();
         if (string.IsNullOrWhiteSpace(_contno)) return;
         _busy = true;
         try
         {
-            _mh4All = await Svc.GetMh4ForContnoAsync(_contno);
-            _styles = await Svc.GetStylesForContnoAsync(_contno);
+            _ponos          = await Svc.GetPONosForContnoAsync(_contno);
+            _mh4All         = await Svc.GetMh4ForContnoAsync(_contno);
+            _styles         = await Svc.GetStylesForContnoAsync(_contno);
+            _manifestBrands = await Svc.GetManifestBrandsForContnoAsync(_contno);
         }
         catch (Exception ex) { ShowError($"Container lookup failed: {ex.Message}"); }
+        finally { _busy = false; }
+    }
+
+    private async Task OnItemcodeChangedAsync()
+    {
+        _itemcodeErr = "";
+        _itemcode = (_itemcode ?? "").Trim().ToUpperInvariant();
+        if (string.IsNullOrEmpty(_itemcode)) return;
+        if (!_itemcodeRegex.IsMatch(_itemcode))
+        {
+            _itemcodeErr = "Only 0-9, A-Z and '-' allowed. Max 15 characters.";
+            return;
+        }
+        // Duplicate check across WMS_ContAllocationData + WMS_Generatebarcode.
+        try
+        {
+            var exists = await Svc.ItemcodeExistsAsync(_itemcode);
+            if (exists.InAllocation && exists.InGenerated)
+                _itemcodeErr = "Already exists in Container Allocation AND already encoded.";
+            else if (exists.InAllocation)
+                _itemcodeErr = "Already exists as an allocated item on this Azure DB.";
+            else if (exists.InGenerated)
+                _itemcodeErr = "Barcode already encoded.";
+        }
+        catch (Exception ex) { _itemcodeErr = $"Duplicate check failed: {ex.Message}"; }
+    }
+
+    private void OnItemnameChanged()
+    {
+        _itemnameErr = "";
+        if (string.IsNullOrEmpty(_itemname)) return;
+        // Trim only trailing spaces per spec; leading spaces are allowed to stay
+        // while typing but blocked on submit — trimming here trips validation
+        // sooner and matches "no trailing spaces".
+        var trimmed = _itemname.TrimEnd();
+        if (trimmed != _itemname) _itemname = trimmed;
+        if (!_itemnameRegex.IsMatch(_itemname))
+            _itemnameErr = "Only letters, digits and spaces. Max 100 characters.";
+    }
+
+    private async Task GenerateBarcodeAsync()
+    {
+        _itemcodeErr = "";
+        if (string.IsNullOrWhiteSpace(_contno) || string.IsNullOrWhiteSpace(_pono)) return;
+        _busy = true;
+        try
+        {
+            var next = await Svc.GetNextBarcodeSrnoAsync(_contno, _pono);
+            var candidate = $"{_pono.Trim()}-{next:0000}";
+            if (candidate.Length > 15)
+            {
+                _itemcodeErr = $"Generated barcode '{candidate}' would exceed 15 chars. Trim PO or use shorter SRNO.";
+                return;
+            }
+            _itemcode = candidate;
+            await OnItemcodeChangedAsync();  // pick up duplicate + regex re-check
+        }
+        catch (Exception ex) { ShowError($"Generate Barcode failed: {ex.Message}"); }
         finally { _busy = false; }
     }
 
