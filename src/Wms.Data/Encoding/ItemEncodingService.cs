@@ -6,11 +6,16 @@ using Microsoft.Data.SqlClient;
 namespace Wms.Data.Encoding;
 
 public record OpenContnoRow(string ContNo, string? ContDesc);
+public record PONoRow(string PONo);
 public record BrandRow(string Brand);
 public record StyleRow(string Style);
 public record GenderRow(string Gender);
 public record ColorRow(string Color);
 public record SizeRow(string Size);
+
+/// <summary>Whether a barcode/itemcode already exists on Azure — checked
+/// against both WMS_ContAllocationData and WMS_Generatebarcode.</summary>
+public record ItemcodeExistsResult(bool InAllocation, bool InGenerated);
 
 /// <summary>
 /// One row in the MH4 hierarchy dropdown: a distinct
@@ -30,12 +35,18 @@ public record Mh4Row(
 ///
 /// Sources:
 ///  - Open containers  → Azure dbo.WmsOpenUSACont (country-scoped, Closed &lt;&gt; 'Y').
-///  - Brands           → on-prem usa.dbo.BrandMaster.
+///  - PONos            → distinct OraPONo on Azure dbo.WMS_ContAllocationData for the picked ContNo.
+///  - Manifest brands  → distinct Brand on Azure dbo.WMS_ContAllocationData for the picked ContNo.
+///  - Master brands    → Azure dbo.WMSBrandMaster (fallback search when manifest doesn't cover).
 ///  - Styles           → distinct Style on Azure dbo.WMS_ContAllocationData for the picked ContNo.
 ///  - MH4 hierarchy    → distinct (DivID, Division, Department, Class, Family, Subclass) from
 ///                        on-prem vupc_subclass × SubclassMaster for the picked ContNo's items.
 ///  - Gender / Color   → Azure dbo.WMSGender / dbo.WMSColor masters.
 ///  - Sizes            → Azure dbo.WMSSizeMaster filtered by DivID (MH4 must be picked first).
+///  - Next SRNO        → MAX SRNO parsed off the tail of Barcode in dbo.WMS_Generatebarcode,
+///                        keyed by (Contno, PONo prefix).
+///  - Itemcode exists  → checks both dbo.WMS_ContAllocationData.Itemcode and
+///                        dbo.WMS_Generatebarcode.Barcode.
 /// </summary>
 public class ItemEncodingService(IOnPremConnectionResolver resolver, ICurrentUser user)
 {
@@ -74,15 +85,47 @@ public class ItemEncodingService(IOnPremConnectionResolver resolver, ICurrentUse
         return rows.AsList();
     }
 
-    public async Task<List<BrandRow>> GetBrandsAsync(CancellationToken ct = default)
+    /// <summary>All brands from the Azure master (WMSBrandMaster). Seeded from
+    /// usa.dbo.BrandMaster.BrandName. Used as the searchable fallback list when
+    /// the operator wants a brand not on the container's manifest.</summary>
+    public async Task<List<BrandRow>> GetMasterBrandsAsync(CancellationToken ct = default)
     {
-        await using var c = OpenOnPremBackup();
+        await using var c = OpenWms();
+        var rows = await c.QueryAsync<BrandRow>(new CommandDefinition(@"
+            SELECT Brand = BrandName
+              FROM dbo.WMSBrandMaster WITH (NOLOCK)
+             ORDER BY BrandName",
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        return rows.AsList();
+    }
+
+    /// <summary>Distinct brands that appear on the picked container's manifest —
+    /// pulled from Azure WMS_ContAllocationData.Brand for that ContNo.</summary>
+    public async Task<List<BrandRow>> GetManifestBrandsForContnoAsync(string contno, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(contno)) return new();
+        await using var c = OpenWms();
         var rows = await c.QueryAsync<BrandRow>(new CommandDefinition(@"
             SELECT DISTINCT Brand
-              FROM usa.dbo.BrandMaster WITH (NOLOCK)
-             WHERE Brand IS NOT NULL AND LTRIM(RTRIM(Brand)) <> ''
+              FROM dbo.WMS_ContAllocationData WITH (NOLOCK)
+             WHERE ContNo = @c AND Brand IS NOT NULL AND LTRIM(RTRIM(Brand)) <> ''
              ORDER BY Brand",
-            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            new { c = contno.Trim() }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        return rows.AsList();
+    }
+
+    /// <summary>Distinct PONos from Azure WMS_ContAllocationData for the container.</summary>
+    public async Task<List<PONoRow>> GetPONosForContnoAsync(string contno, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(contno)) return new();
+        await using var c = OpenWms();
+        var rows = await c.QueryAsync<PONoRow>(new CommandDefinition(@"
+            SELECT PONo = ORAPONo
+              FROM dbo.WMS_ContAllocationData WITH (NOLOCK)
+             WHERE ContNo = @c AND ORAPONo IS NOT NULL AND LTRIM(RTRIM(ORAPONo)) <> ''
+             GROUP BY ORAPONo
+             ORDER BY ORAPONo",
+            new { c = contno.Trim() }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         return rows.AsList();
     }
 
@@ -172,5 +215,41 @@ public class ItemEncodingService(IOnPremConnectionResolver resolver, ICurrentUse
              ORDER BY Size",
             new { d = divId }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         return rows.AsList();
+    }
+
+    // ===================== Generate Barcode + duplicate check =====================
+
+    /// <summary>Compute the next SRNO for a (Contno, PONo) pair by scanning existing
+    /// barcodes in dbo.WMS_Generatebarcode that match the "PONo-NNNN" prefix. If
+    /// no prior barcode exists, returns 1. SRNO is stored on the barcode string
+    /// itself (last 4 chars, zero-padded) so no additional column is needed.</summary>
+    public async Task<int> GetNextBarcodeSrnoAsync(string contno, string pono, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(contno) || string.IsNullOrWhiteSpace(pono)) return 1;
+        await using var c = OpenWms();
+        var next = await c.ExecuteScalarAsync<int?>(new CommandDefinition(@"
+            SELECT ISNULL(MAX(TRY_CAST(RIGHT(Barcode, 4) AS INT)), 0) + 1
+              FROM dbo.WMS_Generatebarcode WITH (NOLOCK)
+             WHERE Contno = @c
+               AND Barcode LIKE @prefix",
+            new { c = contno.Trim(), prefix = pono.Trim() + "-%" },
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        return next ?? 1;
+    }
+
+    /// <summary>Check whether an itemcode already exists on Azure — either as
+    /// a barcode in WMS_Generatebarcode (already encoded) or as an itemcode in
+    /// WMS_ContAllocationData (already allocated). Either hit blocks the save.</summary>
+    public async Task<ItemcodeExistsResult> ItemcodeExistsAsync(string itemcode, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(itemcode)) return new(false, false);
+        await using var c = OpenWms();
+        var alloc = await c.ExecuteScalarAsync<int?>(new CommandDefinition(
+            "SELECT TOP 1 1 FROM dbo.WMS_ContAllocationData WITH (NOLOCK) WHERE Itemcode = @i",
+            new { i = itemcode.Trim() }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)) == 1;
+        var gen = await c.ExecuteScalarAsync<int?>(new CommandDefinition(
+            "SELECT TOP 1 1 FROM dbo.WMS_Generatebarcode WITH (NOLOCK) WHERE Barcode = @i",
+            new { i = itemcode.Trim() }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)) == 1;
+        return new(alloc, gen);
     }
 }
