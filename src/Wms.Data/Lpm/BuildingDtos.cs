@@ -56,7 +56,8 @@ public record AllocationResult(
     string? Division = null,
     bool Manual = false,
     string? Error = null,
-    string? PalletTypeName = null);  // TypeName from dbo.WmsPalletType, looked up by PalletType code
+    string? PalletTypeName = null,   // TypeName from dbo.WmsPalletType, looked up by PalletType code
+    string? ItemSource = null);      // "Order Sheet" | "WMS Itemmaster" | "Generated Barcode" | "USA Item Master"
 
 /// <summary>Outcome of the LPM Manual Building "Close Logistics" button —
 /// flips WmsKNBBoxes.closed='Y' and writes a row to WmsLogisticsBoxClosure_Log.

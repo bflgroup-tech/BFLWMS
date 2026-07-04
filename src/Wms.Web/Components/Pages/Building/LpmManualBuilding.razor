@@ -106,9 +106,11 @@ else
             </div>
             <div class="aiwms-input-row">
                 <label class="aiwms-input-lbl">Itemcode (UPC) <span class="req">*</span></label>
-                <input @ref="_itemRef" @bind="_itemInput" @bind:event="oninput" @onkeydown="OnItemKey"
+                <input @ref="_itemRef"
+                       @bind="_itemInput" @bind:event="oninput" @bind:after="ScheduleAutoScan"
+                       @onkeydown="OnItemKey"
                        class="aiwms-input"
-                       placeholder="Scan item code" autocomplete="off"
+                       placeholder="Scan or type item code" autocomplete="off"
                        disabled="@(!_boxOk || _busy)" />
             </div>
         </div>
@@ -137,7 +139,24 @@ else
         else
         {
             var it = _lastItem;
-            <div class="aiwms-upc-display" style="font-size:14px; padding:4px 8px">@it.ItemCode</div>
+            <div class="aiwms-upc-display" style="font-size:14px; padding:4px 8px">
+                @it.ItemCode
+                @if (_lastAlloc?.ItemSource is { Length: > 0 } src)
+                {
+                    <span class="aiwms-pill" style="margin-left:8px; font-size:10px; background:#eef; color:#334; border:1px solid #ccd"
+                          title="Source: @src">SRC: @src</span>
+                }
+                @if (_lastAlloc?.Tier == Wms.Data.Lpm.AllocationTier.Tier2_OtsOverflow)
+                {
+                    <span class="aiwms-pill" style="margin-left:6px; font-size:10px; background:#fee; color:#933; border:1px solid #f99"
+                          title="Item is in the container's Order Sheet but all planned qty has been issued — surplus piece.">EXCESS QTY</span>
+                }
+                else if (_lastAlloc?.Tier == Wms.Data.Lpm.AllocationTier.Tier3_ManualNewItem)
+                {
+                    <span class="aiwms-pill" style="margin-left:6px; font-size:10px; background:#fee; color:#933; border:1px solid #f99"
+                          title="Item is not on the container's Order Sheet at all — sourced from @(_lastAlloc?.ItemSource ?? "external").">EXCESS ITEM</span>
+                }
+            </div>
             <div class="aiwms-item-grid" style="grid-template-columns: repeat(3, 1fr); gap:4px 12px; font-size:11px">
                 <div class="cell"><div class="lbl" style="font-size:9px">Description</div><div class="val" style="font-size:11px; line-height:1.2">@it.ItemName</div></div>
                 <div class="cell"><div class="lbl" style="font-size:9px">Style</div><div class="val" style="font-size:11px; line-height:1.2">@it.Style</div></div>
@@ -445,6 +464,35 @@ else
         }
         catch (Exception ex) { CaptureException(ex, "ValidateBox failed"); }
         finally { _busy = false; }
+    }
+
+    // Debounced auto-scan: fires ScanItem() 300ms after the last keystroke,
+    // so both scanner input (finishes quickly, then debounce elapses) and
+    // typed input (pause to think = submit) work without a manual Enter.
+    private CancellationTokenSource? _autoScanCts;
+    private const int AutoScanDebounceMs = 300;
+
+    private void ScheduleAutoScan()
+    {
+        _autoScanCts?.Cancel();
+        _autoScanCts = new CancellationTokenSource();
+        var token = _autoScanCts.Token;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(AutoScanDebounceMs, token);
+                if (token.IsCancellationRequested) return;
+                // Skip if busy or Itemcode was cleared. Length-1 typos will still
+                // fire — that's what the duplicate check + error UI is for.
+                if (_busy || string.IsNullOrWhiteSpace(_itemInput)) return;
+                await InvokeAsync(async () =>
+                {
+                    if (!token.IsCancellationRequested) await ScanItem();
+                });
+            }
+            catch (TaskCanceledException) { /* superseded by next keystroke */ }
+        });
     }
 
     private async Task ScanItem()

@@ -17,6 +17,28 @@ public record SizeRow(string Size);
 /// against both WMS_ContAllocationData and WMS_Generatebarcode.</summary>
 public record ItemcodeExistsResult(bool InAllocation, bool InGenerated);
 
+/// <summary>One row of the Item Encoding page's Recent Activity grid — a
+/// row from dbo.WMS_Generatebarcode plus the audit stamp.</summary>
+public record RecentEncodingRow(
+    long      BarcodeId,
+    string    Barcode,
+    string?   Itemname,
+    string    Contno,
+    string?   Brand,
+    string?   Gender,
+    string?   Color,
+    string?   Size,
+    string?   Style,
+    string?   Division,
+    string?   Department,
+    string?   Class,
+    string?   SubClass,
+    string?   Family,
+    DateTime? Trndate,
+    string?   Tim1,
+    DateTime  CreateTS,
+    string?   CreatedBy);
+
 /// <summary>
 /// One row in the MH4 hierarchy dropdown: a distinct
 /// (DivID, Division, Department, Class, Family, Subclass) combination
@@ -251,5 +273,45 @@ public class ItemEncodingService(IOnPremConnectionResolver resolver, ICurrentUse
             "SELECT TOP 1 1 FROM dbo.WMS_Generatebarcode WITH (NOLOCK) WHERE Barcode = @i",
             new { i = itemcode.Trim() }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)) == 1;
         return new(alloc, gen);
+    }
+
+    // ===================== Recent Activity =====================
+
+    /// <summary>Recent Item Encoding activity from dbo.WMS_Generatebarcode.
+    /// When <paramref name="contnoFilter"/> is empty, only today's rows (GST)
+    /// are returned. When a Contno is supplied, ALL rows for that Contno are
+    /// returned (across dates). Newest first, capped at top rows.</summary>
+    public async Task<List<RecentEncodingRow>> GetRecentEncodingsAsync(
+        string? contnoFilter = null, int top = 200, CancellationToken ct = default)
+    {
+        var trimmed = (contnoFilter ?? "").Trim();
+        await using var c = OpenWms();
+        var sql = $@"
+            SELECT TOP ({top})
+                   BarcodeId,
+                   Barcode,
+                   Itemname,
+                   Contno,
+                   BRAND       AS Brand,
+                   GENDER      AS Gender,
+                   Color,
+                   Size,
+                   Style,
+                   Division,
+                   Department,
+                   [Class]     AS [Class],
+                   SubClass,
+                   Family,
+                   Trndate,
+                   Tim1,
+                   CreateTS,
+                   CreatedBy
+              FROM dbo.WMS_Generatebarcode WITH (NOLOCK)
+             WHERE (@c = '' AND CAST(CreateTS AS DATE) = CAST(DATEADD(hour, 4, SYSUTCDATETIME()) AS DATE))
+                OR (@c <> '' AND Contno = @c)
+             ORDER BY CreateTS DESC, BarcodeId DESC";
+        var rows = await c.QueryAsync<RecentEncodingRow>(new CommandDefinition(
+            sql, new { c = trimmed }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        return rows.AsList();
     }
 }

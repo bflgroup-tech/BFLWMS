@@ -1,6 +1,7 @@
 using System.Data;
 using Wms.Core;
 using Wms.Data.Configuration;
+using Wms.Data.ItemMaster;
 using Dapper;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Caching.Memory;
@@ -48,8 +49,13 @@ public static class DbOpContext
 /// decremented; each pick subtracts the count of non-reversed scans for that
 /// StoreID + Division from the column value.
 /// </summary>
-public class BuildingService(IOnPremConnectionResolver resolver, ICurrentUser user, IMemoryCache cache)
+public class BuildingService(IOnPremConnectionResolver resolver, ICurrentUser user, IMemoryCache cache, ItemMasterApiClient? apiClient = null)
 {
+    // ItemMasterApi is optional at DI time — the client is registered but the
+    // options may not be configured in dev. Null means "skip API, go straight
+    // to Generated Barcode / usa.upcbarcodes".
+    private readonly ItemMasterApiClient? _apiClient = apiClient;
+
     private string Country =>
         user.Country
         ?? throw new InvalidOperationException(
@@ -243,7 +249,8 @@ public class BuildingService(IOnPremConnectionResolver resolver, ICurrentUser us
                     StoreName: storeName1,
                     Division: (string?)t1.Division,
                     Manual: false,
-                    PalletTypeName: palletN1);
+                    PalletTypeName: palletN1,
+                    ItemSource: "Order Sheet");
             }
 
             var anyInContainer = await c.QueryFirstOrDefaultAsync<dynamic>(new CommandDefinition(
@@ -308,7 +315,8 @@ public class BuildingService(IOnPremConnectionResolver resolver, ICurrentUser us
                     StoreName: storeName2,
                     Division: division2,
                     Manual: false,
-                    PalletTypeName: palletN2);
+                    PalletTypeName: palletN2,
+                    ItemSource: "Order Sheet");
             }
 
             // No item in this container at all — fall through to Tier 3 outside this tx.
@@ -358,7 +366,7 @@ public class BuildingService(IOnPremConnectionResolver resolver, ICurrentUser us
                 buildingCategory: master.Division,
                 result: "SHOP",
                 manual: 'Y',
-                itemSource: "usa.upcbarcodes",
+                itemSource: master.Source ?? "usa.upcbarcodes",
                 ct: ct);
 
             var storeName3 = await StoreNameByIdAsync(c3, tx3, store3, ct);
@@ -372,7 +380,8 @@ public class BuildingService(IOnPremConnectionResolver resolver, ICurrentUser us
                 StoreId: store3,
                 StoreName: storeName3,
                 Division: master.Division,
-                Manual: true);
+                Manual: true,
+                ItemSource: master.Source);
         }
     }
 
@@ -506,9 +515,66 @@ public class BuildingService(IOnPremConnectionResolver resolver, ICurrentUser us
             transaction: tx, cancellationToken: ct));
     }
 
-    // ----- helper: usa.upcbarcodes + datareporting hierarchy lookup (Tier-3 fallback) -----
+    // ----- helper: 3-tier fallback lookup for items not in the container -----
+    // Order: WMS Itemmaster API → Azure dbo.WMS_Generatebarcode → usa.upcbarcodes.
+    // Each successful hit stamps the returned row's ItemSource so the UI can
+    // show the operator where the details came from.
     private async Task<ItemMasterRow?> LookupItemMasterAsync(string itemCode, CancellationToken ct)
     {
+        // 1) External API (WMS Itemmaster). Configured via ItemMasterApi options.
+        if (_apiClient is not null)
+        {
+            var apiItem = await _apiClient.GetByUpcAsync(itemCode, ct);
+            if (apiItem is not null)
+            {
+                return new ItemMasterRow(
+                    Itemname:   apiItem.Itemname,
+                    Style:      apiItem.Style,
+                    Size:       apiItem.Size,
+                    Color:      apiItem.Color,
+                    Brand:      apiItem.Brand,
+                    Season:     apiItem.Season,
+                    Gender:     apiItem.Gender,
+                    HsCode:     null,
+                    Division:   apiItem.Division,
+                    Department: apiItem.Department,
+                    Class:      null,
+                    Family:     null,
+                    Subclass:   apiItem.Subcategory,
+                    Source:     "WMS Itemmaster");
+            }
+        }
+
+        // 2) Azure dbo.WMS_Generatebarcode — items encoded via Item Encoding.
+        await using (var w = OpenWms())
+        {
+            var gen = await w.QueryFirstOrDefaultAsync<dynamic>(new CommandDefinition(
+                @"SELECT TOP 1 Itemname, Style, Size, Color, BRAND AS Brand, Season, GENDER AS Gender,
+                               Division, Department, [Class] AS [Class], Family, SubClass
+                    FROM dbo.WMS_Generatebarcode WITH (NOLOCK)
+                   WHERE Barcode = @i",
+                new { i = itemCode }, cancellationToken: ct));
+            if (gen is not null)
+            {
+                return new ItemMasterRow(
+                    Itemname:   (string?)gen.Itemname,
+                    Style:      (string?)gen.Style,
+                    Size:       (string?)gen.Size,
+                    Color:      (string?)gen.Color,
+                    Brand:      (string?)gen.Brand,
+                    Season:     (string?)gen.Season,
+                    Gender:     (string?)gen.Gender,
+                    HsCode:     null,
+                    Division:   (string?)gen.Division,
+                    Department: (string?)gen.Department,
+                    Class:      (string?)gen.Class,
+                    Family:     (string?)gen.Family,
+                    Subclass:   (string?)gen.SubClass,
+                    Source:     "Generated Barcode");
+            }
+        }
+
+        // 3) On-prem usa.dbo.upcbarcodes fallback (UAE only).
         await using var b = OpenOnPremBackup();
         var head = await b.QueryFirstOrDefaultAsync<dynamic>(new CommandDefinition(
             @"SELECT TOP 1 ItemName = itemname, Style = style, [Size] = size, Color = color,
@@ -548,13 +614,15 @@ public class BuildingService(IOnPremConnectionResolver resolver, ICurrentUser us
             Department: dept,
             Class:      klass,
             Family:     family,
-            Subclass:   subclass);
+            Subclass:   subclass,
+            Source:     "USA Item Master");
     }
 
     private sealed record ItemMasterRow(
         string? Itemname, string? Style, string? Size, string? Color,
         string? Brand, string? Season, string? Gender, string? HsCode,
-        string? Division, string? Department, string? Class, string? Family, string? Subclass);
+        string? Division, string? Department, string? Class, string? Family, string? Subclass,
+        string? Source = null);
 
     // ==================== 5. Find a matching open box (read-only) ====================
     public async Task<string?> FindMatchingOpenBoxAsync(

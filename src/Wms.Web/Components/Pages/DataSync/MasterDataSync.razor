@@ -42,6 +42,14 @@
 </div>
 
 <div class="aiwms-section">
+    <div class="aiwms-card-header">Brand master sync</div>
+    <p style="margin:0 0 10px 0; color:var(--text-secondary); font-size:13px">
+        Full refresh of <code>dbo.WMSBrandMaster</code> from <code>usa.dbo.BrandMaster</code> (source column <code>BrandName</code>). Used by the Item Encoding page's Brand fallback search. TRUNCATE + reload on every click.
+    </p>
+    <button class="aiwms-btn aiwms-btn-primary" @onclick="SyncBrandMasterAsync" disabled="@_busy">Sync Brand Master</button>
+</div>
+
+<div class="aiwms-section">
     <div class="aiwms-card-header">ToteID Master sync — all countries</div>
     <p style="margin:0 0 10px 0; color:var(--text-secondary); font-size:13px">
         Pulls <b>yesterday's</b> totes from each country's <code>BlueToteIDMaster</code> (UAE: <code>bfldata</code>; other countries: <code>{DataName}</code> from <code>WMS_DataSettings</code>) and inserts into <code>dbo.WmsBlueToteIDMaster</code> with <code>Used = 'N'</code>.
@@ -184,6 +192,23 @@
         finally { _busy = false; }
     }
 
+    private async Task SyncBrandMasterAsync()
+    {
+        var confirm = await JS.InvokeAsync<bool>("confirm",
+            "Refresh Brand master from usa.dbo.BrandMaster? This TRUNCATES dbo.WMSBrandMaster and reloads all distinct BrandName rows.");
+        if (!confirm) return;
+        _busy = true; _message = ""; await InvokeAsync(StateHasChanged);
+        try
+        {
+            var result = await Svc.SyncBrandMasterAsync();
+            if (result.Ok) ShowInfo(result.Message ?? "Synced.");
+            else           ShowError(result.Message ?? "Sync failed.");
+            await ReloadActivityAsync();
+        }
+        catch (Exception ex) { ShowError($"Brand master sync failed: {ex.Message}"); }
+        finally { _busy = false; }
+    }
+
     private async Task SyncToteMasterAsync()
     {
         var confirm = await JS.InvokeAsync<bool>("confirm",
@@ -211,6 +236,7 @@
     {
         "WMSDataSettings" => "Azure WMS — Data Settings",
         "WMSPalletType"   => "Azure WMS — PalletType Master",
+        "WMSBrandMaster"  => "Azure WMS — Brand Master",
         "ToteIDMaster"    => "Azure WMS — ToteID Master",
         _                 => d,
     };
