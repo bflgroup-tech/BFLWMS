@@ -218,7 +218,7 @@ public class BuildingService(IOnPremConnectionResolver resolver, ICurrentUser us
                   FROM dbo.WMS_ContAllocationData WITH (UPDLOCK, ROWLOCK)
                  WHERE ContNo = @c AND Itemcode = @i
                    AND (@p IS NULL OR ORAPONo = @p)
-                   AND ISNULL(QtyIssue,0) < ISNULL(Qty,0)
+                   AND ISNULL(QtyIssue,0) < ISNULL(AllocatedQty,0)
                  ORDER BY ORAPONo, LPMDt, StoreID, ISNULL(OTS,0) DESC";
             DbOpContext.Set("Tier-1 lookup on dbo.WMS_ContAllocationData", t1Sql);
             var t1 = await c.QueryFirstOrDefaultAsync<dynamic>(new CommandDefinition(
@@ -491,13 +491,13 @@ public class BuildingService(IOnPremConnectionResolver resolver, ICurrentUser us
             INSERT INTO dbo.WMS_ContAllocationData
                 (ContNo, Country, TrnDate, Itemcode, Itemname, Style, [Size], Color, Brand, Season, Gender,
                  HsCode, GroupCode, Division, Department, [Class], Family, Subclass, ORAPONo,
-                 ResultType, LPMDt, StoreID, Qty, AllocatedQty, QtyIssue, Result, SalesPrice,
+                 ResultType, LPMDt, StoreID, AllocatedQty, QtyIssue, Result, SalesPrice,
                  BuildingCategory, Manual, ItemSource)
             OUTPUT INSERTED.IdNo
             VALUES
                 (@c, @country, CAST(DATEADD(hour, 4, SYSUTCDATETIME()) AS DATE), @i, @itemname, @style, @size, @color, @brand, @season, @gender,
                  @hsCode, @groupCode, @division, @department, @klass, @family, @subclass, @p,
-                 @resultType, @lpmDt, @store, 1, 1, 1, @result, @salesPrice,
+                 @resultType, @lpmDt, @store, 1, 1, @result, @salesPrice,
                  @buildingCategory, @manual, @itemSource);";
 
         DbOpContext.Set("INSERT overflow row on dbo.WMS_ContAllocationData", sql);
