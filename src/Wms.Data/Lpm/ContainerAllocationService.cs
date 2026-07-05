@@ -1397,13 +1397,16 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         // Azure sync check: any row in dbo.WMS_ContAllocationData means the
         // container's allocation has been shipped to Azure. Once that happens
         // Delete must be blocked at the UI (Building may already be reading
-        // those rows).
+        // those rows). Uses TOP 1 (index-friendly on IX_AzureCAD_ContItemPo)
+        // + explicit command timeout so a growing mirror never hangs the
+        // Status refresh, which is called from Process on every click.
         int azureRows = 0;
         await using (var w = OpenWms())
         {
-            azureRows = await w.ExecuteScalarAsync<int>(new CommandDefinition(
-                "SELECT COUNT(*) FROM dbo.WMS_ContAllocationData WITH (NOLOCK) WHERE ContNo = @c",
-                new { c = contno }, cancellationToken: ct));
+            var exists = await w.ExecuteScalarAsync<int?>(new CommandDefinition(
+                "SELECT TOP 1 1 FROM dbo.WMS_ContAllocationData WITH (NOLOCK) WHERE ContNo = @c",
+                new { c = contno }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            azureRows = exists == 1 ? 1 : 0;
         }
 
         return new AllocationStatus(hasDraft, hasFinal, draftRows, f.Total, f.Max1, d.RunOption,

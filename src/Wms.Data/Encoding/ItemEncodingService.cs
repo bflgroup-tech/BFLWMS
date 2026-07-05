@@ -314,4 +314,60 @@ public class ItemEncodingService(IOnPremConnectionResolver resolver, ICurrentUse
             sql, new { c = trimmed }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         return rows.AsList();
     }
+
+    // ===================== Save (Phase 3) =====================
+
+    public sealed class SaveEncodingRequest
+    {
+        public string  Contno       { get; set; } = "";
+        public string  Barcode      { get; set; } = "";   // = Itemcode = UPC
+        public string? Itemname     { get; set; }
+        public string? Brand        { get; set; }
+        public string? Gender       { get; set; }
+        public string? Color        { get; set; }
+        public string? Size         { get; set; }
+        public string? Style        { get; set; }
+        public string? Division     { get; set; }
+        public string? Department   { get; set; }
+        public string? Class        { get; set; }
+        public string? Family       { get; set; }
+        public string? SubClass     { get; set; }
+    }
+
+    /// <summary>Save one row into dbo.WMS_Generatebarcode. Sets:
+    ///   Barcode = UPC = Itemcode = req.Barcode
+    ///   Trndate = today's GST date
+    ///   Tim1    = current GST time as HH:mm:ss
+    ///   CreateTS defaulted by the table's DEFAULT constraint
+    ///   CreatedBy = current user's email/name
+    /// Returns the new BarcodeId identity.</summary>
+    public async Task<long> SaveEncodingAsync(SaveEncodingRequest req, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(req.Contno))  throw new ArgumentException("Contno is required.",  nameof(req));
+        if (string.IsNullOrWhiteSpace(req.Barcode)) throw new ArgumentException("Barcode is required.", nameof(req));
+
+        var now = DateTime.UtcNow.AddHours(4); // GST
+        var tim1 = now.ToString("HH:mm:ss");
+
+        await using var c = OpenWms();
+        const string sql = @"
+            INSERT INTO dbo.WMS_Generatebarcode
+                (Barcode, Contno, Itemname, Trndate, Tim1, UPC, BRAND, GENDER, Style,
+                 SubClass, Color, Size, Division, [Class], Department, Family, CreatedBy)
+            OUTPUT INSERTED.BarcodeId
+            VALUES
+                (@Barcode, @Contno, @Itemname, CAST(@Trndate AS smalldatetime), @Tim1, @Barcode,
+                 @Brand, @Gender, @Style, @SubClass, @Color, @Size, @Division, @Class, @Department, @Family,
+                 @CreatedBy);";
+        var id = await c.ExecuteScalarAsync<long>(new CommandDefinition(sql, new
+        {
+            req.Contno, req.Barcode, req.Itemname,
+            Trndate  = now.Date,
+            Tim1     = tim1,
+            req.Brand, req.Gender, req.Style, req.SubClass, req.Color, req.Size,
+            req.Division, req.Class, req.Department, req.Family,
+            CreatedBy = user.Name,
+        }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        return id;
+    }
 }

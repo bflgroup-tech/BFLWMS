@@ -38,7 +38,7 @@
 
     <div class="aiwms-section">
         <div class="aiwms-card-header">Item</div>
-        <div class="ie-grid" style="display:grid; grid-template-columns: minmax(0,200px) minmax(0,140px) minmax(0,220px) auto minmax(0,260px); align-items:end">
+        <div class="ie-grid" style="display:grid; grid-template-columns: minmax(0,180px) minmax(0,120px) minmax(0,190px) auto minmax(0,1fr); align-items:end">
             <div>
                 <label class="aiwms-input-lbl">CONTAINER *</label>
                 <select class="aiwms-input" @bind="_contno" @bind:after="OnContnoChangedAsync" disabled="@_busy">
@@ -63,84 +63,93 @@
                        style="text-transform:uppercase" disabled="@_busy" />
                 @if (!string.IsNullOrEmpty(_itemcodeErr)) { <div class="ie-err">@_itemcodeErr</div> }
             </div>
-            <button class="aiwms-btn aiwms-btn-secondary"
+            <button class="aiwms-btn"
                     @onclick="GenerateBarcodeAsync"
                     disabled="@(_busy || string.IsNullOrWhiteSpace(_contno) || string.IsNullOrWhiteSpace(_pono))"
+                    style="background:#facc15; border:1px solid #ca8a04; color:#422006; padding:5px 10px; font-size:11px; white-space:nowrap"
                     title="@(string.IsNullOrWhiteSpace(_pono) ? "Pick PONo first" : "Generate the next barcode for this Container + PONo")">
                 Generate Barcode
             </button>
             <div>
                 <label class="aiwms-input-lbl">ITEM NAME</label>
                 <input class="aiwms-input" @bind="_itemname" @bind:after="OnItemnameChanged"
-                       maxlength="100" placeholder="Item name / description" disabled="@_busy" />
+                       maxlength="100" placeholder="Item name / description" disabled="@_busy"
+                       style="font-size:14px; padding:6px 10px" />
                 @if (!string.IsNullOrEmpty(_itemnameErr)) { <div class="ie-err">@_itemnameErr</div> }
             </div>
         </div>
     </div>
 
-    <div class="aiwms-section">
-        <div class="aiwms-card-header">Attributes + MH4</div>
-        <div class="ie-grid" style="display:grid; grid-template-columns: repeat(8, minmax(0,1fr))">
-            <div>
-                <label class="aiwms-input-lbl">BRAND</label>
-                <input class="aiwms-input" list="brands-list" @bind="_brand" placeholder="manifest or master…" disabled="@_busy" />
-                <datalist id="brands-list">
-                    @foreach (var b in _manifestBrands) { <option value="@b.Brand">from manifest</option> }
-                    @foreach (var b in _masterBrands.Where(x => !_manifestBrands.Any(m => string.Equals(m.Brand, x.Brand, StringComparison.OrdinalIgnoreCase))))
-                    { <option value="@b.Brand">from master</option> }
-                </datalist>
+    <div style="display:grid; grid-template-columns: 2fr 1fr; gap:8px">
+        <div class="aiwms-section">
+            <div class="aiwms-card-header">MH4 Hierarchy</div>
+            <div class="ie-grid" style="display:grid; grid-template-columns: repeat(5, minmax(0,1fr))">
+                <div>
+                    <label class="aiwms-input-lbl">DIVISION</label>
+                    <select class="aiwms-input" @bind="_division" @bind:after="OnMh4ChangedAsync" disabled="@(_busy || _mh4All.Count == 0)">
+                        <option value=""></option>
+                        @foreach (var d in DivisionOptions) { <option value="@d.key">@d.label</option> }
+                    </select>
+                </div>
+                <div>
+                    <label class="aiwms-input-lbl">DEPARTMENT</label>
+                    <select class="aiwms-input" @bind="_department" @bind:after="OnMh4ChangedAsync" disabled="@(_busy || string.IsNullOrEmpty(_division))">
+                        <option value=""></option>
+                        @foreach (var d in DepartmentOptions) { <option value="@d">@d</option> }
+                    </select>
+                </div>
+                <div>
+                    <label class="aiwms-input-lbl">CLASS</label>
+                    <select class="aiwms-input" @bind="_class" @bind:after="OnMh4ChangedAsync" disabled="@(_busy || string.IsNullOrEmpty(_department))">
+                        <option value=""></option>
+                        @foreach (var d in ClassOptions) { <option value="@d">@d</option> }
+                    </select>
+                </div>
+                <div>
+                    <label class="aiwms-input-lbl">FAMILY</label>
+                    <select class="aiwms-input" @bind="_family" @bind:after="OnMh4ChangedAsync" disabled="@(_busy || string.IsNullOrEmpty(_class))">
+                        <option value=""></option>
+                        @foreach (var d in FamilyOptions) { <option value="@d">@d</option> }
+                    </select>
+                </div>
+                <div>
+                    <label class="aiwms-input-lbl">SUBCLASS</label>
+                    <select class="aiwms-input" @bind="_subclass" disabled="@(_busy || string.IsNullOrEmpty(_family))">
+                        <option value=""></option>
+                        @foreach (var d in SubclassOptions) { <option value="@d">@d</option> }
+                    </select>
+                </div>
             </div>
-            <div>
-                <label class="aiwms-input-lbl">GENDER</label>
-                <select class="aiwms-input" @bind="_gender" disabled="@_busy">
-                    <option value=""></option>
-                    @foreach (var g in _genders) { <option value="@g.Gender">@g.Gender</option> }
-                </select>
-            </div>
-            <div>
-                <label class="aiwms-input-lbl">COLOR</label>
-                <select class="aiwms-input" @bind="_color" disabled="@_busy">
-                    <option value=""></option>
-                    @foreach (var col in _colors) { <option value="@col.Color">@col.Color</option> }
-                </select>
-            </div>
-            <div>
-                <label class="aiwms-input-lbl">DIVISION</label>
-                <select class="aiwms-input" @bind="_division" @bind:after="OnMh4ChangedAsync" disabled="@(_busy || _mh4All.Count == 0)">
-                    <option value=""></option>
-                    @foreach (var d in DivisionOptions) { <option value="@d.key">@d.label</option> }
-                </select>
-            </div>
-            <div>
-                <label class="aiwms-input-lbl">DEPARTMENT</label>
-                <select class="aiwms-input" @bind="_department" @bind:after="OnMh4ChangedAsync" disabled="@(_busy || string.IsNullOrEmpty(_division))">
-                    <option value=""></option>
-                    @foreach (var d in DepartmentOptions) { <option value="@d">@d</option> }
-                </select>
-            </div>
-            <div>
-                <label class="aiwms-input-lbl">CLASS</label>
-                <select class="aiwms-input" @bind="_class" @bind:after="OnMh4ChangedAsync" disabled="@(_busy || string.IsNullOrEmpty(_department))">
-                    <option value=""></option>
-                    @foreach (var d in ClassOptions) { <option value="@d">@d</option> }
-                </select>
-            </div>
-            <div>
-                <label class="aiwms-input-lbl">FAMILY</label>
-                <select class="aiwms-input" @bind="_family" @bind:after="OnMh4ChangedAsync" disabled="@(_busy || string.IsNullOrEmpty(_class))">
-                    <option value=""></option>
-                    @foreach (var d in FamilyOptions) { <option value="@d">@d</option> }
-                </select>
-            </div>
-            <div>
-                <label class="aiwms-input-lbl">SUBCLASS</label>
-                <select class="aiwms-input" @bind="_subclass" disabled="@(_busy || string.IsNullOrEmpty(_family))">
-                    <option value=""></option>
-                    @foreach (var d in SubclassOptions) { <option value="@d">@d</option> }
-                </select>
+            <p class="ie-hint" style="margin-top:6px">Only combinations from the picked container's items are listed.</p>
+        </div>
+        <div class="aiwms-section">
+            <div class="aiwms-card-header">Attributes</div>
+            <div class="ie-grid" style="display:grid; grid-template-columns: repeat(3, minmax(0,1fr))">
+                <div>
+                    <label class="aiwms-input-lbl">BRAND</label>
+                    <input class="aiwms-input" list="brands-list" @bind="_brand" placeholder="manifest / master…" disabled="@_busy" />
+                    <datalist id="brands-list">
+                        @foreach (var b in _manifestBrands) { <option value="@b.Brand">from manifest</option> }
+                        @foreach (var b in _masterBrands.Where(x => !_manifestBrands.Any(m => string.Equals(m.Brand, x.Brand, StringComparison.OrdinalIgnoreCase))))
+                        { <option value="@b.Brand">from master</option> }
+                    </datalist>
+                </div>
+                <div>
+                    <label class="aiwms-input-lbl">GENDER</label>
+                    <select class="aiwms-input" @bind="_gender" disabled="@_busy">
+                        <option value=""></option>
+                        @foreach (var g in _genders) { <option value="@g.Gender">@g.Gender</option> }
+                    </select>
+                </div>
+                <div>
+                    <label class="aiwms-input-lbl">COLOR</label>
+                    <select class="aiwms-input" @bind="_color" disabled="@_busy">
+                        <option value=""></option>
+                        @foreach (var col in _colors) { <option value="@col.Color">@col.Color</option> }
+                    </select>
+                </div>
             </div>
         </div>
-        <p class="ie-hint" style="margin-top:6px">MH4: only combinations from the picked container's items are listed.</p>
     </div>
 
     <div class="aiwms-section">
@@ -180,7 +189,8 @@
                 <input class="aiwms-input" @bind="_activityContnoFilter"
                        placeholder="leave blank for today's rows" disabled="@_activityBusy" />
             </div>
-            <button class="aiwms-btn aiwms-btn-primary" @onclick="RefreshActivityAsync" disabled="@_activityBusy">
+            <button class="aiwms-btn aiwms-btn-secondary" @onclick="RefreshActivityAsync" disabled="@_activityBusy"
+                    style="padding:4px 10px; font-size:11px; white-space:nowrap">
                 @(_activityBusy ? "Loading…" : "Refresh")
             </button>
             <div class="ie-hint" style="align-self:center">
@@ -246,10 +256,17 @@
         </div>
     </div>
 
-    <div class="aiwms-section">
-        <div class="aiwms-alert info" style="margin:0">
-            Save is coming in Phase 3. Read-side, validation, and Recent Activity are live.
-        </div>
+    <div class="aiwms-section" style="display:flex; align-items:center; gap:12px">
+        <button class="aiwms-btn aiwms-btn-primary" @onclick="SaveAsync"
+                disabled="@(_busy || !CanSave)"
+                style="padding:8px 24px; font-size:14px; font-weight:700"
+                title="@(CanSave ? "Save this item into dbo.WMS_Generatebarcode" : "Fill Container, Itemcode and Division at minimum")">
+            Save
+        </button>
+        <button class="aiwms-btn aiwms-btn-secondary" @onclick="ClearForm" disabled="@_busy">Clear</button>
+        <span class="ie-hint" style="align-self:center">
+            Required: Container, Itemcode, Division. All other fields optional.
+        </span>
     </div>
 </div>
 
@@ -433,6 +450,53 @@
         }
         catch (Exception ex) { ShowError($"Generate Barcode failed: {ex.Message}"); }
         finally { _busy = false; }
+    }
+
+    private bool CanSave =>
+        !string.IsNullOrWhiteSpace(_contno)
+        && !string.IsNullOrWhiteSpace(_itemcode)
+        && string.IsNullOrEmpty(_itemcodeErr)
+        && string.IsNullOrEmpty(_itemnameErr)
+        && SelectedDivId > 0;
+
+    private async Task SaveAsync()
+    {
+        if (!CanSave) return;
+        _busy = true; _message = "";
+        try
+        {
+            var req = new ItemEncodingService.SaveEncodingRequest
+            {
+                Contno     = _contno.Trim(),
+                Barcode    = _itemcode.Trim(),
+                Itemname   = string.IsNullOrWhiteSpace(_itemname) ? null : _itemname.Trim(),
+                Brand      = string.IsNullOrWhiteSpace(_brand)    ? null : _brand.Trim(),
+                Gender     = string.IsNullOrWhiteSpace(_gender)   ? null : _gender,
+                Color      = string.IsNullOrWhiteSpace(_color)    ? null : _color,
+                Size       = string.IsNullOrWhiteSpace(_size)     ? null : _size,
+                Style      = string.IsNullOrWhiteSpace(_style)    ? null : _style.Trim(),
+                Division   = string.IsNullOrEmpty(_division) ? null : _division.Split('|', 2).LastOrDefault(),
+                Department = string.IsNullOrWhiteSpace(_department) ? null : _department,
+                Class      = string.IsNullOrWhiteSpace(_class)      ? null : _class,
+                Family     = string.IsNullOrWhiteSpace(_family)     ? null : _family,
+                SubClass   = string.IsNullOrWhiteSpace(_subclass)   ? null : _subclass,
+            };
+            var id = await Svc.SaveEncodingAsync(req);
+            ShowInfo($"Saved barcode {req.Barcode} (id {id}).");
+            ClearForm();
+            await RefreshActivityAsync();
+        }
+        catch (Exception ex) { ShowError($"Save failed: {ex.Message}"); }
+        finally { _busy = false; }
+    }
+
+    private void ClearForm()
+    {
+        // Keep the container + PO context so the operator can quickly encode
+        // the next item for the same shipment; clear only the item-specific fields.
+        _itemcode = ""; _itemname = ""; _brand = ""; _gender = ""; _color = "";
+        _style = ""; _size = "";
+        _itemcodeErr = ""; _itemnameErr = "";
     }
 
     private async Task RefreshActivityAsync()

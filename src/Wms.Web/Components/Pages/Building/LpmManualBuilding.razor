@@ -118,7 +118,7 @@ else
         <div class="aiwms-input-actions" style="display:flex; gap:10px; align-items:center; flex-wrap:wrap">
             <button class="aiwms-btn aiwms-btn-secondary" @onclick="ResetAll">Reset all</button>
             <div style="font-size:13px; color:var(--text-secondary)">
-                Box qty: <b style="font-size:14px; color:var(--text-primary)">@_stagedItems.Sum(x => x.Qty)</b>
+                Scanned Box Qty: <b style="font-size:14px; color:var(--text-primary)">@_stagedItems.Sum(x => x.Qty)</b>
             </div>
             <div style="flex:1"></div>
             <button class="aiwms-btn aiwms-btn-danger" @onclick="CloseLogisticsAsync"
@@ -175,19 +175,19 @@ else
 
         @if (_lastAlloc is { } al)
         {
-            <div class="aiwms-result-row" style="background:@(_lastAppliedException is null ? "#a7f3d0" : "#fde68a"); padding:8px 10px; border-radius:var(--r-sm); border:1px solid @(_lastAppliedException is null ? "#6ee7b7" : "#f59e0b")">
-                <div class="aiwms-result-tag">@(_lastAppliedException is null ? "RESULT" : "EXCEPTION")</div>
-                <div class="aiwms-result-value">
+            <div class="aiwms-result-row" style="background:@(_lastAppliedException is null ? "#166534" : "#fde68a"); color:@(_lastAppliedException is null ? "#f0fdf4" : "inherit"); padding:10px 12px; border-radius:var(--r-sm); border:1px solid @(_lastAppliedException is null ? "#14532d" : "#f59e0b")">
+                <div class="aiwms-result-tag" style="@(_lastAppliedException is null ? "background:#f0fdf4; color:#166534;" : "")">@(_lastAppliedException is null ? "RESULT" : "EXCEPTION")</div>
+                <div class="aiwms-result-value" style="font-size:22px; font-weight:800; line-height:1.2">
                     @if (_lastAppliedException is (var exPt, var exName))
                     {
                         <b>@exPt@(string.IsNullOrEmpty(exName) ? "" : " — " + exName)</b>
-                        <span class="aiwms-pill tier@((int)al.Tier)" style="margin-left:10px;font-size:11px"
+                        <span class="aiwms-pill tier@((int)al.Tier)" style="margin-left:10px;font-size:11px;font-weight:600"
                               title="Underlying Tier — allocation row @al.AllocationIdNo was tagged with the exception">Tier @((int)al.Tier)</span>
                     }
                     else
                     {
-                        @al.Result @(_lastItem?.Season is { Length: > 0 } s ? " - " + s : "")
-                        <span class="aiwms-pill tier@((int)al.Tier)" style="margin-left:10px;font-size:11px"
+                        @(al.PalletType ?? al.Result)@(string.IsNullOrEmpty(al.PalletTypeName) ? "" : " — " + al.PalletTypeName)
+                        <span class="aiwms-pill tier@((int)al.Tier)" style="margin-left:10px;font-size:11px;font-weight:600"
                               title="@TierTitle(al.Tier)">Tier @((int)al.Tier) — @TierShort(al.Tier)</span>
                         @if (al.Manual)
                         {
@@ -198,10 +198,16 @@ else
                 </div>
             </div>
             <div class="aiwms-result-meta">
-                <div style="grid-column: span 2"><span class="lbl">Store</span> <b>@(al.StoreId ?? "—")</b>@(string.IsNullOrEmpty(al.StoreName) ? "" : $" — {al.StoreName}")</div>
-                <div><span class="lbl">Division</span> <b>@(al.Division ?? "—")</b></div>
-                <div style="grid-column: span 2"><span class="lbl">PalletType</span> <b>@(al.PalletType ?? "—")</b>@(string.IsNullOrEmpty(al.PalletTypeName) ? "" : $" — {al.PalletTypeName}")</div>
-                <div><span class="lbl">LPMDt</span> <b>@(al.LpmDt?.ToString("yyyy-MM-dd") ?? "—")</b></div>
+                @if (_lastAppliedException is null)
+                {
+                    <div style="grid-column: span 2"><span class="lbl">Store</span> <b>@(al.StoreId ?? "—")</b>@(string.IsNullOrEmpty(al.StoreName) ? "" : $" — {al.StoreName}")</div>
+                    <div><span class="lbl">Division</span> <b>@(al.Division ?? "—")</b></div>
+                }
+                else
+                {
+                    <div style="grid-column: span 3; color:#92400e; font-weight:600">Item held for exception — not routed to a store.</div>
+                }
+                <div><span class="lbl">LPMDt</span> <b>@(al.LpmDt?.ToString("dd/MM/yyyy") ?? "—")</b></div>
                 <div><span class="lbl">PO</span> <b>@(al.PoNumber ?? "NA")</b></div>
                 @if (_currentBoxNo is not null) { <div><span class="lbl">Box</span> <b>@_currentBoxNo</b></div> }
             </div>
@@ -328,33 +334,33 @@ else
             <table class="aiwms-table aiwms-table-dense" style="font-size:11px">
                 <thead style="position:sticky; top:0; background:white; z-index:1">
                     <tr>
-                        <th>Time</th>
-                        <th>ContNo</th>
-                        <th>ItemCode</th>
-                        <th>Result</th>
-                        <th>Tier</th>
-                        <th>Store</th>
-                        <th>Store Name</th>
-                        <th>Division</th>
-                        <th>Pallet</th>
-                        <th>Box</th>
-                        <th>Logistics Box</th>
-                        <th>Tote</th>
+                        <th style="cursor:pointer" @onclick='() => SortScans("TrnDate")'>TrnDate @ScanSortArrow("TrnDate")</th>
+                        <th style="cursor:pointer" @onclick='() => SortScans("Time")'>Time @ScanSortArrow("Time")</th>
+                        <th style="cursor:pointer" @onclick='() => SortScans("ContNo")'>ContNo @ScanSortArrow("ContNo")</th>
+                        <th style="cursor:pointer" @onclick='() => SortScans("ItemCode")'>ItemCode @ScanSortArrow("ItemCode")</th>
+                        <th style="cursor:pointer" @onclick='() => SortScans("FinalResult")'>Final Result @ScanSortArrow("FinalResult")</th>
+                        <th style="cursor:pointer" @onclick='() => SortScans("Tier")'>Tier @ScanSortArrow("Tier")</th>
+                        <th style="cursor:pointer" @onclick='() => SortScans("Store")'>Store @ScanSortArrow("Store")</th>
+                        <th style="cursor:pointer" @onclick='() => SortScans("StoreName")'>Store Name @ScanSortArrow("StoreName")</th>
+                        <th style="cursor:pointer" @onclick='() => SortScans("Division")'>Division @ScanSortArrow("Division")</th>
+                        <th style="cursor:pointer" @onclick='() => SortScans("Box")'>Box @ScanSortArrow("Box")</th>
+                        <th style="cursor:pointer" @onclick='() => SortScans("LogisticsBox")'>Logistics Box @ScanSortArrow("LogisticsBox")</th>
+                        <th style="cursor:pointer" @onclick='() => SortScans("Tote")'>Tote @ScanSortArrow("Tote")</th>
                     </tr>
                 </thead>
                 <tbody>
-                    @foreach (var r in _todayScans)
+                    @foreach (var r in SortedScans)
                     {
                         <tr>
+                            <td>@r.ScannedTS.ToString("dd/MM/yyyy")</td>
                             <td>@r.ScannedTS.ToString("HH:mm:ss")</td>
                             <td style="font-family:var(--font-mono)">@r.ContNo</td>
                             <td style="font-family:var(--font-mono)"><b>@r.Itemcode</b></td>
-                            <td>@r.Result @(r.Manual == "Y" ? "★" : "")</td>
+                            <td title="@r.PalletTypeName">@r.PalletType@(string.IsNullOrEmpty(r.PalletTypeName) ? "" : " — " + r.PalletTypeName)@(r.Manual == "Y" ? " ★" : "")</td>
                             <td><span class="aiwms-pill tier@(r.Tier)" style="font-size:10px; padding:1px 6px">@r.Tier</span></td>
                             <td style="font-family:var(--font-mono)">@r.StoreID</td>
                             <td>@r.StoreName</td>
                             <td>@r.Division</td>
-                            <td title="@r.PalletTypeName">@r.PalletType@(string.IsNullOrEmpty(r.PalletTypeName) ? "" : " — " + r.PalletTypeName)</td>
                             <td style="font-family:var(--font-mono)">@r.BoxNo</td>
                             <td style="font-family:var(--font-mono)">@r.LogisticsBoxNo</td>
                             <td style="font-family:var(--font-mono)">@r.ToteID</td>
@@ -396,6 +402,40 @@ else
 
     private List<OpenBoxRow> _openBoxes = new();
     private List<TodayScanRow> _todayScans = new();
+    // My Scans grid — default: newest first (by ScannedTS DESC).
+    private string _scanSortKey = "TrnDate";
+    private bool   _scanSortAsc = false;
+
+    private void SortScans(string key)
+    {
+        if (_scanSortKey == key) _scanSortAsc = !_scanSortAsc;
+        else { _scanSortKey = key; _scanSortAsc = key == "ItemCode" || key == "ContNo" || key == "Store" || key == "StoreName" || key == "Division" || key == "Box" || key == "LogisticsBox" || key == "Tote"; }
+    }
+    private string ScanSortArrow(string key) => _scanSortKey != key ? "" : (_scanSortAsc ? "▲" : "▼");
+
+    private IEnumerable<TodayScanRow> SortedScans
+    {
+        get
+        {
+            Func<TodayScanRow, object?> k = _scanSortKey switch
+            {
+                "TrnDate"      => r => r.ScannedTS,
+                "Time"         => r => r.ScannedTS,
+                "ContNo"       => r => r.ContNo,
+                "ItemCode"     => r => r.Itemcode,
+                "FinalResult"  => r => r.PalletType,
+                "Tier"         => r => r.Tier,
+                "Store"        => r => r.StoreID,
+                "StoreName"    => r => r.StoreName,
+                "Division"     => r => r.Division,
+                "Box"          => r => r.BoxNo,
+                "LogisticsBox" => r => r.LogisticsBoxNo,
+                "Tote"         => r => r.ToteID,
+                _              => r => r.ScannedTS,
+            };
+            return _scanSortAsc ? _todayScans.OrderBy(k) : _todayScans.OrderByDescending(k);
+        }
+    }
 
     // Exception dropdown — one-shot: applies to next scan, then auto-clears.
     private List<ExceptionPalletTypeRow> _exceptionOptions = new();
