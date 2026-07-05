@@ -1393,7 +1393,21 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
             WHERE GenCountry = @gc AND ContNo = @c",
             new { gc = genCountry, c = contno }, cancellationToken: ct));
         var hasFinal = f.Total > 0;
-        return new AllocationStatus(hasDraft, hasFinal, draftRows, f.Total, f.Max1, d.RunOption, f.Fsm, f.Rr, f.Frr);
+
+        // Azure sync check: any row in dbo.WMS_ContAllocationData means the
+        // container's allocation has been shipped to Azure. Once that happens
+        // Delete must be blocked at the UI (Building may already be reading
+        // those rows).
+        int azureRows = 0;
+        await using (var w = OpenWms())
+        {
+            azureRows = await w.ExecuteScalarAsync<int>(new CommandDefinition(
+                "SELECT COUNT(*) FROM dbo.WMS_ContAllocationData WITH (NOLOCK) WHERE ContNo = @c",
+                new { c = contno }, cancellationToken: ct));
+        }
+
+        return new AllocationStatus(hasDraft, hasFinal, draftRows, f.Total, f.Max1, d.RunOption,
+                                     f.Fsm, f.Rr, f.Frr, azureRows);
     }
 
     // ===================== Confirm & Save (Draft -> WMS_ContAllocationData) =====================
