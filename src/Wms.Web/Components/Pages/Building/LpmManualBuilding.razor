@@ -107,7 +107,7 @@ else
             <div class="aiwms-input-row">
                 <label class="aiwms-input-lbl">Itemcode (UPC) <span class="req">*</span></label>
                 <input @ref="_itemRef"
-                       @bind="_itemInput" @bind:event="oninput" @bind:after="ScheduleAutoScan"
+                       @bind="_itemInput" @bind:event="oninput"
                        @onkeydown="OnItemKey"
                        class="aiwms-input"
                        placeholder="Scan or type item code" autocomplete="off"
@@ -466,48 +466,6 @@ else
         finally { _busy = false; }
     }
 
-    // Debounced auto-scan: fires ScanItem() 500ms after the last keystroke,
-    // but only if the input is long enough to plausibly be a full barcode
-    // (min 8 chars). This handles scanner input (dumps a 13-char UPC in
-    // <100ms, then debounce elapses) without triggering premature scans on
-    // partial typed input, which would clear panels and thrash the API.
-    // A scanner's trailing Enter still fires via OnItemKey immediately.
-    private CancellationTokenSource? _autoScanCts;
-    private string? _lastAutoScannedCode;
-    private const int AutoScanDebounceMs   = 500;
-    private const int AutoScanMinCodeChars = 8;
-
-    private void ScheduleAutoScan()
-    {
-        _autoScanCts?.Cancel();
-        // Skip clearly-partial input up front — avoids scheduling a doomed scan.
-        var trimmed = (_itemInput ?? "").Trim();
-        if (trimmed.Length < AutoScanMinCodeChars) return;
-        // De-dupe: don't re-scan the exact code we just processed.
-        if (string.Equals(trimmed, _lastAutoScannedCode, StringComparison.OrdinalIgnoreCase)) return;
-
-        _autoScanCts = new CancellationTokenSource();
-        var token = _autoScanCts.Token;
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                await Task.Delay(AutoScanDebounceMs, token);
-                if (token.IsCancellationRequested) return;
-                if (_busy) return;
-                var current = (_itemInput ?? "").Trim();
-                if (current.Length < AutoScanMinCodeChars) return;
-                if (string.Equals(current, _lastAutoScannedCode, StringComparison.OrdinalIgnoreCase)) return;
-                _lastAutoScannedCode = current;
-                await InvokeAsync(async () =>
-                {
-                    if (!token.IsCancellationRequested) await ScanItem();
-                });
-            }
-            catch (TaskCanceledException) { /* superseded by next keystroke */ }
-        });
-    }
-
     private async Task ScanItem()
     {
         ClearTransient(); _busy = true;
@@ -629,7 +587,7 @@ else
             // Box label is now closed — reset the local box state so the operator
             // is prompted to scan the next logistics label.
             _boxInput = ""; _boxLabel = ""; _poNumber = null; _boxOk = false;
-            _itemInput = ""; _lastItem = null; _lastAlloc = null; _lastAutoScannedCode = null;
+            _itemInput = ""; _lastItem = null; _lastAlloc = null;
             _currentBoxNo = null; _stagedItems.Clear();
             await TryFocus(_boxRef);
         }
