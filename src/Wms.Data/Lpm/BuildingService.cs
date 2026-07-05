@@ -146,6 +146,22 @@ public class BuildingService(IOnPremConnectionResolver resolver, ICurrentUser us
                 new { cont = contno, po = parsed.PoNumber }, cancellationToken: ct));
             if (poOk != 1) return new(false, $"PO {parsed.PoNumber} on box does not match container {contno}.", parsed.PoNumber, true);
         }
+
+        // Concurrent-user gate: refuse if the same Logistics Box is already
+        // open under a different UserId. Two operators must not scan into the
+        // same physical logistics box simultaneously.
+        var otherUser = await c.ExecuteScalarAsync<string?>(new CommandDefinition(
+            @"SELECT TOP 1 UserId FROM dbo.WmsOpenBox WITH (NOLOCK)
+               WHERE LogisticsBoxNo = @lb AND UserId <> @me
+               ORDER BY BoxNo",
+            new { lb = bareBox, me = user.Name }, cancellationToken: ct));
+        if (!string.IsNullOrEmpty(otherUser))
+        {
+            return new(false,
+                $"Logistics Box {bareBox} is already being built by {otherUser}. Two users cannot scan into the same logistics box.",
+                parsed.PoNumber, parsed.HasPo);
+        }
+
         return new(true, null, parsed.PoNumber, parsed.HasPo);
     }
 
@@ -574,24 +590,36 @@ public class BuildingService(IOnPremConnectionResolver resolver, ICurrentUser us
             }
         }
 
-        // 3) On-prem usa.dbo.upcbarcodes fallback (UAE only).
+        // 3) On-prem usa.dbo.upcbarcodes fallback (UAE only). Wrapped in
+        //    try/catch so a schema mismatch on the on-prem source doesn't
+        //    kill the scan — we just fall through to "not found".
         await using var b = OpenOnPremBackup();
-        var head = await b.QueryFirstOrDefaultAsync<dynamic>(new CommandDefinition(
-            @"SELECT TOP 1 ItemName = itemname, Style = style, [Size] = size, Color = color,
-                           Brand = brand, Season = season, Gender = GENDER, HsCode = hscode
-                FROM usa.dbo.upcbarcodes WITH (NOLOCK)
-               WHERE itemcode = @i",
-            new { i = itemCode }, cancellationToken: ct));
+        dynamic? head = null;
+        try
+        {
+            head = await b.QueryFirstOrDefaultAsync<dynamic>(new CommandDefinition(
+                @"SELECT TOP 1 ItemName = itemname, Style = style, [Size] = size, Color = color,
+                               Brand = brand, Season = season, Gender = GENDER, HsCode = hscode
+                    FROM usa.dbo.upcbarcodes WITH (NOLOCK)
+                   WHERE itemcode = @i",
+                new { i = itemCode }, cancellationToken: ct));
+        }
+        catch { /* schema drift or connectivity — treat as not-found */ }
 
         if (head is null) return null;
 
         string? division = null, dept = null, klass = null, family = null, subclass = null;
-        var sub = await b.QueryFirstOrDefaultAsync<dynamic>(new CommandDefinition(
-            @"SELECT TOP 1 sm.Division, sm.Department, sm.[Class], sm.Family, sm.Subclass
-                FROM datareporting.dbo.vupc_subclass v WITH (NOLOCK)
-                LEFT JOIN datareporting.dbo.SubclassMaster sm WITH (NOLOCK) ON sm.MH4ID = v.MH4ID
-               WHERE v.itemcode = @i",
-            new { i = itemCode }, cancellationToken: ct));
+        dynamic? sub = null;
+        try
+        {
+            sub = await b.QueryFirstOrDefaultAsync<dynamic>(new CommandDefinition(
+                @"SELECT TOP 1 sm.Division, sm.Department, sm.[Class], sm.Family, sm.Subclass
+                    FROM datareporting.dbo.vupc_subclass v WITH (NOLOCK)
+                    LEFT JOIN datareporting.dbo.SubclassMaster sm WITH (NOLOCK) ON sm.MH4ID = v.MH4ID
+                   WHERE v.itemcode = @i",
+                new { i = itemCode }, cancellationToken: ct));
+        }
+        catch { /* hierarchy lookup optional — leave nulls */ }
         if (sub is not null)
         {
             division = (string?)sub.Division;
