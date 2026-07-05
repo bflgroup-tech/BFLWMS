@@ -99,6 +99,8 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
     public async Task<ContainerAllocationValidationResult> ValidateAsync(
         string country, string contno,
         IProgress<AllocationProgress>? progress = null,
+        RunOption runOption = RunOption.FillSKUMax,
+        IReadOnlyCollection<string>? allocationCountries = null,
         CancellationToken ct = default)
     {
         var steps = new List<ValidationStep>();
@@ -201,6 +203,32 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                     ? $"Container {contno} already has {status.Scanned} scan row(s) in dbo.WMSContBuildScanData — building has started. Cannot re-run allocation."
                     : null));
             if (scanned) return new ContainerAllocationValidationResult(false, steps);
+
+            // 8. Manual Allocation ECOM gate — only for FillSKUMax+RoundRobin
+            //    when the operator included ECOM in the Allocation Countries.
+            //    ECOM has a single store (StoreID='ONLINE') and its per-store
+            //    caps come from dbo.WmsManualAllocation. If that table has no
+            //    ONLINE row for this container, FillSKUMax+RR has nothing to
+            //    cap ECOM against — block Process here so the operator uploads
+            //    the sheet first.
+            var wantsEcom = runOption == RunOption.FillSKUMaxRoundRobin
+                            && allocationCountries is not null
+                            && allocationCountries.Any(x => string.Equals(x, "ECOM", StringComparison.OrdinalIgnoreCase));
+            if (wantsEcom)
+            {
+                progress?.Report(new AllocationProgress(7, TOTAL, "Validating: ECOM Manual Allocation rows"));
+                var ecomRows = await w.ExecuteScalarAsync<int?>(new CommandDefinition(
+                    @"SELECT TOP 1 1 FROM dbo.WmsManualAllocation WITH (NOLOCK)
+                       WHERE ContNo = @c AND StoreID = 'ONLINE'",
+                    new { c = contno }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)) == 1;
+                steps.Add(new ValidationStep(
+                    "ECOM Manual Allocation rows exist (StoreID='ONLINE')",
+                    ecomRows,
+                    ecomRows
+                        ? null
+                        : $"Allocation Countries includes ECOM but dbo.WmsManualAllocation has no row for ContNo={contno}, StoreID='ONLINE'. Upload ECOM's Manual Allocation sheet before running FillSKUMax+RoundRobin."));
+                if (!ecomRows) return new ContainerAllocationValidationResult(false, steps);
+            }
         }
 
         return new ContainerAllocationValidationResult(true, steps);

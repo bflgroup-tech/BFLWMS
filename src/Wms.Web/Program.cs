@@ -66,7 +66,13 @@ public class Program
         // this before falling through to Generated Barcode / usa.upcbarcodes.
         builder.Services.Configure<Wms.Data.ItemMaster.ItemMasterApiOptions>(
             builder.Configuration.GetSection(Wms.Data.ItemMaster.ItemMasterApiOptions.SectionName));
-        builder.Services.AddHttpClient<Wms.Data.ItemMaster.ItemMasterApiClient>();
+        // Short HttpClient timeout so an unreachable API host fails fast and
+        // the scan flow falls through to Generated Barcode / usa.upcbarcodes
+        // instead of hanging on the default 100-second timeout.
+        builder.Services.AddHttpClient<Wms.Data.ItemMaster.ItemMasterApiClient>(c =>
+        {
+            c.Timeout = TimeSpan.FromSeconds(5);
+        });
 
         builder.Services.AddScoped<ReportsService>();
         builder.Services.AddScoped<WarehouseBoxesService>();
