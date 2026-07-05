@@ -92,7 +92,14 @@
         }
         @if (currentRoRows > 0 && !IsApproved)
         {
-            <button class="aiwms-btn aiwms-btn-secondary" style="border-color:#D1435B; color:#D1435B" @onclick="DeleteAsync" disabled="@_busy">Delete @_runOption (@currentRoRows rows)</button>
+            var azureSynced = (_status?.AzureAllocRows ?? 0) > 0;
+            <button class="aiwms-btn aiwms-btn-secondary" style="border-color:#D1435B; color:#D1435B"
+                    @onclick="DeleteAsync"
+                    disabled="@(_busy || azureSynced)"
+                    title="@(azureSynced ? $"Blocked — {_contno} already synced to Azure WMS ({_status?.AzureAllocRows} row(s)). Clear the Azure mirror rows first if you really need to re-allocate." : $"Delete the current {_runOption} allocation for {_contno}")">
+                Delete @_runOption for @_contno (@currentRoRows rows)
+                @if (azureSynced) { <span>— SYNCED, blocked</span> }
+            </button>
         }
         @if (_loadedBatch is not null && _allocation.Count > 0 && !IsApproved)
         {
@@ -739,8 +746,19 @@
             _                              => (_status?.FillSkuMaxRows ?? 0),
         };
         if (rowsForRo == 0) return;
+
+        // Defensive: even if the UI is up-to-date, refresh status right before
+        // deleting so the Azure sync check reflects reality at click time.
+        await RefreshStatusAsync();
+        var azureSynced = (_status?.AzureAllocRows ?? 0) > 0;
+        if (azureSynced)
+        {
+            ShowError($"Delete blocked — {_contno} already has {_status!.AzureAllocRows} row(s) in Azure WMS_ContAllocationData. Clear the Azure mirror rows first before deleting the SIM allocation.");
+            return;
+        }
+
         var ok = await JS.InvokeAsync<bool>("confirm",
-            $"Delete {rowsForRo} {_runOption} allocation rows for {_contno}?\n\nThis cannot be undone.");
+            $"Delete {rowsForRo} {_runOption} allocation rows for {_contno}?\n\nThis cannot be undone. Are you sure?");
         if (!ok) return;
         _busy = true; _message = ""; await InvokeAsync(StateHasChanged);
         try

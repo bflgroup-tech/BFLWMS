@@ -84,7 +84,8 @@ public record AllocationStatus(
     string? DraftRunOption,
     int  FillSkuMaxRows,
     int  RoundRobinRows,
-    int  FillSKUMaxRoundRobinRows = 0);
+    int  FillSKUMaxRoundRobinRows = 0,
+    int  AzureAllocRows           = 0);  // dbo.WMS_ContAllocationData row count on Azure — > 0 means the container has been synced and Delete should be blocked at UI level
 
 /// <summary>How to distribute qty across eligible stores.</summary>
 public enum RunOption { FillSKUMax = 0, RoundRobin = 1, FillSKUMaxRoundRobin = 2 }
