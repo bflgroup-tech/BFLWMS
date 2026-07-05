@@ -143,6 +143,7 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
     {
         nameof(DataSyncDestination.WMSDataSettings),
         nameof(DataSyncDestination.WMSPalletType),
+        nameof(DataSyncDestination.WMSBrandMaster),
         nameof(DataSyncDestination.ToteIDMaster),
     };
 
@@ -1123,5 +1124,60 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
                 $"PalletType master: {rowsCopied:N0} row(s) reloaded (truncate + insert).",
                 syncId, rowsCopied)
             : new DataSyncResult(false, $"PalletType master sync failed: {error}", syncId, 0);
+    }
+
+    /// <summary>Full refresh of dbo.WMSBrandMaster from usa.dbo.BrandMaster
+    /// (source column BrandName). Same shape as the PalletType sync — TRUNCATE
+    /// + bulk-reload on every click.</summary>
+    public async Task<DataSyncResult> SyncBrandMasterAsync(CancellationToken ct = default)
+    {
+        const string srcSql = @"
+            SELECT DISTINCT BrandName
+              FROM usa.dbo.BrandMaster WITH (NOLOCK)
+             WHERE BrandName IS NOT NULL AND LTRIM(RTRIM(BrandName)) <> ''";
+
+        int rowsCopied = 0;
+        string? error = null;
+
+        try
+        {
+            await using (var dest0 = OpenWms())
+            {
+                await dest0.ExecuteAsync(new CommandDefinition(
+                    "TRUNCATE TABLE dbo.WMSBrandMaster",
+                    commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            }
+
+            await using var src = OpenOnPremBackup();
+            using var cmd = new SqlCommand(srcSql, src) { CommandTimeout = CommandTimeoutSeconds };
+            using var reader = await cmd.ExecuteReaderAsync(ct);
+
+            await using var dest = OpenWms();
+            using var bulk = new SqlBulkCopy(dest)
+            {
+                DestinationTableName = "dbo.WMSBrandMaster",
+                BatchSize            = 1000,
+                BulkCopyTimeout      = CommandTimeoutSeconds,
+                EnableStreaming      = true,
+            };
+            bulk.ColumnMappings.Add("BrandName", "BrandName");
+            await bulk.WriteToServerAsync(reader, ct);
+            rowsCopied = bulk.RowsCopied;
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+
+        var syncId = await WriteLogRowAsync("(BrandMaster)", null, DataSyncDestination.WMSBrandMaster,
+            totalAllocatedQty: rowsCopied,
+            status: error is null ? "Success" : "Failed",
+            error: error, ct);
+
+        return error is null
+            ? new DataSyncResult(true,
+                $"Brand master: {rowsCopied:N0} row(s) reloaded (truncate + insert).",
+                syncId, rowsCopied)
+            : new DataSyncResult(false, $"Brand master sync failed: {error}", syncId, 0);
     }
 }

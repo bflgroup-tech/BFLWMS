@@ -45,7 +45,8 @@ public enum DataSyncDestination
     WmsKnbBoxes      = 2,   // bfl-wms Azure SQL — dbo.WmsKNBBoxes (auxiliary, runs alongside allocation sync)
     WMSDataSettings  = 3,   // bfl-wms Azure SQL — dbo.WMS_DataSettings (incremental on CreateDate)
     ToteIDMaster     = 4,   // bfl-wms Azure SQL — dbo.WmsBlueToteIDMaster (per-country, yesterday's totes + in-use flag)
-    WMSPalletType    = 5    // bfl-wms Azure SQL — dbo.WmsPalletType (full truncate + reload from bfldata.dbo.pallettype)
+    WMSPalletType    = 5,   // bfl-wms Azure SQL — dbo.WmsPalletType (full truncate + reload from bfldata.dbo.pallettype)
+    WMSBrandMaster   = 6    // bfl-wms Azure SQL — dbo.WMSBrandMaster (full truncate + reload from usa.dbo.BrandMaster)
 }
 
 /// <summary>One row per country processed in the ToteID Master sync — used by

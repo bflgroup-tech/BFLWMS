@@ -61,6 +61,13 @@ public class Program
         builder.Services.AddScoped<OpenContainerService>();
         builder.Services.AddScoped<ManualAllocationService>();
         builder.Services.AddScoped<Wms.Data.Encoding.ItemEncodingService>();
+
+        // WMS Itemmaster external API — Building's Tier-3 fallback goes through
+        // this before falling through to Generated Barcode / usa.upcbarcodes.
+        builder.Services.Configure<Wms.Data.ItemMaster.ItemMasterApiOptions>(
+            builder.Configuration.GetSection(Wms.Data.ItemMaster.ItemMasterApiOptions.SectionName));
+        builder.Services.AddHttpClient<Wms.Data.ItemMaster.ItemMasterApiClient>();
+
         builder.Services.AddScoped<ReportsService>();
         builder.Services.AddScoped<WarehouseBoxesService>();
         builder.Services.AddScoped<MissingExcessSnapshotService>();
