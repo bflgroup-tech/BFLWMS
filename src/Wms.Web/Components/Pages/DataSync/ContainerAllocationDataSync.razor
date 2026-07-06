@@ -10,7 +10,7 @@
 
 <div class="aiwms-page-header">
     <h2>Container Allocation Data Sync</h2>
-    <p>Copy an approved Container Allocation's detail rows to either the Azure WMS DB mirror or the on-prem WMS-Prod-DB (<code>online.dbo.PhotoCheckingResult</code>). Allocation and KNB boxes each skip only if the destination already has rows for this container — after a re-approval, clear the mirror rows first, then re-sync.</p>
+    <p>Copy an approved Container Allocation's detail rows to either the Azure WMS DB mirror or the on-prem WMS-Prod-DB (<code>online.dbo.PhotoCheckingResult</code>), or REVERSE-PULL from WMSPRODDB (<code>online.dbo.PhotoCheckingResult</code>) back into Azure (<code>dbo.WMS_PhotoCheckingResult_Mirror</code>). Each destination skips only if it already has rows for this container — clear the destination first to re-sync.</p>
 </div>
 
 <div class="aiwms-section">
@@ -31,6 +31,7 @@
             <select @bind="_destination" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;">
                 <option value="AzureWmsDb">Azure WMS DB</option>
                 <option value="WmsProductionDb">WMS-Prod-DB</option>
+                <option value="WmsProdDbToAzure">WMSPRODDB → Azure WMS</option>
             </select>
         </div>
         <button class="aiwms-btn aiwms-btn-primary" @onclick="SyncAsync" disabled="@(_busy || string.IsNullOrWhiteSpace(_contno))">Sync</button>
@@ -173,11 +174,21 @@
     private async Task SyncAsync()
     {
         if (string.IsNullOrWhiteSpace(_contno)) return;
-        var dest = _destination == "WmsProductionDb"
-            ? DataSyncDestination.WmsProductionDb
-            : DataSyncDestination.AzureWmsDb;
+        var dest = _destination switch
+        {
+            "WmsProductionDb"   => DataSyncDestination.WmsProductionDb,
+            "WmsProdDbToAzure"  => DataSyncDestination.WmsProdDbToAzure,
+            _                   => DataSyncDestination.AzureWmsDb,
+        };
+        var destLabel = dest switch
+        {
+            DataSyncDestination.AzureWmsDb       => "Azure WMS DB",
+            DataSyncDestination.WmsProductionDb  => "WMS-Prod-DB",
+            DataSyncDestination.WmsProdDbToAzure => "WMSPRODDB → Azure WMS (reverse pull)",
+            _                                    => dest.ToString(),
+        };
         var confirm = await JS.InvokeAsync<bool>("confirm",
-            $"Sync container {_contno} to {(dest == DataSyncDestination.AzureWmsDb ? "Azure WMS DB" : "WMS-Prod-DB")}?\n\n" +
+            $"Sync container {_contno} to {destLabel}?\n\n" +
             "Once synced, this container cannot be synced again.");
         if (!confirm) return;
         _busy = true; _message = ""; await InvokeAsync(StateHasChanged);
@@ -194,10 +205,11 @@
 
     private static string FmtDestination(string d) => d switch
     {
-        "AzureWmsDb"      => "Azure WMS DB",
-        "WmsProductionDb" => "WMS-Prod-DB",
-        "WmsKnbBoxes"     => "Azure WMS — KNB Boxes",
-        _                 => d,
+        "AzureWmsDb"       => "Azure WMS DB",
+        "WmsProductionDb"  => "WMS-Prod-DB",
+        "WmsKnbBoxes"      => "Azure WMS — KNB Boxes",
+        "WmsProdDbToAzure" => "WMSPRODDB → Azure WMS",
+        _                  => d,
     };
 
     private void ShowError(string msg) { _message = msg; _isError = true; }

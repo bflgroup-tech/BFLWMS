@@ -46,7 +46,8 @@ public enum DataSyncDestination
     WMSDataSettings  = 3,   // bfl-wms Azure SQL — dbo.WMS_DataSettings (incremental on CreateDate)
     ToteIDMaster     = 4,   // bfl-wms Azure SQL — dbo.WmsBlueToteIDMaster (per-country, yesterday's totes + in-use flag)
     WMSPalletType    = 5,   // bfl-wms Azure SQL — dbo.WmsPalletType (full truncate + reload from bfldata.dbo.pallettype)
-    WMSBrandMaster   = 6    // bfl-wms Azure SQL — dbo.WMSBrandMaster (full truncate + reload from usa.dbo.BrandMaster)
+    WMSBrandMaster   = 6,   // bfl-wms Azure SQL — dbo.WMSBrandMaster (full truncate + reload from usa.dbo.BrandMaster)
+    WmsProdDbToAzure = 7    // Reverse pull: On-prem online.dbo.PhotoCheckingResult -> Azure dbo.WMS_PhotoCheckingResult_Mirror
 }
 
 /// <summary>One row per country processed in the ToteID Master sync — used by

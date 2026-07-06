@@ -152,6 +152,7 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
         nameof(DataSyncDestination.AzureWmsDb),
         nameof(DataSyncDestination.WmsProductionDb),
         nameof(DataSyncDestination.WmsKnbBoxes),
+        nameof(DataSyncDestination.WmsProdDbToAzure),
     };
 
     /// <summary>True if the destination mirror already holds rows for this ContNo.
@@ -180,6 +181,14 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
                     new { c = contno }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
                 return hit == 1;
             }
+            case DataSyncDestination.WmsProdDbToAzure:
+            {
+                await using var c = OpenWms();
+                var hit = await c.ExecuteScalarAsync<int?>(new CommandDefinition(
+                    @"SELECT TOP 1 1 FROM dbo.WMS_PhotoCheckingResult_Mirror WITH (NOLOCK) WHERE ContNo = @c",
+                    new { c = contno }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+                return hit == 1;
+            }
             default:
                 return false;
         }
@@ -203,12 +212,18 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
 
     /// <summary>Sync entry point — runs the allocation copy AND the KNB-boxes
     /// pull for the same ContNo. The two have independent gates and produce
-    /// their own log rows; the UI sees both in Recent Activity.</summary>
+    /// their own log rows; the UI sees both in Recent Activity.
+    /// The WmsProdDbToAzure destination is a REVERSE pull (WMSPROD ->
+    /// Azure mirror) — it skips both the forward allocation copy and the KNB
+    /// pull, which are source-side flows irrelevant to that direction.</summary>
     public async Task<DataSyncResult> SyncAsync(string contno, DataSyncDestination destination, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(contno))
             return new DataSyncResult(false, "Container number is required.", null, 0);
         contno = contno.Trim();
+
+        if (destination == DataSyncDestination.WmsProdDbToAzure)
+            return await TryReversePullFromWmsProdDbAsync(contno, ct);
 
         var alloc = await TryCopyAllocationAsync(contno, destination, ct);
         var knb   = await TryCopyKnbBoxesAsync(contno, ct);
@@ -221,6 +236,96 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
             Message: string.Join(" | ", parts),
             SyncId: alloc.SyncId ?? knb.SyncId,
             RowsCopied: alloc.RowsCopied + knb.RowsCopied);
+    }
+
+    // ----- reverse pull: WMSPROD -> Azure mirror -----
+    /// <summary>Read online.dbo.PhotoCheckingResult (24 cols, filtered by ContNo)
+    /// from the on-prem WmsProductionDb and SqlBulkCopy the rows into the Azure
+    /// mirror table dbo.WMS_PhotoCheckingResult_Mirror. Gated on the Azure
+    /// mirror already having rows for this ContNo — clear the mirror rows to
+    /// re-pull.</summary>
+    private async Task<DataSyncResult> TryReversePullFromWmsProdDbAsync(string contno, CancellationToken ct)
+    {
+        var dest = DataSyncDestination.WmsProdDbToAzure;
+
+        if (await IsAlreadySyncedAsync(contno, dest, ct))
+        {
+            var skipId = await WriteLogRowAsync(
+                contno, null, dest, 0,
+                status: "Skipped",
+                error: $"Azure dbo.WMS_PhotoCheckingResult_Mirror already has rows for {contno}.", ct);
+            return new DataSyncResult(false,
+                $"Reverse pull: Azure mirror already has rows for {contno} — skipped.",
+                skipId, 0);
+        }
+
+        // Read from on-prem WMSPROD.
+        System.Data.DataTable dt;
+        int sourceRowCount;
+        try
+        {
+            await using var src = OpenWmsProductionDb();
+            using var cmd = new SqlCommand(@"
+                SELECT ContNo, TrnDate, Time1, UPC, Itemcode, GroupCode, Season, Department, Division,
+                       FinalResult, ResultType, Qty, QtyIssue, Itemname, Barcode, SalesPrice,
+                       TcmContno, BuildingCategory, LPMDt, LPMBoxNO, ORAPONo, Style, Remarks, StoreId
+                  FROM online.dbo.PhotoCheckingResult WITH (NOLOCK)
+                 WHERE ContNo = @c",
+                src) { CommandTimeout = CommandTimeoutSeconds };
+            cmd.Parameters.Add(new SqlParameter("@c", System.Data.SqlDbType.NVarChar, 50) { Value = contno });
+            using var reader = await cmd.ExecuteReaderAsync(ct);
+            dt = new System.Data.DataTable();
+            dt.Load(reader);
+            sourceRowCount = dt.Rows.Count;
+        }
+        catch (Exception ex)
+        {
+            var failId = await WriteLogRowAsync(contno, null, dest, 0,
+                "Failed", $"Reading online.dbo.PhotoCheckingResult failed: {ex.Message}", ct);
+            return new DataSyncResult(false, $"Reverse pull read failed: {ex.Message}", failId, 0);
+        }
+
+        if (sourceRowCount == 0)
+        {
+            var emptyId = await WriteLogRowAsync(contno, null, dest, 0,
+                "Empty", $"online.dbo.PhotoCheckingResult returned no rows for ContNo = {contno}.", ct);
+            return new DataSyncResult(true, $"Reverse pull: WMSPRODDB has no rows for {contno}.", emptyId, 0);
+        }
+
+        // Stamp audit columns onto the DataTable so SqlBulkCopy fills SyncedBy
+        // (SyncedTS defaults to SYSDATETIME() on Azure).
+        dt.Columns.Add("SyncedBy", typeof(string));
+        var who = user.Name ?? "";
+        foreach (System.Data.DataRow row in dt.Rows)
+            row["SyncedBy"] = who;
+
+        string? writeError = null;
+        try
+        {
+            await using var conn = OpenWms();
+            using var bulk = new SqlBulkCopy(conn)
+            {
+                DestinationTableName = "dbo.WMS_PhotoCheckingResult_Mirror",
+                BatchSize            = 1000,
+                BulkCopyTimeout      = CommandTimeoutSeconds,
+            };
+            foreach (System.Data.DataColumn col in dt.Columns)
+                bulk.ColumnMappings.Add(col.ColumnName, col.ColumnName);
+            await bulk.WriteToServerAsync(dt, ct);
+        }
+        catch (Exception ex) { writeError = ex.Message; }
+
+        var logId = await WriteLogRowAsync(contno, null, dest, sourceRowCount,
+            status: writeError is null ? "Success" : "Failed",
+            error: writeError, ct);
+
+        return writeError is null
+            ? new DataSyncResult(true,
+                $"Reverse pull: {sourceRowCount:N0} row(s) copied from WMSPRODDB to Azure mirror.",
+                logId, sourceRowCount)
+            : new DataSyncResult(false,
+                $"Reverse pull write to Azure mirror failed: {writeError}",
+                logId, 0);
     }
 
     // ----- pass 1: allocation copy (with Q4 gate) -----
@@ -605,10 +710,11 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
 
     private static string DestinationLabel(DataSyncDestination d) => d switch
     {
-        DataSyncDestination.AzureWmsDb      => "Azure WMS DB",
-        DataSyncDestination.WmsProductionDb => "WMS-Prod-DB",
-        DataSyncDestination.WmsKnbBoxes     => "Azure WMS — KNB Boxes",
-        _                                   => d.ToString(),
+        DataSyncDestination.AzureWmsDb       => "Azure WMS DB",
+        DataSyncDestination.WmsProductionDb  => "WMS-Prod-DB",
+        DataSyncDestination.WmsKnbBoxes      => "Azure WMS — KNB Boxes",
+        DataSyncDestination.WmsProdDbToAzure => "WMSPRODDB → Azure WMS",
+        _                                    => d.ToString(),
     };
 
     private static System.Data.DataTable BuildKnbBoxDataTable(string country, List<KnbBoxRow> rows)
