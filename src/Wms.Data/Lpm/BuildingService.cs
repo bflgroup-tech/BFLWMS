@@ -249,7 +249,7 @@ public class BuildingService(IOnPremConnectionResolver resolver, ICurrentUser us
                     new { id = id1 }, transaction: tx, cancellationToken: ct));
                 var storeId1   = (string?)t1.StoreID;
                 var storeName1 = await StoreNameByIdAsync(c, tx, storeId1, ct);
-                var palletT1   = (string?)t1.ResultType;
+                var palletT1   = await ResolvePalletTypeByStoreAsync(c, tx, contno, storeId1, ct);
                 var palletN1   = await PalletTypeNameByCodeAsync(c, tx, palletT1, ct);
                 await tx.CommitAsync(ct);
                 return new AllocationResult(
@@ -316,7 +316,7 @@ public class BuildingService(IOnPremConnectionResolver resolver, ICurrentUser us
                     ct: ct);
 
                 var storeName2 = await StoreNameByIdAsync(c, tx, store2, ct);
-                var palletT2   = (string?)anyInContainer.ResultType;
+                var palletT2   = await ResolvePalletTypeByStoreAsync(c, tx, contno, store2, ct);
                 var palletN2   = await PalletTypeNameByCodeAsync(c, tx, palletT2, ct);
                 await tx.CommitAsync(ct);
                 return new AllocationResult(
@@ -386,10 +386,12 @@ public class BuildingService(IOnPremConnectionResolver resolver, ICurrentUser us
                 ct: ct);
 
             var storeName3 = await StoreNameByIdAsync(c3, tx3, store3, ct);
+            var palletT3   = await ResolvePalletTypeByStoreAsync(c3, tx3, contno, store3, ct);
+            var palletN3   = await PalletTypeNameByCodeAsync(c3, tx3, palletT3, ct);
             await tx3.CommitAsync(ct);
             return new AllocationResult(
                 Found: true, Result: "SHOP",
-                LpmDt: null, PoNumber: poNumber, PalletType: null,
+                LpmDt: null, PoNumber: poNumber, PalletType: palletT3,
                 Tier: AllocationTier.Tier3_ManualNewItem,
                 AllocationIdNo: inserted3,
                 Action: 'I',
@@ -397,6 +399,7 @@ public class BuildingService(IOnPremConnectionResolver resolver, ICurrentUser us
                 StoreName: storeName3,
                 Division: master.Division,
                 Manual: true,
+                PalletTypeName: palletN3,
                 ItemSource: master.Source);
         }
     }
@@ -423,6 +426,26 @@ public class BuildingService(IOnPremConnectionResolver resolver, ICurrentUser us
             @"SELECT TOP 1 TypeName FROM dbo.WmsPalletType WITH (NOLOCK)
               WHERE PalletType = @p AND TypeName IS NOT NULL AND LTRIM(RTRIM(TypeName)) <> ''",
             new { p = palletType }, transaction: tx, cancellationToken: ct));
+    }
+
+    /// <summary>Resolve the PalletType for a scan by reading FinalResult from
+    /// dbo.WMS_ContAllocationData for the target store within the current
+    /// container. Applied to all three tiers so the RESULT panel shows the
+    /// store's own final result (not a stale ResultType borrowed from any
+    /// other allocation row). Falls back to "R1" when no CAD row for
+    /// (ContNo, StoreID) carries a non-empty FinalResult.</summary>
+    private async Task<string> ResolvePalletTypeByStoreAsync(
+        SqlConnection c, SqlTransaction? tx, string contno, string? storeId, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(storeId)) return "R1";
+        var final = await c.ExecuteScalarAsync<string?>(new CommandDefinition(
+            @"SELECT TOP 1 FinalResult
+                FROM dbo.WMS_ContAllocationData WITH (NOLOCK)
+               WHERE ContNo = @c AND StoreID = @s
+                 AND FinalResult IS NOT NULL AND LTRIM(RTRIM(FinalResult)) <> ''
+              ORDER BY IdNo DESC",
+            new { c = contno, s = storeId }, transaction: tx, cancellationToken: ct));
+        return string.IsNullOrWhiteSpace(final) ? "R1" : final!;
     }
 
     // ----- helper: OTS pick (recompute on the fly, division-scoped with container-wide fallback) -----
