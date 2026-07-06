@@ -175,9 +175,9 @@ else
 
         @if (_lastAlloc is { } al)
         {
-            <div class="aiwms-result-row" style="background:@(_lastAppliedException is null ? "#166534" : "#fde68a"); color:@(_lastAppliedException is null ? "#f0fdf4" : "inherit"); padding:10px 12px; border-radius:var(--r-sm); border:1px solid @(_lastAppliedException is null ? "#14532d" : "#f59e0b")">
-                <div class="aiwms-result-tag" style="@(_lastAppliedException is null ? "background:#f0fdf4; color:#166534;" : "")">@(_lastAppliedException is null ? "RESULT" : "EXCEPTION")</div>
-                <div class="aiwms-result-value" style="font-size:22px; font-weight:800; line-height:1.2">
+            <div class="aiwms-result-row" style="background:@(_lastAppliedException is null ? "#22c55e" : "#fde68a"); color:@(_lastAppliedException is null ? "#ffffff" : "inherit"); padding:10px 12px; border-radius:var(--r-sm); border:1px solid @(_lastAppliedException is null ? "#16a34a" : "#f59e0b")">
+                <div class="aiwms-result-tag" style="@(_lastAppliedException is null ? "background:#ffffff; color:#166534;" : "")">@(_lastAppliedException is null ? "RESULT" : "EXCEPTION")</div>
+                <div class="aiwms-result-value" style="font-size:22px; font-weight:800; line-height:1.2; color:#ffffff">
                     @if (_lastAppliedException is (var exPt, var exName))
                     {
                         <b>@exPt@(string.IsNullOrEmpty(exName) ? "" : " — " + exName)</b>
@@ -317,7 +317,7 @@ else
         <span>
             My Scans
             @if (_contOk) { <text>— container <b>@_contno</b> — @_todayScans.Count scan(s)</text> }
-            else          { <text>— validate a container to see your scans</text> }
+            else          { <text>— today's scans across all containers — @_todayScans.Count scan(s)</text> }
         </span>
         <button class="aiwms-btn aiwms-btn-secondary" style="font-size:11px; padding:4px 10px"
                 @onclick="RefreshTodayScansAsync" disabled="@_busy">Refresh</button>
@@ -325,7 +325,7 @@ else
     @if (_todayScans.Count == 0)
     {
         <div style="padding:14px; font-style:italic; color:var(--text-secondary)">
-            @(_contOk ? $"No scans by you into container {_contno} yet." : "Validate a container above.")
+            @(_contOk ? $"No scans by you into container {_contno} yet." : "No scans by you today yet.")
         </div>
     }
     else
@@ -447,14 +447,15 @@ else
         await Me.EnsureLoadedAsync();
         try { _exceptionOptions = await Build.GetExceptionPalletTypesAsync(); }
         catch { _exceptionOptions = new(); }
-        // No activity refresh on init — the grid is scoped to the current container,
-        // so it stays empty until ValidateContainer succeeds.
+        // Load today's scans across all containers upfront so the operator sees
+        // recent activity immediately. Once ValidateContainer fires, the grid
+        // narrows to just the entered ContNo.
+        await RefreshTodayScansAsync();
     }
 
     private async Task RefreshTodayScansAsync()
     {
-        if (!_contOk) { _todayScans = new(); return; }
-        try { _todayScans = await Build.GetTodayScansAsync(contno: _contno); }
+        try { _todayScans = await Build.GetTodayScansAsync(contno: _contOk ? _contno : null); }
         catch { /* keep prior list; surface via _globalErr if needed */ }
     }
 
