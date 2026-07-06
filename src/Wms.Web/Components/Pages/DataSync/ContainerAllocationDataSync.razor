@@ -10,7 +10,7 @@
 
 <div class="aiwms-page-header">
     <h2>Container Allocation Data Sync</h2>
-    <p>Copy an approved Container Allocation's detail rows to either the Azure WMS DB mirror or the on-prem WMS-Prod-DB (<code>online.dbo.PhotoCheckingResult</code>), or REVERSE-PULL from WMSPRODDB (<code>online.dbo.PhotoCheckingResult</code>) back into Azure (<code>dbo.WMS_PhotoCheckingResult_Mirror</code>). Each destination skips only if it already has rows for this container — clear the destination first to re-sync.</p>
+    <p>Copy an approved Container Allocation's detail rows to either the Azure WMS DB mirror or the on-prem WMS-Prod-DB (<code>online.dbo.PhotoCheckingResult</code>), or REVERSE-PULL legacy rows from WMSPRODDB (<code>online.dbo.PhotoCheckingResult</code>) into Azure <code>dbo.WMS_ContAllocationData</code> so LPM Manual Building can route them for store sorting. Each destination skips only if it already has rows for this container — clear them first to re-sync. Reverse pull writes <code>Country='UAE'</code>, <code>BatchNo=NULL</code>; Color/Gender/HsCode/Brand come from <code>usa.dbo.usaorgfile</code>.</p>
 </div>
 
 <div class="aiwms-section">
