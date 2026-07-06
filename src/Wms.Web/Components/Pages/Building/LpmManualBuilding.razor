@@ -175,9 +175,9 @@ else
 
         @if (_lastAlloc is { } al)
         {
-            <div class="aiwms-result-row" style="background:@(_lastAppliedException is null ? "#166534" : "#fde68a"); color:@(_lastAppliedException is null ? "#f0fdf4" : "inherit"); padding:10px 12px; border-radius:var(--r-sm); border:1px solid @(_lastAppliedException is null ? "#14532d" : "#f59e0b")">
-                <div class="aiwms-result-tag" style="@(_lastAppliedException is null ? "background:#f0fdf4; color:#166534;" : "")">@(_lastAppliedException is null ? "RESULT" : "EXCEPTION")</div>
-                <div class="aiwms-result-value" style="font-size:22px; font-weight:800; line-height:1.2">
+            <div class="aiwms-result-row" style="background:@(_lastAppliedException is null ? "#22c55e" : "#fde68a"); color:@(_lastAppliedException is null ? "#ffffff" : "inherit"); padding:10px 12px; border-radius:var(--r-sm); border:1px solid @(_lastAppliedException is null ? "#16a34a" : "#f59e0b")">
+                <div class="aiwms-result-tag" style="@(_lastAppliedException is null ? "background:#ffffff; color:#166534;" : "")">@(_lastAppliedException is null ? "RESULT" : "EXCEPTION")</div>
+                <div class="aiwms-result-value" style="font-size:22px; font-weight:800; line-height:1.2; color:#ffffff">
                     @if (_lastAppliedException is (var exPt, var exName))
                     {
                         <b>@exPt@(string.IsNullOrEmpty(exName) ? "" : " — " + exName)</b>
