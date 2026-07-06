@@ -35,7 +35,8 @@ Then on github.com:
 - Open a Pull Request → base `main`
 - Fill in the PR template
 - Tag a teammate for review
-- After ≥1 approval and CI green → squash merge → delete branch
+- After @sheeja72 approves and CI is green → **@sheeja72 squash-merges** — no other dev merges to `main`.
+  - Note: this is enforced by team discipline, not by GitHub (private repo on Free plan has no server-side branch protection). Anyone with Write access could technically bypass it — don't. If you need a merge urgently and @sheeja72 is offline, message them; don't self-merge.
 
 ### Branch naming
 - `feature/<thing>` — new functionality
