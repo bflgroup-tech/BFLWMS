@@ -394,28 +394,41 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         // 2c4. PrevAllocatedQty seed — sum of allocated qty per (StoreID, DivCode) from
         // approved Headers' detail rows whose (ContNo, Country) pair has NOT yet been
         // marked complete in the Azure WMS DB's WmsBuildingCompletion table.
-        // Until Approve UI ships (P4), this returns empty.
+        //
+        // Fetch the completed set from Azure FIRST, then push the exclusion into the
+        // LPMSIM query so we don't drag every approved batch ever into memory just to
+        // throw most of them away. On growing SIM DBs the unbounded read used to hit
+        // the Dapper command timeout during Process.
         var prevAllocatedSeed = new Dictionary<(string StoreID, int DivCode), int>();
         {
-            var approvedRows = (await c.QueryAsync<(string ContNo, string Country, string StoreID, string Itemcode, int? Qty)>(new CommandDefinition(@"
+            string[] completedContnos;
+            HashSet<(string, string)> completed;
+            await using (var w = OpenWms())
+            {
+                var compRows = await w.QueryAsync<(string ContNo, string Country)>(new CommandDefinition(
+                    "SELECT DISTINCT ContNo, Country FROM dbo.WmsBuildingCompletion WITH (NOLOCK)",
+                    commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+                completed = compRows.Select(r => (r.ContNo, r.Country)).ToHashSet();
+                completedContnos = completed.Select(x => x.Item1).Distinct().ToArray();
+            }
+
+            // Build the approved-batch query with an anti-join at SQL level.
+            var excludeClause = completedContnos.Length > 0
+                ? "AND d.TcmContno NOT IN @excluded"
+                : "";
+            var approvedSql = $@"
                 SELECT d.TcmContno AS ContNo, d.Country, d.StoreID, d.Itemcode, d.AllocatedQty AS Qty
                   FROM LPMSIM.dbo.WMS_Cont_Allocation_Header h WITH (NOLOCK)
                   JOIN LPMSIM.dbo.WMS_ContAllocationData d   WITH (NOLOCK) ON d.BatchNo = h.BatchNo
-                 WHERE h.ApprovedDt IS NOT NULL",
+                 WHERE h.ApprovedDt IS NOT NULL
+                   {excludeClause}";
+            var approvedRows = (await c.QueryAsync<(string ContNo, string Country, string StoreID, string Itemcode, int? Qty)>(new CommandDefinition(
+                approvedSql,
+                new { excluded = completedContnos },
                 commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).AsList();
+
             if (approvedRows.Count > 0)
             {
-                var distinctContnos = approvedRows.Select(r => r.ContNo).Distinct().ToArray();
-                HashSet<(string, string)> completed;
-                await using (var w = OpenWms())
-                {
-                    var compRows = await w.QueryAsync<(string ContNo, string Country)>(new CommandDefinition(@"
-                        SELECT DISTINCT ContNo, Country FROM dbo.WmsBuildingCompletion WITH (NOLOCK)
-                        WHERE ContNo IN @contnos",
-                        new { contnos = distinctContnos }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-                    completed = compRows.Select(r => (r.ContNo, r.Country)).ToHashSet();
-                }
-
                 // Resolve DivCode for any approved-batch item not already in divByItem.
                 var extraItems = approvedRows.Select(r => r.Itemcode)
                     .Where(i => !divByItem.ContainsKey(i)).Distinct().ToArray();
@@ -432,6 +445,10 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
 
                 foreach (var r in approvedRows)
                 {
+                    // Belt-and-braces: if the (ContNo, Country) tuple pair is fully
+                    // completed on the Azure side, skip. Handles the rare same-ContNo
+                    // different-Country case that the ContNo-only exclusion above
+                    // wouldn't catch.
                     if (completed.Contains((r.ContNo, r.Country))) continue;
                     if (!divByApprovedItem.TryGetValue(r.Itemcode, out var div) || div == 0) continue;
                     var key = (r.StoreID, div);
