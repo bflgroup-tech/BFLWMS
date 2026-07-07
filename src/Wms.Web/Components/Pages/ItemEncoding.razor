@@ -51,10 +51,12 @@
             </div>
             <div>
                 <label class="aiwms-input-lbl">PO NO</label>
-                <select class="aiwms-input" @bind="_pono" disabled="@(_busy || _ponos.Count == 0)">
-                    <option value=""></option>
-                    @foreach (var p in _ponos) { <option value="@p.PONo">@p.PONo</option> }
-                </select>
+                <input class="aiwms-input" list="pono-list" @bind="_pono"
+                       placeholder="@(_ponos.Count == 0 ? "type PO" : "pick or type")"
+                       disabled="@(_busy || string.IsNullOrEmpty(_contno))" />
+                <datalist id="pono-list">
+                    @foreach (var p in _ponos) { <option value="@p.PONo"></option> }
+                </datalist>
             </div>
             <div>
                 <label class="aiwms-input-lbl">ITEMCODE (barcode) *</label>
@@ -80,48 +82,49 @@
         </div>
     </div>
 
-    <div style="display:grid; grid-template-columns: 2fr 1fr; gap:8px">
-        <div class="aiwms-section">
-            <div class="aiwms-card-header">MH4 Hierarchy</div>
-            <div class="ie-grid" style="display:grid; grid-template-columns: repeat(5, minmax(0,1fr))">
-                <div>
-                    <label class="aiwms-input-lbl">DIVISION</label>
-                    <select class="aiwms-input" @bind="_division" @bind:after="OnMh4ChangedAsync" disabled="@(_busy || _mh4All.Count == 0)">
-                        <option value=""></option>
-                        @foreach (var d in DivisionOptions) { <option value="@d.key">@d.label</option> }
-                    </select>
-                </div>
-                <div>
-                    <label class="aiwms-input-lbl">DEPARTMENT</label>
-                    <select class="aiwms-input" @bind="_department" @bind:after="OnMh4ChangedAsync" disabled="@(_busy || string.IsNullOrEmpty(_division))">
-                        <option value=""></option>
-                        @foreach (var d in DepartmentOptions) { <option value="@d">@d</option> }
-                    </select>
-                </div>
-                <div>
-                    <label class="aiwms-input-lbl">CLASS</label>
-                    <select class="aiwms-input" @bind="_class" @bind:after="OnMh4ChangedAsync" disabled="@(_busy || string.IsNullOrEmpty(_department))">
-                        <option value=""></option>
-                        @foreach (var d in ClassOptions) { <option value="@d">@d</option> }
-                    </select>
-                </div>
-                <div>
-                    <label class="aiwms-input-lbl">FAMILY</label>
-                    <select class="aiwms-input" @bind="_family" @bind:after="OnMh4ChangedAsync" disabled="@(_busy || string.IsNullOrEmpty(_class))">
-                        <option value=""></option>
-                        @foreach (var d in FamilyOptions) { <option value="@d">@d</option> }
-                    </select>
-                </div>
-                <div>
-                    <label class="aiwms-input-lbl">SUBCLASS</label>
-                    <select class="aiwms-input" @bind="_subclass" disabled="@(_busy || string.IsNullOrEmpty(_family))">
-                        <option value=""></option>
-                        @foreach (var d in SubclassOptions) { <option value="@d">@d</option> }
-                    </select>
-                </div>
+    <div class="aiwms-section">
+        <div class="aiwms-card-header">MH4 Hierarchy</div>
+        <div class="ie-grid" style="display:grid; grid-template-columns: repeat(5, minmax(0,1fr))">
+            <div>
+                <label class="aiwms-input-lbl">DIVISION</label>
+                <select class="aiwms-input" @bind="_division" @bind:after="OnMh4ChangedAsync" disabled="@(_busy || _mh4All.Count == 0)">
+                    <option value=""></option>
+                    @foreach (var d in DivisionOptions) { <option value="@d.key">@d.label</option> }
+                </select>
             </div>
-            <p class="ie-hint" style="margin-top:6px">Only combinations from the picked container's items are listed.</p>
+            <div>
+                <label class="aiwms-input-lbl">DEPARTMENT</label>
+                <select class="aiwms-input" @bind="_department" @bind:after="OnMh4ChangedAsync" disabled="@(_busy || string.IsNullOrEmpty(_division))">
+                    <option value=""></option>
+                    @foreach (var d in DepartmentOptions) { <option value="@d">@d</option> }
+                </select>
+            </div>
+            <div>
+                <label class="aiwms-input-lbl">CLASS</label>
+                <select class="aiwms-input" @bind="_class" @bind:after="OnMh4ChangedAsync" disabled="@(_busy || string.IsNullOrEmpty(_department))">
+                    <option value=""></option>
+                    @foreach (var d in ClassOptions) { <option value="@d">@d</option> }
+                </select>
+            </div>
+            <div>
+                <label class="aiwms-input-lbl">FAMILY</label>
+                <select class="aiwms-input" @bind="_family" @bind:after="OnMh4ChangedAsync" disabled="@(_busy || string.IsNullOrEmpty(_class))">
+                    <option value=""></option>
+                    @foreach (var d in FamilyOptions) { <option value="@d">@d</option> }
+                </select>
+            </div>
+            <div>
+                <label class="aiwms-input-lbl">SUBCLASS</label>
+                <select class="aiwms-input" @bind="_subclass" disabled="@(_busy || string.IsNullOrEmpty(_family))">
+                    <option value=""></option>
+                    @foreach (var d in SubclassOptions) { <option value="@d">@d</option> }
+                </select>
+            </div>
         </div>
+        <p class="ie-hint" style="margin-top:6px">Only combinations from the picked container's items are listed.</p>
+    </div>
+
+    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px">
         <div class="aiwms-section">
             <div class="aiwms-card-header">Attributes</div>
             <div class="ie-grid" style="display:grid; grid-template-columns: repeat(3, minmax(0,1fr))">
@@ -150,30 +153,29 @@
                 </div>
             </div>
         </div>
-    </div>
-
-    <div class="aiwms-section">
-        <div class="aiwms-card-header">Style + Size</div>
-        <div class="ie-grid" style="display:grid; grid-template-columns: 2fr 1fr">
-            <div>
-                <label class="aiwms-input-lbl">STYLE</label>
-                <input class="aiwms-input" list="styles-list" @bind="_style"
-                       placeholder="pick from container styles or type new"
-                       disabled="@(_busy || string.IsNullOrEmpty(_contno))" />
-                <datalist id="styles-list">
-                    @foreach (var s in _styles) { <option value="@s.Style"></option> }
-                </datalist>
-            </div>
-            <div>
-                <label class="aiwms-input-lbl">SIZE</label>
-                <select class="aiwms-input" @bind="_size" disabled="@(_busy || _sizes.Count == 0)">
-                    <option value=""></option>
-                    @foreach (var s in _sizes) { <option value="@s.Size">@s.Size</option> }
-                </select>
-                @if (string.IsNullOrEmpty(_division))
-                {
-                    <div class="ie-hint">Pick Division first to see sizes.</div>
-                }
+        <div class="aiwms-section">
+            <div class="aiwms-card-header">Style + Size</div>
+            <div class="ie-grid" style="display:grid; grid-template-columns: 2fr 1fr">
+                <div>
+                    <label class="aiwms-input-lbl">STYLE</label>
+                    <input class="aiwms-input" list="styles-list" @bind="_style"
+                           placeholder="pick from container styles or type new"
+                           disabled="@(_busy || string.IsNullOrEmpty(_contno))" />
+                    <datalist id="styles-list">
+                        @foreach (var s in _styles) { <option value="@s.Style"></option> }
+                    </datalist>
+                </div>
+                <div>
+                    <label class="aiwms-input-lbl">SIZE</label>
+                    <select class="aiwms-input" @bind="_size" disabled="@(_busy || _sizes.Count == 0)">
+                        <option value=""></option>
+                        @foreach (var s in _sizes) { <option value="@s.Size">@s.Size</option> }
+                    </select>
+                    @if (string.IsNullOrEmpty(_division))
+                    {
+                        <div class="ie-hint">Pick Division first to see sizes.</div>
+                    }
+                </div>
             </div>
         </div>
     </div>
@@ -189,8 +191,8 @@
                 <input class="aiwms-input" @bind="_activityContnoFilter"
                        placeholder="leave blank for today's rows" disabled="@_activityBusy" />
             </div>
-            <button class="aiwms-btn aiwms-btn-secondary" @onclick="RefreshActivityAsync" disabled="@_activityBusy"
-                    style="padding:4px 10px; font-size:11px; white-space:nowrap">
+            <button class="aiwms-btn" @onclick="RefreshActivityAsync" disabled="@_activityBusy"
+                    style="background:#facc15; border:1px solid #ca8a04; color:#422006; padding:3px 8px; font-size:10.5px; white-space:nowrap">
                 @(_activityBusy ? "Loading…" : "Refresh")
             </button>
             <div class="ie-hint" style="align-self:center">
