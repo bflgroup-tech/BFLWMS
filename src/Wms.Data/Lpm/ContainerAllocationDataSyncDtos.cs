@@ -49,7 +49,8 @@ public enum DataSyncDestination
     WMSPalletType    = 5,   // bfl-wms Azure SQL — dbo.WmsPalletType (full truncate + reload from bfldata.dbo.pallettype)
     WMSBrandMaster   = 6,   // bfl-wms Azure SQL — dbo.WMSBrandMaster (full truncate + reload from usa.dbo.BrandMaster)
     WmsProdDbToAzure = 7,   // Reverse pull: On-prem online.dbo.PhotoCheckingResult -> Azure dbo.WMS_PhotoCheckingResult_Mirror
-    WmsProdUsedTotes = 8    // bfl-wms Azure SQL — dbo.WmsBlueToteIDMaster.Used flip from on-prem WMSPROD online.dbo.UPCBoxHead (Closed='N')
+    WmsProdUsedTotes = 8,   // bfl-wms Azure SQL — dbo.WmsBlueToteIDMaster.Used flip from on-prem usa.dbo.upcboxhead (Closed='N')
+    BoxesToWmsProd   = 9    // Azure dbo.WmsUPCBoxHead + WmsUPCBoxDet -> on-prem usa.dbo.upcboxhead + usa.dbo.upcboxdet (incremental by PublishedTS)
 }
 
 /// <summary>One row per country processed in the ToteID Master sync — used by

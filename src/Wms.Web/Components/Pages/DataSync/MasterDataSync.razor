@@ -59,8 +59,8 @@
     <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap">
         <button class="aiwms-btn aiwms-btn-primary" @onclick="SyncToteMasterAsync" disabled="@_busy">Sync ToteID Master (all countries)</button>
         <button class="aiwms-btn aiwms-btn-secondary" @onclick="SyncWmsProdUsedTotesAsync" disabled="@_busy"
-                title="Reads DISTINCT ToteID from WMSPROD online.dbo.UPCBoxHead WHERE Closed='N' and flips Used='Y' on dbo.WmsBlueToteIDMaster.">
-            Mark Used from WMSPROD (UPCBoxHead)
+                title="Reads DISTINCT ToteID from usa.dbo.upcboxhead WHERE Closed='N' and flips Used='Y' on dbo.WmsBlueToteIDMaster.">
+            Mark Used from WMSPROD (upcboxhead)
         </button>
     </div>
 
@@ -221,7 +221,7 @@
     private async Task SyncWmsProdUsedTotesAsync()
     {
         var confirm = await JS.InvokeAsync<bool>("confirm",
-            "Flip Used='Y' on dbo.WmsBlueToteIDMaster for every ToteID currently in WMSPROD online.dbo.UPCBoxHead WHERE Closed='N'?");
+            "Flip Used='Y' on dbo.WmsBlueToteIDMaster for every ToteID currently in usa.dbo.upcboxhead WHERE Closed='N'?");
         if (!confirm) return;
         _busy = true; _message = ""; await InvokeAsync(StateHasChanged);
         try

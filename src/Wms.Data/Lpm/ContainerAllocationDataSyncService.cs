@@ -1181,8 +1181,8 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
 
     // ===================== WMSPROD used-totes flip =====================
 
-    /// <summary>Pulls DISTINCT ToteID from the on-prem WMSPROD `online.dbo.UPCBoxHead`
-    /// where `Closed = 'N'` (still-open boxes) and flips
+    /// <summary>Pulls DISTINCT ToteID from on-prem `usa.dbo.upcboxhead`
+    /// (via OnPremBackup) where `Closed = 'N'` (still-open boxes) and flips
     /// dbo.WmsBlueToteIDMaster.Used = 'Y' for any matching ToteIDs on Azure
     /// (any country). Logs one row with Destination='WmsProdUsedTotes'.
     /// Chunked to 1000-tote batches to stay under SQL Server's 2100 sqlparameter cap.
@@ -1192,14 +1192,14 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
     {
         var dest = DataSyncDestination.WmsProdUsedTotes;
 
-        // 1. Read distinct in-use ToteIDs from WMSPROD.
+        // 1. Read distinct in-use ToteIDs from usa.dbo.upcboxhead (OnPremBackup).
         List<string> inUseTotes;
         try
         {
-            await using var src = OpenWmsProductionDb();
+            await using var src = OpenOnPremBackup();
             inUseTotes = (await src.QueryAsync<string>(new CommandDefinition(
                 @"SELECT DISTINCT ToteID
-                    FROM online.dbo.UPCBoxHead WITH (NOLOCK)
+                    FROM usa.dbo.upcboxhead WITH (NOLOCK)
                    WHERE ISNULL(Closed, 'N') = 'N'
                      AND ToteID IS NOT NULL
                      AND LTRIM(RTRIM(ToteID)) <> ''",
@@ -1208,7 +1208,7 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
         catch (Exception ex)
         {
             var failId = await WriteLogRowAsync("(WmsProdUsedTotes)", null, dest, 0,
-                "Failed", $"Reading online.dbo.UPCBoxHead on WMSPROD failed: {ex.Message}", ct,
+                "Failed", $"Reading usa.dbo.upcboxhead on OnPremBackup failed: {ex.Message}", ct,
                 origin: origin, actorOverride: actor);
             return new DataSyncResult(false, $"WMSPROD used-totes read failed: {ex.Message}", failId, 0);
         }
@@ -1216,9 +1216,9 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
         if (inUseTotes.Count == 0)
         {
             var emptyId = await WriteLogRowAsync("(WmsProdUsedTotes)", null, dest, 0,
-                "Empty", "WMSPROD online.dbo.UPCBoxHead returned no open (Closed='N') rows with ToteID.", ct,
+                "Empty", "usa.dbo.upcboxhead returned no open (Closed='N') rows with ToteID.", ct,
                 origin: origin, actorOverride: actor);
-            return new DataSyncResult(true, "WMSPROD has no open UPCBoxHead rows with ToteID.", emptyId, 0);
+            return new DataSyncResult(true, "usa.dbo.upcboxhead has no open rows with ToteID.", emptyId, 0);
         }
 
         // 2. Flip Used='Y' on Azure. Country-wide match (any country).
@@ -1253,6 +1253,190 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
             : new DataSyncResult(false,
                 $"WMSPROD used-totes update failed: {writeError}",
                 logId, 0);
+    }
+
+    // ===================== Boxes push to WMSPROD =====================
+
+    /// <summary>
+    /// Pushes Azure dbo.WmsUPCBoxHead + WmsUPCBoxDet rows to on-prem
+    /// usa.dbo.upcboxhead + usa.dbo.upcboxdet incrementally, filtering on
+    /// WmsUPCBoxHead.PublishedTS IS NULL (i.e. never published). Dedups by
+    /// BoxNo — if the row already exists on the target, it's skipped but
+    /// PublishedTS is still stamped so we don't reprocess it next run.
+    ///
+    /// Head + Det rows for each box are written in a single on-prem
+    /// transaction. If Det rows fail after Head succeeded, the transaction
+    /// rolls back and the Azure PublishedTS is left NULL for retry.
+    ///
+    /// Logs one summary row per run with Destination='BoxesToWmsProd'.
+    /// </summary>
+    public async Task<DataSyncResult> SyncBoxesToWmsProdAsync(
+        string origin = "Manual", string? actor = null, CancellationToken ct = default)
+    {
+        var dest = DataSyncDestination.BoxesToWmsProd;
+
+        // 1. Pull all unpublished Head rows + their Det rows from Azure.
+        List<PushHeadRow> heads;
+        Dictionary<string, List<PushDetRow>> detsByBox;
+        try
+        {
+            await using var w = OpenWms();
+            heads = (await w.QueryAsync<PushHeadRow>(new CommandDefinition(@"
+                SELECT Country, BoxNo, TrnDate, Time1, PreparedBy, PalletType, ToteID, LPMDT, PONo,
+                       WHouse, Userid, Closed, Remarks
+                  FROM dbo.WmsUPCBoxHead WITH (NOLOCK)
+                 WHERE PublishedTS IS NULL
+                 ORDER BY TrnDate, BoxNo",
+                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).ToList();
+
+            if (heads.Count == 0)
+            {
+                var emptyId = await WriteLogRowAsync("(BoxesToWmsProd)", null, dest, 0,
+                    "Empty", "No unpublished WmsUPCBoxHead rows to push.", ct,
+                    origin: origin, actorOverride: actor);
+                return new DataSyncResult(true, "No unpublished boxes to push.", emptyId, 0);
+            }
+
+            var boxNos = heads.Select(h => h.BoxNo).ToArray();
+            var detRows = (await w.QueryAsync<PushDetRow>(new CommandDefinition(@"
+                SELECT Country, BoxNo, Itemcode, SrNo, Qty, UPC, StoreId, Status
+                  FROM dbo.WmsUPCBoxDet WITH (NOLOCK)
+                 WHERE BoxNo IN @b",
+                new { b = boxNos },
+                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).ToList();
+
+            detsByBox = detRows.GroupBy(d => d.BoxNo, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.OrdinalIgnoreCase);
+        }
+        catch (Exception ex)
+        {
+            var failId = await WriteLogRowAsync("(BoxesToWmsProd)", null, dest, 0,
+                "Failed", $"Reading unpublished rows from Azure failed: {ex.Message}", ct,
+                origin: origin, actorOverride: actor);
+            return new DataSyncResult(false, $"Boxes push read failed: {ex.Message}", failId, 0);
+        }
+
+        // 2. For each Head, check existence on target and insert if new.
+        int pushed = 0, skipped = 0, failed = 0;
+        var errors = new List<string>();
+
+        foreach (var h in heads)
+        {
+            if (ct.IsCancellationRequested) break;
+
+            try
+            {
+                await using var opb = OpenOnPremBackup();
+                await using var tx = (SqlTransaction)await opb.BeginTransactionAsync(ct);
+
+                var exists = await opb.ExecuteScalarAsync<int?>(new CommandDefinition(
+                    @"SELECT TOP 1 1 FROM usa.dbo.upcboxhead WITH (NOLOCK) WHERE BoxNo = @b",
+                    new { b = h.BoxNo }, transaction: tx, cancellationToken: ct));
+
+                if (exists == 1)
+                {
+                    // Already on target — no insert, but stamp Azure PublishedTS
+                    // so we don't reprocess. Skip status counts as success.
+                    await tx.RollbackAsync(ct);
+                    await StampPublishedAsync(h.Country, h.BoxNo, ct);
+                    skipped++;
+                    continue;
+                }
+
+                // INSERT Head. Only column set the target is known to accept.
+                await opb.ExecuteAsync(new CommandDefinition(@"
+                    INSERT INTO usa.dbo.upcboxhead
+                        (BoxNo, TrnDate, Time1, PreparedBy, PalletType, ToteID, LPMDT, PONo,
+                         WHouse, Userid, Closed, Remarks)
+                    VALUES
+                        (@BoxNo, @TrnDate, @Time1, @PreparedBy, @PalletType, @ToteID, @LPMDT, @PONo,
+                         @WHouse, @Userid, @Closed, @Remarks)",
+                    new
+                    {
+                        h.BoxNo, h.TrnDate, h.Time1, h.PreparedBy, h.PalletType, h.ToteID, h.LPMDT,
+                        h.PONo, h.WHouse, h.Userid, h.Closed, h.Remarks
+                    },
+                    transaction: tx, cancellationToken: ct));
+
+                // INSERT Det rows (if any).
+                if (detsByBox.TryGetValue(h.BoxNo, out var dets) && dets.Count > 0)
+                {
+                    foreach (var d in dets)
+                    {
+                        await opb.ExecuteAsync(new CommandDefinition(@"
+                            INSERT INTO usa.dbo.upcboxdet
+                                (BoxNo, Itemcode, SrNo, Qty, UPC, StoreId, Status)
+                            VALUES
+                                (@BoxNo, @Itemcode, @SrNo, @Qty, @UPC, @StoreId, @Status)",
+                            new { d.BoxNo, d.Itemcode, d.SrNo, d.Qty, d.UPC, d.StoreId, d.Status },
+                            transaction: tx, cancellationToken: ct));
+                    }
+                }
+
+                await tx.CommitAsync(ct);
+                await StampPublishedAsync(h.Country, h.BoxNo, ct);
+                pushed++;
+            }
+            catch (Exception ex)
+            {
+                failed++;
+                if (errors.Count < 5) errors.Add($"{h.BoxNo}: {ex.Message}");
+            }
+        }
+
+        var status  = failed == 0 ? "Success" : (pushed + skipped > 0 ? "PartialFailed" : "Failed");
+        var msg     = $"Boxes push: {pushed} inserted, {skipped} skipped (already on target), {failed} failed.";
+        var errText = errors.Count > 0 ? "First errors: " + string.Join(" | ", errors) : null;
+        var logId   = await WriteLogRowAsync("(BoxesToWmsProd)", null, dest,
+                        totalAllocatedQty: pushed + skipped,
+                        status: status, error: errText, ct: ct,
+                        origin: origin, actorOverride: actor);
+
+        return new DataSyncResult(
+            Ok: failed == 0,
+            Message: msg + (errText is null ? "" : " " + errText),
+            SyncId: logId,
+            RowsCopied: pushed + skipped);
+    }
+
+    private async Task StampPublishedAsync(string country, string boxNo, CancellationToken ct)
+    {
+        await using var w = OpenWms();
+        await w.ExecuteAsync(new CommandDefinition(
+            @"UPDATE dbo.WmsUPCBoxHead
+                 SET PublishedTS = SYSDATETIME()
+               WHERE Country = @c AND BoxNo = @b",
+            new { c = country, b = boxNo },
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+    }
+
+    private sealed class PushHeadRow
+    {
+        public string   Country     { get; set; } = "";
+        public string   BoxNo       { get; set; } = "";
+        public DateTime? TrnDate    { get; set; }
+        public TimeSpan? Time1      { get; set; }
+        public string?  PreparedBy  { get; set; }
+        public string?  PalletType  { get; set; }
+        public string?  ToteID      { get; set; }
+        public DateTime? LPMDT      { get; set; }
+        public string?  PONo        { get; set; }
+        public string?  WHouse      { get; set; }
+        public string?  Userid      { get; set; }
+        public string?  Closed      { get; set; }
+        public string?  Remarks     { get; set; }
+    }
+
+    private sealed class PushDetRow
+    {
+        public string   Country  { get; set; } = "";
+        public string   BoxNo    { get; set; } = "";
+        public string?  Itemcode { get; set; }
+        public int      SrNo     { get; set; }
+        public int      Qty      { get; set; }
+        public string?  UPC      { get; set; }
+        public string?  StoreId  { get; set; }
+        public string?  Status   { get; set; }
     }
 
     // ===================== PalletType master sync =====================

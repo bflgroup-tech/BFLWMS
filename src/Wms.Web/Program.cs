@@ -80,6 +80,7 @@ public class Program
         builder.Services.AddScoped<CountingReportsService>();
         builder.Services.AddHostedService<Wms.Web.Hosting.NightlyBatchService>();
         builder.Services.AddHostedService<Wms.Web.Hosting.ToteMasterScheduledService>();
+        builder.Services.AddHostedService<Wms.Web.Hosting.BoxesToWmsProdScheduledService>();
 
         // WMS DbContext — Azure SQL via AAD (Managed Identity in App Service,
         // AAD Default locally via `az login`). NO password in code.
