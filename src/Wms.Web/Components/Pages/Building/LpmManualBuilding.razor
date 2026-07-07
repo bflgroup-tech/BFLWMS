@@ -1,4 +1,4 @@
-@page "/building/manual"
+@page "/counting/manual"
 @rendermode RenderMode.InteractiveServer
 @attribute [Authorize(Policy = Wms.Core.MenuKeys.LPM_MANUAL_BUILDING)]
 @using Wms.Core
@@ -10,10 +10,10 @@
 @inject ICurrentUser Me
 @inject IJSRuntime JS
 
-<PageTitle>WMS — LPM Manual Building</PageTitle>
+<PageTitle>WMS — LPM Manual Counting</PageTitle>
 
 <div class="aiwms-page-header">
-    <h2>LPM Manual Building</h2>
+    <h2>LPM Manual Counting</h2>
     <p>Press <kbd>Enter</kbd> in each field — focus advances automatically. New (PalletType/Div/Season/LPMDt) combos require a Tote scan before item details show.</p>
 </div>
 

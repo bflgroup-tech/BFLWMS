@@ -77,6 +77,7 @@ public class Program
         builder.Services.AddScoped<ReportsService>();
         builder.Services.AddScoped<WarehouseBoxesService>();
         builder.Services.AddScoped<MissingExcessSnapshotService>();
+        builder.Services.AddScoped<CountingReportsService>();
         builder.Services.AddHostedService<Wms.Web.Hosting.NightlyBatchService>();
 
         // WMS DbContext — Azure SQL via AAD (Managed Identity in App Service,
