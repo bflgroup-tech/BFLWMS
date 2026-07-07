@@ -54,10 +54,14 @@
     <p style="margin:0 0 10px 0; color:var(--text-secondary); font-size:13px">
         Pulls <b>yesterday's</b> totes from each country's <code>BlueToteIDMaster</code> (UAE: <code>bfldata</code>; other countries: <code>{DataName}</code> from <code>WMS_DataSettings</code>) and inserts into <code>dbo.WmsBlueToteIDMaster</code> with <code>Used = 'N'</code>.
         Then sets <code>Used = 'Y'</code> for any ToteID currently held in <code>racks.dbo.whboxitems</code> (UAE) or <code>{DataName}.dbo.WHboxitemsexport</code> (others).
-        Each country gets its own row in Recent Activity.
+        Each country gets its own row in Recent Activity. <b>Also runs automatically at 05:00 GST daily</b> — scheduled runs are tagged <code>Scheduled</code> in Recent Activity.
     </p>
     <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap">
         <button class="aiwms-btn aiwms-btn-primary" @onclick="SyncToteMasterAsync" disabled="@_busy">Sync ToteID Master (all countries)</button>
+        <button class="aiwms-btn aiwms-btn-secondary" @onclick="SyncWmsProdUsedTotesAsync" disabled="@_busy"
+                title="Reads DISTINCT ToteID from WMSPROD online.dbo.UPCBoxHead WHERE Closed='N' and flips Used='Y' on dbo.WmsBlueToteIDMaster.">
+            Mark Used from WMSPROD (UPCBoxHead)
+        </button>
     </div>
 
     @if (_toteResults.Count > 0)
@@ -110,6 +114,7 @@
                     <th>Destination</th>
                     <th style="text-align:right">Rows</th>
                     <th>Status</th>
+                    <th>Origin</th>
                     <th>By</th>
                     <th>When</th>
                     <th>Error</th>
@@ -124,6 +129,10 @@
                         <td>@FmtDestination(r.Destination)</td>
                         <td style="text-align:right">@(r.TotalAllocatedQty?.ToString("N0") ?? "")</td>
                         <td><span class="aiwms-pill @(r.Status == "Success" ? "tier1" : r.Status == "Empty" ? "tier3" : "tier4")">@r.Status</span></td>
+                        <td>
+                            <span class="aiwms-pill @(r.Origin == "Scheduled" ? "tier2" : "tier1")"
+                                  style="font-size:10px; padding:1px 6px">@(r.Origin ?? "Manual")</span>
+                        </td>
                         <td>@r.SyncedBy</td>
                         <td>@r.SyncedTS.ToString("yyyy-MM-dd HH:mm")</td>
                         <td style="max-width:300px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap" title="@r.ErrorMessage">@r.ErrorMessage</td>
@@ -209,6 +218,23 @@
         finally { _busy = false; }
     }
 
+    private async Task SyncWmsProdUsedTotesAsync()
+    {
+        var confirm = await JS.InvokeAsync<bool>("confirm",
+            "Flip Used='Y' on dbo.WmsBlueToteIDMaster for every ToteID currently in WMSPROD online.dbo.UPCBoxHead WHERE Closed='N'?");
+        if (!confirm) return;
+        _busy = true; _message = ""; await InvokeAsync(StateHasChanged);
+        try
+        {
+            var result = await Svc.SyncWmsProdUsedTotesAsync();
+            if (result.Ok) ShowInfo(result.Message ?? "Done.");
+            else           ShowError(result.Message ?? "Failed.");
+            await ReloadActivityAsync();
+        }
+        catch (Exception ex) { ShowError($"WMSPROD used-totes sync failed: {ex.Message}"); }
+        finally { _busy = false; }
+    }
+
     private async Task SyncToteMasterAsync()
     {
         var confirm = await JS.InvokeAsync<bool>("confirm",
@@ -234,11 +260,12 @@
 
     private static string FmtDestination(string d) => d switch
     {
-        "WMSDataSettings" => "Azure WMS — Data Settings",
-        "WMSPalletType"   => "Azure WMS — PalletType Master",
-        "WMSBrandMaster"  => "Azure WMS — Brand Master",
-        "ToteIDMaster"    => "Azure WMS — ToteID Master",
-        _                 => d,
+        "WMSDataSettings"  => "Azure WMS — Data Settings",
+        "WMSPalletType"    => "Azure WMS — PalletType Master",
+        "WMSBrandMaster"   => "Azure WMS — Brand Master",
+        "ToteIDMaster"     => "Azure WMS — ToteID Master",
+        "WmsProdUsedTotes" => "Azure WMS — Used from WMSPROD",
+        _                  => d,
     };
 
     private void ShowError(string m) { _message = m; _isError = true; }

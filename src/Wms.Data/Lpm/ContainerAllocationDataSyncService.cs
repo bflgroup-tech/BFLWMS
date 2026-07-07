@@ -124,7 +124,7 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
         var sql = $@"
             SELECT TOP ({top})
                    SyncId, ContNo, BatchNo, Destination, TotalAllocatedQty,
-                   Status, ErrorMessage, SyncedBy, SyncedTS
+                   Status, ErrorMessage, SyncedBy, SyncedTS, Origin
               FROM dbo.WMS_ContAllocationDataSync_Log WITH (NOLOCK)
              WHERE (@s IS NULL OR ContNo LIKE @s)
                {destClause}
@@ -145,6 +145,7 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
         nameof(DataSyncDestination.WMSPalletType),
         nameof(DataSyncDestination.WMSBrandMaster),
         nameof(DataSyncDestination.ToteIDMaster),
+        nameof(DataSyncDestination.WmsProdUsedTotes),
     };
 
     public static readonly string[] ContainerDestinations = new[]
@@ -519,18 +520,20 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
     }
 
     private async Task<int?> WriteLogRowAsync(string contno, int? batchNo, DataSyncDestination dest,
-        int? totalAllocatedQty, string status, string? error, CancellationToken ct)
+        int? totalAllocatedQty, string status, string? error, CancellationToken ct,
+        string origin = "Manual", string? actorOverride = null)
     {
         try
         {
             await using var c = OpenWms();
             return await c.ExecuteScalarAsync<int?>(new CommandDefinition(@"
                 INSERT INTO dbo.WMS_ContAllocationDataSync_Log
-                    (ContNo, BatchNo, Destination, TotalAllocatedQty, Status, ErrorMessage, SyncedBy)
+                    (ContNo, BatchNo, Destination, TotalAllocatedQty, Status, ErrorMessage, SyncedBy, Origin)
                 OUTPUT INSERTED.SyncId
-                VALUES (@c, @b, @d, @q, @s, @e, @u)",
+                VALUES (@c, @b, @d, @q, @s, @e, @u, @o)",
                 new { c = contno, b = batchNo, d = dest.ToString(),
-                      q = totalAllocatedQty, s = status, e = error, u = user.Name },
+                      q = totalAllocatedQty, s = status, e = error,
+                      u = actorOverride ?? user.Name, o = origin },
                 commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         }
         catch
@@ -938,7 +941,8 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
     /// used-flag source = racks.dbo.whboxitems). Other countries read from
     /// {DataName}.dbo.BlueToteIDMaster and {DataName}.dbo.WHboxitemsexport
     /// via OnPremBackup using 3-part names.</summary>
-    public async Task<List<CountryToteSyncRow>> SyncToteIDMasterAsync(CancellationToken ct = default)
+    public async Task<List<CountryToteSyncRow>> SyncToteIDMasterAsync(
+        string origin = "Manual", string? actor = null, CancellationToken ct = default)
     {
         // 1. Country list from the Azure DataSettings mirror.
         List<(string SIMCountry, string Dataname)> countries;
@@ -956,7 +960,8 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
         catch (Exception ex)
         {
             await WriteLogRowAsync("(ToteMaster)", null, DataSyncDestination.ToteIDMaster, 0,
-                "Failed", $"Reading country list from WMS_DataSettings failed: {ex.Message}", ct);
+                "Failed", $"Reading country list from WMS_DataSettings failed: {ex.Message}", ct,
+                origin: origin, actorOverride: actor);
             return new List<CountryToteSyncRow> {
                 new("(all)", "", 0, 0, "Failed",
                     $"Cannot read country list from dbo.WMS_DataSettings — run Phase 1 sync first. ({ex.Message})")
@@ -966,7 +971,8 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
         if (countries.Count == 0)
         {
             await WriteLogRowAsync("(ToteMaster)", null, DataSyncDestination.ToteIDMaster, 0,
-                "Empty", "dbo.WMS_DataSettings has no SIMCountry/Dataname rows yet.", ct);
+                "Empty", "dbo.WMS_DataSettings has no SIMCountry/Dataname rows yet.", ct,
+                origin: origin, actorOverride: actor);
             return new List<CountryToteSyncRow> {
                 new("(all)", "", 0, 0, "Empty",
                     "dbo.WMS_DataSettings has no SIMCountry rows. Run the Data Settings Sync first.")
@@ -985,6 +991,8 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
                 toteSrcTable:   "bfldata.dbo.BlueToteIDMaster",
                 usedSrcTable:   "racks.dbo.whboxitems",
                 openSourceConn: () => OpenOnPremBackup(),
+                origin:         origin,
+                actor:          actor,
                 ct: ct));
         }
 
@@ -997,7 +1005,8 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
             if (!SafeDbName.IsMatch(dataName))
             {
                 await WriteLogRowAsync(country, null, DataSyncDestination.ToteIDMaster, 0,
-                    "Failed", $"DataName '{dataName}' contains characters outside [A-Za-z0-9_].", ct);
+                    "Failed", $"DataName '{dataName}' contains characters outside [A-Za-z0-9_].", ct,
+                    origin: origin, actorOverride: actor);
                 results.Add(new(country, dataName, 0, 0, "Failed", "DataName format invalid."));
                 continue;
             }
@@ -1009,7 +1018,7 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
             {
                 var msg = $"Skipped: no {country}_DB_ConnectionString configured in App Service.";
                 await WriteLogRowAsync(country, null, DataSyncDestination.ToteIDMaster, 0,
-                    "Skipped", msg, ct);
+                    "Skipped", msg, ct, origin: origin, actorOverride: actor);
                 results.Add(new(country, dataName, 0, 0, "Skipped", msg));
                 continue;
             }
@@ -1020,6 +1029,8 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
                 toteSrcTable:   $"{dataName}.dbo.BlueToteIDMaster",
                 usedSrcTable:   $"{dataName}.dbo.WHboxitemsexport",
                 openSourceConn: () => OpenCountry(country),
+                origin:         origin,
+                actor:          actor,
                 ct: ct));
         }
 
@@ -1034,6 +1045,7 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
         string country, string sourceLabel,
         string toteSrcTable, string usedSrcTable,
         Func<SqlConnection> openSourceConn,
+        string origin, string? actor,
         CancellationToken ct)
     {
         // 1. Read yesterday's totes from source.
@@ -1052,7 +1064,8 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
         catch (Exception ex)
         {
             await WriteLogRowAsync(country, null, DataSyncDestination.ToteIDMaster, 0,
-                "Failed", $"Reading {toteSrcTable} failed: {ex.Message}", ct);
+                "Failed", $"Reading {toteSrcTable} failed: {ex.Message}", ct,
+                origin: origin, actorOverride: actor);
             return new(country, sourceLabel, 0, 0, "Failed", $"Source read ({toteSrcTable}): {ex.Message}");
         }
 
@@ -1069,7 +1082,8 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
         catch (Exception ex)
         {
             await WriteLogRowAsync(country, null, DataSyncDestination.ToteIDMaster, 0,
-                "Failed", $"Reading existing Azure ToteIDs failed: {ex.Message}", ct);
+                "Failed", $"Reading existing Azure ToteIDs failed: {ex.Message}", ct,
+                origin: origin, actorOverride: actor);
             return new(country, sourceLabel, 0, 0, "Failed", $"Azure dedup read: {ex.Message}");
         }
 
@@ -1106,7 +1120,8 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
             catch (Exception ex)
             {
                 await WriteLogRowAsync(country, null, DataSyncDestination.ToteIDMaster, 0,
-                    "Failed", $"Insert into WmsBlueToteIDMaster failed: {ex.Message}", ct);
+                    "Failed", $"Insert into WmsBlueToteIDMaster failed: {ex.Message}", ct,
+                    origin: origin, actorOverride: actor);
                 return new(country, sourceLabel, 0, 0, "Failed", $"Bulk insert: {ex.Message}");
             }
         }
@@ -1149,7 +1164,8 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
             // The insert may have succeeded — log a "partial" outcome.
             await WriteLogRowAsync(country, null, DataSyncDestination.ToteIDMaster, inserted,
                 "PartialFailed",
-                $"Inserted {inserted}; Used='Y' update failed reading {usedSrcTable}: {ex.Message}", ct);
+                $"Inserted {inserted}; Used='Y' update failed reading {usedSrcTable}: {ex.Message}", ct,
+                origin: origin, actorOverride: actor);
             return new(country, sourceLabel, inserted, 0, "PartialFailed",
                 $"Inserted {inserted}; Used update failed ({usedSrcTable}): {ex.Message}");
         }
@@ -1159,8 +1175,84 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
             ? $"Source has no yesterday rows in {toteSrcTable}."
             : $"Source returned {sourceTotes.Count} tote(s); {inserted} inserted, {markedUsed} marked Used='Y'.";
         await WriteLogRowAsync(country, null, DataSyncDestination.ToteIDMaster, inserted,
-            status, note, ct);
+            status, note, ct, origin: origin, actorOverride: actor);
         return new(country, sourceLabel, inserted, markedUsed, status, note);
+    }
+
+    // ===================== WMSPROD used-totes flip =====================
+
+    /// <summary>Pulls DISTINCT ToteID from the on-prem WMSPROD `online.dbo.UPCBoxHead`
+    /// where `Closed = 'N'` (still-open boxes) and flips
+    /// dbo.WmsBlueToteIDMaster.Used = 'Y' for any matching ToteIDs on Azure
+    /// (any country). Logs one row with Destination='WmsProdUsedTotes'.
+    /// Chunked to 1000-tote batches to stay under SQL Server's 2100 sqlparameter cap.
+    /// </summary>
+    public async Task<DataSyncResult> SyncWmsProdUsedTotesAsync(
+        string origin = "Manual", string? actor = null, CancellationToken ct = default)
+    {
+        var dest = DataSyncDestination.WmsProdUsedTotes;
+
+        // 1. Read distinct in-use ToteIDs from WMSPROD.
+        List<string> inUseTotes;
+        try
+        {
+            await using var src = OpenWmsProductionDb();
+            inUseTotes = (await src.QueryAsync<string>(new CommandDefinition(
+                @"SELECT DISTINCT ToteID
+                    FROM online.dbo.UPCBoxHead WITH (NOLOCK)
+                   WHERE ISNULL(Closed, 'N') = 'N'
+                     AND ToteID IS NOT NULL
+                     AND LTRIM(RTRIM(ToteID)) <> ''",
+                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).ToList();
+        }
+        catch (Exception ex)
+        {
+            var failId = await WriteLogRowAsync("(WmsProdUsedTotes)", null, dest, 0,
+                "Failed", $"Reading online.dbo.UPCBoxHead on WMSPROD failed: {ex.Message}", ct,
+                origin: origin, actorOverride: actor);
+            return new DataSyncResult(false, $"WMSPROD used-totes read failed: {ex.Message}", failId, 0);
+        }
+
+        if (inUseTotes.Count == 0)
+        {
+            var emptyId = await WriteLogRowAsync("(WmsProdUsedTotes)", null, dest, 0,
+                "Empty", "WMSPROD online.dbo.UPCBoxHead returned no open (Closed='N') rows with ToteID.", ct,
+                origin: origin, actorOverride: actor);
+            return new DataSyncResult(true, "WMSPROD has no open UPCBoxHead rows with ToteID.", emptyId, 0);
+        }
+
+        // 2. Flip Used='Y' on Azure. Country-wide match (any country).
+        int marked = 0;
+        string? writeError = null;
+        try
+        {
+            await using var w = OpenWms();
+            const int chunkSize = 1000;
+            for (int i = 0; i < inUseTotes.Count; i += chunkSize)
+            {
+                var chunk = inUseTotes.Skip(i).Take(chunkSize).ToArray();
+                var n = await w.ExecuteAsync(new CommandDefinition(@"
+                    UPDATE dbo.WmsBlueToteIDMaster
+                       SET Used = 'Y'
+                     WHERE ToteID IN @list
+                       AND (Used IS NULL OR Used = 'N')",
+                    new { list = chunk }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+                marked += n;
+            }
+        }
+        catch (Exception ex) { writeError = ex.Message; }
+
+        var logId = await WriteLogRowAsync("(WmsProdUsedTotes)", null, dest, marked,
+            status: writeError is null ? "Success" : "Failed",
+            error: writeError, ct, origin: origin, actorOverride: actor);
+
+        return writeError is null
+            ? new DataSyncResult(true,
+                $"WMSPROD used-totes: {inUseTotes.Count:N0} distinct ToteID(s) read; {marked:N0} row(s) flipped to Used='Y' on Azure.",
+                logId, marked)
+            : new DataSyncResult(false,
+                $"WMSPROD used-totes update failed: {writeError}",
+                logId, 0);
     }
 
     // ===================== PalletType master sync =====================
