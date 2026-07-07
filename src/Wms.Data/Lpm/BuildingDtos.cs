@@ -57,7 +57,8 @@ public record AllocationResult(
     bool Manual = false,
     string? Error = null,
     string? PalletTypeName = null,   // TypeName from dbo.WmsPalletType, looked up by PalletType code
-    string? ItemSource = null);      // "Order Sheet" | "WMS Itemmaster" | "Generated Barcode" | "USA Item Master"
+    string? ItemSource = null,       // "Order Sheet" | "WMS Itemmaster" | "Generated Barcode" | "USA Item Master"
+    string? Country = null);         // Country of the resolved allocation row (or current user's country for Tier 3)
 
 /// <summary>Outcome of the LPM Manual Building "Close Logistics" button —
 /// flips WmsKNBBoxes.closed='Y' and writes a row to WmsLogisticsBoxClosure_Log.
