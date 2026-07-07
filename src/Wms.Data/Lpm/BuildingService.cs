@@ -230,7 +230,7 @@ public class BuildingService(IOnPremConnectionResolver resolver, ICurrentUser us
         await using (var tx = (SqlTransaction)await c.BeginTransactionAsync(IsolationLevel.Serializable, ct))
         {
             var t1Sql = @"
-                SELECT TOP 1 IdNo, Result, ResultType, LPMDt, ORAPONo, StoreID, Division
+                SELECT TOP 1 IdNo, Result, ResultType, LPMDt, ORAPONo, StoreID, Division, Country
                   FROM dbo.WMS_ContAllocationData WITH (UPDLOCK, ROWLOCK)
                  WHERE ContNo = @c AND Itemcode = @i
                    AND (@p IS NULL OR ORAPONo = @p)
@@ -266,7 +266,8 @@ public class BuildingService(IOnPremConnectionResolver resolver, ICurrentUser us
                     Division: (string?)t1.Division,
                     Manual: false,
                     PalletTypeName: palletN1,
-                    ItemSource: "Order Sheet");
+                    ItemSource: "Order Sheet",
+                    Country: (string?)t1.Country);
             }
 
             var anyInContainer = await c.QueryFirstOrDefaultAsync<dynamic>(new CommandDefinition(
@@ -332,7 +333,8 @@ public class BuildingService(IOnPremConnectionResolver resolver, ICurrentUser us
                     Division: division2,
                     Manual: false,
                     PalletTypeName: palletN2,
-                    ItemSource: "Order Sheet");
+                    ItemSource: "Order Sheet",
+                    Country: (string?)anyInContainer.Country);
             }
 
             // No item in this container at all — fall through to Tier 3 outside this tx.
@@ -400,7 +402,8 @@ public class BuildingService(IOnPremConnectionResolver resolver, ICurrentUser us
                 Division: master.Division,
                 Manual: true,
                 PalletTypeName: palletN3,
-                ItemSource: master.Source);
+                ItemSource: master.Source,
+                Country: Country);
         }
     }
 
