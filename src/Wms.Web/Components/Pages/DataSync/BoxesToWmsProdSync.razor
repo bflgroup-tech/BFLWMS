@@ -1,0 +1,122 @@
+@page "/datasync/boxes-to-wmsprod"
+@rendermode RenderMode.InteractiveServer
+@using Wms.Core
+@using Wms.Data.Lpm
+@using Microsoft.Extensions.Configuration
+@attribute [Authorize(Policy = MenuKeys.DATASYNC_BOXES_TO_WMSPROD)]
+@inject ContainerAllocationDataSyncService Svc
+@inject IConfiguration Cfg
+@inject Microsoft.JSInterop.IJSRuntime JS
+
+<PageTitle>WMS — Boxes Data Sync to WMSPROD</PageTitle>
+
+<div class="aiwms-page-header">
+    <h2>Boxes Data Sync to WMSPROD</h2>
+    <p>Pushes checked-out box rows from Azure (<code>dbo.WmsUPCBoxHead</code> + <code>dbo.WmsUPCBoxDet</code>) to on-prem <code>usa.dbo.upcboxhead</code> + <code>usa.dbo.upcboxdet</code>. Incremental — rows are picked only where Azure <code>PublishedTS IS NULL</code>. Rows already present on the target (matched by <code>BoxNo</code>) are skipped but still marked published. Successful pushes stamp Azure <code>PublishedTS = SYSDATETIME()</code>. Det rows carry <code>StoreId</code> and <code>ToteID</code> alongside the aggregate qty.</p>
+</div>
+
+<div class="aiwms-section">
+    <div class="aiwms-card-header">Manual sync</div>
+    <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap">
+        <button class="aiwms-btn aiwms-btn-primary" @onclick="SyncAsync" disabled="@_busy">
+            @(_busy ? "Syncing…" : "Push Unpublished Boxes now")
+        </button>
+        <span style="font-size:12px; color:var(--text-secondary)">
+            Scheduled every 30 minutes when <code>Scheduler:BoxesToWmsProd:Enabled</code> is <code>true</code>. Currently: <b>@(_scheduleOn ? "ON" : "OFF")</b>.
+        </span>
+    </div>
+    @if (!string.IsNullOrEmpty(_message))
+    {
+        <div class="aiwms-alert @(_isError ? "error" : "info")" style="margin-top:12px">@_message</div>
+    }
+</div>
+
+<div class="aiwms-section">
+    <div class="aiwms-card-header" style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px">
+        <span>Recent Push Activity — last @_activity.Count row(s)</span>
+        <button class="aiwms-btn aiwms-btn-secondary" style="font-size:11px; padding:4px 10px"
+                @onclick="ReloadActivityAsync" disabled="@_busy">Refresh</button>
+    </div>
+    @if (_activity.Count == 0)
+    {
+        <div style="padding:14px; font-style:italic; color:var(--text-secondary)">No push activity yet.</div>
+    }
+    else
+    {
+        <table class="aiwms-table aiwms-table-dense">
+            <thead>
+                <tr>
+                    <th>SyncId</th>
+                    <th style="text-align:right">Rows</th>
+                    <th>Status</th>
+                    <th>Origin</th>
+                    <th>By</th>
+                    <th>When</th>
+                    <th>Error</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var r in _activity)
+                {
+                    <tr>
+                        <td>@r.SyncId</td>
+                        <td style="text-align:right">@(r.TotalAllocatedQty?.ToString("N0") ?? "")</td>
+                        <td><span class="aiwms-pill @(r.Status == "Success" ? "tier1" : r.Status == "Empty" ? "tier3" : "tier4")">@r.Status</span></td>
+                        <td>
+                            <span class="aiwms-pill @(r.Origin == "Scheduled" ? "tier2" : "tier1")"
+                                  style="font-size:10px; padding:1px 6px">@(r.Origin ?? "Manual")</span>
+                        </td>
+                        <td>@r.SyncedBy</td>
+                        <td>@r.SyncedTS.ToString("yyyy-MM-dd HH:mm")</td>
+                        <td style="max-width:400px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap" title="@r.ErrorMessage">@r.ErrorMessage</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+</div>
+
+@code {
+    private bool _busy;
+    private string _message = "";
+    private bool _isError;
+    private bool _scheduleOn;
+    private List<DataSyncActivityRow> _activity = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        _scheduleOn = Cfg.GetValue("Scheduler:BoxesToWmsProd:Enabled", false);
+        await ReloadActivityAsync();
+    }
+
+    private async Task ReloadActivityAsync()
+    {
+        try
+        {
+            _activity = await Svc.GetRecentActivityAsync(
+                top: 50,
+                destinations: new[] { nameof(DataSyncDestination.BoxesToWmsProd) });
+        }
+        catch (Exception ex) { ShowError($"Failed to load activity: {ex.Message}"); }
+    }
+
+    private async Task SyncAsync()
+    {
+        var confirm = await JS.InvokeAsync<bool>("confirm",
+            "Push all unpublished WmsUPCBoxHead + WmsUPCBoxDet rows to usa.dbo.upcboxhead / usa.dbo.upcboxdet? Existing BoxNos on the target are skipped.");
+        if (!confirm) return;
+        _busy = true; _message = ""; await InvokeAsync(StateHasChanged);
+        try
+        {
+            var result = await Svc.SyncBoxesToWmsProdAsync();
+            if (result.Ok) ShowInfo(result.Message ?? "Push complete.");
+            else           ShowError(result.Message ?? "Push failed.");
+            await ReloadActivityAsync();
+        }
+        catch (Exception ex) { ShowError($"Push failed: {ex.Message}"); }
+        finally { _busy = false; }
+    }
+
+    private void ShowError(string m) { _message = m; _isError = true; }
+    private void ShowInfo(string m)  { _message = m; _isError = false; }
+}
