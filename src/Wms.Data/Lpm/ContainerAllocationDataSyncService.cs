@@ -1299,7 +1299,7 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
 
             var boxNos = heads.Select(h => h.BoxNo).ToArray();
             var detRows = (await w.QueryAsync<PushDetRow>(new CommandDefinition(@"
-                SELECT Country, BoxNo, Itemcode, SrNo, Qty, UPC, StoreId, Status
+                SELECT Country, BoxNo, Itemcode, SrNo, Qty, UPC, StoreId, Status, ToteID
                   FROM dbo.WmsUPCBoxDet WITH (NOLOCK)
                  WHERE BoxNo IN @b",
                 new { b = boxNos },
@@ -1365,10 +1365,10 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
                     {
                         await opb.ExecuteAsync(new CommandDefinition(@"
                             INSERT INTO usa.dbo.upcboxdet
-                                (BoxNo, Itemcode, SrNo, Qty, UPC, StoreId, Status)
+                                (BoxNo, Itemcode, SrNo, Qty, UPC, StoreId, Status, ToteID)
                             VALUES
-                                (@BoxNo, @Itemcode, @SrNo, @Qty, @UPC, @StoreId, @Status)",
-                            new { d.BoxNo, d.Itemcode, d.SrNo, d.Qty, d.UPC, d.StoreId, d.Status },
+                                (@BoxNo, @Itemcode, @SrNo, @Qty, @UPC, @StoreId, @Status, @ToteID)",
+                            new { d.BoxNo, d.Itemcode, d.SrNo, d.Qty, d.UPC, d.StoreId, d.Status, d.ToteID },
                             transaction: tx, cancellationToken: ct));
                     }
                 }
@@ -1437,6 +1437,7 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
         public string?  UPC      { get; set; }
         public string?  StoreId  { get; set; }
         public string?  Status   { get; set; }
+        public string?  ToteID   { get; set; }
     }
 
     // ===================== PalletType master sync =====================

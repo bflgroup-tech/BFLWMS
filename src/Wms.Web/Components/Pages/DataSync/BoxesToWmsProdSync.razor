@@ -12,7 +12,7 @@
 
 <div class="aiwms-page-header">
     <h2>Boxes Data Sync to WMSPROD</h2>
-    <p>Pushes checked-out box rows from Azure (<code>dbo.WmsUPCBoxHead</code> + <code>dbo.WmsUPCBoxDet</code>) to on-prem <code>usa.dbo.upcboxhead</code> + <code>usa.dbo.upcboxdet</code>. Incremental — rows are picked only where Azure <code>PublishedTS IS NULL</code>. Rows already present on the target (matched by <code>BoxNo</code>) are skipped but still marked published. Successful pushes stamp Azure <code>PublishedTS = SYSDATETIME()</code>.</p>
+    <p>Pushes checked-out box rows from Azure (<code>dbo.WmsUPCBoxHead</code> + <code>dbo.WmsUPCBoxDet</code>) to on-prem <code>usa.dbo.upcboxhead</code> + <code>usa.dbo.upcboxdet</code>. Incremental — rows are picked only where Azure <code>PublishedTS IS NULL</code>. Rows already present on the target (matched by <code>BoxNo</code>) are skipped but still marked published. Successful pushes stamp Azure <code>PublishedTS = SYSDATETIME()</code>. Det rows carry <code>StoreId</code> and <code>ToteID</code> alongside the aggregate qty.</p>
 </div>
 
 <div class="aiwms-section">
