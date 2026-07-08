@@ -1052,15 +1052,15 @@ public class BuildingService(IOnPremConnectionResolver resolver, ICurrentUser us
         }
 
         var detSql = @"INSERT INTO dbo.WmsUPCBoxDet
-            (Country, BoxNo, Itemcode, Qty, QtyIssued, SrNo, Status, UPC, imgfile, StoreId)
-          VALUES (@Country, @BoxNo, @Item, @Qty, 0, @SrNo, '', @Item, @Cont, @StoreId);";
+            (Country, BoxNo, Itemcode, Qty, QtyIssued, SrNo, Status, UPC, imgfile, StoreId, ToteID)
+          VALUES (@Country, @BoxNo, @Item, @Qty, 0, @SrNo, '', @Item, @Cont, @StoreId, @Tote);";
         int srNo = 1;
         foreach (var g in detGroups)
         {
             DbOpContext.Set("INSERT dbo.WmsUPCBoxDet (checkout step 2 — StoreID-grouped)", detSql);
             await c.ExecuteAsync(new CommandDefinition(detSql,
                 new { Country = country, BoxNo = boxNo, Item = (string)g.Itemcode, Qty = (int)g.Qty,
-                      SrNo = srNo, Cont = contno, StoreId = (string?)g.StoreId },
+                      SrNo = srNo, Cont = contno, StoreId = (string?)g.StoreId, Tote = toteId },
                 transaction: tx, cancellationToken: ct));
             srNo++;
         }
