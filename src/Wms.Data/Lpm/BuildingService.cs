@@ -59,7 +59,7 @@ public class BuildingService(IOnPremConnectionResolver resolver, ICurrentUser us
     private string Country =>
         user.Country
         ?? throw new InvalidOperationException(
-            "Current user has no Country assigned — cannot run Manual Building. " +
+            "Current user has no Country assigned — cannot run Manual Counting. " +
             "Admin must set WmsUser.Country first.");
 
     /// <summary>Azure SQL WMS DB — all writes and most reads.</summary>
@@ -998,32 +998,71 @@ public class BuildingService(IOnPremConnectionResolver resolver, ICurrentUser us
         var warehouse = user.Warehouse ?? "";
         var pcName = user.ClientPcName ?? "";
 
-        // 1) WmsUPCBoxHead
+        // === Phase-2 checkout: uniform-PO validation + StoreID-grouped Det rows ===
+        // LPMDt and PalletType are uniform per box by construction (WmsOpenBox holds
+        // one value of each), so the only cross-item mix we need to guard against is
+        // multiple POs — Tier-2/3 OTS picks can route a scan to an allocation row
+        // with a different ORAPONo than earlier scans in the same box.
+
+        var poRows = (await c.QueryAsync<string?>(new CommandDefinition(
+            @"SELECT DISTINCT a.ORAPONo
+                FROM dbo.WMSContBuildScanData s WITH (NOLOCK)
+                JOIN dbo.WMS_ContAllocationData a WITH (NOLOCK) ON a.IdNo = s.AllocationIdNo
+               WHERE s.BoxNo = @b AND s.Reversed = 'N'",
+            new { b = boxNo }, transaction: tx, cancellationToken: ct))).ToList();
+        var distinctPos = poRows.Where(p => !string.IsNullOrWhiteSpace(p)).Distinct().ToList();
+        if (distinctPos.Count > 1)
+        {
+            await tx.RollbackAsync(ct);
+            return new(false,
+                $"Cannot check out — box {boxNo} contains items from multiple POs: {string.Join(", ", distinctPos)}. Clear the box or move mixed pieces to a separate box.",
+                0);
+        }
+        var boxPo = distinctPos.FirstOrDefault() ?? "";
+
+        // 1) WmsUPCBoxHead — now with PONo.
         var headSql = @"INSERT INTO dbo.WmsUPCBoxHead
             (Country, BoxNo, TrnDate, Time1, NewPallet, PreparedBy, Remarks, Userid, PalletType, Closed,
              GroupCode, OldBoxNo, Prepared1, Prepared2, WHouse, FWType, FPreparedBy, FPalletType,
-             ISize, Gender, ToteID, LPMDT)
+             ISize, Gender, ToteID, LPMDT, PONo)
           VALUES
             (@Country, @BoxNo, CAST(DATEADD(hour, 4, SYSUTCDATETIME()) AS DATE), CAST(DATEADD(hour, 4, SYSUTCDATETIME()) AS TIME(0)), 'Y', @CheckOut, 'from WMS', @CheckIn, @Pallet, 'N',
              '', '', @CheckOut, @Division, @WHouse, '', @CheckOut, @Pallet,
-             '', '', @Tote, @LPMDt);";
+             '', '', @Tote, @LPMDt, @PONo);";
         DbOpContext.Set("INSERT dbo.WmsUPCBoxHead (checkout step 1)", headSql);
         await c.ExecuteAsync(new CommandDefinition(headSql,
             new { Country = country, BoxNo = boxNo, CheckOut = checkoutUser, CheckIn = checkInUser, Pallet = palletType,
-                  Division = division, WHouse = warehouse, Tote = toteId, LPMDt = lpmDt },
+                  Division = division, WHouse = warehouse, Tote = toteId, LPMDt = lpmDt, PONo = boxPo },
             transaction: tx, cancellationToken: ct));
 
-        // 2) WmsUPCBoxDet (one row per item)
-        var detSql = @"INSERT INTO dbo.WmsUPCBoxDet
-            (Country, BoxNo, Itemcode, Qty, QtyIssued, SrNo, Status, UPC, imgfile)
-          VALUES (@Country, @BoxNo, @Item, @Qty, 0, @SrNo, '', @Item, @Cont);";
-        foreach (var it in items)
+        // 2) WmsUPCBoxDet — one row per (BoxNo, StoreID, Itemcode) aggregated from
+        //    the scan ledger. Qty = SUM of non-reversed scans in that group.
+        var detGroups = (await c.QueryAsync<dynamic>(new CommandDefinition(
+            @"SELECT s.Itemcode, s.StoreID AS StoreId, COUNT(*) AS Qty
+                FROM dbo.WMSContBuildScanData s WITH (NOLOCK)
+               WHERE s.BoxNo = @b AND s.Reversed = 'N'
+               GROUP BY s.Itemcode, s.StoreID
+               ORDER BY s.StoreID, s.Itemcode",
+            new { b = boxNo }, transaction: tx, cancellationToken: ct))).AsList();
+
+        if (detGroups.Count == 0)
         {
-            DbOpContext.Set("INSERT dbo.WmsUPCBoxDet (checkout step 2)", detSql);
+            await tx.RollbackAsync(ct);
+            return new(false, $"Cannot check out — box {boxNo} has no non-reversed scan-ledger rows to group by.", 0);
+        }
+
+        var detSql = @"INSERT INTO dbo.WmsUPCBoxDet
+            (Country, BoxNo, Itemcode, Qty, QtyIssued, SrNo, Status, UPC, imgfile, StoreId, ToteID)
+          VALUES (@Country, @BoxNo, @Item, @Qty, 0, @SrNo, '', @Item, @Cont, @StoreId, @Tote);";
+        int srNo = 1;
+        foreach (var g in detGroups)
+        {
+            DbOpContext.Set("INSERT dbo.WmsUPCBoxDet (checkout step 2 — StoreID-grouped)", detSql);
             await c.ExecuteAsync(new CommandDefinition(detSql,
-                new { Country = country, BoxNo = boxNo, Item = (string)it.ItemCode, Qty = (int)it.Qty,
-                      SrNo = (int)it.SrNo, Cont = contno },
+                new { Country = country, BoxNo = boxNo, Item = (string)g.Itemcode, Qty = (int)g.Qty,
+                      SrNo = srNo, Cont = contno, StoreId = (string?)g.StoreId, Tote = toteId },
                 transaction: tx, cancellationToken: ct));
+            srNo++;
         }
 
         // 3) WMSContBuilding — ONE ROW PER SCAN
