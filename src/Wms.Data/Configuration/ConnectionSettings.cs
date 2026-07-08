@@ -12,6 +12,8 @@ namespace Wms.Data.Configuration;
 ///      "{Country}_DB_ConnectionString" (LPMSIM pattern).
 ///   3. OnPremBackupDB — single UAE-only backup DB hosting contreceipt, upc_subclass,
 ///      SubclassMaster. Key: "OnPremBackupDB_ConnectionString".
+///   4. JafazaRoboDb — the Robotics SQL Server hosting ROBOTICS.dbo.* (chute
+///      mapping/status) and BFLDATA.dbo.* (shop master). Key: "JafazaRoboDb".
 /// </summary>
 public interface IOnPremConnectionResolver
 {
@@ -19,6 +21,7 @@ public interface IOnPremConnectionResolver
     string GetCountryConnectionString(string country);
     string GetOnPremBackupConnectionString();
     string GetWmsProductionDbConnectionString();
+    string GetJafazaRoboDbConnectionString();
     IReadOnlyList<string> GetConfiguredCountries();
 }
 
@@ -53,6 +56,11 @@ public class OnPremConnectionResolver(IConfiguration cfg) : IOnPremConnectionRes
         cfg.GetConnectionString("WmsProductionDb")
         ?? throw new InvalidOperationException(
             "ConnectionStrings:WmsProductionDb is not configured.");
+
+    public string GetJafazaRoboDbConnectionString() =>
+        cfg.GetConnectionString("JafazaRoboDb")
+        ?? throw new InvalidOperationException(
+            "ConnectionStrings:JafazaRoboDb is not configured.");
 
     public IReadOnlyList<string> GetConfiguredCountries() =>
         _knownCountries

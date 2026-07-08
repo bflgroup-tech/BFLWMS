@@ -1,8 +1,10 @@
 @page "/reports/racks"
 @rendermode RenderMode.InteractiveServer
 @using Wms.Core
+@using Wms.Data.Lpm
 @using MudBlazor
 @attribute [Authorize(Policy = MenuKeys.RPT_RACKS)]
+@inject RacksService Svc
 
 <PageTitle>WMS — WH-Racks</PageTitle>
 
@@ -11,5 +13,49 @@
 </div>
 
 <div class="aiwms-section">
-    <p>WH-Racks report — coming soon.</p>
+    @if (_loading)
+    {
+        <p>Loading...</p>
+    }
+    else if (_error is not null)
+    {
+        <div class="aiwms-alert error">@_error</div>
+    }
+    else if (_rows.Count == 0)
+    {
+        <p>No data settings found.</p>
+    }
+    else
+    {
+        <table class="aiwms-table aiwms-table-dense">
+            <thead>
+                <tr>
+                    <th>ShopName</th>
+                    <th>DataName</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var r in _rows)
+                {
+                    <tr>
+                        <td>@r.ShopName</td>
+                        <td style="font-family:var(--font-mono)">@r.DataName</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
 </div>
+
+@code {
+    private List<ShopDataNameRow> _rows = new();
+    private bool _loading = true;
+    private string? _error;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try { _rows = await Svc.GetShopDataNamesAsync(); }
+        catch (Exception ex) { _error = $"Failed to load: {ex.Message}"; }
+        finally { _loading = false; }
+    }
+}
