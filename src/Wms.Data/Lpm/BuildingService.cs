@@ -744,21 +744,35 @@ public class BuildingService(IOnPremConnectionResolver resolver, ICurrentUser us
     }
 
     // ==================== 7. Find existing OR create a new open box (no tote required up front) ====================
+    /// <summary>Find an existing open box matching the partition key, or create
+    /// a new one. When <paramref name="matchDivSeason"/> is false, the match
+    /// query skips Division + Season columns entirely — used by exception
+    /// scans, which segregate boxes by (exception PalletType, LogisticsBox, LPMDt)
+    /// only, ignoring the item's Division/Season so all exception items for a
+    /// given PONO+LPMDt land in one exception box.</summary>
     public async Task<string> FindOrCreateOpenBoxAsync(
         string contno, string palletType, string? division, string? season, DateTime? lpmDt,
-        string? logisticsBoxNo, CancellationToken ct = default)
+        string? logisticsBoxNo, bool matchDivSeason = true, CancellationToken ct = default)
     {
         await using var c = OpenWms();
         await using var tx = (SqlTransaction)await c.BeginTransactionAsync(IsolationLevel.Serializable, ct);
 
+        // Normal scans: match on (Contno, UserId, PalletType, Division, Season, LPMDt).
+        // Exception scans: match on (Contno, UserId, PalletType, LogisticsBoxNo, LPMDt) —
+        // Division + Season ignored so all exception items for a given PONO+LPMDt
+        // land in one exception box. LogisticsBoxNo implicitly encodes PONO.
+        var extraClause = matchDivSeason
+            ? @"AND ISNULL(Division,'') = ISNULL(@d,'')
+                AND ISNULL(Season,'')   = ISNULL(@s,'')"
+            : @"AND ISNULL(LogisticsBoxNo,'') = ISNULL(@lb,'')";
+
         var existing = await c.ExecuteScalarAsync<string?>(new CommandDefinition(
-            @"SELECT TOP 1 BoxNo FROM dbo.WmsOpenBox WITH (UPDLOCK, HOLDLOCK)
+            $@"SELECT TOP 1 BoxNo FROM dbo.WmsOpenBox WITH (UPDLOCK, HOLDLOCK)
               WHERE Contno = @c AND UserId = @u AND PalletType = @p
-                AND ISNULL(Division,'') = ISNULL(@d,'')
-                AND ISNULL(Season,'')   = ISNULL(@s,'')
                 AND ISNULL(LPMDt,'1900-01-01') = ISNULL(@l,'1900-01-01')
+                {extraClause}
               ORDER BY BoxNo",
-            new { c = contno, u = user.Name, p = palletType, d = division, s = season, l = lpmDt?.Date },
+            new { c = contno, u = user.Name, p = palletType, d = division, s = season, l = lpmDt?.Date, lb = logisticsBoxNo },
             transaction: tx, cancellationToken: ct));
 
         if (existing is not null) { await tx.CommitAsync(ct); return existing; }
