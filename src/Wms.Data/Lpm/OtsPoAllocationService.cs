@@ -254,29 +254,34 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
             return rows.ToDictionary(r => (r.StoreID, r.DivCode), r => r.SOH);
         }, () => new Dictionary<(string, int), int>());
 
-        // 3) Ex2 SOH pair per DivCode from LPM_Ex2ItemSOH (item-level).
+        // 3) Ex2 SOH pair per (Country, DivCode) from LPM_Ex2ItemSOH (item-level),
+        //    mapped to retail countries via LPM_Ex2LocationConfig (Ex2StoreID -> Country).
         //
-        // Ex2 warehouses live under DataSettings.SIMCountry='Ex2Locations' and
-        // serve every retail country — so we sum across ALL Ex2 warehouses per
-        // DivCode. The per-country split happens in the merge below by dividing
-        // by that country's retail-store count.
-        //   Itemcode -> datareporting.dbo.vupc_subclass.DivID (matches
-        //               LPM_EOM_Output.DivCode's domain)
-        var ex2ByDiv = await SafeAsync(warnings, "InTransit/Ex2 DC SOH (LPM_Ex2ItemSOH)", async () =>
+        // Each Ex2 warehouse serves specific countries per LPM_Ex2LocationConfig, so
+        // the sum is scoped to (Country, DivCode). In the merge below, the per-store
+        // share = country total / retail store count. UAE stores are forced to 0
+        // (per spec — UAE is not fed by Ex2 stock).
+        //   Itemcode   -> datareporting.dbo.vupc_subclass.DivID (matches
+        //                 LPM_EOM_Output.DivCode's domain)
+        //   Ex2StoreID -> dbo.LPM_Ex2LocationConfig.Country
+        var ex2ByKey = await SafeAsync(warnings, "InTransit/Ex2 DC SOH (LPM_Ex2ItemSOH + LPM_Ex2LocationConfig)", async () =>
         {
             await using var c = OpenOnPremBackup();
-            var rows = await c.QueryAsync<(int DivCode, int InTransitTotal, int Ex2DcTotal)>(new CommandDefinition(@"
-                SELECT v.DivID AS DivCode,
+            var rows = await c.QueryAsync<(string Country, int DivCode, int InTransitTotal, int Ex2DcTotal)>(new CommandDefinition(@"
+                SELECT cfg.Country AS Country,
+                       v.DivID    AS DivCode,
                        SUM(ISNULL(sohs.Ex2SOH, 0) + ISNULL(sohs.BoxSOH, 0)) AS InTransitTotal,
                        SUM(ISNULL(sohs.R1WHSOH, 0))                         AS Ex2DcTotal
                   FROM dbo.LPM_Ex2ItemSOH sohs WITH (NOLOCK)
+                  JOIN dbo.LPM_Ex2LocationConfig cfg WITH (NOLOCK)
+                    ON cfg.Ex2StoreID = sohs.Ex2StoreID
                   JOIN datareporting.dbo.vupc_subclass v WITH (NOLOCK)
                     ON v.itemcode = sohs.Itemcode
-                 WHERE v.DivID IS NOT NULL
-                 GROUP BY v.DivID",
+                 WHERE v.DivID IS NOT NULL AND cfg.Country IS NOT NULL
+                 GROUP BY cfg.Country, v.DivID",
                 commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-            return rows.ToDictionary(r => r.DivCode, r => (r.InTransitTotal, r.Ex2DcTotal));
-        }, () => new Dictionary<int, (int, int)>());
+            return rows.ToDictionary(r => (r.Country, r.DivCode), r => (r.InTransitTotal, r.Ex2DcTotal));
+        }, () => new Dictionary<(string, int), (int, int)>());
 
         // 4) Week Sales per (StoreID, DivCode) summed over next N weeks from currentWk.
         var weeksByCountry = baseRows.GroupBy(b => b.Country).ToDictionary(g => g.Key, g => g.First().WeeksToInclude);
@@ -366,12 +371,14 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
             var ws     = weekSalesByKey.TryGetValue((r.StoreID, r.DivCode), out var w) ? w : 0;
             var stores = storeCountByCountry.TryGetValue(r.Country, out var sc) ? sc : 0;
             int inTransit = 0, ex2dc = 0;
-            if (ex2ByDiv.TryGetValue(r.DivCode, out var e) && stores > 0)
+            var isUAE = string.Equals(r.Country, "UAE", StringComparison.OrdinalIgnoreCase);
+            if (!isUAE
+                && ex2ByKey.TryGetValue((r.Country, r.DivCode), out var e)
+                && stores > 0)
             {
                 var (inTransitTotal, ex2DcTotal) = e;
-                if (!string.Equals(r.Country, "UAE", StringComparison.OrdinalIgnoreCase))
-                    inTransit = inTransitTotal / stores;
-                ex2dc = ex2DcTotal / stores;
+                inTransit = inTransitTotal / stores;
+                ex2dc     = ex2DcTotal    / stores;
             }
             var wip    = wipByKey.TryGetValue((r.Country, r.StoreID, r.DivCode), out var v) ? v : 0;
             var otsQty = r.TgtEOM + ws - soh - inTransit - ex2dc - wip;
