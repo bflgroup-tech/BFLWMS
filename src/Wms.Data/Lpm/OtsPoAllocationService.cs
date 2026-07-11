@@ -110,30 +110,29 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver)
             return rows.ToDictionary(r => (r.StoreID, r.DivCode), r => r.SOH);
         }, () => new Dictionary<(string, int), int>());
 
-        // 3) Ex2 SOH pair per (SIMCountry, DivCode) from LPM_Ex2ItemSOH.
+        // 3) Ex2 SOH pair per DivCode from LPM_Ex2ItemSOH (item-level).
         //
-        // Table is item-level with (Ex2StoreID, Itemcode, Ex2SOH, R1WHSOH, BoxSOH, ...).
-        //   Ex2StoreID -> bfldata.dbo.DataSettings.SIMCountry   (country)
-        //   Itemcode   -> datareporting.dbo.vupc_subclass.DivID (matches
-        //                LPM_EOM_Output.DivCode's domain)
-        var ex2ByKey = await SafeAsync(warnings, "InTransit/Ex2 DC SOH (LPM_Ex2ItemSOH)", async () =>
+        // Ex2 warehouses live under DataSettings.SIMCountry='Ex2Locations' and
+        // serve every retail country — so we sum across ALL Ex2 warehouses per
+        // DivCode. The per-country split happens in the merge below by dividing
+        // by that country's retail-store count.
+        //   Itemcode -> datareporting.dbo.vupc_subclass.DivID (matches
+        //               LPM_EOM_Output.DivCode's domain)
+        var ex2ByDiv = await SafeAsync(warnings, "InTransit/Ex2 DC SOH (LPM_Ex2ItemSOH)", async () =>
         {
             await using var c = OpenOnPremBackup();
-            var rows = await c.QueryAsync<(string Country, int DivCode, int InTransitTotal, int Ex2DcTotal)>(new CommandDefinition(@"
-                SELECT ds.SIMCountry AS Country,
-                       v.DivID       AS DivCode,
+            var rows = await c.QueryAsync<(int DivCode, int InTransitTotal, int Ex2DcTotal)>(new CommandDefinition(@"
+                SELECT v.DivID AS DivCode,
                        SUM(ISNULL(sohs.Ex2SOH, 0) + ISNULL(sohs.BoxSOH, 0)) AS InTransitTotal,
                        SUM(ISNULL(sohs.R1WHSOH, 0))                         AS Ex2DcTotal
                   FROM dbo.LPM_Ex2ItemSOH sohs WITH (NOLOCK)
-                  JOIN bfldata.dbo.DataSettings ds WITH (NOLOCK)
-                    ON ds.StoreID = sohs.Ex2StoreID
                   JOIN datareporting.dbo.vupc_subclass v WITH (NOLOCK)
                     ON v.itemcode = sohs.Itemcode
-                 WHERE ds.SIMCountry IS NOT NULL AND v.DivID IS NOT NULL
-                 GROUP BY ds.SIMCountry, v.DivID",
+                 WHERE v.DivID IS NOT NULL
+                 GROUP BY v.DivID",
                 commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-            return rows.ToDictionary(r => (r.Country, r.DivCode), r => (r.InTransitTotal, r.Ex2DcTotal));
-        }, () => new Dictionary<(string, int), (int, int)>());
+            return rows.ToDictionary(r => r.DivCode, r => (r.InTransitTotal, r.Ex2DcTotal));
+        }, () => new Dictionary<int, (int, int)>());
 
         // 4) Week Sales per (StoreID, DivCode) summed over next N weeks from currentWk.
         var weeksByCountry = baseRows.GroupBy(b => b.Country).ToDictionary(g => g.Key, g => g.First().WeeksToInclude);
@@ -223,7 +222,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver)
             var ws     = weekSalesByKey.TryGetValue((r.StoreID, r.DivCode), out var w) ? w : 0;
             var stores = storeCountByCountry.TryGetValue(r.Country, out var sc) ? sc : 0;
             int inTransit = 0, ex2dc = 0;
-            if (ex2ByKey.TryGetValue((r.Country, r.DivCode), out var e) && stores > 0)
+            if (ex2ByDiv.TryGetValue(r.DivCode, out var e) && stores > 0)
             {
                 var (inTransitTotal, ex2DcTotal) = e;
                 if (!string.Equals(r.Country, "UAE", StringComparison.OrdinalIgnoreCase))
