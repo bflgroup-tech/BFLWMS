@@ -1,5 +1,6 @@
 using Dapper;
 using Microsoft.Data.SqlClient;
+using Wms.Core;
 using Wms.Data.Configuration;
 
 namespace Wms.Data.Lpm;
@@ -15,7 +16,7 @@ namespace Wms.Data.Lpm;
 /// in that one column rather than blanking the whole grid. The list of
 /// warnings is returned alongside the rows.
 /// </summary>
-public class OtsPoAllocationService(IOnPremConnectionResolver resolver)
+public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrentUser user)
 {
     private const int CommandTimeoutSeconds = 300;
 
@@ -60,7 +61,150 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver)
         return rows.AsList();
     }
 
-    /// <summary>Main report. country == null OR "BFLGroup" means no country filter.</summary>
+    /// <summary>Distinct (DivCode, Division) pairs for the Division multi-select
+    /// picker — sourced from LPM_EOM_Output filtered by picked Month/Year, joined
+    /// to LPMSIM.dbo.Division for the human name.</summary>
+    public async Task<List<(int DivCode, string Division)>> GetDivisionsAsync(
+        int month, int year, CancellationToken ct = default)
+    {
+        await using var c = OpenOnPremBackup();
+        var rows = await c.QueryAsync<(int DivCode, string Division)>(new CommandDefinition(@"
+            SELECT DISTINCT e.DivCode, ISNULL(dv.Division, CAST(e.DivCode AS NVARCHAR(20))) AS Division
+              FROM dbo.LPM_EOM_Output e WITH (NOLOCK)
+              LEFT JOIN LPMSIM.dbo.Division dv WITH (NOLOCK) ON dv.DivCode = e.DivCode
+             WHERE e.Month1 = @month AND e.Year1 = @year
+               AND e.Country <> 'Ex2Locations'
+             ORDER BY Division",
+            new { month, year },
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        return rows.AsList();
+    }
+
+    /// <summary>Latest RunTS on the persisted table for a (Month, Year). Null =
+    /// never generated. Used by the razor page to show "last generated" info.</summary>
+    public async Task<DateTime?> GetLastGeneratedTsAsync(int month, int year, CancellationToken ct = default)
+    {
+        await using var c = OpenWms();
+        return await c.ExecuteScalarAsync<DateTime?>(new CommandDefinition(@"
+            SELECT MAX(RunTS) FROM dbo.WmsOtsPoAllocationRun WITH (NOLOCK)
+             WHERE [Year] = @year AND [Month] = @month",
+            new { month, year },
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+    }
+
+    /// <summary>Load persisted rows for a (Month, Year), optionally filtered by
+    /// country + a division subset. Country == null or BFLGroup means "all".
+    /// divisions == null or empty means "all divisions".</summary>
+    public async Task<List<OtsPoAllocationRow>> LoadPersistedAsync(
+        int month, int year, string? country, IReadOnlyCollection<int>? divisions,
+        CancellationToken ct = default)
+    {
+        var filter = string.IsNullOrWhiteSpace(country) || string.Equals(country, BflGroup, StringComparison.OrdinalIgnoreCase)
+            ? null : country;
+        var eomLabel = new DateTime(year, month, 1).ToString("MMM-yyyy");
+        var divClause = divisions is { Count: > 0 } ? "AND DivCode IN @divs" : "";
+        var sql = $@"
+            SELECT Country, StoreID, StoreName, DivCode, Division, VolumeGroup, PriorityRank,
+                   TgtEOM, SOHToday, WeeksToInclude, WeekSales, InTransit, Ex2DcSoh,
+                   CountingWIP, OtsQtyToday, OtsPercentToday
+              FROM dbo.WmsOtsPoAllocationRun WITH (NOLOCK)
+             WHERE [Year] = @year AND [Month] = @month
+               AND (@ct IS NULL OR Country = @ct)
+               {divClause}
+             ORDER BY Country, StoreID, DivCode";
+        await using var c = OpenWms();
+        var rows = await c.QueryAsync<PersistedRow>(new CommandDefinition(
+            sql, new { month, year, ct = filter, divs = divisions?.ToArray() },
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        return rows.Select(r => new OtsPoAllocationRow(
+            Country: r.Country, StoreID: r.StoreID, StoreName: r.StoreName,
+            DivCode: r.DivCode, Division: r.Division, VolumeGroup: r.VolumeGroup,
+            PriorityRank: r.PriorityRank, EOMMonth: eomLabel,
+            TgtEOM: r.TgtEOM, SOHToday: r.SOHToday, WeeksToInclude: r.WeeksToInclude,
+            WeekSales: r.WeekSales, InTransit: r.InTransit, Ex2DcSoh: r.Ex2DcSoh,
+            CountingWIP: r.CountingWIP, OtsQtyToday: r.OtsQtyToday,
+            OtsPercentToday: (double)r.OtsPercentToday)).ToList();
+    }
+
+    /// <summary>Runs the full compute for (Month, Year) across all countries and
+    /// persists to dbo.WmsOtsPoAllocationRun. Any prior rows for the same
+    /// (Month, Year) are DELETEd first. Callers should follow with LoadPersistedAsync.
+    /// Only valid when Country=BFLGroup; the razor page enforces that.</summary>
+    public async Task<(int RowsPersisted, List<string> Warnings)> GenerateAndPersistAsync(
+        int month, int year, CancellationToken ct = default)
+    {
+        var (rows, warnings) = await GenerateAsync(month, year, country: null, ct);
+        if (rows.Count == 0) return (0, warnings);
+
+        await using var c = OpenWms();
+        await using var tx = (SqlTransaction)await c.BeginTransactionAsync(ct);
+        try
+        {
+            await c.ExecuteAsync(new CommandDefinition(@"
+                DELETE FROM dbo.WmsOtsPoAllocationRun
+                 WHERE [Year] = @year AND [Month] = @month",
+                new { month, year }, transaction: tx,
+                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+
+            var dt = new System.Data.DataTable();
+            dt.Columns.Add("RunTS",           typeof(DateTime));
+            dt.Columns.Add("RunBy",           typeof(string));
+            dt.Columns.Add("Month",           typeof(int));
+            dt.Columns.Add("Year",            typeof(int));
+            dt.Columns.Add("Country",         typeof(string));
+            dt.Columns.Add("StoreID",         typeof(string));
+            dt.Columns.Add("StoreName",       typeof(string));
+            dt.Columns.Add("DivCode",         typeof(int));
+            dt.Columns.Add("Division",        typeof(string));
+            dt.Columns.Add("VolumeGroup",     typeof(string));
+            dt.Columns.Add("PriorityRank",    typeof(int));
+            dt.Columns.Add("TgtEOM",          typeof(int));
+            dt.Columns.Add("SOHToday",        typeof(int));
+            dt.Columns.Add("WeeksToInclude",  typeof(int));
+            dt.Columns.Add("WeekSales",       typeof(int));
+            dt.Columns.Add("InTransit",       typeof(int));
+            dt.Columns.Add("Ex2DcSoh",        typeof(int));
+            dt.Columns.Add("CountingWIP",     typeof(int));
+            dt.Columns.Add("OtsQtyToday",     typeof(int));
+            dt.Columns.Add("OtsPercentToday", typeof(decimal));
+
+            var nowGst = DateTime.UtcNow.AddHours(4);
+            var who = user.Name ?? "";
+            foreach (var r in rows)
+            {
+                dt.Rows.Add(
+                    nowGst, who, month, year,
+                    r.Country, r.StoreID, (object?)r.StoreName ?? DBNull.Value,
+                    r.DivCode, (object?)r.Division ?? DBNull.Value,
+                    (object?)r.VolumeGroup ?? DBNull.Value,
+                    (object?)r.PriorityRank ?? DBNull.Value,
+                    r.TgtEOM, r.SOHToday, r.WeeksToInclude, r.WeekSales,
+                    r.InTransit, r.Ex2DcSoh, r.CountingWIP, r.OtsQtyToday,
+                    (decimal)r.OtsPercentToday);
+            }
+
+            using var bulk = new SqlBulkCopy(c, SqlBulkCopyOptions.Default, tx)
+            {
+                DestinationTableName = "dbo.WmsOtsPoAllocationRun",
+                BatchSize = 1000,
+                BulkCopyTimeout = CommandTimeoutSeconds,
+            };
+            foreach (System.Data.DataColumn col in dt.Columns)
+                bulk.ColumnMappings.Add(col.ColumnName, col.ColumnName);
+            await bulk.WriteToServerAsync(dt, ct);
+
+            await tx.CommitAsync(ct);
+        }
+        catch
+        {
+            try { await tx.RollbackAsync(ct); } catch { }
+            throw;
+        }
+        return (rows.Count, warnings);
+    }
+
+    /// <summary>Main report. country == null OR "BFLGroup" means no country filter.
+    /// Kept for the direct/live path — persistence is done by GenerateAndPersistAsync.</summary>
     public async Task<(List<OtsPoAllocationRow> Rows, List<string> Warnings)> GenerateAsync(
         int month, int year, string? country, CancellationToken ct = default)
     {
@@ -275,5 +419,25 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver)
         public int?     PriorityRank   { get; set; }
         public int      TgtEOM         { get; set; }
         public int      WeeksToInclude { get; set; }
+    }
+
+    private sealed class PersistedRow
+    {
+        public string   Country         { get; set; } = "";
+        public string   StoreID         { get; set; } = "";
+        public string?  StoreName       { get; set; }
+        public int      DivCode         { get; set; }
+        public string?  Division        { get; set; }
+        public string?  VolumeGroup     { get; set; }
+        public int?     PriorityRank    { get; set; }
+        public int      TgtEOM          { get; set; }
+        public int      SOHToday        { get; set; }
+        public int      WeeksToInclude  { get; set; }
+        public int      WeekSales       { get; set; }
+        public int      InTransit       { get; set; }
+        public int      Ex2DcSoh        { get; set; }
+        public int      CountingWIP     { get; set; }
+        public int      OtsQtyToday     { get; set; }
+        public decimal  OtsPercentToday { get; set; }
     }
 }

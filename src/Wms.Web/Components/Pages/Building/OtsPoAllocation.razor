@@ -1,7 +1,8 @@
 @page "/counting/ots-po-allocation"
 @rendermode RenderMode.InteractiveServer
 @using System.Globalization
-@using System.Text
+@using System.IO
+@using ClosedXML.Excel
 @using Wms.Core
 @using Wms.Data.Lpm
 @attribute [Authorize(Policy = MenuKeys.OTS_FOR_PO_ALLOCATION)]
@@ -13,35 +14,52 @@
 
 <div class="aiwms-page-header">
     <h2>OTS for PO Allocation</h2>
-    <p>Per-(Country, StoreID, DivCode) OTS math for a picked Month/Year, sourced from <code>LPM_EOM_Output</code> + <code>LPM_Locstock</code> + <code>LPM_Ex2ItemSOH</code> + <code>lpm_salestgtwk_stores</code> + Azure <code>WMS_ContAllocationData</code>. Rundate: <b>@_rundate.ToString("dd/MM/yyyy")</b>.</p>
+    <p>Per-(Country, StoreID, DivCode) OTS math for a picked Month/Year. <b>Generate</b> runs the heavy cross-DB compute and persists to <code>dbo.WmsOtsPoAllocationRun</code>; <b>Load</b> reads from there with your Country + Divisions filters. Rundate: <b>@_rundate.ToString("dd/MM/yyyy")</b>. Last generated for @_month/@_year: <b>@(_lastGenerated?.ToString("dd/MM/yyyy HH:mm") ?? "never")</b>.</p>
 </div>
 
 <div class="aiwms-section">
-    <div style="display:grid; grid-template-columns: 1fr 1fr 1fr auto auto; gap:12px; align-items:end">
+    <div style="display:grid; grid-template-columns: 1.2fr 1fr 1fr 2fr auto auto auto; gap:12px; align-items:end">
         <div>
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COUNTRY</label>
-            <select @bind="_country" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" disabled="@_loading">
-                <option value="@OtsPoAllocationService.BflGroup">@OtsPoAllocationService.BflGroup (all)</option>
+            <select @bind="_country" @bind:after="OnCountryChangedAsync" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" disabled="@_busy">
+                <option value="@OtsPoAllocationService.BflGroup">@OtsPoAllocationService.BflGroup</option>
                 @foreach (var c in _countries) { <option value="@c">@c</option> }
             </select>
         </div>
         <div>
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">MONTH *</label>
-            <select @bind="_month" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" disabled="@_loading">
+            <select @bind="_month" @bind:after="RefreshDivisionsAsync" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" disabled="@_busy">
                 @foreach (var m in _monthsForSelectedYear) { <option value="@m">@(CultureInfo.InvariantCulture.DateTimeFormat.GetMonthName(m)) (@m)</option> }
             </select>
         </div>
         <div>
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">YEAR *</label>
-            <select @bind="_year" @bind:after="OnYearChangedAsync" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" disabled="@_loading">
+            <select @bind="_year" @bind:after="OnYearChangedAsync" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" disabled="@_busy">
                 @foreach (var y in _years) { <option value="@y">@y</option> }
             </select>
         </div>
+        <div>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">DIVISIONS (leave empty for all)</label>
+            <MudSelect T="int" Dense="true" MultiSelection="true" SelectAll="true"
+                       SelectedValues="_selectedDivs"
+                       SelectedValuesChanged="@(v => _selectedDivs = v.ToHashSet())"
+                       Placeholder="all divisions"
+                       Variant="Variant.Outlined" Margin="Margin.Dense">
+                @foreach (var d in _divisions)
+                {
+                    <MudSelectItem T="int" Value="@d.DivCode">@d.DivCode — @d.Division</MudSelectItem>
+                }
+            </MudSelect>
+        </div>
         <button class="aiwms-btn aiwms-btn-primary" @onclick="GenerateAsync"
-                disabled="@(_loading || _month == 0 || _year == 0 || string.IsNullOrWhiteSpace(_country))">
-            @(_loading ? "Loading…" : "Generate")
+                disabled="@(!CanGenerate)"
+                title="@(CanGenerate ? "Recompute + persist for all countries" : "Generate is only enabled when Country = BFLGroup")">
+            @(_busy && _busyKind == "gen" ? "Generating…" : "Generate")
         </button>
-        <button class="aiwms-btn aiwms-btn-secondary" @onclick="ExportCsv" disabled="@(_rows.Count == 0 || _loading)">Export CSV</button>
+        <button class="aiwms-btn aiwms-btn-secondary" @onclick="LoadAsync" disabled="@(_busy || _month == 0 || _year == 0)">
+            @(_busy && _busyKind == "load" ? "Loading…" : "Load")
+        </button>
+        <button class="aiwms-btn aiwms-btn-secondary" @onclick="ExportExcelAsync" disabled="@(_rows.Count == 0 || _busy)">Export Excel</button>
     </div>
     @if (!string.IsNullOrEmpty(_message))
     {
@@ -50,7 +68,7 @@
     @if (_warnings.Count > 0)
     {
         <div class="aiwms-alert" style="margin-top:8px; background:#fef3c7; border:1px solid #f59e0b; color:#92400e">
-            <b>Partial data:</b>
+            <b>Partial data during Generate:</b>
             <ul style="margin:6px 0 0 20px; padding:0">
                 @foreach (var w in _warnings) { <li>@w</li> }
             </ul>
@@ -65,27 +83,27 @@
             <table class="aiwms-table aiwms-table-dense" style="font-size:11.5px">
                 <thead style="position:sticky; top:0; background:white; z-index:1">
                     <tr>
-                        <th>Country</th>
-                        <th>StoreID</th>
-                        <th>Store Name</th>
-                        <th>Divcode</th>
-                        <th>Division</th>
-                        <th>Volume Group</th>
-                        <th style="text-align:right">Priority Ranking</th>
-                        <th>EOM Month</th>
-                        <th style="text-align:right">Tgt EOM</th>
-                        <th style="text-align:right">SOH Today</th>
-                        <th style="text-align:right">No. of Weeks to include Sales</th>
-                        <th style="text-align:right">Week Sales</th>
-                        <th style="text-align:right">InTransit</th>
-                        <th style="text-align:right">Ex2 DC SOH</th>
-                        <th style="text-align:right">Counting WIP</th>
-                        <th style="text-align:right">OTS Qty Today</th>
-                        <th style="text-align:right">OTS % Today</th>
+                        @SortHeader("Country",         "Country",   "160px")
+                        @SortHeader("StoreID",         "StoreID",   "120px")
+                        @SortHeader("StoreName",       "Store Name","260px")
+                        @SortHeader("DivCode",         "Divcode",   null,  true)
+                        @SortHeader("Division",        "Division",  "220px")
+                        @SortHeader("VolumeGroup",     "Volume Group")
+                        @SortHeader("PriorityRank",    "Priority Ranking", null, true)
+                        @SortHeader("EOMMonth",        "EOM Month")
+                        @SortHeader("TgtEOM",          "Tgt EOM",  null, true)
+                        @SortHeader("SOHToday",        "SOH Today", null, true)
+                        @SortHeader("WeeksToInclude",  "No. of Weeks to include Sales", null, true)
+                        @SortHeader("WeekSales",       "Week Sales", null, true)
+                        @SortHeader("InTransit",       "InTransit", null, true)
+                        @SortHeader("Ex2DcSoh",        "Ex2 DC SOH", null, true)
+                        @SortHeader("CountingWIP",     "Counting WIP", null, true)
+                        @SortHeader("OtsQtyToday",     "OTS Qty Today", null, true)
+                        @SortHeader("OtsPercentToday", "OTS % Today", null, true)
                     </tr>
                 </thead>
                 <tbody>
-                    @foreach (var r in _rows)
+                    @foreach (var r in SortedRows)
                     {
                         <tr>
                             <td>@r.Country</td>
@@ -104,7 +122,7 @@
                             <td style="text-align:right">@r.Ex2DcSoh.ToString("N0")</td>
                             <td style="text-align:right">@r.CountingWIP.ToString("N0")</td>
                             <td style="text-align:right"><b>@r.OtsQtyToday.ToString("N0")</b></td>
-                            <td style="text-align:right">@r.OtsPercentToday.ToString("N1")%</td>
+                            <td style="text-align:right">@((int)Math.Round(r.OtsPercentToday))%</td>
                         </tr>
                     }
                 </tbody>
@@ -121,21 +139,29 @@
     private string _country = OtsPoAllocationService.BflGroup;
     private int    _month;
     private int    _year;
-    private bool   _loading;
+    private bool   _busy;
+    private string _busyKind = "";   // "gen" | "load"
     private string _message = "";
     private bool   _isError;
+    private DateTime? _lastGenerated;
     private List<string> _countries = new();
     private List<string> _warnings = new();
     private List<OtsMonthYearOption> _monthYears = new();
     private List<int>    _years = new();
     private List<int>    _monthsForSelectedYear = new();
+    private List<(int DivCode, string Division)> _divisions = new();
+    private HashSet<int> _selectedDivs = new();
     private List<OtsPoAllocationRow> _rows = new();
+    private string _sortKey = "Country";
+    private bool   _sortAsc = true;
+
+    private bool CanGenerate =>
+        !_busy && _month != 0 && _year != 0
+        && string.Equals(_country, OtsPoAllocationService.BflGroup, StringComparison.OrdinalIgnoreCase);
 
     protected override async Task OnInitializedAsync()
     {
         await Me.EnsureLoadedAsync();
-        // Country defaults to BFLGroup (all). User may then pick a specific country.
-        _country = OtsPoAllocationService.BflGroup;
         try
         {
             _countries = await Svc.GetCountriesAsync();
@@ -150,6 +176,7 @@
                             ? today.Month
                             : _monthsForSelectedYear.FirstOrDefault();
             }
+            await RefreshDivisionsAsync();
         }
         catch (Exception ex) { ShowError($"Failed to load pickers: {ex.Message}"); }
     }
@@ -159,7 +186,21 @@
         UpdateMonthsForYear();
         if (!_monthsForSelectedYear.Contains(_month))
             _month = _monthsForSelectedYear.FirstOrDefault();
-        return Task.CompletedTask;
+        return RefreshDivisionsAsync();
+    }
+
+    private Task OnCountryChangedAsync() => Task.CompletedTask;
+
+    private async Task RefreshDivisionsAsync()
+    {
+        if (_month == 0 || _year == 0) { _divisions = new(); return; }
+        try
+        {
+            _divisions = await Svc.GetDivisionsAsync(_month, _year);
+            _selectedDivs = _selectedDivs.Where(d => _divisions.Any(x => x.DivCode == d)).ToHashSet();
+            _lastGenerated = await Svc.GetLastGeneratedTsAsync(_month, _year);
+        }
+        catch (Exception ex) { ShowError($"Divisions load failed: {ex.Message}"); }
     }
 
     private void UpdateMonthsForYear()
@@ -174,41 +215,126 @@
 
     private async Task GenerateAsync()
     {
-        _loading = true; _message = ""; _isError = false; _warnings = new();
+        if (!CanGenerate) return;
+        _busy = true; _busyKind = "gen"; _message = ""; _isError = false; _warnings = new();
         try
         {
-            var (rows, warnings) = await Svc.GenerateAsync(_month, _year, _country);
-            _rows = rows;
+            var (n, warnings) = await Svc.GenerateAndPersistAsync(_month, _year);
             _warnings = warnings;
-            if (_rows.Count == 0) _message = "No rows.";
+            _lastGenerated = await Svc.GetLastGeneratedTsAsync(_month, _year);
+            _message = n == 0
+                ? "Generate returned no rows — nothing persisted."
+                : $"Generated {n:N0} row(s). Now click Load (with your Country + Divisions filters) to see the grid.";
         }
-        catch (Exception ex) { ShowError(ex.Message); }
-        finally { _loading = false; }
+        catch (Exception ex) { ShowError($"Generate failed: {ex.Message}"); }
+        finally { _busy = false; _busyKind = ""; }
     }
 
-    private async Task ExportCsv()
+    private async Task LoadAsync()
+    {
+        _busy = true; _busyKind = "load"; _message = ""; _isError = false;
+        try
+        {
+            _rows = await Svc.LoadPersistedAsync(_month, _year, _country,
+                _selectedDivs.Count == 0 ? null : _selectedDivs);
+            if (_rows.Count == 0)
+                _message = _lastGenerated is null
+                    ? "No data yet — click Generate first (Country = BFLGroup)."
+                    : "Load returned no rows for the current filters.";
+        }
+        catch (Exception ex) { ShowError($"Load failed: {ex.Message}"); }
+        finally { _busy = false; _busyKind = ""; }
+    }
+
+    private async Task ExportExcelAsync()
     {
         if (_rows.Count == 0) return;
-        var sb = new StringBuilder();
-        sb.AppendLine("Country,StoreID,Store Name,Divcode,Division,Volume Group,Priority Ranking,EOM Month,Tgt EOM,SOH Today,Weeks,Week Sales,InTransit,Ex2 DC SOH,Counting WIP,OTS Qty Today,OTS % Today");
-        foreach (var r in _rows)
+        using var wb = new XLWorkbook();
+        var ws = wb.AddWorksheet("OTS");
+        string[] headers =
         {
-            sb.AppendLine(string.Join(",",
-                Esc(r.Country), Esc(r.StoreID), Esc(r.StoreName ?? ""), r.DivCode, Esc(r.Division ?? ""),
-                Esc(r.VolumeGroup ?? ""), r.PriorityRank?.ToString() ?? "", Esc(r.EOMMonth),
-                r.TgtEOM, r.SOHToday, r.WeeksToInclude, r.WeekSales, r.InTransit, r.Ex2DcSoh,
-                r.CountingWIP, r.OtsQtyToday, r.OtsPercentToday.ToString("F2")));
+            "Country","StoreID","Store Name","Divcode","Division","Volume Group","Priority Ranking",
+            "EOM Month","Tgt EOM","SOH Today","No. of Weeks to include Sales","Week Sales",
+            "InTransit","Ex2 DC SOH","Counting WIP","OTS Qty Today","OTS % Today"
+        };
+        for (int i = 0; i < headers.Length; i++) ws.Cell(1, i + 1).Value = headers[i];
+        int row = 2;
+        foreach (var r in SortedRows)
+        {
+            ws.Cell(row, 1).Value  = r.Country;
+            ws.Cell(row, 2).Value  = r.StoreID;
+            ws.Cell(row, 3).Value  = r.StoreName ?? "";
+            ws.Cell(row, 4).Value  = r.DivCode;
+            ws.Cell(row, 5).Value  = r.Division ?? "";
+            ws.Cell(row, 6).Value  = r.VolumeGroup ?? "";
+            ws.Cell(row, 7).Value  = r.PriorityRank ?? 0;
+            ws.Cell(row, 8).Value  = r.EOMMonth;
+            ws.Cell(row, 9).Value  = r.TgtEOM;
+            ws.Cell(row,10).Value  = r.SOHToday;
+            ws.Cell(row,11).Value  = r.WeeksToInclude;
+            ws.Cell(row,12).Value  = r.WeekSales;
+            ws.Cell(row,13).Value  = r.InTransit;
+            ws.Cell(row,14).Value  = r.Ex2DcSoh;
+            ws.Cell(row,15).Value  = r.CountingWIP;
+            ws.Cell(row,16).Value  = r.OtsQtyToday;
+            ws.Cell(row,17).Value  = (int)Math.Round(r.OtsPercentToday);
+            row++;
         }
-        var name = $"ots-po-allocation-{_year:D4}-{_month:D2}-{_rundate:yyyyMMdd}.csv";
+        ws.Columns().AdjustToContents();
+        using var ms = new MemoryStream();
+        wb.SaveAs(ms);
+        var b64 = Convert.ToBase64String(ms.ToArray());
+        var name = $"ots-po-allocation-{_year:D4}-{_month:D2}-{_rundate:yyyyMMdd}.xlsx";
         await JS.InvokeVoidAsync("eval",
-            $"var b=new Blob([{System.Text.Json.JsonSerializer.Serialize(sb.ToString())}],{{type:'text/csv'}});" +
-            $"var a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='{name}';a.click();");
+            $"var link=document.createElement('a');link.href='data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64}';link.download='{name}';link.click();");
     }
 
-    private static string Esc(string s)
-        => s.Contains(',') || s.Contains('"') || s.Contains('\n')
-            ? "\"" + s.Replace("\"", "\"\"") + "\""
-            : s;
+    private RenderFragment SortHeader(string key, string label, string? width = null, bool numeric = false) => builder =>
+    {
+        var style = "cursor:pointer" + (width is null ? "" : $"; width:{width}");
+        if (numeric) style += "; text-align:right";
+        var arrow = _sortKey == key ? (_sortAsc ? " ▲" : " ▼") : "";
+        builder.OpenElement(0, "th");
+        builder.AddAttribute(1, "style", style);
+        builder.AddAttribute(2, "onclick", EventCallback.Factory.Create(this, () => ToggleSort(key)));
+        builder.AddContent(3, label + arrow);
+        builder.CloseElement();
+    };
+
+    private void ToggleSort(string key)
+    {
+        if (_sortKey == key) _sortAsc = !_sortAsc;
+        else { _sortKey = key; _sortAsc = true; }
+    }
+
+    private IEnumerable<OtsPoAllocationRow> SortedRows
+    {
+        get
+        {
+            Func<OtsPoAllocationRow, object?> k = _sortKey switch
+            {
+                "Country"         => r => r.Country,
+                "StoreID"         => r => r.StoreID,
+                "StoreName"       => r => r.StoreName,
+                "DivCode"         => r => r.DivCode,
+                "Division"        => r => r.Division,
+                "VolumeGroup"     => r => r.VolumeGroup,
+                "PriorityRank"    => r => r.PriorityRank ?? int.MaxValue,
+                "EOMMonth"        => r => r.EOMMonth,
+                "TgtEOM"          => r => r.TgtEOM,
+                "SOHToday"        => r => r.SOHToday,
+                "WeeksToInclude"  => r => r.WeeksToInclude,
+                "WeekSales"       => r => r.WeekSales,
+                "InTransit"       => r => r.InTransit,
+                "Ex2DcSoh"        => r => r.Ex2DcSoh,
+                "CountingWIP"     => r => r.CountingWIP,
+                "OtsQtyToday"     => r => r.OtsQtyToday,
+                "OtsPercentToday" => r => r.OtsPercentToday,
+                _ => r => r.Country,
+            };
+            return _sortAsc ? _rows.OrderBy(k) : _rows.OrderByDescending(k);
+        }
+    }
 
     private void ShowError(string m) { _message = m; _isError = true; }
 }
