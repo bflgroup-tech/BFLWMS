@@ -1,0 +1,201 @@
+@page "/counting/ots-po-allocation"
+@rendermode RenderMode.InteractiveServer
+@using System.Globalization
+@using System.Text
+@using Wms.Core
+@using Wms.Data.Lpm
+@attribute [Authorize(Policy = MenuKeys.OTS_FOR_PO_ALLOCATION)]
+@inject OtsPoAllocationService Svc
+@inject ICurrentUser Me
+@inject IJSRuntime JS
+
+<PageTitle>WMS — OTS for PO Allocation</PageTitle>
+
+<div class="aiwms-page-header">
+    <h2>OTS for PO Allocation</h2>
+    <p>Per-(Country, StoreID, DivCode) OTS math for a picked Month/Year, sourced from <code>LPM_EOM_Output</code> + <code>LPM_Locstock</code> + <code>LPM_Ex2ItemSOH</code> + <code>lpm_salestgtwk_stores</code> + Azure <code>WMS_ContAllocationData</code>. Rundate: <b>@_rundate.ToString("dd/MM/yyyy")</b>.</p>
+</div>
+
+<div class="aiwms-section">
+    <div style="display:grid; grid-template-columns: 1fr 1fr 1fr auto auto; gap:12px; align-items:end">
+        <div>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COUNTRY</label>
+            <select @bind="_country" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" disabled="@_loading">
+                <option value="">(all)</option>
+                @foreach (var c in _countries) { <option value="@c">@c</option> }
+            </select>
+        </div>
+        <div>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">MONTH *</label>
+            <select @bind="_month" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" disabled="@_loading">
+                @foreach (var m in _monthsForSelectedYear) { <option value="@m">@(CultureInfo.InvariantCulture.DateTimeFormat.GetMonthName(m)) (@m)</option> }
+            </select>
+        </div>
+        <div>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">YEAR *</label>
+            <select @bind="_year" @bind:after="OnYearChangedAsync" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" disabled="@_loading">
+                @foreach (var y in _years) { <option value="@y">@y</option> }
+            </select>
+        </div>
+        <button class="aiwms-btn aiwms-btn-primary" @onclick="GenerateAsync" disabled="@(_loading || _month == 0 || _year == 0)">
+            @(_loading ? "Loading…" : "Generate")
+        </button>
+        <button class="aiwms-btn aiwms-btn-secondary" @onclick="ExportCsv" disabled="@(_rows.Count == 0 || _loading)">Export CSV</button>
+    </div>
+    @if (!string.IsNullOrEmpty(_message))
+    {
+        <div class="aiwms-alert @(_isError ? "error" : "info")" style="margin-top:12px">@_message</div>
+    }
+</div>
+
+@if (_rows.Count > 0)
+{
+    <div class="aiwms-section" style="padding:0; overflow:hidden">
+        <div style="max-height:640px; overflow:auto">
+            <table class="aiwms-table aiwms-table-dense" style="font-size:11.5px">
+                <thead style="position:sticky; top:0; background:white; z-index:1">
+                    <tr>
+                        <th>Country</th>
+                        <th>StoreID</th>
+                        <th>Store Name</th>
+                        <th>Divcode</th>
+                        <th>Division</th>
+                        <th>Volume Group</th>
+                        <th style="text-align:right">Priority Ranking</th>
+                        <th>EOM Month</th>
+                        <th style="text-align:right">Tgt EOM</th>
+                        <th style="text-align:right">SOH Today</th>
+                        <th style="text-align:right">No. of Weeks to include Sales</th>
+                        <th style="text-align:right">Week Sales</th>
+                        <th style="text-align:right">InTransit</th>
+                        <th style="text-align:right">Ex2 DC SOH</th>
+                        <th style="text-align:right">Counting WIP</th>
+                        <th style="text-align:right">OTS Qty Today</th>
+                        <th style="text-align:right">OTS % Today</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var r in _rows)
+                    {
+                        <tr>
+                            <td>@r.Country</td>
+                            <td style="font-family:var(--font-mono)">@r.StoreID</td>
+                            <td>@r.StoreName</td>
+                            <td>@r.DivCode</td>
+                            <td>@r.Division</td>
+                            <td>@r.VolumeGroup</td>
+                            <td style="text-align:right">@r.PriorityRank</td>
+                            <td>@r.EOMMonth</td>
+                            <td style="text-align:right">@r.TgtEOM.ToString("N0")</td>
+                            <td style="text-align:right">@r.SOHToday.ToString("N0")</td>
+                            <td style="text-align:right">@r.WeeksToInclude</td>
+                            <td style="text-align:right">@r.WeekSales.ToString("N0")</td>
+                            <td style="text-align:right">@r.InTransit.ToString("N0")</td>
+                            <td style="text-align:right">@r.Ex2DcSoh.ToString("N0")</td>
+                            <td style="text-align:right">@r.CountingWIP.ToString("N0")</td>
+                            <td style="text-align:right"><b>@r.OtsQtyToday.ToString("N0")</b></td>
+                            <td style="text-align:right">@r.OtsPercentToday.ToString("N1")%</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+        <div style="padding:8px 12px; background:#f9fafb; border-top:1px solid var(--border-default); font-size:11px; color:var(--text-secondary)">
+            @_rows.Count row(s)
+        </div>
+    </div>
+}
+
+@code {
+    private readonly DateTime _rundate = DateTime.UtcNow.AddHours(4).Date;
+    private string _country = "";
+    private int    _month;
+    private int    _year;
+    private bool   _loading;
+    private string _message = "";
+    private bool   _isError;
+    private List<string> _countries = new();
+    private List<OtsMonthYearOption> _monthYears = new();
+    private List<int>    _years = new();
+    private List<int>    _monthsForSelectedYear = new();
+    private List<OtsPoAllocationRow> _rows = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await Me.EnsureLoadedAsync();
+        _country = Me.Country ?? "";
+        try
+        {
+            _countries = await Svc.GetCountriesAsync();
+            _monthYears = await Svc.GetAvailableMonthYearsAsync();
+            _years = _monthYears.Select(x => x.Year).Distinct().OrderByDescending(y => y).ToList();
+            if (_years.Count > 0)
+            {
+                var today = _rundate;
+                _year  = _years.Contains(today.Year) ? today.Year : _years.First();
+                UpdateMonthsForYear();
+                _month = _monthsForSelectedYear.Contains(today.Month)
+                            ? today.Month
+                            : _monthsForSelectedYear.FirstOrDefault();
+            }
+        }
+        catch (Exception ex) { ShowError($"Failed to load pickers: {ex.Message}"); }
+    }
+
+    private Task OnYearChangedAsync()
+    {
+        UpdateMonthsForYear();
+        if (!_monthsForSelectedYear.Contains(_month))
+            _month = _monthsForSelectedYear.FirstOrDefault();
+        return Task.CompletedTask;
+    }
+
+    private void UpdateMonthsForYear()
+    {
+        _monthsForSelectedYear = _monthYears
+            .Where(x => x.Year == _year)
+            .Select(x => x.Month)
+            .Distinct()
+            .OrderBy(m => m)
+            .ToList();
+    }
+
+    private async Task GenerateAsync()
+    {
+        _loading = true; _message = ""; _isError = false;
+        try
+        {
+            var country = string.IsNullOrWhiteSpace(_country) ? null : _country;
+            _rows = await Svc.GenerateAsync(_month, _year, country);
+            if (_rows.Count == 0) _message = "No rows.";
+        }
+        catch (Exception ex) { ShowError(ex.Message); }
+        finally { _loading = false; }
+    }
+
+    private async Task ExportCsv()
+    {
+        if (_rows.Count == 0) return;
+        var sb = new StringBuilder();
+        sb.AppendLine("Country,StoreID,Store Name,Divcode,Division,Volume Group,Priority Ranking,EOM Month,Tgt EOM,SOH Today,Weeks,Week Sales,InTransit,Ex2 DC SOH,Counting WIP,OTS Qty Today,OTS % Today");
+        foreach (var r in _rows)
+        {
+            sb.AppendLine(string.Join(",",
+                Esc(r.Country), Esc(r.StoreID), Esc(r.StoreName ?? ""), r.DivCode, Esc(r.Division ?? ""),
+                Esc(r.VolumeGroup ?? ""), r.PriorityRank?.ToString() ?? "", Esc(r.EOMMonth),
+                r.TgtEOM, r.SOHToday, r.WeeksToInclude, r.WeekSales, r.InTransit, r.Ex2DcSoh,
+                r.CountingWIP, r.OtsQtyToday, r.OtsPercentToday.ToString("F2")));
+        }
+        var name = $"ots-po-allocation-{_year:D4}-{_month:D2}-{_rundate:yyyyMMdd}.csv";
+        await JS.InvokeVoidAsync("eval",
+            $"var b=new Blob([{System.Text.Json.JsonSerializer.Serialize(sb.ToString())}],{{type:'text/csv'}});" +
+            $"var a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='{name}';a.click();");
+    }
+
+    private static string Esc(string s)
+        => s.Contains(',') || s.Contains('"') || s.Contains('\n')
+            ? "\"" + s.Replace("\"", "\"\"") + "\""
+            : s;
+
+    private void ShowError(string m) { _message = m; _isError = true; }
+}
