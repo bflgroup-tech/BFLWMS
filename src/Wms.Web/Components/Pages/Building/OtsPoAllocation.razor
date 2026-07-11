@@ -101,11 +101,13 @@
                         @SortHeader("CountingWIP",     "Counting WIP", null, true)
                         @SortHeader("OtsQtyToday",     "OTS Qty Today", null, true)
                         @SortHeader("OtsPercentToday", "OTS % Today", null, true)
+                        @SortHeader("OtsTodayRequired","OTS Today Required", null, true)
                     </tr>
                 </thead>
                 <tbody>
                     @foreach (var r in SortedRows)
                     {
+                        var req = Math.Max(0, r.OtsQtyToday);
                         <tr>
                             <td>@r.Country</td>
                             <td style="font-family:var(--font-mono)">@r.StoreID</td>
@@ -124,9 +126,25 @@
                             <td style="text-align:right">@r.CountingWIP.ToString("N0")</td>
                             <td style="text-align:right"><b>@r.OtsQtyToday.ToString("N0")</b></td>
                             <td style="text-align:right">@((int)Math.Round(r.OtsPercentToday))%</td>
+                            <td style="text-align:right"><b>@(req > 0 ? req.ToString("N0") : "")</b></td>
                         </tr>
                     }
                 </tbody>
+                <tfoot style="position:sticky; bottom:0; background:#f3f4f6; z-index:1; font-weight:800">
+                    <tr>
+                        <td colspan="8" style="text-align:right">Totals</td>
+                        <td style="text-align:right">@_totTgtEOM.ToString("N0")</td>
+                        <td style="text-align:right">@_totSOH.ToString("N0")</td>
+                        <td></td>
+                        <td style="text-align:right">@_totWeekSales.ToString("N0")</td>
+                        <td style="text-align:right">@_totInTransit.ToString("N0")</td>
+                        <td style="text-align:right">@_totEx2.ToString("N0")</td>
+                        <td style="text-align:right">@_totWIP.ToString("N0")</td>
+                        <td style="text-align:right">@_totOtsQty.ToString("N0")</td>
+                        <td></td>
+                        <td style="text-align:right">@_totOtsRequired.ToString("N0")</td>
+                    </tr>
+                </tfoot>
             </table>
         </div>
         <div style="padding:8px 12px; background:#f9fafb; border-top:1px solid var(--border-default); font-size:11px; color:var(--text-secondary)">
@@ -155,6 +173,21 @@
     private List<OtsPoAllocationRow> _rows = new();
     private string _sortKey = "Country";
     private bool   _sortAsc = true;
+
+    // Column totals — recomputed whenever _rows changes.
+    private int _totTgtEOM, _totSOH, _totWeekSales, _totInTransit, _totEx2, _totWIP, _totOtsQty, _totOtsRequired;
+
+    private void RecomputeTotals()
+    {
+        _totTgtEOM      = _rows.Sum(r => r.TgtEOM);
+        _totSOH         = _rows.Sum(r => r.SOHToday);
+        _totWeekSales   = _rows.Sum(r => r.WeekSales);
+        _totInTransit   = _rows.Sum(r => r.InTransit);
+        _totEx2         = _rows.Sum(r => r.Ex2DcSoh);
+        _totWIP         = _rows.Sum(r => r.CountingWIP);
+        _totOtsQty      = _rows.Sum(r => r.OtsQtyToday);
+        _totOtsRequired = _rows.Sum(r => Math.Max(0, r.OtsQtyToday));
+    }
 
     private bool CanGenerate =>
         !_busy && _month != 0 && _year != 0
@@ -266,6 +299,7 @@
         {
             _rows = await Svc.LoadPersistedAsync(_month, _year, _country,
                 _selectedDivs.Count == 0 ? null : _selectedDivs);
+            RecomputeTotals();
             if (_rows.Count == 0)
                 _message = _lastGenerated is null
                     ? "No data yet — click Generate first (Country = BFLGroup)."
@@ -284,12 +318,13 @@
         {
             "Country","StoreID","Store Name","Divcode","Division","Volume Group","Priority Ranking",
             "EOM Month","Tgt EOM","SOH Today","No. of Weeks to include Sales","Week Sales",
-            "InTransit","Ex2 DC SOH","Counting WIP","OTS Qty Today","OTS % Today"
+            "InTransit","Ex2 DC SOH","Counting WIP","OTS Qty Today","OTS % Today","OTS Today Required"
         };
         for (int i = 0; i < headers.Length; i++) ws.Cell(1, i + 1).Value = headers[i];
         int row = 2;
         foreach (var r in SortedRows)
         {
+            var req = Math.Max(0, r.OtsQtyToday);
             ws.Cell(row, 1).Value  = r.Country;
             ws.Cell(row, 2).Value  = r.StoreID;
             ws.Cell(row, 3).Value  = r.StoreName ?? "";
@@ -307,8 +342,20 @@
             ws.Cell(row,15).Value  = r.CountingWIP;
             ws.Cell(row,16).Value  = r.OtsQtyToday;
             ws.Cell(row,17).Value  = (int)Math.Round(r.OtsPercentToday);
+            ws.Cell(row,18).Value  = req > 0 ? req : 0;
             row++;
         }
+        // Totals row
+        ws.Cell(row, 1).Value = "Totals";
+        ws.Cell(row, 9).Value  = _totTgtEOM;
+        ws.Cell(row,10).Value  = _totSOH;
+        ws.Cell(row,12).Value  = _totWeekSales;
+        ws.Cell(row,13).Value  = _totInTransit;
+        ws.Cell(row,14).Value  = _totEx2;
+        ws.Cell(row,15).Value  = _totWIP;
+        ws.Cell(row,16).Value  = _totOtsQty;
+        ws.Cell(row,18).Value  = _totOtsRequired;
+        ws.Row(row).Style.Font.Bold = true;
         ws.Columns().AdjustToContents();
         using var ms = new MemoryStream();
         wb.SaveAs(ms);
@@ -359,6 +406,7 @@
                 "CountingWIP"     => r => r.CountingWIP,
                 "OtsQtyToday"     => r => r.OtsQtyToday,
                 "OtsPercentToday" => r => r.OtsPercentToday,
+                "OtsTodayRequired"=> r => Math.Max(0, r.OtsQtyToday),
                 _ => r => r.Country,
             };
             return _sortAsc ? _rows.OrderBy(k) : _rows.OrderByDescending(k);
