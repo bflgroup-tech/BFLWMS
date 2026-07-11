@@ -84,7 +84,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver)
                     e.MerchNeedMonth AS TgtEOM,
                     ISNULL(w.Weeks, 1) AS WeeksToInclude
                   FROM dbo.LPM_EOM_Output e WITH (NOLOCK)
-                  LEFT JOIN LPMSIM.dbo.Divisions dv WITH (NOLOCK) ON dv.DivCode = e.DivCode
+                  LEFT JOIN LPMSIM.dbo.Division dv WITH (NOLOCK) ON dv.DivCode = e.DivCode
                   LEFT JOIN bfldata.dbo.DataSettings d WITH (NOLOCK) ON d.StoreID = e.StoreID
                   LEFT JOIN dbo.WmsCountryOtsWeeks w WITH (NOLOCK) ON w.SimCountry = e.Country
                  WHERE e.Month1 = @month AND e.Year1 = @year
