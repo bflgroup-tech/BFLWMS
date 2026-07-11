@@ -43,6 +43,7 @@
             <MudSelect T="int" Dense="true" MultiSelection="true" SelectAll="true"
                        SelectedValues="_selectedDivs"
                        SelectedValuesChanged="@(v => _selectedDivs = v.ToHashSet())"
+                       MultiSelectionTextFunc="@FormatSelectedDivs"
                        Placeholder="all divisions"
                        Variant="Variant.Outlined" Margin="Margin.Dense">
                 @foreach (var d in _divisions)
@@ -53,7 +54,7 @@
         </div>
         <button class="aiwms-btn aiwms-btn-primary" @onclick="GenerateAsync"
                 disabled="@(!CanGenerate)"
-                title="@(CanGenerate ? "Recompute + persist for all countries" : "Generate is only enabled when Country = BFLGroup")">
+                title="@(CanGenerate ? "Recompute + persist for all countries" : "Generate is only enabled when Country = BFLGroup and no Divisions filter is applied")">
             @(_busy && _busyKind == "gen" ? "Generating…" : "Generate")
         </button>
         <button class="aiwms-btn aiwms-btn-secondary" @onclick="LoadAsync" disabled="@(_busy || _month == 0 || _year == 0)">
@@ -157,7 +158,35 @@
 
     private bool CanGenerate =>
         !_busy && _month != 0 && _year != 0
-        && string.Equals(_country, OtsPoAllocationService.BflGroup, StringComparison.OrdinalIgnoreCase);
+        && string.Equals(_country, OtsPoAllocationService.BflGroup, StringComparison.OrdinalIgnoreCase)
+        && _selectedDivs.Count == 0;
+
+    private string FormatSelectedDivs(List<string> selected)
+    {
+        if (selected.Count == 0) return "";
+        // selected values arrive as MudSelectItem's string form ("403" etc.);
+        // map back to Division names so the chip reads "Beauty (403)" instead of "403".
+        var pretty = selected.Select(s =>
+        {
+            if (int.TryParse(s, out var code))
+            {
+                var d = _divisions.FirstOrDefault(x => x.DivCode == code);
+                return d.Division is { Length: > 0 } name ? $"{name} ({code})" : code.ToString();
+            }
+            return s;
+        });
+        return string.Join(", ", pretty);
+    }
+
+    // Volume Group sort — A+ ranked ABOVE plain A ("A+ first when asc").
+    // Alpha-safe for anything else (single-letter grades map to their char).
+    private static int VolumeGroupRank(string? vg)
+    {
+        if (string.IsNullOrWhiteSpace(vg)) return 999;
+        var v = vg.Trim().ToUpperInvariant();
+        if (v == "A+") return 0;
+        return 1 + (v[0] - 'A'); // A=1, B=2, C=3, D=4, E=5, ...
+    }
 
     protected override async Task OnInitializedAsync()
     {
@@ -318,7 +347,7 @@
                 "StoreName"       => r => r.StoreName,
                 "DivCode"         => r => r.DivCode,
                 "Division"        => r => r.Division,
-                "VolumeGroup"     => r => r.VolumeGroup,
+                "VolumeGroup"     => r => VolumeGroupRank(r.VolumeGroup),
                 "PriorityRank"    => r => r.PriorityRank ?? int.MaxValue,
                 "EOMMonth"        => r => r.EOMMonth,
                 "TgtEOM"          => r => r.TgtEOM,
