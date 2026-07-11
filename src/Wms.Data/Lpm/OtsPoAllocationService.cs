@@ -113,16 +113,15 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver)
         // 3) Ex2 SOH pair per (SIMCountry, DivCode) from LPM_Ex2ItemSOH.
         //
         // Table is item-level with (Ex2StoreID, Itemcode, Ex2SOH, R1WHSOH, BoxSOH, ...).
-        // To land at (Country, DivCode):
         //   Ex2StoreID -> bfldata.dbo.DataSettings.SIMCountry   (country)
-        //   Itemcode   -> datareporting.dbo.vupc_subclass.MH4ID
-        //              -> datareporting.dbo.SubclassMaster      (DivCode)
+        //   Itemcode   -> datareporting.dbo.vupc_subclass.DivID (matches
+        //                LPM_EOM_Output.DivCode's domain)
         var ex2ByKey = await SafeAsync(warnings, "InTransit/Ex2 DC SOH (LPM_Ex2ItemSOH)", async () =>
         {
             await using var c = OpenOnPremBackup();
             var rows = await c.QueryAsync<(string Country, int DivCode, int InTransitTotal, int Ex2DcTotal)>(new CommandDefinition(@"
                 SELECT ds.SIMCountry AS Country,
-                       sm.DivCode    AS DivCode,
+                       v.DivID       AS DivCode,
                        SUM(ISNULL(sohs.Ex2SOH, 0) + ISNULL(sohs.BoxSOH, 0)) AS InTransitTotal,
                        SUM(ISNULL(sohs.R1WHSOH, 0))                         AS Ex2DcTotal
                   FROM dbo.LPM_Ex2ItemSOH sohs WITH (NOLOCK)
@@ -130,10 +129,8 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver)
                     ON ds.StoreID = sohs.Ex2StoreID
                   JOIN datareporting.dbo.vupc_subclass v WITH (NOLOCK)
                     ON v.itemcode = sohs.Itemcode
-                  JOIN datareporting.dbo.SubclassMaster sm WITH (NOLOCK)
-                    ON sm.MH4ID = v.MH4ID
-                 WHERE ds.SIMCountry IS NOT NULL AND sm.DivCode IS NOT NULL
-                 GROUP BY ds.SIMCountry, sm.DivCode",
+                 WHERE ds.SIMCountry IS NOT NULL AND v.DivID IS NOT NULL
+                 GROUP BY ds.SIMCountry, v.DivID",
                 commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
             return rows.ToDictionary(r => (r.Country, r.DivCode), r => (r.InTransitTotal, r.Ex2DcTotal));
         }, () => new Dictionary<(string, int), (int, int)>());
