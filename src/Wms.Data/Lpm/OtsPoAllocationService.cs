@@ -243,6 +243,8 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         if (baseRows.Count == 0) return (new(), warnings);
 
         // 2) SOH Today per (StoreID, DivCode) from Racks.dbo.LPM_Locstock.
+        //    StoreID keys are upper-cased so the ECom special-case below can
+        //    look up "ONLINE" + "ONLINEKSA" without worrying about source casing.
         var sohByKey = await SafeAsync(warnings, "SOH Today (Racks.dbo.LPM_Locstock)", async () =>
         {
             await using var c = OpenOnPremBackup();
@@ -251,7 +253,9 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                   FROM Racks.dbo.LPM_Locstock WITH (NOLOCK)
                  GROUP BY StoreID, DivCode",
                 commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-            return rows.ToDictionary(r => (r.StoreID, r.DivCode), r => r.SOH);
+            return rows.ToDictionary(
+                r => (r.StoreID.Trim().ToUpperInvariant(), r.DivCode),
+                r => r.SOH);
         }, () => new Dictionary<(string, int), int>());
 
         // 3) Ex2 SOH pair per (Country, DivCode) from LPM_Ex2ItemSOH (item-level),
@@ -367,7 +371,20 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         var results = new List<OtsPoAllocationRow>(baseRows.Count);
         foreach (var r in baseRows)
         {
-            var soh    = sohByKey.TryGetValue((r.StoreID, r.DivCode), out var s) ? s : 0;
+            // SOH lookup — ECOM special-case sums SOH across the Online (UAE)
+            // AND OnlineKSA stores, since a single ECOM base row represents the
+            // combined online channel.
+            int soh;
+            if (string.Equals(r.Country, "ECOM", StringComparison.OrdinalIgnoreCase))
+            {
+                var sUae = sohByKey.TryGetValue(("ONLINE",    r.DivCode), out var v1) ? v1 : 0;
+                var sKsa = sohByKey.TryGetValue(("ONLINEKSA", r.DivCode), out var v2) ? v2 : 0;
+                soh = sUae + sKsa;
+            }
+            else
+            {
+                soh = sohByKey.TryGetValue((r.StoreID.Trim().ToUpperInvariant(), r.DivCode), out var s) ? s : 0;
+            }
             var ws     = weekSalesByKey.TryGetValue((r.StoreID, r.DivCode), out var w) ? w : 0;
             var stores = storeCountByCountry.TryGetValue(r.Country, out var sc) ? sc : 0;
             int inTransit = 0, ex2dc = 0;
