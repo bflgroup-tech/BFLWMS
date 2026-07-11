@@ -21,7 +21,7 @@
         <div>
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COUNTRY</label>
             <select @bind="_country" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" disabled="@_loading">
-                <option value="">(all)</option>
+                <option value="@OtsPoAllocationService.BflGroup">@OtsPoAllocationService.BflGroup (all)</option>
                 @foreach (var c in _countries) { <option value="@c">@c</option> }
             </select>
         </div>
@@ -37,7 +37,8 @@
                 @foreach (var y in _years) { <option value="@y">@y</option> }
             </select>
         </div>
-        <button class="aiwms-btn aiwms-btn-primary" @onclick="GenerateAsync" disabled="@(_loading || _month == 0 || _year == 0)">
+        <button class="aiwms-btn aiwms-btn-primary" @onclick="GenerateAsync"
+                disabled="@(_loading || _month == 0 || _year == 0 || string.IsNullOrWhiteSpace(_country))">
             @(_loading ? "Loading…" : "Generate")
         </button>
         <button class="aiwms-btn aiwms-btn-secondary" @onclick="ExportCsv" disabled="@(_rows.Count == 0 || _loading)">Export CSV</button>
@@ -45,6 +46,15 @@
     @if (!string.IsNullOrEmpty(_message))
     {
         <div class="aiwms-alert @(_isError ? "error" : "info")" style="margin-top:12px">@_message</div>
+    }
+    @if (_warnings.Count > 0)
+    {
+        <div class="aiwms-alert" style="margin-top:8px; background:#fef3c7; border:1px solid #f59e0b; color:#92400e">
+            <b>Partial data:</b>
+            <ul style="margin:6px 0 0 20px; padding:0">
+                @foreach (var w in _warnings) { <li>@w</li> }
+            </ul>
+        </div>
     }
 </div>
 
@@ -108,13 +118,14 @@
 
 @code {
     private readonly DateTime _rundate = DateTime.UtcNow.AddHours(4).Date;
-    private string _country = "";
+    private string _country = OtsPoAllocationService.BflGroup;
     private int    _month;
     private int    _year;
     private bool   _loading;
     private string _message = "";
     private bool   _isError;
     private List<string> _countries = new();
+    private List<string> _warnings = new();
     private List<OtsMonthYearOption> _monthYears = new();
     private List<int>    _years = new();
     private List<int>    _monthsForSelectedYear = new();
@@ -123,7 +134,8 @@
     protected override async Task OnInitializedAsync()
     {
         await Me.EnsureLoadedAsync();
-        _country = Me.Country ?? "";
+        // Country defaults to BFLGroup (all). User may then pick a specific country.
+        _country = OtsPoAllocationService.BflGroup;
         try
         {
             _countries = await Svc.GetCountriesAsync();
@@ -162,11 +174,12 @@
 
     private async Task GenerateAsync()
     {
-        _loading = true; _message = ""; _isError = false;
+        _loading = true; _message = ""; _isError = false; _warnings = new();
         try
         {
-            var country = string.IsNullOrWhiteSpace(_country) ? null : _country;
-            _rows = await Svc.GenerateAsync(_month, _year, country);
+            var (rows, warnings) = await Svc.GenerateAsync(_month, _year, _country);
+            _rows = rows;
+            _warnings = warnings;
             if (_rows.Count == 0) _message = "No rows.";
         }
         catch (Exception ex) { ShowError(ex.Message); }

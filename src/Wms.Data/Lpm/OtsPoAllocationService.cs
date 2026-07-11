@@ -8,23 +8,18 @@ namespace Wms.Data.Lpm;
 /// Data service for the "OTS for PO Allocation" report.
 ///
 /// Grain: one row per (Country, StoreID, DivCode) filtered by a picked
-/// (Month, Year) and optional country filter.
+/// (Month, Year) and optional country filter. BFLGroup = no filter.
 ///
-/// Sources:
-///   - LPMSIM.dbo.LPM_EOM_Output      (base grid: StoreID, Country, DivCode,
-///                                     VolumeGroup, PriorityRank, MerchNeedMonth)
-///   - LPMSIM.dbo.Divisions           (DivCode -> Division human name)
-///   - bfldata.dbo.DataSettings       (StoreID -> PBFullname Store Name)
-///   - Racks.dbo.LPM_Locstock         (SUM SOH per StoreID + DivCode)
-///   - LPMSIM.dbo.LPM_Ex2ItemSOH      (Ex2SOH + boxsoh + r1whsoh per Country + DivCode)
-///   - LPMSIM.dbo.lpm_salestgtwk_stores (Week Sales — SalesTgtWk summed over next N wks)
-///   - LPMSIM.dbo.WmsCountryOtsWeeks  (SIM country -> weeks-to-include)
-///   - Azure WMS.dbo.WMS_ContAllocationData (Counting WIP — approved not completed)
-///   - Azure WMS.dbo.WmsBuildingCompletion (exclude completed contnos from WIP)
+/// Each satellite lookup (SOH, Ex2SOH pair, WeekSales, StoreCount, WIP) is
+/// run in its own try/catch so a single schema mismatch shows up as zeros
+/// in that one column rather than blanking the whole grid. The list of
+/// warnings is returned alongside the rows.
 /// </summary>
 public class OtsPoAllocationService(IOnPremConnectionResolver resolver)
 {
     private const int CommandTimeoutSeconds = 300;
+
+    public const string BflGroup = "BFLGroup";
 
     private SqlConnection OpenOnPremBackup()
     {
@@ -40,8 +35,6 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver)
         return c;
     }
 
-    /// <summary>Distinct (Month, Year) pairs present on LPM_EOM_Output — used to
-    /// populate the Month + Year pickers.</summary>
     public async Task<List<OtsMonthYearOption>> GetAvailableMonthYearsAsync(CancellationToken ct = default)
     {
         await using var c = OpenOnPremBackup();
@@ -54,8 +47,6 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver)
         return rows.AsList();
     }
 
-    /// <summary>Distinct SIM countries present on LPM_EOM_Output — used for the
-    /// country dropdown on the report page.</summary>
     public async Task<List<string>> GetCountriesAsync(CancellationToken ct = default)
     {
         await using var c = OpenOnPremBackup();
@@ -68,118 +59,111 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver)
         return rows.AsList();
     }
 
-    /// <summary>Main query — builds all 17 columns for the report.</summary>
-    public async Task<List<OtsPoAllocationRow>> GenerateAsync(
+    /// <summary>Main report. country == null OR "BFLGroup" means no country filter.</summary>
+    public async Task<(List<OtsPoAllocationRow> Rows, List<string> Warnings)> GenerateAsync(
         int month, int year, string? country, CancellationToken ct = default)
     {
-        // 1) Base rows + on-prem-side joins in one round trip.
-        //
-        // All the on-prem joins live on OnPremBackup so a single query can pull
-        // the whole grid minus the Azure-side Counting-WIP column. Sub-selects
-        // per store keep the CTE readable and let SQL choose independent plans
-        // for each aggregate.
-        //
-        // WeekSales: pick the "current wk" from a small subquery (MIN(wk) where
-        // start-date <= today) so the same value is used everywhere in the
-        // outer query. Then sum SalesTgtWk over [currentWk, currentWk + N - 1].
-        var sql = @"
-            DECLARE @today DATE = CAST(DATEADD(hour, 4, SYSUTCDATETIME()) AS DATE);
+        var warnings = new List<string>();
+        var filter = string.IsNullOrWhiteSpace(country) || string.Equals(country, BflGroup, StringComparison.OrdinalIgnoreCase)
+            ? null : country;
 
-            ;WITH weeks AS (
-                SELECT SimCountry, Weeks FROM dbo.WmsCountryOtsWeeks WITH (NOLOCK)
-            ),
-            storeCount AS (
-                SELECT Country, COUNT(DISTINCT StoreID) AS StoreCnt
-                  FROM dbo.LPM_EOM_Output WITH (NOLOCK)
-                 WHERE Month1 = @month AND Year1 = @year
-                 GROUP BY Country
-            ),
-            currentWk AS (
-                -- Best-effort: the smallest week number whose salesTgtWk row is
-                -- still valid this week. Falls back to MIN(wk) if no dating cols.
-                SELECT MIN(wk) AS Wk FROM dbo.lpm_salestgtwk_stores WITH (NOLOCK)
-                 WHERE wk >= (SELECT MIN(wk) FROM dbo.lpm_salestgtwk_stores WITH (NOLOCK))
-            ),
-            weekSales AS (
-                SELECT s.StoreID, s.DivCode,
-                       SUM(ISNULL(s.SalesTgtWk, 0)) AS WeekSales
-                  FROM dbo.lpm_salestgtwk_stores s WITH (NOLOCK)
-                  CROSS JOIN currentWk cw
-                  CROSS JOIN dbo.LPM_EOM_Output e
-                 WHERE e.Month1 = @month AND e.Year1 = @year
-                   AND s.StoreID = e.StoreID AND s.DivCode = e.DivCode
-                   AND (@ct IS NULL OR e.Country = @ct)
-                   AND s.wk >= cw.Wk
-                   AND s.wk <  cw.Wk + (SELECT ISNULL(Weeks, 1) FROM weeks WHERE SimCountry = e.Country)
-                 GROUP BY s.StoreID, s.DivCode
-            ),
-            soh AS (
-                SELECT StoreID, DivCode, SUM(ISNULL(SOH, 0)) AS SOHToday
-                  FROM Racks.dbo.LPM_Locstock WITH (NOLOCK)
-                 GROUP BY StoreID, DivCode
-            ),
-            ex2 AS (
-                SELECT Country, DivCode,
-                       SUM(ISNULL(Ex2SOH, 0) + ISNULL(boxsoh, 0)) AS InTransitTotal,
-                       SUM(ISNULL(r1whsoh, 0))                     AS Ex2DcTotal
-                  FROM dbo.LPM_Ex2ItemSOH WITH (NOLOCK)
-                 GROUP BY Country, DivCode
-            )
-            SELECT
-                e.Country,
-                e.StoreID,
-                d.PBFullname AS StoreName,
-                e.DivCode,
-                dv.Division AS Division,
-                e.VolumeGroup,
-                e.PriorityRank,
-                e.MerchNeedMonth AS TgtEOM,
-                ISNULL(w.Weeks, 1) AS WeeksToInclude,
-                ISNULL(soh.SOHToday, 0) AS SOHToday,
-                ISNULL(ws.WeekSales, 0)  AS WeekSales,
-                CASE
-                    WHEN UPPER(e.Country) = 'UAE' THEN 0
-                    WHEN sc.StoreCnt > 0 AND ex2.InTransitTotal IS NOT NULL
-                        THEN ex2.InTransitTotal / sc.StoreCnt
-                    ELSE 0
-                END AS InTransit,
-                CASE
-                    WHEN sc.StoreCnt > 0 AND ex2.Ex2DcTotal IS NOT NULL
-                        THEN ex2.Ex2DcTotal / sc.StoreCnt
-                    ELSE 0
-                END AS Ex2DcSoh
-              FROM dbo.LPM_EOM_Output e WITH (NOLOCK)
-              LEFT JOIN LPMSIM.dbo.Divisions dv WITH (NOLOCK) ON dv.DivCode = e.DivCode
-              LEFT JOIN bfldata.dbo.DataSettings d WITH (NOLOCK) ON d.StoreID = e.StoreID
-              LEFT JOIN weeks w  ON w.SimCountry = e.Country
-              LEFT JOIN storeCount sc ON sc.Country = e.Country
-              LEFT JOIN weekSales ws ON ws.StoreID = e.StoreID AND ws.DivCode = e.DivCode
-              LEFT JOIN soh      ON soh.StoreID   = e.StoreID  AND soh.DivCode = e.DivCode
-              LEFT JOIN ex2      ON ex2.Country   = e.Country  AND ex2.DivCode = e.DivCode
-             WHERE e.Month1 = @month AND e.Year1 = @year
-               AND (@ct IS NULL OR e.Country = @ct)
-             ORDER BY e.Country, e.StoreID, e.DivCode";
-
-        List<OnPremRow> onPremRows;
-        try
+        // 1) Base rows (reliable — well-known columns): LPM_EOM_Output +
+        //    Divisions (name) + DataSettings (store name) + WmsCountryOtsWeeks.
+        List<BaseRow> baseRows;
+        await using (var c = OpenOnPremBackup())
         {
-            await using var c = OpenOnPremBackup();
-            onPremRows = (await c.QueryAsync<OnPremRow>(new CommandDefinition(
-                sql, new { month, year, ct = country },
+            baseRows = (await c.QueryAsync<BaseRow>(new CommandDefinition(@"
+                SELECT
+                    e.Country,
+                    e.StoreID,
+                    d.PBFullname AS StoreName,
+                    e.DivCode,
+                    dv.Division  AS Division,
+                    e.VolumeGroup,
+                    e.PriorityRank,
+                    e.MerchNeedMonth AS TgtEOM,
+                    ISNULL(w.Weeks, 1) AS WeeksToInclude
+                  FROM dbo.LPM_EOM_Output e WITH (NOLOCK)
+                  LEFT JOIN LPMSIM.dbo.Divisions dv WITH (NOLOCK) ON dv.DivCode = e.DivCode
+                  LEFT JOIN bfldata.dbo.DataSettings d WITH (NOLOCK) ON d.StoreID = e.StoreID
+                  LEFT JOIN dbo.WmsCountryOtsWeeks w WITH (NOLOCK) ON w.SimCountry = e.Country
+                 WHERE e.Month1 = @month AND e.Year1 = @year
+                   AND (@ct IS NULL OR e.Country = @ct)
+                 ORDER BY e.Country, e.StoreID, e.DivCode",
+                new { month, year, ct = filter },
                 commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).ToList();
         }
-        catch (Exception ex)
+
+        if (baseRows.Count == 0) return (new(), warnings);
+
+        // 2) SOH Today per (StoreID, DivCode) from Racks.dbo.LPM_Locstock.
+        var sohByKey = await SafeAsync(warnings, "SOH Today (Racks.dbo.LPM_Locstock)", async () =>
         {
-            throw new InvalidOperationException(
-                $"On-prem OTS query failed. If a column name doesn't match the actual schema (e.g. LPM_Locstock.SOH, LPM_Ex2ItemSOH.Ex2SOH/boxsoh/r1whsoh, lpm_salestgtwk_stores.wk/SalesTgtWk, LPMSIM.dbo.Divisions.Division), the SELECT above needs the real column names. Underlying error: {ex.Message}", ex);
-        }
+            await using var c = OpenOnPremBackup();
+            var rows = await c.QueryAsync<(string StoreID, int DivCode, int SOH)>(new CommandDefinition(@"
+                SELECT StoreID, DivCode, SUM(ISNULL(SOH, 0)) AS SOH
+                  FROM Racks.dbo.LPM_Locstock WITH (NOLOCK)
+                 GROUP BY StoreID, DivCode",
+                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            return rows.ToDictionary(r => (r.StoreID, r.DivCode), r => r.SOH);
+        }, () => new Dictionary<(string, int), int>());
 
-        if (onPremRows.Count == 0) return new();
+        // 3) Ex2 SOH pair per (Country, DivCode) from LPM_Ex2ItemSOH.
+        var ex2ByKey = await SafeAsync(warnings, "InTransit/Ex2 DC SOH (LPM_Ex2ItemSOH)", async () =>
+        {
+            await using var c = OpenOnPremBackup();
+            var rows = await c.QueryAsync<(string Country, int DivCode, int InTransitTotal, int Ex2DcTotal)>(new CommandDefinition(@"
+                SELECT Country, DivCode,
+                       SUM(ISNULL(Ex2SOH, 0) + ISNULL(boxsoh, 0)) AS InTransitTotal,
+                       SUM(ISNULL(r1whsoh, 0))                    AS Ex2DcTotal
+                  FROM dbo.LPM_Ex2ItemSOH WITH (NOLOCK)
+                 GROUP BY Country, DivCode",
+                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            return rows.ToDictionary(r => (r.Country, r.DivCode), r => (r.InTransitTotal, r.Ex2DcTotal));
+        }, () => new Dictionary<(string, int), (int, int)>());
 
-        // 2) Counting WIP on Azure — SUM(AllocatedQty) per (Country, StoreID, DivCode)
-        //    for contnos with an approved LPMSIM header but no WmsBuildingCompletion.
-        Dictionary<(string, string, int), int> wipByKey;
-        try
+        // 4) Week Sales per (StoreID, DivCode) summed over next N weeks from currentWk.
+        var weeksByCountry = baseRows.GroupBy(b => b.Country).ToDictionary(g => g.Key, g => g.First().WeeksToInclude);
+        var weekSalesByKey = await SafeAsync(warnings, "Week Sales (lpm_salestgtwk_stores)", async () =>
+        {
+            await using var c = OpenOnPremBackup();
+            var rows = await c.QueryAsync<(string StoreID, int DivCode, string Country, int Wk, int Sales)>(new CommandDefinition(@"
+                SELECT s.StoreID, s.DivCode, e.Country, s.wk AS Wk, ISNULL(s.SalesTgtWk, 0) AS Sales
+                  FROM dbo.lpm_salestgtwk_stores s WITH (NOLOCK)
+                  JOIN dbo.LPM_EOM_Output e WITH (NOLOCK)
+                    ON e.StoreID = s.StoreID AND e.DivCode = s.DivCode
+                 WHERE e.Month1 = @month AND e.Year1 = @year
+                   AND (@ct IS NULL OR e.Country = @ct)",
+                new { month, year, ct = filter },
+                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            var minWk = rows.Any() ? rows.Min(r => r.Wk) : 0;
+            return rows
+                .GroupBy(r => (r.StoreID, r.DivCode))
+                .ToDictionary(g => g.Key, g =>
+                {
+                    var cty = g.First().Country;
+                    var n = weeksByCountry.TryGetValue(cty, out var w) ? w : 1;
+                    return g.Where(x => x.Wk >= minWk && x.Wk < minWk + n).Sum(x => x.Sales);
+                });
+        }, () => new Dictionary<(string, int), int>());
+
+        // 5) Store count per country from LPM_EOM_Output.
+        var storeCountByCountry = await SafeAsync(warnings, "Store count", async () =>
+        {
+            await using var c = OpenOnPremBackup();
+            var rows = await c.QueryAsync<(string Country, int Cnt)>(new CommandDefinition(@"
+                SELECT Country, COUNT(DISTINCT StoreID) AS Cnt
+                  FROM dbo.LPM_EOM_Output WITH (NOLOCK)
+                 WHERE Month1 = @month AND Year1 = @year
+                 GROUP BY Country",
+                new { month, year },
+                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            return rows.ToDictionary(r => r.Country, r => r.Cnt);
+        }, () => new Dictionary<string, int>());
+
+        // 6) Counting WIP on Azure — SUM(AllocatedQty) per (Country, StoreID, DivCode)
+        //    for contnos with approved LPMSIM header but no WmsBuildingCompletion.
+        var wipByKey = await SafeAsync(warnings, "Counting WIP (Azure)", async () =>
         {
             HashSet<string> approvedContnos;
             await using (var opb = OpenOnPremBackup())
@@ -188,7 +172,8 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver)
                     SELECT DISTINCT ContNo
                       FROM dbo.WMS_Cont_Allocation_Header WITH (NOLOCK)
                      WHERE ApprovedDt IS NOT NULL",
-                    commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                    commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
             }
 
             HashSet<string> completedContnos;
@@ -197,7 +182,8 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver)
             {
                 completedContnos = (await w.QueryAsync<string>(new CommandDefinition(@"
                     SELECT DISTINCT ContNo FROM dbo.WmsBuildingCompletion WITH (NOLOCK)",
-                    commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                    commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
                 allocs = (await w.QueryAsync<(string Country, string StoreID, int DivCode, int Qty, string ContNo)>(
                     new CommandDefinition(@"
@@ -209,23 +195,30 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver)
                     commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).ToList();
             }
 
-            wipByKey = allocs
+            return allocs
                 .Where(a => approvedContnos.Contains(a.ContNo) && !completedContnos.Contains(a.ContNo))
                 .GroupBy(a => (a.Country ?? "", a.StoreID, a.DivCode))
                 .ToDictionary(g => g.Key, g => g.Sum(x => x.Qty));
-        }
-        catch
-        {
-            wipByKey = new();
-        }
+        }, () => new Dictionary<(string, string, int), int>());
 
-        // 3) Merge + compute OTS Qty / OTS %.
+        // 7) Merge + compute OTS Qty / OTS %.
         var eomLabel = new DateTime(year, month, 1).ToString("MMM-yyyy");
-        var results = new List<OtsPoAllocationRow>(onPremRows.Count);
-        foreach (var r in onPremRows)
+        var results = new List<OtsPoAllocationRow>(baseRows.Count);
+        foreach (var r in baseRows)
         {
-            var wip = wipByKey.TryGetValue((r.Country, r.StoreID, r.DivCode), out var v) ? v : 0;
-            var otsQty = r.TgtEOM + r.WeekSales - r.SOHToday - r.InTransit - r.Ex2DcSoh - wip;
+            var soh    = sohByKey.TryGetValue((r.StoreID, r.DivCode), out var s) ? s : 0;
+            var ws     = weekSalesByKey.TryGetValue((r.StoreID, r.DivCode), out var w) ? w : 0;
+            var stores = storeCountByCountry.TryGetValue(r.Country, out var sc) ? sc : 0;
+            int inTransit = 0, ex2dc = 0;
+            if (ex2ByKey.TryGetValue((r.Country, r.DivCode), out var e) && stores > 0)
+            {
+                var (inTransitTotal, ex2DcTotal) = e;
+                if (!string.Equals(r.Country, "UAE", StringComparison.OrdinalIgnoreCase))
+                    inTransit = inTransitTotal / stores;
+                ex2dc = ex2DcTotal / stores;
+            }
+            var wip    = wipByKey.TryGetValue((r.Country, r.StoreID, r.DivCode), out var v) ? v : 0;
+            var otsQty = r.TgtEOM + ws - soh - inTransit - ex2dc - wip;
             var otsPct = r.TgtEOM > 0 ? (double)otsQty / r.TgtEOM * 100.0 : 0.0;
             results.Add(new OtsPoAllocationRow(
                 Country:         r.Country,
@@ -237,19 +230,29 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver)
                 PriorityRank:    r.PriorityRank,
                 EOMMonth:        eomLabel,
                 TgtEOM:          r.TgtEOM,
-                SOHToday:        r.SOHToday,
+                SOHToday:        soh,
                 WeeksToInclude:  r.WeeksToInclude,
-                WeekSales:       r.WeekSales,
-                InTransit:       r.InTransit,
-                Ex2DcSoh:        r.Ex2DcSoh,
+                WeekSales:       ws,
+                InTransit:       inTransit,
+                Ex2DcSoh:        ex2dc,
                 CountingWIP:     wip,
                 OtsQtyToday:     otsQty,
                 OtsPercentToday: otsPct));
         }
-        return results;
+        return (results, warnings);
     }
 
-    private sealed class OnPremRow
+    private static async Task<T> SafeAsync<T>(List<string> warnings, string label, Func<Task<T>> body, Func<T> fallback)
+    {
+        try { return await body(); }
+        catch (Exception ex)
+        {
+            warnings.Add($"{label} unavailable: {ex.Message}");
+            return fallback();
+        }
+    }
+
+    private sealed class BaseRow
     {
         public string   Country        { get; set; } = "";
         public string   StoreID        { get; set; } = "";
@@ -260,9 +263,5 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver)
         public int?     PriorityRank   { get; set; }
         public int      TgtEOM         { get; set; }
         public int      WeeksToInclude { get; set; }
-        public int      SOHToday       { get; set; }
-        public int      WeekSales      { get; set; }
-        public int      InTransit      { get; set; }
-        public int      Ex2DcSoh       { get; set; }
     }
 }
