@@ -1271,6 +1271,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         }
 
         // 2) Create the new Header row and read back BatchNo.
+        progress?.Report(new AllocationProgress(0, rows.Count, "Saving: creating header row"));
         var totalQty = rows.Sum(r => r.AllocQty);
         var batchNo = await c.ExecuteScalarAsync<int>(new CommandDefinition(@"
             INSERT INTO LPMSIM.dbo.WMS_Cont_Allocation_Header
@@ -1282,26 +1283,54 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                   ro = roTag, rc = rows.Count, tq = totalQty, u = user.Name },
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
 
-        // 3) Write blocked rows (small list — per-row INSERT is fine).
+        // 3) Write blocked rows via SqlBulkCopy. Large containers can produce
+        // thousands of blocked rows (item eligibility blocks), and the previous
+        // per-row Dapper Execute loop was ~10ms per round-trip — dominant cost
+        // on containers with 4k+ blocks.
         if (blocked is { Count: > 0 })
         {
-            const string blkSql = @"
-                INSERT INTO LPMSIM.dbo.WMS_ContAllocationBlocked
-                    (BatchNo, Country, ContNo, RunOption, ItemCode, ItemName, StoreID, StoreName,
-                     DivCode, Division, Department, PoQty, BlockReason, CreatedBy)
-                VALUES
-                    (@BatchNo, @Country, @ContNo, @RunOption, @ItemCode, @ItemName, @StoreID, @StoreName,
-                     @DivCode, @Division, @Department, @PoQty, @BlockReason, @CreatedBy)";
+            progress?.Report(new AllocationProgress(0, rows.Count, $"Saving: bulk inserting {blocked.Count:N0} blocked row(s)"));
+            var bdt = new System.Data.DataTable();
+            bdt.Columns.Add("BatchNo",     typeof(int));
+            bdt.Columns.Add("Country",     typeof(string));
+            bdt.Columns.Add("ContNo",      typeof(string));
+            bdt.Columns.Add("RunOption",   typeof(string));
+            bdt.Columns.Add("ItemCode",    typeof(string));
+            bdt.Columns.Add("ItemName",    typeof(string));
+            bdt.Columns.Add("StoreID",     typeof(string));
+            bdt.Columns.Add("StoreName",   typeof(string));
+            bdt.Columns.Add("DivCode",     typeof(int));
+            bdt.Columns.Add("Division",    typeof(string));
+            bdt.Columns.Add("Department",  typeof(string));
+            bdt.Columns.Add("PoQty",       typeof(int));
+            bdt.Columns.Add("BlockReason", typeof(string));
+            bdt.Columns.Add("CreatedBy",   typeof(string));
             foreach (var b in blocked)
             {
-                await c.ExecuteAsync(new CommandDefinition(blkSql, new
-                {
-                    BatchNo = batchNo, Country = b.Country, ContNo = b.Contno, RunOption = roTag,
-                    b.ItemCode, b.ItemName, b.StoreID, b.StoreName,
-                    b.DivCode, b.Division, b.Department, b.PoQty, b.BlockReason,
-                    CreatedBy = user.Name,
-                }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+                bdt.Rows.Add(
+                    batchNo,
+                    b.Country, b.Contno, roTag,
+                    b.ItemCode,
+                    (object?)b.ItemName   ?? DBNull.Value,
+                    b.StoreID,
+                    (object?)b.StoreName  ?? DBNull.Value,
+                    b.DivCode,
+                    (object?)b.Division   ?? DBNull.Value,
+                    (object?)b.Department ?? DBNull.Value,
+                    b.PoQty,
+                    (object?)b.BlockReason ?? DBNull.Value,
+                    user.Name);
             }
+
+            using var bulkBlk = new SqlBulkCopy(c)
+            {
+                DestinationTableName = "LPMSIM.dbo.WMS_ContAllocationBlocked",
+                BatchSize            = 1000,
+                BulkCopyTimeout      = CommandTimeoutSeconds,
+            };
+            foreach (System.Data.DataColumn col in bdt.Columns)
+                bulkBlk.ColumnMappings.Add(col.ColumnName, col.ColumnName);
+            await bulkBlk.WriteToServerAsync(bdt, ct);
         }
 
         // 4) Bulk-copy detail rows tagged with BatchNo + per-row Country + enrichment columns.
