@@ -255,11 +255,13 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                   LEFT JOIN LPMSIM.dbo.Division dv WITH (NOLOCK) ON dv.DivCode = e.DivCode
                   OUTER APPLY (
                       -- DataSettings can have multiple rows per StoreID (per DataName),
-                      -- which would multiply base rows. Pick the first non-empty
-                      -- PBFullname deterministically.
+                      -- which would multiply base rows. Restrict to rows with a
+                      -- non-empty SIMCountry (the operational rows) and pick the
+                      -- first non-empty PBFullname deterministically.
                       SELECT TOP 1 PBFullname
                         FROM bfldata.dbo.DataSettings WITH (NOLOCK)
                        WHERE StoreID = e.StoreID
+                         AND SIMCountry IS NOT NULL AND LTRIM(RTRIM(SIMCountry)) <> ''
                          AND PBFullname IS NOT NULL AND LTRIM(RTRIM(PBFullname)) <> ''
                        ORDER BY PBFullname
                   ) d
