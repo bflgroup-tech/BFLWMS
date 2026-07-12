@@ -91,7 +91,7 @@
 {
     <div class="aiwms-section">
         <div class="aiwms-card-header">Filter rows (in memory)</div>
-        <div style="display:grid; grid-template-columns: 1.4fr 1fr 1.4fr 1fr auto; gap:12px; align-items:end">
+        <div style="display:grid; grid-template-columns: 1.2fr 2.4fr 1fr auto; gap:12px; align-items:end">
             <div>
                 <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COUNTRY</label>
                 <MudSelect T="string" Dense="true" MultiSelection="true" SelectAll="true"
@@ -105,12 +105,16 @@
                 </MudSelect>
             </div>
             <div>
-                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">STORE ID (contains)</label>
-                <input @bind="_fStoreId" @bind:event="oninput" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white; font-family:var(--font-mono)" />
-            </div>
-            <div>
-                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">STORE NAME (contains)</label>
-                <input @bind="_fStoreName" @bind:event="oninput" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white" />
+                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">STORE (search by ID or name)</label>
+                <MudAutocomplete T="string" Dense="true" Clearable="true"
+                                 Value="_fStoreLabel"
+                                 ValueChanged="OnStoreFilterChanged"
+                                 SearchFunc="@SearchStoreOptions"
+                                 Placeholder="type to search…"
+                                 CoerceText="false"
+                                 CoerceValue="false"
+                                 ResetValueOnEmptyText="true"
+                                 Variant="Variant.Outlined" Margin="Margin.Dense" />
             </div>
             <div>
                 <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">VOLUME GROUP</label>
@@ -209,8 +213,8 @@
     private List<DateTime> _availableDates = new();
     // In-memory column filters applied to loaded rows before display.
     private HashSet<string> _fCountries = new(StringComparer.OrdinalIgnoreCase);
-    private string _fStoreId   = "";
-    private string _fStoreName = "";
+    private string? _fStoreLabel;      // "StoreID — StoreName" picked in the autocomplete; null = no filter
+    private string? _fStoreId;         // parsed StoreID for row matching
     private HashSet<string> _fVolumeGroups = new(StringComparer.OrdinalIgnoreCase);
     private int    _month;
     private int    _year;
@@ -451,9 +455,7 @@
     {
         if (_fCountries.Count > 0 && !_fCountries.Contains(r.Country)) return false;
         if (!string.IsNullOrWhiteSpace(_fStoreId)
-            && (r.StoreID?.IndexOf(_fStoreId, StringComparison.OrdinalIgnoreCase) ?? -1) < 0) return false;
-        if (!string.IsNullOrWhiteSpace(_fStoreName)
-            && (r.StoreName?.IndexOf(_fStoreName, StringComparison.OrdinalIgnoreCase) ?? -1) < 0) return false;
+            && !string.Equals(r.StoreID, _fStoreId, StringComparison.OrdinalIgnoreCase)) return false;
         if (_fVolumeGroups.Count > 0 && !_fVolumeGroups.Contains(r.VolumeGroup ?? "")) return false;
         return true;
     }
@@ -461,8 +463,35 @@
     private void ClearFilters()
     {
         _fCountries = new(StringComparer.OrdinalIgnoreCase);
-        _fStoreId = ""; _fStoreName = "";
+        _fStoreLabel = null; _fStoreId = null;
         _fVolumeGroups = new(StringComparer.OrdinalIgnoreCase);
+    }
+
+    /// <summary>Distinct StoreID/StoreName options from the loaded rows, formatted
+    /// "StoreID — StoreName". Users can type either fragment; matches are case-
+    /// insensitive contains-anywhere. Deduped so each store shows once.</summary>
+    private Task<IEnumerable<string>> SearchStoreOptions(string? term, CancellationToken ct)
+    {
+        var q = _rows
+            .Select(r => (Id: r.StoreID, Name: r.StoreName ?? ""))
+            .GroupBy(x => x.Id, StringComparer.OrdinalIgnoreCase)
+            .Select(g => g.First())
+            .OrderBy(x => x.Id, StringComparer.OrdinalIgnoreCase)
+            .Select(x => string.IsNullOrEmpty(x.Name) ? x.Id : $"{x.Id} — {x.Name}");
+
+        if (!string.IsNullOrWhiteSpace(term))
+            q = q.Where(s => s.IndexOf(term, StringComparison.OrdinalIgnoreCase) >= 0);
+
+        return Task.FromResult<IEnumerable<string>>(q.Take(50));
+    }
+
+    private void OnStoreFilterChanged(string? label)
+    {
+        _fStoreLabel = label;
+        if (string.IsNullOrWhiteSpace(label)) { _fStoreId = null; return; }
+        // Extract the StoreID portion (everything up to the first " — ").
+        var dashIdx = label.IndexOf(" — ", StringComparison.Ordinal);
+        _fStoreId = (dashIdx > 0 ? label[..dashIdx] : label).Trim();
     }
 
     private IEnumerable<OtsPoAllocationRow> SortedRows
