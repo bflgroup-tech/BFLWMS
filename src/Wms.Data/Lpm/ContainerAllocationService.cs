@@ -29,7 +29,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
     // (saw a 14003ms post-login on a real Process call). Bump to 60s for this
     // service only — every other caller stays on the configured default.
     private const int ConnectTimeoutSeconds = 60;
-    private const int CommandTimeoutSeconds = 60;
+    private const int CommandTimeoutSeconds = 300;
 
     private static string WithConnectTimeout(string cs)
     {
@@ -86,7 +86,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
             WHERE u.ContNo = @contno
             GROUP BY u.ContNo, u.OraPONo, u.LPM
             ORDER BY u.OraPONo, u.LPM",
-            new { contno }, cancellationToken: ct));
+            new { contno }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         return rows.AsList();
     }
 
@@ -268,7 +268,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                 FROM usa.dbo.usaorgfile_LPM WITH (NOLOCK)
                 WHERE ContNo = @c
                 ORDER BY OraPONo, LPM, ItemCode",
-                new { c = contno }, cancellationToken: ct))).AsList();
+                new { c = contno }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).AsList();
 
         if (lines.Count == 0) return new(result, blocked);
 
@@ -278,7 +278,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
             SELECT itemcode, DivID, Division, Department
             FROM datareporting.dbo.vupc_subclass WITH (NOLOCK)
             WHERE itemcode IN @items",
-            new { items = lines.Select(l => l.ItemCode).Distinct().ToArray() }, cancellationToken: ct)))
+            new { items = lines.Select(l => l.ItemCode).Distinct().ToArray() }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
             .GroupBy(r => r.itemcode)
             .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
         var divByItem = itemMeta.ToDictionary(kv => kv.Key, kv => kv.Value.DivID ?? 0, StringComparer.OrdinalIgnoreCase);
@@ -290,14 +290,14 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
             SELECT StoreID, DivCode, Department
             FROM dbo.LPM_StoreDeptAccess WITH (NOLOCK)
             WHERE IsActive = 0",
-            cancellationToken: ct)))
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
             .Select(r => (Sid: (r.StoreID ?? "").Trim().ToUpperInvariant(), r.DivCode, Dep: (r.Department ?? "").Trim().ToUpperInvariant()))
             .ToHashSet();
         var divBlocks = (await c.QueryAsync<(string StoreID, int DivCode)>(new CommandDefinition(@"
             SELECT StoreID, DivCode
             FROM dbo.LPM_StoreDivAccess WITH (NOLOCK)
             WHERE IsActive = 0",
-            cancellationToken: ct)))
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
             .Select(r => (Sid: (r.StoreID ?? "").Trim().ToUpperInvariant(), r.DivCode))
             .ToHashSet();
 
@@ -315,7 +315,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
             FROM usa.dbo.USAOrgFile WITH (NOLOCK)
             WHERE contno = @c AND itemcode IN @items
             GROUP BY itemcode",
-            new { c = contno, items = lines.Select(l => l.ItemCode).Distinct().ToArray() }, cancellationToken: ct)))
+            new { c = contno, items = lines.Select(l => l.ItemCode).Distinct().ToArray() }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
             .ToDictionary(r => r.itemcode, r => (r.itemname, r.vendor, r.season, r.Style, r.Size), StringComparer.OrdinalIgnoreCase);
 
         progress?.Report(new AllocationProgress(0, 0, "Prefetching: store names"));
@@ -325,7 +325,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
             FROM bfldata.dbo.DataSettings WITH (NOLOCK)
             WHERE PBFullname IS NOT NULL
             GROUP BY StoreID",
-            cancellationToken: ct)))
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
             .ToDictionary(r => r.StoreID, r => r.PBFullname, StringComparer.OrdinalIgnoreCase);
 
         progress?.Report(new AllocationProgress(0, 0, "Prefetching: pallet types"));
@@ -336,7 +336,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
             FROM dbo.WMS_Building_PalletTypes WITH (NOLOCK)
             WHERE StoreId IS NOT NULL
             GROUP BY StoreId",
-            cancellationToken: ct)))
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
             .ToDictionary(r => r.StoreId, r => (r.PalletTypeS, r.PalletTypeW), StringComparer.OrdinalIgnoreCase);
 
         // Determine the country filter once — used for both eomStores narrowing and
@@ -1469,7 +1469,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         await using var c = OpenOnPremBackup();
         var d = await c.QueryFirstOrDefaultAsync<(int? RowCount1, int? TotalQty, string? RunOption)>(new CommandDefinition(
             "SELECT RowCount1, TotalQty, RunOption FROM LPMSIM.dbo.WMS_ContAllocationDraftHeader WHERE Country = @ct AND ContNo = @c",
-            new { ct = genCountry, c = contno }, cancellationToken: ct));
+            new { ct = genCountry, c = contno }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         var hasDraft = d.RowCount1 is not null;
         var draftRows = d.RowCount1 ?? 0;
 
@@ -1484,7 +1484,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                 Frr   = ISNULL(SUM(CASE WHEN RunOption = 'FillSKUMaxRoundRobin' THEN RowCount1 ELSE 0 END), 0)
             FROM LPMSIM.dbo.WMS_Cont_Allocation_Header
             WHERE GenCountry = @gc AND ContNo = @c",
-            new { gc = genCountry, c = contno }, cancellationToken: ct));
+            new { gc = genCountry, c = contno }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         var hasFinal = f.Total > 0;
 
         // Azure sync check: any row in dbo.WMS_ContAllocationData means the
@@ -1572,7 +1572,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                 Remarks   = r.RoundRobinExtra > 0 ? $"RR+{r.RoundRobinExtra}" : null,
                 PriorityRank = (int?)r.PriorityRank,
                 MnwToday  = (int?)r.MnwToday,
-            }, cancellationToken: ct));
+            }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         }
         return affected;
     }
@@ -1583,7 +1583,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         await using var c = OpenWms();
         var list = await c.QueryAsync<string>(new CommandDefinition(
             @"SELECT DISTINCT Country FROM dbo.WmsWHMaster WHERE Active = 1 ORDER BY Country",
-            cancellationToken: ct));
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         return list.AsList();
     }
 
@@ -1594,7 +1594,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         var list = await c.QueryAsync<string>(new CommandDefinition(
             @"SELECT Warehouse FROM dbo.WmsWHMaster
               WHERE Active = 1 AND Country = @c ORDER BY Warehouse",
-            new { c = country }, cancellationToken: ct));
+            new { c = country }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         return list.AsList();
     }
 
@@ -1610,7 +1610,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                  AND LTRIM(RTRIM(SIMCountry)) <> ''
                  AND SIMCountry <> 'Ex2Locations'
                ORDER BY SIMCountry",
-            cancellationToken: ct));
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         return list.AsList();
     }
 
