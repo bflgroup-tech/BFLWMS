@@ -92,6 +92,51 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
     }
 
+    /// <summary>Pre-Generate validation — checks each country present in the
+    /// picked (Month, Year) has (a) an entry in WmsCountryOtsWeeks and (b) enough
+    /// distinct weeks of data in lpm_salestgtwk_stores to cover the configured
+    /// N-week window. Returns one issue string per country problem; empty list
+    /// = all good. Non-blocking — the razor page can still force-generate.</summary>
+    public async Task<List<string>> ValidateWeekCoverageAsync(int month, int year, CancellationToken ct = default)
+    {
+        await using var c = OpenOnPremBackup();
+        var rows = (await c.QueryAsync<(string Country, int? ConfiguredWeeks, int AvailableWeeks)>(new CommandDefinition(@"
+            ;WITH baseCountries AS (
+                SELECT DISTINCT Country FROM dbo.LPM_EOM_Output WITH (NOLOCK)
+                 WHERE Month1 = @month AND Year1 = @year
+                   AND Country <> 'Ex2Locations'
+                   AND Country IS NOT NULL AND LTRIM(RTRIM(Country)) <> ''
+            ),
+            weekCounts AS (
+                SELECT e.Country, COUNT(DISTINCT s.wk) AS Weeks
+                  FROM dbo.LPM_EOM_Output e WITH (NOLOCK)
+                  JOIN dbo.lpm_salestgtwk_stores s WITH (NOLOCK)
+                    ON s.StoreID = e.StoreID AND s.DivCode = e.DivCode
+                 WHERE e.Month1 = @month AND e.Year1 = @year
+                   AND e.Country <> 'Ex2Locations'
+                 GROUP BY e.Country
+            )
+            SELECT bc.Country,
+                   w.Weeks               AS ConfiguredWeeks,
+                   ISNULL(wc.Weeks, 0)   AS AvailableWeeks
+              FROM baseCountries bc
+              LEFT JOIN dbo.WmsCountryOtsWeeks w WITH (NOLOCK) ON w.SimCountry = bc.Country
+              LEFT JOIN weekCounts wc ON wc.Country = bc.Country
+             ORDER BY bc.Country",
+            new { month, year },
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).ToList();
+
+        var issues = new List<string>();
+        foreach (var r in rows)
+        {
+            if (r.ConfiguredWeeks is null)
+                issues.Add($"{r.Country}: not configured in WmsCountryOtsWeeks — falls back to 1 week of sales.");
+            else if (r.AvailableWeeks < r.ConfiguredWeeks.Value)
+                issues.Add($"{r.Country}: configured to include {r.ConfiguredWeeks.Value} week(s) of sales, but only {r.AvailableWeeks} distinct week(s) available in lpm_salestgtwk_stores.");
+        }
+        return issues;
+    }
+
     /// <summary>Distinct OTSDate values already persisted for a (Month, Year).
     /// Used by the razor page's Rundate picker so operators can load prior days.</summary>
     public async Task<List<DateTime>> GetAvailableRunDatesAsync(int month, int year, CancellationToken ct = default)
