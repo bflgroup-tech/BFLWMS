@@ -226,7 +226,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                     dv.Division  AS Division,
                     e.VolumeGroup,
                     e.PriorityRank,
-                    e.MerchNeedMonth AS TgtEOM,
+                    e.TargetEOM AS TgtEOM,
                     ISNULL(w.Weeks, 1) AS WeeksToInclude
                   FROM dbo.LPM_EOM_Output e WITH (NOLOCK)
                   LEFT JOIN LPMSIM.dbo.Division dv WITH (NOLOCK) ON dv.DivCode = e.DivCode
