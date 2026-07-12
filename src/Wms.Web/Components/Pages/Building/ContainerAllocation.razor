@@ -82,6 +82,13 @@
         <label style="display:flex; align-items:center; gap:6px; font-size:12px; cursor:pointer">
             <input type="checkbox" @bind="_validate" /> Validate before Process
         </label>
+        @if (_runOption == "FillSKUMaxRoundRobin")
+        {
+            <label style="display:flex; align-items:center; gap:6px; font-size:12px; cursor:pointer"
+                   title="When ticked, ECOM's Manual Allocation qty (StoreID='ONLINE') is allocated first per item; remaining qty distributes to other countries via the normal Pass 1-4 rules.">
+                <input type="checkbox" @bind="_ecomManualPriority" /> Follow ECOM Manual Allocation on priority
+            </label>
+        }
         @{
             var currentRoRows = _runOption switch
             {
@@ -511,6 +518,7 @@
     private string _contno = "";
     private string _runOption = "FillSKUMaxRoundRobin";
     private bool _validate = true;
+    private bool _ecomManualPriority = false;
     private long _totalPoQty;
     private List<BlockedItemRow> _blocked = new();
     private bool _showBlocked;
@@ -740,7 +748,7 @@
             var allocCsv = string.Join(",", _allocCountries);
             {
                 var sw = System.Diagnostics.Stopwatch.StartNew();
-                var procResult = await Svc.ProcessAllocationAsync(_contno, progress, ro, _allocCountries);
+                var procResult = await Svc.ProcessAllocationAsync(_contno, progress, ro, _allocCountries, _ecomManualPriority);
                 algoMs = sw.ElapsedMilliseconds;
                 _allocation = procResult.Allocations;
                 _blocked    = procResult.Blocked;

@@ -246,6 +246,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         IProgress<AllocationProgress>? progress = null,
         RunOption runOption = RunOption.FillSKUMax,
         IReadOnlyCollection<string>? allocationCountries = null,
+        bool ecomManualPriority = false,
         CancellationToken ct = default)
     {
         var result  = new List<AllocationRow>();
@@ -870,7 +871,29 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                     var eligible = otsRunByKey.Values
                         .Where(r => r.DivCode == divCode)
                         .ToList();
-                    if (eligible.Count == 0) continue;
+
+                    // ECOM Manual Priority — when the operator ticks the checkbox
+                    // on the page, we honour WmsManualAllocation.AllocationQty for
+                    // (StoreID=ONLINE, itemcode) before any OTS-based pass runs.
+                    // ONLINE is then removed from `eligible` so Passes 1-4 don't
+                    // touch it. The row is tagged as Pass1Qty (per user spec) so
+                    // no schema change is needed. Cap = min(manual qty, remaining).
+                    OtsRunLookupRow? ecomOtsRow = null;
+                    int ecomPreAllocTake = 0;
+                    if (ecomManualPriority
+                        && initialAllocByKey.TryGetValue(("ONLINE", line.ItemCode.ToUpperInvariant()), out var ecomManualQty)
+                        && ecomManualQty > 0
+                        && remaining > 0)
+                    {
+                        ecomPreAllocTake = Math.Min(ecomManualQty, remaining);
+                        if (ecomPreAllocTake > 0)
+                        {
+                            ecomOtsRow = eligible.FirstOrDefault(r => string.Equals(r.StoreID, "ONLINE", StringComparison.OrdinalIgnoreCase));
+                            eligible.RemoveAll(r => string.Equals(r.StoreID, "ONLINE", StringComparison.OrdinalIgnoreCase));
+                        }
+                    }
+
+                    if (eligible.Count == 0 && ecomPreAllocTake == 0) continue;
 
                     // Live OTS% per (StoreID, DivCode) driven by runningOtsQty
                     // (decreases as we allocate).
@@ -880,10 +903,32 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                         return r.TgtEOM > 0 ? (double)qty / r.TgtEOM * 100.0 : 0.0;
                     }
 
-                    // Refresh Avg OTS% for THIS Division from stores with live OTS% > 0.
+                    // Refresh Avg OTS% for THIS Division from stores with live OTS% > 0
+                    // (ONLINE already removed above if ECOM Manual Priority was applied,
+                    // so its OTS% doesn't skew the threshold for the rest of the passes).
                     var positives = eligible.Select(LiveOtsPct).Where(p => p > 0).ToList();
                     var avgOts = positives.Count > 0 ? positives.Average() : 0.0;
                     var avgOtsDecimal = (decimal)Math.Round(avgOts, 2);
+
+                    // Materialise the ECOM pre-alloc row now that avgOtsDecimal is known.
+                    if (ecomPreAllocTake > 0)
+                    {
+                        AllocationRow ecomRow;
+                        if (ecomOtsRow != null)
+                        {
+                            ecomRow = BumpRow(null, ecomOtsRow, ecomPreAllocTake, 0, pass: 1);
+                        }
+                        else
+                        {
+                            // ONLINE isn't in the OTS PO Allocation run for this DivCode —
+                            // build the row directly. Country label is hard-coded ECOM to
+                            // match the store universe convention.
+                            ecomRow = MakeRow("ONLINE", "ECOM", "", 0, ecomPreAllocTake, ecomPreAllocTake, 0)
+                                with { Pass1Qty = ecomPreAllocTake, AvgOtsPercent = avgOtsDecimal };
+                        }
+                        allocs["ONLINE"] = ecomRow;
+                        remaining -= ecomPreAllocTake;
+                    }
 
                     static int VolumeGroupRank(string? vg)
                     {
