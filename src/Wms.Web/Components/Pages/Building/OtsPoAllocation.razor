@@ -131,6 +131,29 @@
             <button class="aiwms-btn aiwms-btn-secondary" @onclick="ClearFilters" style="height:36px">Clear</button>
         </div>
     </div>
+    <div class="aiwms-section" style="padding:14px">
+        @{
+            var fRows = FilteredSortedRows.ToList();
+            var fEOM  = fRows.Sum(r => r.TgtEOM);
+            var fSOH  = fRows.Sum(r => r.SOHToday);
+            var fWS   = fRows.Sum(r => r.WeekSales);
+            var fOTS  = fRows.Sum(r => r.OtsQtyToday);
+            var fReq  = fRows.Sum(r => Math.Max(0, r.OtsQtyToday));
+        }
+        <div style="display:grid; grid-template-columns: repeat(5, minmax(0,1fr)); gap:12px;">
+            @Kpi("EOM",          fEOM.ToString("N0"),  "#dbeafe", "#1e40af")
+            @Kpi("SOH",          fSOH.ToString("N0"),  "#dcfce7", "#166534")
+            @Kpi("Weekly Sales", fWS.ToString("N0"),   "#fef3c7", "#92400e")
+            @Kpi("OTS",          fOTS.ToString("N0"),  fOTS < 0 ? "#fee2e2" : "#e0e7ff", fOTS < 0 ? "#991b1b" : "#3730a3")
+            @Kpi("OTS Reqd",     fReq.ToString("N0"),  "#ede9fe", "#5b21b6")
+        </div>
+        @if (fRows.Count != _rows.Count)
+        {
+            <div style="margin-top:8px; font-size:11px; color:var(--text-secondary)">
+                Filtered: @fRows.Count of @_rows.Count row(s).
+            </div>
+        }
+    </div>
     <div class="aiwms-section" style="padding:0; overflow:hidden">
         <div style="max-height:640px; overflow:auto">
             <table class="aiwms-table aiwms-table-dense" style="font-size:11.5px">
@@ -430,6 +453,23 @@
         await JS.InvokeVoidAsync("eval",
             $"var link=document.createElement('a');link.href='data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64}';link.download='{name}';link.click();");
     }
+
+    private RenderFragment Kpi(string label, string value, string bg, string fg) => builder =>
+    {
+        builder.OpenElement(0, "div");
+        builder.AddAttribute(1, "style",
+            $"background:{bg}; color:{fg}; border-radius:8px; padding:12px 14px; " +
+            "display:flex; flex-direction:column; gap:4px; box-shadow:0 1px 2px rgba(0,0,0,.04)");
+        builder.OpenElement(2, "div");
+        builder.AddAttribute(3, "style", "font-size:11px; text-transform:uppercase; letter-spacing:.5px; font-weight:800; opacity:.85");
+        builder.AddContent(4, label);
+        builder.CloseElement();
+        builder.OpenElement(5, "div");
+        builder.AddAttribute(6, "style", "font-size:22px; font-weight:900; line-height:1.1");
+        builder.AddContent(7, value);
+        builder.CloseElement();
+        builder.CloseElement();
+    };
 
     private RenderFragment SortHeader(string key, string label, string? width = null, bool numeric = false) => builder =>
     {
