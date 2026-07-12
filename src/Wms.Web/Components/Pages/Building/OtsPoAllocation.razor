@@ -14,11 +14,11 @@
 
 <div class="aiwms-page-header">
     <h2>OTS for PO Allocation</h2>
-    <p>Per-(Country, StoreID, DivCode) OTS math for a picked Month/Year. <b>Generate</b> runs the heavy cross-DB compute and persists to <code>dbo.WmsOtsPoAllocationRun</code>; <b>Load</b> reads from there with your Country + Divisions filters. Rundate: <b>@_rundate.ToString("dd/MM/yyyy")</b>. Last generated for @_month/@_year: <b>@(_lastGenerated?.ToString("dd/MM/yyyy HH:mm") ?? "never")</b>.</p>
+    <p>Per-(Country, StoreID, DivCode) OTS math for a picked Month/Year + RunDate. <b>Generate</b> runs the heavy cross-DB compute and persists to <code>dbo.WmsOtsPoAllocationRun</code> stamped with today's <b>OTSDate</b> (GST); <b>Load</b> reads by the picked RunDate. Generate is only enabled when RunDate = today. Rundate now (GST): <b>@_today.ToString("dd/MM/yyyy")</b>. Last generated for @_month/@_year: <b>@(_lastGenerated?.ToString("dd/MM/yyyy HH:mm") ?? "never")</b>.</p>
 </div>
 
 <div class="aiwms-section">
-    <div style="display:grid; grid-template-columns: 1.2fr 1fr 1fr 2fr auto auto auto; gap:12px; align-items:end">
+    <div style="display:grid; grid-template-columns: 1fr 1fr 1fr 1.2fr 2fr auto auto auto; gap:12px; align-items:end">
         <div>
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COUNTRY</label>
             <select @bind="_country" @bind:after="OnCountryChangedAsync" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" disabled="@_busy">
@@ -36,6 +36,16 @@
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">YEAR *</label>
             <select @bind="_year" @bind:after="OnYearChangedAsync" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" disabled="@_busy">
                 @foreach (var y in _years) { <option value="@y">@y</option> }
+            </select>
+        </div>
+        <div>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">RUN DATE (GST) *</label>
+            <select @bind="_runDateStr" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" disabled="@_busy">
+                <option value="@_today.ToString("yyyy-MM-dd")">@_today.ToString("dd/MM/yyyy") (today)</option>
+                @foreach (var d in _availableDates.Where(x => x != _today))
+                {
+                    <option value="@d.ToString("yyyy-MM-dd")">@d.ToString("dd/MM/yyyy")</option>
+                }
             </select>
         </div>
         <div>
@@ -79,6 +89,44 @@
 
 @if (_rows.Count > 0)
 {
+    <div class="aiwms-section">
+        <div class="aiwms-card-header">Filter rows (in memory)</div>
+        <div style="display:grid; grid-template-columns: 1.4fr 1fr 1.4fr 1fr auto; gap:12px; align-items:end">
+            <div>
+                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COUNTRY</label>
+                <MudSelect T="string" Dense="true" MultiSelection="true" SelectAll="true"
+                           SelectedValues="_fCountries"
+                           SelectedValuesChanged="@(v => _fCountries = v.ToHashSet(StringComparer.OrdinalIgnoreCase))"
+                           MultiSelectionTextFunc="@(v => string.Join(", ", v))"
+                           Placeholder="all"
+                           Variant="Variant.Outlined" Margin="Margin.Dense">
+                    @foreach (var c in _rows.Select(r => r.Country).Distinct().OrderBy(x => x))
+                    { <MudSelectItem T="string" Value="@c">@c</MudSelectItem> }
+                </MudSelect>
+            </div>
+            <div>
+                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">STORE ID (contains)</label>
+                <input @bind="_fStoreId" @bind:event="oninput" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white; font-family:var(--font-mono)" />
+            </div>
+            <div>
+                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">STORE NAME (contains)</label>
+                <input @bind="_fStoreName" @bind:event="oninput" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white" />
+            </div>
+            <div>
+                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">VOLUME GROUP</label>
+                <MudSelect T="string" Dense="true" MultiSelection="true" SelectAll="true"
+                           SelectedValues="_fVolumeGroups"
+                           SelectedValuesChanged="@(v => _fVolumeGroups = v.ToHashSet(StringComparer.OrdinalIgnoreCase))"
+                           MultiSelectionTextFunc="@(v => string.Join(", ", v))"
+                           Placeholder="all"
+                           Variant="Variant.Outlined" Margin="Margin.Dense">
+                    @foreach (var g in _rows.Select(r => r.VolumeGroup ?? "").Where(x => x.Length > 0).Distinct().OrderBy(x => x))
+                    { <MudSelectItem T="string" Value="@g">@g</MudSelectItem> }
+                </MudSelect>
+            </div>
+            <button class="aiwms-btn aiwms-btn-secondary" @onclick="ClearFilters" style="height:36px">Clear</button>
+        </div>
+    </div>
     <div class="aiwms-section" style="padding:0; overflow:hidden">
         <div style="max-height:640px; overflow:auto">
             <table class="aiwms-table aiwms-table-dense" style="font-size:11.5px">
@@ -105,7 +153,7 @@
                     </tr>
                 </thead>
                 <tbody>
-                    @foreach (var r in SortedRows)
+                    @foreach (var r in FilteredSortedRows)
                     {
                         var req = Math.Max(0, r.OtsQtyToday);
                         <tr>
@@ -155,7 +203,15 @@
 
 @code {
     private readonly DateTime _rundate = DateTime.UtcNow.AddHours(4).Date;
+    private readonly DateTime _today   = DateTime.UtcNow.AddHours(4).Date;
     private string _country = OtsPoAllocationService.BflGroup;
+    private string _runDateStr = DateTime.UtcNow.AddHours(4).Date.ToString("yyyy-MM-dd");
+    private List<DateTime> _availableDates = new();
+    // In-memory column filters applied to loaded rows before display.
+    private HashSet<string> _fCountries = new(StringComparer.OrdinalIgnoreCase);
+    private string _fStoreId   = "";
+    private string _fStoreName = "";
+    private HashSet<string> _fVolumeGroups = new(StringComparer.OrdinalIgnoreCase);
     private int    _month;
     private int    _year;
     private bool   _busy;
@@ -192,7 +248,11 @@
     private bool CanGenerate =>
         !_busy && _month != 0 && _year != 0
         && string.Equals(_country, OtsPoAllocationService.BflGroup, StringComparison.OrdinalIgnoreCase)
-        && _selectedDivs.Count == 0;
+        && _selectedDivs.Count == 0
+        && SelectedRunDate == _today;
+
+    private DateTime SelectedRunDate =>
+        DateTime.TryParse(_runDateStr, out var d) ? d.Date : _today;
 
     private string FormatSelectedDivs(List<string> selected)
     {
@@ -261,6 +321,7 @@
             _divisions = await Svc.GetDivisionsAsync(_month, _year);
             _selectedDivs = _selectedDivs.Where(d => _divisions.Any(x => x.DivCode == d)).ToHashSet();
             _lastGenerated = await Svc.GetLastGeneratedTsAsync(_month, _year);
+            _availableDates = await Svc.GetAvailableRunDatesAsync(_month, _year);
         }
         catch (Exception ex) { ShowError($"Divisions load failed: {ex.Message}"); }
     }
@@ -297,13 +358,13 @@
         _busy = true; _busyKind = "load"; _message = ""; _isError = false;
         try
         {
-            _rows = await Svc.LoadPersistedAsync(_month, _year, _country,
+            _rows = await Svc.LoadPersistedAsync(_month, _year, SelectedRunDate, _country,
                 _selectedDivs.Count == 0 ? null : _selectedDivs);
             RecomputeTotals();
             if (_rows.Count == 0)
-                _message = _lastGenerated is null
-                    ? "No data yet — click Generate first (Country = BFLGroup)."
-                    : "Load returned no rows for the current filters.";
+                _message = _availableDates.Count == 0
+                    ? "No data yet — click Generate first (Country = BFLGroup, today's date)."
+                    : $"Load returned no rows for the selected filters + OTSDate {SelectedRunDate:dd/MM/yyyy}.";
         }
         catch (Exception ex) { ShowError($"Load failed: {ex.Message}"); }
         finally { _busy = false; _busyKind = ""; }
@@ -381,6 +442,27 @@
     {
         if (_sortKey == key) _sortAsc = !_sortAsc;
         else { _sortKey = key; _sortAsc = true; }
+    }
+
+    private IEnumerable<OtsPoAllocationRow> FilteredSortedRows =>
+        SortedRows.Where(RowMatchesFilters);
+
+    private bool RowMatchesFilters(OtsPoAllocationRow r)
+    {
+        if (_fCountries.Count > 0 && !_fCountries.Contains(r.Country)) return false;
+        if (!string.IsNullOrWhiteSpace(_fStoreId)
+            && (r.StoreID?.IndexOf(_fStoreId, StringComparison.OrdinalIgnoreCase) ?? -1) < 0) return false;
+        if (!string.IsNullOrWhiteSpace(_fStoreName)
+            && (r.StoreName?.IndexOf(_fStoreName, StringComparison.OrdinalIgnoreCase) ?? -1) < 0) return false;
+        if (_fVolumeGroups.Count > 0 && !_fVolumeGroups.Contains(r.VolumeGroup ?? "")) return false;
+        return true;
+    }
+
+    private void ClearFilters()
+    {
+        _fCountries = new(StringComparer.OrdinalIgnoreCase);
+        _fStoreId = ""; _fStoreName = "";
+        _fVolumeGroups = new(StringComparer.OrdinalIgnoreCase);
     }
 
     private IEnumerable<OtsPoAllocationRow> SortedRows

@@ -92,17 +92,34 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
     }
 
-    /// <summary>Load persisted rows for a (Month, Year), optionally filtered by
-    /// country + a division subset. Country == null or BFLGroup means "all".
-    /// divisions == null or empty means "all divisions".</summary>
+    /// <summary>Distinct OTSDate values already persisted for a (Month, Year).
+    /// Used by the razor page's Rundate picker so operators can load prior days.</summary>
+    public async Task<List<DateTime>> GetAvailableRunDatesAsync(int month, int year, CancellationToken ct = default)
+    {
+        await using var c = OpenWms();
+        var rows = await c.QueryAsync<DateTime>(new CommandDefinition(@"
+            SELECT DISTINCT OTSDate FROM dbo.WmsOtsPoAllocationRun WITH (NOLOCK)
+             WHERE [Year] = @year AND [Month] = @month
+               AND OTSDate IS NOT NULL
+             ORDER BY OTSDate DESC",
+            new { month, year },
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        return rows.AsList();
+    }
+
+    /// <summary>Load persisted rows for a (Month, Year, OTSDate), optionally
+    /// filtered by country + a division subset. Country == null or BFLGroup
+    /// means "all". divisions == null or empty means "all divisions".
+    /// otsDate == null falls back to the latest available date for the (Month, Year).</summary>
     public async Task<List<OtsPoAllocationRow>> LoadPersistedAsync(
-        int month, int year, string? country, IReadOnlyCollection<int>? divisions,
+        int month, int year, DateTime? otsDate, string? country, IReadOnlyCollection<int>? divisions,
         CancellationToken ct = default)
     {
         var filter = string.IsNullOrWhiteSpace(country) || string.Equals(country, BflGroup, StringComparison.OrdinalIgnoreCase)
             ? null : country;
         var eomLabel = new DateTime(year, month, 1).ToString("MMM-yyyy");
         var divClause = divisions is { Count: > 0 } ? "AND DivCode IN @divs" : "";
+        var dateClause = otsDate.HasValue ? "AND OTSDate = @dt" : "";
         var sql = $@"
             SELECT Country, StoreID, StoreName, DivCode, Division, VolumeGroup, PriorityRank,
                    TgtEOM, SOHToday, WeeksToInclude, WeekSales, InTransit, Ex2DcSoh,
@@ -110,11 +127,12 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
               FROM dbo.WmsOtsPoAllocationRun WITH (NOLOCK)
              WHERE [Year] = @year AND [Month] = @month
                AND (@ct IS NULL OR Country = @ct)
+               {dateClause}
                {divClause}
              ORDER BY Country, StoreID, DivCode";
         await using var c = OpenWms();
         var rows = await c.QueryAsync<PersistedRow>(new CommandDefinition(
-            sql, new { month, year, ct = filter, divs = divisions?.ToArray() },
+            sql, new { month, year, ct = filter, divs = divisions?.ToArray(), dt = otsDate?.Date },
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         return rows.Select(r => new OtsPoAllocationRow(
             Country: r.Country, StoreID: r.StoreID, StoreName: r.StoreName,
@@ -127,14 +145,19 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
     }
 
     /// <summary>Runs the full compute for (Month, Year) across all countries and
-    /// persists to dbo.WmsOtsPoAllocationRun. Any prior rows for the same
-    /// (Month, Year) are DELETEd first. Callers should follow with LoadPersistedAsync.
-    /// Only valid when Country=BFLGroup; the razor page enforces that.</summary>
+    /// persists to dbo.WmsOtsPoAllocationRun stamped with OTSDate=today (GST).
+    /// Any prior rows for the SAME OTSDate are DELETEd first so re-running
+    /// on the same day replaces itself but keeps prior days intact. Callers
+    /// should follow with LoadPersistedAsync. Only valid when Country=BFLGroup;
+    /// the razor page enforces that.</summary>
     public async Task<(int RowsPersisted, List<string> Warnings)> GenerateAndPersistAsync(
         int month, int year, CancellationToken ct = default)
     {
         var (rows, warnings) = await GenerateAsync(month, year, country: null, ct);
         if (rows.Count == 0) return (0, warnings);
+
+        var nowGst   = DateTime.UtcNow.AddHours(4);
+        var otsDate  = nowGst.Date;   // today (GST), no time
 
         await using var c = OpenWms();
         await using var tx = (SqlTransaction)await c.BeginTransactionAsync(ct);
@@ -142,8 +165,8 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         {
             await c.ExecuteAsync(new CommandDefinition(@"
                 DELETE FROM dbo.WmsOtsPoAllocationRun
-                 WHERE [Year] = @year AND [Month] = @month",
-                new { month, year }, transaction: tx,
+                 WHERE [Year] = @year AND [Month] = @month AND OTSDate = @dt",
+                new { month, year, dt = otsDate }, transaction: tx,
                 commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
 
             var dt = new System.Data.DataTable();
@@ -151,6 +174,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
             dt.Columns.Add("RunBy",           typeof(string));
             dt.Columns.Add("Month",           typeof(int));
             dt.Columns.Add("Year",            typeof(int));
+            dt.Columns.Add("OTSDate",         typeof(DateTime));
             dt.Columns.Add("Country",         typeof(string));
             dt.Columns.Add("StoreID",         typeof(string));
             dt.Columns.Add("StoreName",       typeof(string));
@@ -168,12 +192,11 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
             dt.Columns.Add("OtsQtyToday",     typeof(int));
             dt.Columns.Add("OtsPercentToday", typeof(decimal));
 
-            var nowGst = DateTime.UtcNow.AddHours(4);
             var who = user.Name ?? "";
             foreach (var r in rows)
             {
                 dt.Rows.Add(
-                    nowGst, who, month, year,
+                    nowGst, who, month, year, otsDate,
                     r.Country, r.StoreID, (object?)r.StoreName ?? DBNull.Value,
                     r.DivCode, (object?)r.Division ?? DBNull.Value,
                     (object?)r.VolumeGroup ?? DBNull.Value,
@@ -230,7 +253,16 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                     ISNULL(w.Weeks, 1) AS WeeksToInclude
                   FROM dbo.LPM_EOM_Output e WITH (NOLOCK)
                   LEFT JOIN LPMSIM.dbo.Division dv WITH (NOLOCK) ON dv.DivCode = e.DivCode
-                  LEFT JOIN bfldata.dbo.DataSettings d WITH (NOLOCK) ON d.StoreID = e.StoreID
+                  OUTER APPLY (
+                      -- DataSettings can have multiple rows per StoreID (per DataName),
+                      -- which would multiply base rows. Pick the first non-empty
+                      -- PBFullname deterministically.
+                      SELECT TOP 1 PBFullname
+                        FROM bfldata.dbo.DataSettings WITH (NOLOCK)
+                       WHERE StoreID = e.StoreID
+                         AND PBFullname IS NOT NULL AND LTRIM(RTRIM(PBFullname)) <> ''
+                       ORDER BY PBFullname
+                  ) d
                   LEFT JOIN dbo.WmsCountryOtsWeeks w WITH (NOLOCK) ON w.SimCountry = e.Country
                  WHERE e.Month1 = @month AND e.Year1 = @year
                    AND e.Country <> 'Ex2Locations'
