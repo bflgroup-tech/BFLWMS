@@ -41,7 +41,7 @@
         <div>
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">RUN DATE (GST) *</label>
             <select @bind="_runDateStr" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" disabled="@_busy">
-                <option value="@_today.ToString("yyyy-MM-dd")">@_today.ToString("dd/MM/yyyy") (today)</option>
+                <option value="@_today.ToString("yyyy-MM-dd")">@_today.ToString("dd/MM/yyyy")</option>
                 @foreach (var d in _availableDates.Where(x => x != _today))
                 {
                     <option value="@d.ToString("yyyy-MM-dd")">@d.ToString("dd/MM/yyyy")</option>
@@ -137,13 +137,17 @@
             var fEOM  = fRows.Sum(r => r.TgtEOM);
             var fSOH  = fRows.Sum(r => r.SOHToday);
             var fWS   = fRows.Sum(r => r.WeekSales);
+            var fInT  = fRows.Sum(r => r.InTransit);
+            var fEx2  = fRows.Sum(r => r.Ex2DcSoh);
             var fOTS  = fRows.Sum(r => r.OtsQtyToday);
             var fReq  = fRows.Sum(r => Math.Max(0, r.OtsQtyToday));
         }
-        <div style="display:grid; grid-template-columns: repeat(5, minmax(0,1fr)); gap:12px;">
+        <div style="display:grid; grid-template-columns: repeat(7, minmax(0,1fr)); gap:12px;">
             @Kpi("EOM",          fEOM.ToString("N0"),  "#dbeafe", "#1e40af")
             @Kpi("SOH",          fSOH.ToString("N0"),  "#dcfce7", "#166534")
             @Kpi("Weekly Sales", fWS.ToString("N0"),   "#fef3c7", "#92400e")
+            @Kpi("InTransit",    fInT.ToString("N0"),  "#ffedd5", "#9a3412")
+            @Kpi("Ex2 DC SOH",   fEx2.ToString("N0"),  "#fce7f3", "#9d174d")
             @Kpi("OTS",          fOTS.ToString("N0"),  fOTS < 0 ? "#fee2e2" : "#e0e7ff", fOTS < 0 ? "#991b1b" : "#3730a3")
             @Kpi("OTS Reqd",     fReq.ToString("N0"),  "#ede9fe", "#5b21b6")
         </div>
@@ -206,18 +210,31 @@
                     }
                 </tbody>
                 <tfoot style="position:sticky; bottom:0; background:#f3f4f6; z-index:1; font-weight:800">
+                    @{
+                        // Totals reflect the currently-filtered rows so the footer
+                        // stays in sync with the ribbon and the visible grid.
+                        var tRows       = FilteredSortedRows.ToList();
+                        var tTgtEOM     = tRows.Sum(r => r.TgtEOM);
+                        var tSOH        = tRows.Sum(r => r.SOHToday);
+                        var tWeekSales  = tRows.Sum(r => r.WeekSales);
+                        var tInTransit  = tRows.Sum(r => r.InTransit);
+                        var tEx2        = tRows.Sum(r => r.Ex2DcSoh);
+                        var tWIP        = tRows.Sum(r => r.CountingWIP);
+                        var tOtsQty     = tRows.Sum(r => r.OtsQtyToday);
+                        var tOtsReq     = tRows.Sum(r => Math.Max(0, r.OtsQtyToday));
+                    }
                     <tr>
                         <td colspan="8" style="text-align:right; padding:6px 12px; border-top:2px solid #d1d5db">Totals</td>
-                        <td style="text-align:right; padding:6px 12px; border-top:2px solid #d1d5db">@_totTgtEOM.ToString("N0")</td>
-                        <td style="text-align:right; padding:6px 12px; border-top:2px solid #d1d5db">@_totSOH.ToString("N0")</td>
+                        <td style="text-align:right; padding:6px 12px; border-top:2px solid #d1d5db">@tTgtEOM.ToString("N0")</td>
+                        <td style="text-align:right; padding:6px 12px; border-top:2px solid #d1d5db">@tSOH.ToString("N0")</td>
                         <td style="padding:6px 12px; border-top:2px solid #d1d5db"></td>
-                        <td style="text-align:right; padding:6px 12px; border-top:2px solid #d1d5db">@_totWeekSales.ToString("N0")</td>
-                        <td style="text-align:right; padding:6px 12px; border-top:2px solid #d1d5db">@_totInTransit.ToString("N0")</td>
-                        <td style="text-align:right; padding:6px 12px; border-top:2px solid #d1d5db">@_totEx2.ToString("N0")</td>
-                        <td style="text-align:right; padding:6px 12px; border-top:2px solid #d1d5db">@_totWIP.ToString("N0")</td>
-                        <td style="text-align:right; padding:6px 12px; border-top:2px solid #d1d5db">@_totOtsQty.ToString("N0")</td>
+                        <td style="text-align:right; padding:6px 12px; border-top:2px solid #d1d5db">@tWeekSales.ToString("N0")</td>
+                        <td style="text-align:right; padding:6px 12px; border-top:2px solid #d1d5db">@tInTransit.ToString("N0")</td>
+                        <td style="text-align:right; padding:6px 12px; border-top:2px solid #d1d5db">@tEx2.ToString("N0")</td>
+                        <td style="text-align:right; padding:6px 12px; border-top:2px solid #d1d5db">@tWIP.ToString("N0")</td>
+                        <td style="text-align:right; padding:6px 12px; border-top:2px solid #d1d5db">@tOtsQty.ToString("N0")</td>
                         <td style="padding:6px 12px; border-top:2px solid #d1d5db"></td>
-                        <td style="text-align:right; padding:6px 12px; border-top:2px solid #d1d5db">@_totOtsRequired.ToString("N0")</td>
+                        <td style="text-align:right; padding:6px 12px; border-top:2px solid #d1d5db">@tOtsReq.ToString("N0")</td>
                     </tr>
                 </tfoot>
             </table>
