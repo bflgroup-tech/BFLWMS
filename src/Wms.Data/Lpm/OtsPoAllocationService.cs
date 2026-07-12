@@ -240,31 +240,31 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         List<BaseRow> baseRows;
         await using (var c = OpenOnPremBackup())
         {
+            // Perf: replace the per-row OUTER APPLY on DataSettings with a
+            // single-pass CTE dedup (one ROW_NUMBER per StoreID) that a plain
+            // LEFT JOIN can then use. Cuts thousands of mini-lookups down to
+            // one aggregate pass.
             baseRows = (await c.QueryAsync<BaseRow>(new CommandDefinition(@"
+                ;WITH storeNames AS (
+                    SELECT StoreID, PBFullname,
+                           rn = ROW_NUMBER() OVER (PARTITION BY StoreID ORDER BY PBFullname)
+                      FROM bfldata.dbo.DataSettings WITH (NOLOCK)
+                     WHERE SIMCountry IS NOT NULL AND LTRIM(RTRIM(SIMCountry)) <> ''
+                       AND PBFullname IS NOT NULL AND LTRIM(RTRIM(PBFullname)) <> ''
+                )
                 SELECT
                     e.Country,
                     e.StoreID,
-                    d.PBFullname AS StoreName,
+                    sn.PBFullname AS StoreName,
                     e.DivCode,
-                    dv.Division  AS Division,
+                    dv.Division   AS Division,
                     e.VolumeGroup,
                     e.PriorityRank,
-                    e.TargetEOM AS TgtEOM,
+                    e.TargetEOM   AS TgtEOM,
                     ISNULL(w.Weeks, 1) AS WeeksToInclude
                   FROM dbo.LPM_EOM_Output e WITH (NOLOCK)
                   LEFT JOIN LPMSIM.dbo.Division dv WITH (NOLOCK) ON dv.DivCode = e.DivCode
-                  OUTER APPLY (
-                      -- DataSettings can have multiple rows per StoreID (per DataName),
-                      -- which would multiply base rows. Restrict to rows with a
-                      -- non-empty SIMCountry (the operational rows) and pick the
-                      -- first non-empty PBFullname deterministically.
-                      SELECT TOP 1 PBFullname
-                        FROM bfldata.dbo.DataSettings WITH (NOLOCK)
-                       WHERE StoreID = e.StoreID
-                         AND SIMCountry IS NOT NULL AND LTRIM(RTRIM(SIMCountry)) <> ''
-                         AND PBFullname IS NOT NULL AND LTRIM(RTRIM(PBFullname)) <> ''
-                       ORDER BY PBFullname
-                  ) d
+                  LEFT JOIN storeNames sn ON sn.StoreID = e.StoreID AND sn.rn = 1
                   LEFT JOIN dbo.WmsCountryOtsWeeks w WITH (NOLOCK) ON w.SimCountry = e.Country
                  WHERE e.Month1 = @month AND e.Year1 = @year
                    AND e.Country <> 'Ex2Locations'
@@ -276,10 +276,15 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
 
         if (baseRows.Count == 0) return (new(), warnings);
 
+        // Satellites 2-6 run concurrently — each opens its own connection so
+        // there's no shared state. Warnings.Add is guarded by a lock inside
+        // SafeAsync.
+        var weeksByCountry = baseRows.GroupBy(b => b.Country).ToDictionary(g => g.Key, g => g.First().WeeksToInclude);
+
         // 2) SOH Today per (StoreID, DivCode) from Racks.dbo.LPM_Locstock.
         //    StoreID keys are upper-cased so the ECom special-case below can
         //    look up "ONLINE" + "ONLINEKSA" without worrying about source casing.
-        var sohByKey = await SafeAsync(warnings, "SOH Today (Racks.dbo.LPM_Locstock)", async () =>
+        var sohTask = SafeAsync(warnings, "SOH Today (Racks.dbo.LPM_Locstock)", async () =>
         {
             await using var c = OpenOnPremBackup();
             var rows = await c.QueryAsync<(string StoreID, int DivCode, int SOH)>(new CommandDefinition(@"
@@ -292,17 +297,8 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                 r => r.SOH);
         }, () => new Dictionary<(string, int), int>());
 
-        // 3) Ex2 SOH pair per (Country, DivCode) from LPM_Ex2ItemSOH (item-level),
-        //    mapped to retail countries via LPM_Ex2LocationConfig (Ex2StoreID -> Country).
-        //
-        // Each Ex2 warehouse serves specific countries per LPM_Ex2LocationConfig, so
-        // the sum is scoped to (Country, DivCode). In the merge below, the per-store
-        // share = country total / retail store count. UAE stores are forced to 0
-        // (per spec — UAE is not fed by Ex2 stock).
-        //   Itemcode   -> datareporting.dbo.vupc_subclass.DivID (matches
-        //                 LPM_EOM_Output.DivCode's domain)
-        //   Ex2StoreID -> dbo.LPM_Ex2LocationConfig.Country
-        var ex2ByKey = await SafeAsync(warnings, "InTransit/Ex2 DC SOH (LPM_Ex2ItemSOH + LPM_Ex2LocationConfig)", async () =>
+        // 3) Ex2 SOH pair per (Country, DivCode) via LPM_Ex2LocationConfig + vupc_subclass.
+        var ex2Task = SafeAsync(warnings, "InTransit/Ex2 DC SOH (LPM_Ex2ItemSOH + LPM_Ex2LocationConfig)", async () =>
         {
             await using var c = OpenOnPremBackup();
             var rows = await c.QueryAsync<(string Country, int DivCode, int InTransitTotal, int Ex2DcTotal)>(new CommandDefinition(@"
@@ -322,8 +318,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         }, () => new Dictionary<(string, int), (int, int)>());
 
         // 4) Week Sales per (StoreID, DivCode) summed over next N weeks from currentWk.
-        var weeksByCountry = baseRows.GroupBy(b => b.Country).ToDictionary(g => g.Key, g => g.First().WeeksToInclude);
-        var weekSalesByKey = await SafeAsync(warnings, "Week Sales (lpm_salestgtwk_stores)", async () =>
+        var weekSalesTask = SafeAsync(warnings, "Week Sales (lpm_salestgtwk_stores)", async () =>
         {
             await using var c = OpenOnPremBackup();
             var rows = await c.QueryAsync<(string StoreID, int DivCode, string Country, int Wk, int Sales)>(new CommandDefinition(@"
@@ -347,7 +342,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         }, () => new Dictionary<(string, int), int>());
 
         // 5) Store count per country from LPM_EOM_Output.
-        var storeCountByCountry = await SafeAsync(warnings, "Store count", async () =>
+        var storeCountTask = SafeAsync(warnings, "Store count", async () =>
         {
             await using var c = OpenOnPremBackup();
             var rows = await c.QueryAsync<(string Country, int Cnt)>(new CommandDefinition(@"
@@ -362,7 +357,9 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
 
         // 6) Counting WIP on Azure — SUM(AllocatedQty) per (Country, StoreID, DivCode)
         //    for contnos with approved LPMSIM header but no WmsBuildingCompletion.
-        var wipByKey = await SafeAsync(warnings, "Counting WIP (Azure)", async () =>
+        //    Perf: fetch the approved-contno list first, then let Azure do the
+        //    filter + aggregate in one round-trip (no full-table pull to C#).
+        var wipTask = SafeAsync(warnings, "Counting WIP (Azure)", async () =>
         {
             HashSet<string> approvedContnos;
             await using (var opb = OpenOnPremBackup())
@@ -374,31 +371,34 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                     commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
                     .ToHashSet(StringComparer.OrdinalIgnoreCase);
             }
+            if (approvedContnos.Count == 0) return new Dictionary<(string, string, int), int>();
 
-            HashSet<string> completedContnos;
-            List<(string Country, string StoreID, int DivCode, int Qty, string ContNo)> allocs;
-            await using (var w = OpenWms())
-            {
-                completedContnos = (await w.QueryAsync<string>(new CommandDefinition(@"
-                    SELECT DISTINCT ContNo FROM dbo.WmsBuildingCompletion WITH (NOLOCK)",
-                    commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
-                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-                allocs = (await w.QueryAsync<(string Country, string StoreID, int DivCode, int Qty, string ContNo)>(
-                    new CommandDefinition(@"
-                        SELECT Country, StoreID, DivCode = ISNULL(DivCode, 0),
-                               Qty = SUM(ISNULL(AllocatedQty, 0)), ContNo
-                          FROM dbo.WMS_ContAllocationData WITH (NOLOCK)
-                         WHERE StoreID IS NOT NULL
-                         GROUP BY Country, StoreID, DivCode, ContNo",
-                    commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).ToList();
-            }
-
-            return allocs
-                .Where(a => approvedContnos.Contains(a.ContNo) && !completedContnos.Contains(a.ContNo))
-                .GroupBy(a => (a.Country ?? "", a.StoreID, a.DivCode))
-                .ToDictionary(g => g.Key, g => g.Sum(x => x.Qty));
+            await using var w = OpenWms();
+            var contnos = approvedContnos.ToArray();
+            var rows = await w.QueryAsync<(string Country, string StoreID, int DivCode, int Qty)>(
+                new CommandDefinition(@"
+                    SELECT a.Country, a.StoreID,
+                           DivCode = ISNULL(a.DivCode, 0),
+                           Qty     = SUM(ISNULL(a.AllocatedQty, 0))
+                      FROM dbo.WMS_ContAllocationData a WITH (NOLOCK)
+                     WHERE a.StoreID IS NOT NULL
+                       AND a.ContNo IN @contnos
+                       AND NOT EXISTS (
+                           SELECT 1 FROM dbo.WmsBuildingCompletion b WITH (NOLOCK)
+                            WHERE b.ContNo = a.ContNo
+                       )
+                     GROUP BY a.Country, a.StoreID, ISNULL(a.DivCode, 0)",
+                    new { contnos },
+                    commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            return rows.ToDictionary(r => (r.Country ?? "", r.StoreID, r.DivCode), r => r.Qty);
         }, () => new Dictionary<(string, string, int), int>());
+
+        await Task.WhenAll(sohTask, ex2Task, weekSalesTask, storeCountTask, wipTask);
+        var sohByKey            = sohTask.Result;
+        var ex2ByKey            = ex2Task.Result;
+        var weekSalesByKey      = weekSalesTask.Result;
+        var storeCountByCountry = storeCountTask.Result;
+        var wipByKey            = wipTask.Result;
 
         // 7) Merge + compute OTS Qty / OTS %.
         var eomLabel = new DateTime(year, month, 1).ToString("MMM-yyyy");
@@ -461,7 +461,8 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         try { return await body(); }
         catch (Exception ex)
         {
-            warnings.Add($"{label} unavailable: {ex.Message}");
+            // warnings can be appended from multiple parallel satellite tasks.
+            lock (warnings) { warnings.Add($"{label} unavailable: {ex.Message}"); }
             return fallback();
         }
     }
