@@ -71,6 +71,18 @@
             </ul>
         </div>
     }
+    @if (_validationIssues.Count > 0)
+    {
+        <div class="aiwms-alert" style="margin-top:8px; background:#fee2e2; border:1px solid #f87171; color:#991b1b">
+            <b>Coverage validation — @_validationIssues.Count issue(s):</b>
+            <ul style="margin:6px 0 0 20px; padding:0">
+                @foreach (var w in _validationIssues) { <li>@w</li> }
+            </ul>
+            <label style="display:inline-flex; align-items:center; gap:6px; margin-top:8px; font-size:12px; cursor:pointer">
+                <input type="checkbox" @bind="_proceedAnyway" /> <b>Proceed anyway</b> — I understand the affected countries' Week Sales will be under-counted.
+            </label>
+        </div>
+    }
 </div>
 
 @if (_rows.Count > 0)
@@ -265,6 +277,8 @@
     private DateTime? _lastGenerated;
     private List<string> _countries = new();
     private List<string> _warnings = new();
+    private List<string> _validationIssues = new();
+    private bool _proceedAnyway;
     private List<OtsMonthYearOption> _monthYears = new();
     private List<int>    _years = new();
     private List<int>    _monthsForSelectedYear = new();
@@ -385,9 +399,26 @@
         _busy = true; _busyKind = "gen"; _message = ""; _isError = false; _warnings = new();
         try
         {
+            // Coverage pre-check — countries without enough Weekly Sales data
+            // would silently underestimate WeekSales. Show the operator a list
+            // and require an explicit "Proceed anyway" second click.
+            if (!_proceedAnyway)
+            {
+                _validationIssues = await Svc.ValidateWeekCoverageAsync(_month, _year);
+                if (_validationIssues.Count > 0)
+                {
+                    _message = $"Coverage validation flagged {_validationIssues.Count} issue(s). Review below, tick \"Proceed anyway\" and click Generate again to force.";
+                    _isError = true;
+                    return;
+                }
+            }
+
+            _validationIssues = new();
             var (n, warnings) = await Svc.GenerateAndPersistAsync(_month, _year);
             _warnings = warnings;
             _lastGenerated = await Svc.GetLastGeneratedTsAsync(_month, _year);
+            _availableDates = await Svc.GetAvailableRunDatesAsync(_month, _year);
+            _proceedAnyway = false;
             _message = n == 0
                 ? "Generate returned no rows — nothing persisted."
                 : $"Generated {n:N0} row(s). Now click Load (with your Country + Divisions filters) to see the grid.";
