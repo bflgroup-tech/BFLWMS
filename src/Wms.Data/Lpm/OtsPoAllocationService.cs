@@ -298,12 +298,16 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         }, () => new Dictionary<(string, int), int>());
 
         // 3) Ex2 SOH pair per (Country, DivCode) via LPM_Ex2LocationConfig + vupc_subclass.
+        //    Country casing differs across sources — LPM_Ex2LocationConfig has
+        //    'BAHRAIN', 'KUWAIT', 'QATAR', 'Malaysia', 'KSA'; LPM_EOM_Output has
+        //    'Bahrain', 'Kuwait', 'Qatar', 'MALAYSIA', 'KSA'. Only KSA matched
+        //    by luck. Upper-case both sides here + in the merge lookup below.
         var ex2Task = SafeAsync(warnings, "InTransit/Ex2 DC SOH (LPM_Ex2ItemSOH + LPM_Ex2LocationConfig)", async () =>
         {
             await using var c = OpenOnPremBackup();
             var rows = await c.QueryAsync<(string Country, int DivCode, int InTransitTotal, int Ex2DcTotal)>(new CommandDefinition(@"
-                SELECT cfg.Country AS Country,
-                       v.DivID    AS DivCode,
+                SELECT UPPER(LTRIM(RTRIM(cfg.Country))) AS Country,
+                       v.DivID                          AS DivCode,
                        SUM(ISNULL(sohs.Ex2SOH, 0) + ISNULL(sohs.BoxSOH, 0)) AS InTransitTotal,
                        SUM(ISNULL(sohs.R1WHSOH, 0))                         AS Ex2DcTotal
                   FROM dbo.LPM_Ex2ItemSOH sohs WITH (NOLOCK)
@@ -312,7 +316,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                   JOIN datareporting.dbo.vupc_subclass v WITH (NOLOCK)
                     ON v.itemcode = sohs.Itemcode
                  WHERE v.DivID IS NOT NULL AND cfg.Country IS NOT NULL
-                 GROUP BY cfg.Country, v.DivID",
+                 GROUP BY UPPER(LTRIM(RTRIM(cfg.Country))), v.DivID",
                 commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
             return rows.ToDictionary(r => (r.Country, r.DivCode), r => (r.InTransitTotal, r.Ex2DcTotal));
         }, () => new Dictionary<(string, int), (int, int)>());
@@ -423,8 +427,9 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
             var stores = storeCountByCountry.TryGetValue(r.Country, out var sc) ? sc : 0;
             int inTransit = 0, ex2dc = 0;
             var isUAE = string.Equals(r.Country, "UAE", StringComparison.OrdinalIgnoreCase);
+            var cKey  = (r.Country ?? "").Trim().ToUpperInvariant();
             if (!isUAE
-                && ex2ByKey.TryGetValue((r.Country, r.DivCode), out var e)
+                && ex2ByKey.TryGetValue((cKey, r.DivCode), out var e)
                 && stores > 0)
             {
                 var (inTransitTotal, ex2DcTotal) = e;
