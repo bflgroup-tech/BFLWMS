@@ -300,6 +300,11 @@
                         <th style="cursor:pointer; text-align:right" @onclick='() => Sort("PriorityRank")'>Priority @SortArrow("PriorityRank")</th>
                         <th style="cursor:pointer; text-align:right" @onclick='() => Sort("SkuMax")'>SKUMax @SortArrow("SkuMax")</th>
                         <th style="cursor:pointer; text-align:right" @onclick='() => Sort("AllocQty")'>Alloc Qty @SortArrow("AllocQty")</th>
+                        <th style="text-align:right">Pass 1</th>
+                        <th style="text-align:right">Pass 2</th>
+                        <th style="text-align:right">Pass 3</th>
+                        <th style="text-align:right">Pass 4</th>
+                        <th style="text-align:right" title="Per-Division AVG(OtsPercentToday WHERE >0) at item time">Avg OTS %</th>
                         <th style="text-align:right">RR Extra</th>
                         <th style="cursor:pointer" @onclick='() => Sort("LPMDt")'>LPM Dt @SortArrow("LPMDt")</th>
                     </tr>
@@ -316,6 +321,11 @@
                             <td style="text-align:right">@r.PriorityRank</td>
                             <td style="text-align:right">@r.SkuMax</td>
                             <td style="text-align:right">@r.AllocQty</td>
+                            <td style="text-align:right">@(r.Pass1Qty is > 0 ? r.Pass1Qty!.Value.ToString() : "")</td>
+                            <td style="text-align:right">@(r.Pass2Qty is > 0 ? r.Pass2Qty!.Value.ToString() : "")</td>
+                            <td style="text-align:right">@(r.Pass3Qty is > 0 ? r.Pass3Qty!.Value.ToString() : "")</td>
+                            <td style="text-align:right">@(r.Pass4Qty is > 0 ? r.Pass4Qty!.Value.ToString() : "")</td>
+                            <td style="text-align:right">@(r.AvgOtsPercent.HasValue ? r.AvgOtsPercent.Value.ToString("F1") : "")</td>
                             <td style="text-align:right">@(r.RoundRobinExtra > 0 ? r.RoundRobinExtra.ToString() : "")</td>
                             <td>@r.LPMDt?.ToString("yyyy-MM-dd")</td>
                         </tr>
