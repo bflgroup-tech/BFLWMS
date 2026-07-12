@@ -827,8 +827,9 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                 {
                     storeNameById.TryGetValue(sid, out var storeName);
                     pricesByCountryItem.TryGetValue((country, line.ItemCode), out var price);
-                    var priority = priorityByStoreDiv.TryGetValue((sid, divCode), out var pr) ? pr : null;
-                    var mnw      = mnwByStoreDiv.TryGetValue((sid, divCode), out var mv) ? mv : null;
+                    var priority    = priorityByStoreDiv.TryGetValue((sid, divCode), out var pr) ? pr : null;
+                    var mnw         = mnwByStoreDiv.TryGetValue((sid, divCode), out var mv) ? mv : null;
+                    var otsQtyToday = otsRunByKey.TryGetValue((sid, divCode), out var otsRun) ? (int?)otsRun.OtsQtyToday : null;
                     return new AllocationRow(
                         Contno: line.ContNo, OraPONo: line.OraPONo, ItemCode: line.ItemCode,
                         ItemName: orgRow.itemname, Brand: orgRow.vendor, PoQty: line.Qty,
@@ -841,7 +842,8 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                         PalletType: PalletFor(sid),
                         PrevAllocatedQty: prevAllocatedSeed.GetValueOrDefault((sid, divCode), 0),
                         PriorityRank: priority,
-                        MnwToday: mnw);
+                        MnwToday: mnw,
+                        OtsQtyToday: otsQtyToday);
                 }
 
                 var allocs = new Dictionary<string, AllocationRow>(StringComparer.OrdinalIgnoreCase);
@@ -1379,6 +1381,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         dt.Columns.Add("Pass3Qty",         typeof(int));
         dt.Columns.Add("Pass4Qty",         typeof(int));
         dt.Columns.Add("AvgOtsPercent",    typeof(decimal));
+        dt.Columns.Add("OtsQtyToday",      typeof(int));
 
         var now = DateTime.UtcNow.AddHours(4);  // GST stamp for Trndate/Time1
         var trnDate = now.Date;
@@ -1415,7 +1418,8 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                 (object?)r.Pass2Qty ?? DBNull.Value,
                 (object?)r.Pass3Qty ?? DBNull.Value,
                 (object?)r.Pass4Qty ?? DBNull.Value,
-                (object?)r.AvgOtsPercent ?? DBNull.Value);
+                (object?)r.AvgOtsPercent ?? DBNull.Value,
+                (object?)r.OtsQtyToday ?? DBNull.Value);
         }
 
         c.ChangeDatabase("LPMSIM");
@@ -1794,10 +1798,11 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         var rows = (await c.QueryAsync<(string ContNo, string? OraPONo, string? ItemCode, string? ItemName, string? Brand,
                                        int? POQty, int? AllocatedQty, int? Phase2Qty, int? SkuMax, int? DivCode, string? StoreID, string? Country, string? GroupCode, string? Division,
                                        string? Remarks, DateTime? LPMDt, double? OTS, int? PriorityRank, int? MnwToday,
-                                       int? Pass1Qty, int? Pass2Qty, int? Pass3Qty, int? Pass4Qty, decimal? AvgOtsPercent)>(new CommandDefinition($@"
+                                       int? Pass1Qty, int? Pass2Qty, int? Pass3Qty, int? Pass4Qty, decimal? AvgOtsPercent,
+                                       int? OtsQtyToday)>(new CommandDefinition($@"
             SELECT d.ContNo, d.ORAPONo, d.Itemcode, d.Itemname, d.Brand, d.POQty, d.AllocatedQty, d.Phase2Qty, d.SkuMax, d.DivCode, d.StoreID, d.Country,
                    d.GroupCode, d.Division, d.Remarks, d.LPMDt, d.OTS, d.PriorityRank, d.MnwToday,
-                   d.Pass1Qty, d.Pass2Qty, d.Pass3Qty, d.Pass4Qty, d.AvgOtsPercent
+                   d.Pass1Qty, d.Pass2Qty, d.Pass3Qty, d.Pass4Qty, d.AvgOtsPercent, d.OtsQtyToday
               FROM LPMSIM.dbo.WMS_ContAllocationData d WITH (NOLOCK)
               {joinAndWhereSql}
              ORDER BY d.IdNo",
@@ -1893,7 +1898,8 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                 Pass2Qty: r.Pass2Qty,
                 Pass3Qty: r.Pass3Qty,
                 Pass4Qty: r.Pass4Qty,
-                AvgOtsPercent: r.AvgOtsPercent);
+                AvgOtsPercent: r.AvgOtsPercent,
+                OtsQtyToday: r.OtsQtyToday);
         }).ToList();
     }
 

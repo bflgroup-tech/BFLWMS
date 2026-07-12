@@ -63,7 +63,8 @@ public record AllocationRow(
     int?     Pass2Qty         = null,    // 0 < OTS% < AvgOTS% pass
     int?     Pass3Qty         = null,    // OTS% <= 0 round-robin pass
     int?     Pass4Qty         = null,    // uncapped RR fallback across all stores
-    decimal? AvgOtsPercent    = null);   // per-Division AVG(OtsPercentToday WHERE > 0) at item time
+    decimal? AvgOtsPercent    = null,    // per-Division AVG(OtsPercentToday WHERE > 0) at item time
+    int?     OtsQtyToday      = null);   // OtsQtyToday from WmsOtsPoAllocationRun for this (StoreID, DivCode) — initial value, not decremented
 
 /// <summary>One row in the blocked-items list: an (item, store) pair that was
 /// excluded from allocation by LPM_StoreDeptAccess or LPM_StoreDivAccess.</summary>
