@@ -253,166 +253,391 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         if (string.IsNullOrWhiteSpace(contno)) return new(result, blocked);
         contno = contno.Trim();
 
-        await using var c = OpenOnPremBackup();
+        // Everything in this method is prefetch-heavy — the per-line loop below
+        // depends on ~15 on-prem lookups plus 3-4 Azure ones. We fan them out
+        // into two parallel waves so the operator sees Process finish in
+        // ~= slowest-single-query time instead of sum-of-all-queries time.
+        //
+        //   Wave 1 (fires as soon as PO lines are known):
+        //     itemMeta, deptBlocks, divBlocks, orgByItem, storeNameById,
+        //     palletByStore, priorityByStoreDiv, mnwByStoreDiv,
+        //     sales prices (one task per country in parallel),
+        //     WmsBuildingCompletion (Azure), receiptDt, initialAlloc+topN (Azure, RR),
+        //     WmsOtsPoAllocationRun (Azure, RR)
+        //
+        //   Wave 2 (fires once wave 1's divByItem is known):
+        //     eomStores, rulesRaw (SKU Max bands), otsRaw (LPM_OTS_Output),
+        //     approvedRows (LPMSIM anti-joined to WmsBuildingCompletion)
+        //
+        // Each parallel task opens its own SqlConnection because Dapper +
+        // SqlConnection aren't thread-safe for concurrent commands.
 
-        // Per-prefetch progress messages so the bar shows what the algorithm is
-        // doing during the ~9 prep queries before the per-line loop. Without them
-        // the user sees a static "Processing…" for several seconds after Validate.
         progress?.Report(new AllocationProgress(0, 0, "Prefetching: PO line items"));
-        // 1. Load all PO line items for this container (one row per line — no GROUP BY).
-        var lines = (await c.QueryAsync<(string ContNo, string OraPONo, string ItemCode, int Qty, string? LPM, DateTime? LPMDt)>(
-            new CommandDefinition(@"
-                SELECT ContNo, OraPONo, ItemCode,
-                       CAST(ISNULL(orgqty,0) AS INT) AS Qty,
-                       LPM, LPMDt
-                FROM usa.dbo.usaorgfile_LPM WITH (NOLOCK)
-                WHERE ContNo = @c
-                ORDER BY OraPONo, LPM, ItemCode",
-                new { c = contno }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).AsList();
-
+        List<(string ContNo, string OraPONo, string ItemCode, int Qty, string? LPM, DateTime? LPMDt)> lines;
+        await using (var c0 = OpenOnPremBackup())
+        {
+            lines = (await c0.QueryAsync<(string ContNo, string OraPONo, string ItemCode, int Qty, string? LPM, DateTime? LPMDt)>(
+                new CommandDefinition(@"
+                    SELECT ContNo, OraPONo, ItemCode,
+                           CAST(ISNULL(orgqty,0) AS INT) AS Qty,
+                           LPM, LPMDt
+                    FROM usa.dbo.usaorgfile_LPM WITH (NOLOCK)
+                    WHERE ContNo = @c
+                    ORDER BY OraPONo, LPM, ItemCode",
+                    new { c = contno }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).AsList();
+        }
         if (lines.Count == 0) return new(result, blocked);
 
-        progress?.Report(new AllocationProgress(0, 0, "Prefetching: item Division / Department"));
-        // 2. Resolve DivCode + Division name + Department per item via vupc_subclass
-        var itemMeta = (await c.QueryAsync<(string itemcode, int? DivID, string? Division, string? Department)>(new CommandDefinition(@"
-            SELECT itemcode, DivID, Division, Department
-            FROM datareporting.dbo.vupc_subclass WITH (NOLOCK)
-            WHERE itemcode IN @items",
-            new { items = lines.Select(l => l.ItemCode).Distinct().ToArray() }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
-            .GroupBy(r => r.itemcode)
-            .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
-        var divByItem = itemMeta.ToDictionary(kv => kv.Key, kv => kv.Value.DivID ?? 0, StringComparer.OrdinalIgnoreCase);
-
-        progress?.Report(new AllocationProgress(0, 0, "Prefetching: store eligibility blocks"));
-        // 2.5. Pre-fetch block tables (LPM_StoreDeptAccess + LPM_StoreDivAccess where IsActive=0).
-        // No Country filter per requirement — keys are (StoreID, DivCode[, Department]).
-        var deptBlocks = (await c.QueryAsync<(string StoreID, int DivCode, string? Department)>(new CommandDefinition(@"
-            SELECT StoreID, DivCode, Department
-            FROM dbo.LPM_StoreDeptAccess WITH (NOLOCK)
-            WHERE IsActive = 0",
-            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
-            .Select(r => (Sid: (r.StoreID ?? "").Trim().ToUpperInvariant(), r.DivCode, Dep: (r.Department ?? "").Trim().ToUpperInvariant()))
-            .ToHashSet();
-        var divBlocks = (await c.QueryAsync<(string StoreID, int DivCode)>(new CommandDefinition(@"
-            SELECT StoreID, DivCode
-            FROM dbo.LPM_StoreDivAccess WITH (NOLOCK)
-            WHERE IsActive = 0",
-            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
-            .Select(r => (Sid: (r.StoreID ?? "").Trim().ToUpperInvariant(), r.DivCode))
-            .ToHashSet();
-
-        progress?.Report(new AllocationProgress(0, 0, "Prefetching: item Brand / Season / Style / Size"));
-        // 2b. ItemName + Brand + Season + Style + Size from usa.USAOrgFile.
-        // Season drives the PalletType pick at save time (S vs W variant);
-        // Style + Size are written to the detail rows for downstream consumers.
-        var orgByItem = (await c.QueryAsync<(string itemcode, string? itemname, string? vendor, string? season, string? Style, string? Size)>(new CommandDefinition(@"
-            SELECT itemcode,
-                   MAX(itemname) AS itemname,
-                   MAX(vendor)   AS vendor,
-                   MAX(season)   AS season,
-                   MAX(Style)    AS Style,
-                   MAX([Size])   AS [Size]
-            FROM usa.dbo.USAOrgFile WITH (NOLOCK)
-            WHERE contno = @c AND itemcode IN @items
-            GROUP BY itemcode",
-            new { c = contno, items = lines.Select(l => l.ItemCode).Distinct().ToArray() }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
-            .ToDictionary(r => r.itemcode, r => (r.itemname, r.vendor, r.season, r.Style, r.Size), StringComparer.OrdinalIgnoreCase);
-
-        progress?.Report(new AllocationProgress(0, 0, "Prefetching: store names"));
-        // 2c. StoreName lookup from bfldata.DataSettings.PBFullname (key column: StoreID)
-        var storeNameById = (await c.QueryAsync<(string StoreID, string? PBFullname)>(new CommandDefinition(@"
-            SELECT StoreID, MAX(PBFullname) AS PBFullname
-            FROM bfldata.dbo.DataSettings WITH (NOLOCK)
-            WHERE PBFullname IS NOT NULL
-            GROUP BY StoreID",
-            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
-            .ToDictionary(r => r.StoreID, r => r.PBFullname, StringComparer.OrdinalIgnoreCase);
-
-        progress?.Report(new AllocationProgress(0, 0, "Prefetching: pallet types"));
-        // 2c2. WMS_Building_PalletTypes — keyed by StoreId. Per-row ResultType picks
-        // PalletTypeS when item season <> 'W' else PalletTypeW (per user spec Q-C).
-        var palletByStore = (await c.QueryAsync<(string StoreId, string? PalletTypeS, string? PalletTypeW)>(new CommandDefinition(@"
-            SELECT StoreId, MAX(PalletTypeS) AS PalletTypeS, MAX(PalletTypeW) AS PalletTypeW
-            FROM dbo.WMS_Building_PalletTypes WITH (NOLOCK)
-            WHERE StoreId IS NOT NULL
-            GROUP BY StoreId",
-            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
-            .ToDictionary(r => r.StoreId, r => (r.PalletTypeS, r.PalletTypeW), StringComparer.OrdinalIgnoreCase);
-
-        // Determine the country filter once — used for both eomStores narrowing and
-        // the SalesPrice lookup. Empty/null = all countries (back-compat).
-        var hasCountryFilter = allocationCountries is { Count: > 0 };
-        var countryFilter = hasCountryFilter ? allocationCountries!.ToArray() : Array.Empty<string>();
-
-        // 2c3. SalesPrice per (country, itemcode). UAE stores → hodata.salesprice.salesrate,
-        // other countries → <DataName>.dbo.RFSalesprice.salesrate where DataName comes
-        // from bfldata.DataSettings.DataName for that SIMCountry. DataName is sanitized
-        // (alphanumeric/underscore only) before being injected into the dynamic FROM clause.
-        var pricesByCountryItem = new Dictionary<(string Country, string ItemCode), decimal?>();
         var distinctItemCodes = lines.Select(l => l.ItemCode).Distinct().ToArray();
-        if (hasCountryFilter && distinctItemCodes.Length > 0)
+        var hasCountryFilter  = allocationCountries is { Count: > 0 };
+        var countryFilter     = hasCountryFilter ? allocationCountries!.ToArray() : Array.Empty<string>();
+        var nowGst            = DateTime.UtcNow.AddHours(4);
+
+        // ================= Wave 1 =================
+        progress?.Report(new AllocationProgress(0, 0, "Prefetching: wave 1 (11 lookups in parallel)"));
+
+        async Task<Dictionary<string, (int? DivID, string? Division, string? Department)>> LoadItemMeta()
         {
-            foreach (var sc in countryFilter.Distinct(StringComparer.OrdinalIgnoreCase))
+            await using var c1 = OpenOnPremBackup();
+            return (await c1.QueryAsync<(string itemcode, int? DivID, string? Division, string? Department)>(new CommandDefinition(@"
+                SELECT itemcode, DivID, Division, Department
+                FROM datareporting.dbo.vupc_subclass WITH (NOLOCK)
+                WHERE itemcode IN @items",
+                new { items = distinctItemCodes }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
+                .GroupBy(r => r.itemcode)
+                .ToDictionary(g => g.Key, g => (g.First().DivID, g.First().Division, g.First().Department), StringComparer.OrdinalIgnoreCase);
+        }
+
+        async Task<HashSet<(string Sid, int DivCode, string Dep)>> LoadDeptBlocks()
+        {
+            await using var c1 = OpenOnPremBackup();
+            return (await c1.QueryAsync<(string StoreID, int DivCode, string? Department)>(new CommandDefinition(@"
+                SELECT StoreID, DivCode, Department
+                FROM dbo.LPM_StoreDeptAccess WITH (NOLOCK)
+                WHERE IsActive = 0",
+                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
+                .Select(r => (Sid: (r.StoreID ?? "").Trim().ToUpperInvariant(), r.DivCode, Dep: (r.Department ?? "").Trim().ToUpperInvariant()))
+                .ToHashSet();
+        }
+
+        async Task<HashSet<(string Sid, int DivCode)>> LoadDivBlocks()
+        {
+            await using var c1 = OpenOnPremBackup();
+            return (await c1.QueryAsync<(string StoreID, int DivCode)>(new CommandDefinition(@"
+                SELECT StoreID, DivCode
+                FROM dbo.LPM_StoreDivAccess WITH (NOLOCK)
+                WHERE IsActive = 0",
+                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
+                .Select(r => (Sid: (r.StoreID ?? "").Trim().ToUpperInvariant(), r.DivCode))
+                .ToHashSet();
+        }
+
+        async Task<Dictionary<string, (string? itemname, string? vendor, string? season, string? Style, string? Size)>> LoadOrgByItem()
+        {
+            await using var c1 = OpenOnPremBackup();
+            return (await c1.QueryAsync<(string itemcode, string? itemname, string? vendor, string? season, string? Style, string? Size)>(new CommandDefinition(@"
+                SELECT itemcode,
+                       MAX(itemname) AS itemname,
+                       MAX(vendor)   AS vendor,
+                       MAX(season)   AS season,
+                       MAX(Style)    AS Style,
+                       MAX([Size])   AS [Size]
+                FROM usa.dbo.USAOrgFile WITH (NOLOCK)
+                WHERE contno = @c AND itemcode IN @items
+                GROUP BY itemcode",
+                new { c = contno, items = distinctItemCodes }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
+                .ToDictionary(r => r.itemcode, r => (r.itemname, r.vendor, r.season, r.Style, r.Size), StringComparer.OrdinalIgnoreCase);
+        }
+
+        async Task<Dictionary<string, string?>> LoadStoreNames()
+        {
+            await using var c1 = OpenOnPremBackup();
+            return (await c1.QueryAsync<(string StoreID, string? PBFullname)>(new CommandDefinition(@"
+                SELECT StoreID, MAX(PBFullname) AS PBFullname
+                FROM bfldata.dbo.DataSettings WITH (NOLOCK)
+                WHERE PBFullname IS NOT NULL
+                GROUP BY StoreID",
+                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
+                .ToDictionary(r => r.StoreID, r => r.PBFullname, StringComparer.OrdinalIgnoreCase);
+        }
+
+        async Task<Dictionary<string, (string? PalletTypeS, string? PalletTypeW)>> LoadPalletByStore()
+        {
+            await using var c1 = OpenOnPremBackup();
+            return (await c1.QueryAsync<(string StoreId, string? PalletTypeS, string? PalletTypeW)>(new CommandDefinition(@"
+                SELECT StoreId, MAX(PalletTypeS) AS PalletTypeS, MAX(PalletTypeW) AS PalletTypeW
+                FROM dbo.WMS_Building_PalletTypes WITH (NOLOCK)
+                WHERE StoreId IS NOT NULL
+                GROUP BY StoreId",
+                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
+                .ToDictionary(r => r.StoreId, r => (r.PalletTypeS, r.PalletTypeW), StringComparer.OrdinalIgnoreCase);
+        }
+
+        async Task<Dictionary<(string StoreID, int DivCode), int?>> LoadPriority()
+        {
+            await using var c1 = OpenOnPremBackup();
+            var pRows = await c1.QueryAsync<(string StoreID, int DivCode, int? PriorityRank)>(new CommandDefinition(
+                @"SELECT StoreId AS StoreID, DivCode, PriorityRank
+                    FROM dbo.LPM_EOM_Output WITH (NOLOCK)
+                   WHERE Month1 = @m AND Year1 = @y",
+                new { m = nowGst.Month, y = nowGst.Year },
+                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            var d = new Dictionary<(string StoreID, int DivCode), int?>();
+            foreach (var p in pRows) d[(p.StoreID, p.DivCode)] = p.PriorityRank;
+            return d;
+        }
+
+        async Task<Dictionary<(string StoreID, int DivCode), int?>> LoadMnw()
+        {
+            await using var c1 = OpenOnPremBackup();
+            var mRows = await c1.QueryAsync<(string StoreID, int DivCode, int? MnwToday)>(new CommandDefinition(
+                @"WITH latest AS (
+                     SELECT StoreID, DivCode, mnwtoday,
+                            rn = ROW_NUMBER() OVER (PARTITION BY StoreID, DivCode ORDER BY OTSDate DESC)
+                       FROM dbo.LPM_OTS_Output WITH (NOLOCK)
+                  )
+                  SELECT StoreID, DivCode, mnwtoday AS MnwToday
+                    FROM latest WHERE rn = 1",
+                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            var d = new Dictionary<(string StoreID, int DivCode), int?>();
+            foreach (var m in mRows) d[(m.StoreID, m.DivCode)] = m.MnwToday;
+            return d;
+        }
+
+        // Sales prices — fan out one Task per country. UAE uses hodata.salesprice,
+        // other countries use <DataName>.dbo.RFSalesprice via a per-country DataName
+        // lookup. Failures are logged but don't abort the whole prefetch.
+        async Task<Dictionary<(string Country, string ItemCode), decimal?>> LoadSalesPrices()
+        {
+            var result = new Dictionary<(string Country, string ItemCode), decimal?>();
+            if (!hasCountryFilter || distinctItemCodes.Length == 0) return result;
+
+            async Task<(string Country, List<(string itemcode, decimal? salesrate)> Rows)?> LoadOneCountry(string sc)
             {
-                progress?.Report(new AllocationProgress(0, 0, $"Prefetching: sales prices ({sc})"));
                 try
                 {
+                    await using var cc = OpenOnPremBackup();
                     if (string.Equals(sc, "UAE", StringComparison.OrdinalIgnoreCase))
                     {
-                        var rows = await c.QueryAsync<(string itemcode, decimal? salesrate)>(new CommandDefinition(@"
+                        var rows = (await cc.QueryAsync<(string itemcode, decimal? salesrate)>(new CommandDefinition(@"
                             SELECT itemcode, salesrate
                             FROM hodata.dbo.salesprice WITH (NOLOCK)
                             WHERE itemcode IN @items",
-                            new { items = distinctItemCodes }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-                        foreach (var r in rows) pricesByCountryItem[(sc, r.itemcode)] = r.salesrate;
+                            new { items = distinctItemCodes }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).ToList();
+                        return (sc, rows);
                     }
-                    else
-                    {
-                        var dataName = await c.ExecuteScalarAsync<string?>(new CommandDefinition(@"
-                            SELECT TOP 1 DataName FROM bfldata.dbo.DataSettings WITH (NOLOCK)
-                            WHERE SIMCountry = @c
-                              AND DataName IS NOT NULL AND LTRIM(RTRIM(DataName)) <> ''",
-                            new { c = sc }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-                        if (string.IsNullOrWhiteSpace(dataName)) continue;
-                        if (!Regex.IsMatch(dataName, @"^[A-Za-z0-9_]+$")) continue;  // defend against ETL drift
-                        var sql = $@"SELECT itemcode, salesrate
-                                       FROM {dataName}.dbo.RFSalesprice WITH (NOLOCK)
-                                      WHERE itemcode IN @items";
-                        var rows = await c.QueryAsync<(string itemcode, decimal? salesrate)>(new CommandDefinition(
-                            sql, new { items = distinctItemCodes }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-                        foreach (var r in rows) pricesByCountryItem[(sc, r.itemcode)] = r.salesrate;
-                    }
+                    var dataName = await cc.ExecuteScalarAsync<string?>(new CommandDefinition(@"
+                        SELECT TOP 1 DataName FROM bfldata.dbo.DataSettings WITH (NOLOCK)
+                        WHERE SIMCountry = @c
+                          AND DataName IS NOT NULL AND LTRIM(RTRIM(DataName)) <> ''",
+                        new { c = sc }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+                    if (string.IsNullOrWhiteSpace(dataName)) return (sc, new());
+                    if (!Regex.IsMatch(dataName, @"^[A-Za-z0-9_]+$")) return (sc, new());
+                    var sql = $@"SELECT itemcode, salesrate
+                                   FROM {dataName}.dbo.RFSalesprice WITH (NOLOCK)
+                                  WHERE itemcode IN @items";
+                    var rows2 = (await cc.QueryAsync<(string itemcode, decimal? salesrate)>(new CommandDefinition(
+                        sql, new { items = distinctItemCodes }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).ToList();
+                    return (sc, rows2);
                 }
                 catch (Exception ex)
                 {
                     Console.Error.WriteLine($"[ContainerAllocation] WARN: SalesPrice lookup failed for country '{sc}': {ex.Message}");
+                    return null;
                 }
+            }
+
+            var tasks = countryFilter
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Select(LoadOneCountry)
+                .ToArray();
+            var perCountry = await Task.WhenAll(tasks);
+            foreach (var pc in perCountry)
+            {
+                if (pc is null) continue;
+                foreach (var r in pc.Value.Rows) result[(pc.Value.Country, r.itemcode)] = r.salesrate;
+            }
+            return result;
+        }
+
+        async Task<HashSet<(string ContNo, string Country)>> LoadCompletedSet()
+        {
+            await using var w = OpenWms();
+            var compRows = await w.QueryAsync<(string ContNo, string Country)>(new CommandDefinition(
+                "SELECT DISTINCT ContNo, Country FROM dbo.WmsBuildingCompletion WITH (NOLOCK)",
+                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            return compRows.Select(r => (r.ContNo, r.Country)).ToHashSet();
+        }
+
+        async Task<DateTime?> LoadContainerReceiptDt()
+        {
+            if (runOption != RunOption.FillSKUMaxRoundRobin) return null;
+            await using var c1 = OpenOnPremBackup();
+            return await c1.ExecuteScalarAsync<DateTime?>(new CommandDefinition(
+                @"SELECT TOP 1 receiptdt FROM bfldata.dbo.contreceipt WITH (NOLOCK)
+                   WHERE refno = @c
+                   ORDER BY receiptdt DESC",
+                new { c = contno }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        }
+
+        async Task<(Dictionary<(string StoreID, string ItemCode), int> InitialAlloc, int TopN)> LoadInitialAllocAndTopN()
+        {
+            var initialAlloc = new Dictionary<(string StoreID, string ItemCode), int>();
+            var topN = 25;
+            if (runOption != RunOption.FillSKUMaxRoundRobin) return (initialAlloc, topN);
+            await using var wms = new SqlConnection(resolver.GetWmsAzureConnectionString());
+            await wms.OpenAsync(ct);
+            var rows = await wms.QueryAsync<(string StoreID, string Itemcode, int AllocationQty)>(new CommandDefinition(
+                @"SELECT StoreID, Itemcode, AllocationQty
+                    FROM dbo.WmsManualAllocation WITH (NOLOCK)
+                   WHERE ContNo = @c",
+                new { c = contno }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            foreach (var r in rows)
+                initialAlloc[(r.StoreID.ToUpperInvariant(), r.Itemcode.ToUpperInvariant())] = r.AllocationQty;
+
+            var cfg = await wms.ExecuteScalarAsync<string?>(new CommandDefinition(
+                @"SELECT TOP 1 ConfigValue FROM dbo.WmsAppConfig WITH (NOLOCK)
+                   WHERE ConfigKey = 'ContainerAlloc.FillSKUMaxRoundRobin.TopN'",
+                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            if (int.TryParse(cfg, out var t) && t > 0) topN = t;
+            return (initialAlloc, topN);
+        }
+
+        async Task<List<OtsRunLookupRow>> LoadOtsRunRows()
+        {
+            if (runOption != RunOption.FillSKUMaxRoundRobin) return new();
+            await using var wms = new SqlConnection(resolver.GetWmsAzureConnectionString());
+            await wms.OpenAsync(ct);
+            return (await wms.QueryAsync<OtsRunLookupRow>(new CommandDefinition(@"
+                SELECT Country, StoreID, DivCode, VolumeGroup,
+                       TgtEOM, SOHToday, WeekSales, InTransit, Ex2DcSoh, CountingWIP,
+                       OtsQtyToday, OtsPercentToday
+                  FROM dbo.WmsOtsPoAllocationRun WITH (NOLOCK)
+                 WHERE [Month] = @m AND [Year] = @y
+                   AND TgtEOM > 50
+                   AND (@noCountryFilter = 1 OR Country IN @countries)",
+                new { m = nowGst.Month, y = nowGst.Year,
+                      noCountryFilter = hasCountryFilter ? 0 : 1,
+                      countries = countryFilter },
+                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).ToList();
+        }
+
+        // Fan out wave 1.
+        var w1_itemMeta       = LoadItemMeta();
+        var w1_deptBlocks     = LoadDeptBlocks();
+        var w1_divBlocks      = LoadDivBlocks();
+        var w1_orgByItem      = LoadOrgByItem();
+        var w1_storeNameById  = LoadStoreNames();
+        var w1_palletByStore  = LoadPalletByStore();
+        var w1_priority       = LoadPriority();
+        var w1_mnw            = LoadMnw();
+        var w1_prices         = LoadSalesPrices();
+        var w1_completed      = LoadCompletedSet();
+        var w1_receiptDt      = LoadContainerReceiptDt();
+        var w1_initialAlloc   = LoadInitialAllocAndTopN();
+        var w1_otsRunRows     = LoadOtsRunRows();
+
+        await Task.WhenAll(
+            w1_itemMeta, w1_deptBlocks, w1_divBlocks, w1_orgByItem,
+            w1_storeNameById, w1_palletByStore, w1_priority, w1_mnw,
+            w1_prices, w1_completed, w1_receiptDt, w1_initialAlloc, w1_otsRunRows);
+
+        var itemMeta          = await w1_itemMeta;
+        var deptBlocks        = await w1_deptBlocks;
+        var divBlocks         = await w1_divBlocks;
+        var orgByItem         = await w1_orgByItem;
+        var storeNameById     = await w1_storeNameById;
+        var palletByStore     = await w1_palletByStore;
+        var priorityByStoreDiv = await w1_priority;
+        var mnwByStoreDiv     = await w1_mnw;
+        var pricesByCountryItem = await w1_prices;
+        var completed         = await w1_completed;
+        var containerReceiptDt = await w1_receiptDt;
+        var (initialAllocByKey, fillRRTopN) = await w1_initialAlloc;
+        var otsRunRowsList    = await w1_otsRunRows;
+
+        var divByItem = itemMeta.ToDictionary(kv => kv.Key, kv => kv.Value.DivID ?? 0, StringComparer.OrdinalIgnoreCase);
+
+        // OTS PO Allocation run validation — same behaviour as before, now after wave 1.
+        var otsRunByKey  = new Dictionary<(string StoreID, int DivCode), OtsRunLookupRow>();
+        var runningOtsQty = new Dictionary<(string StoreID, int DivCode), int>();
+        if (runOption == RunOption.FillSKUMaxRoundRobin)
+        {
+            if (otsRunRowsList.Count == 0)
+                throw new InvalidOperationException(
+                    $"FillSKUMax+RoundRobin needs an OTS for PO Allocation run for {nowGst:MMMM yyyy} " +
+                    "in the picked Allocation Countries with TgtEOM > 50. Generate that first, then re-run Process.");
+            foreach (var r in otsRunRowsList)
+            {
+                otsRunByKey[(r.StoreID, r.DivCode)] = r;
+                runningOtsQty[(r.StoreID, r.DivCode)] = r.OtsQtyToday;
             }
         }
 
-        progress?.Report(new AllocationProgress(0, 0, "Prefetching: prior approved allocations"));
-        // 2c4. PrevAllocatedQty seed — sum of allocated qty per (StoreID, DivCode) from
-        // approved Headers' detail rows whose (ContNo, Country) pair has NOT yet been
-        // marked complete in the Azure WMS DB's WmsBuildingCompletion table.
-        //
-        // Fetch the completed set from Azure FIRST, then push the exclusion into the
-        // LPMSIM query so we don't drag every approved batch ever into memory just to
-        // throw most of them away. On growing SIM DBs the unbounded read used to hit
-        // the Dapper command timeout during Process.
-        var prevAllocatedSeed = new Dictionary<(string StoreID, int DivCode), int>();
-        {
-            string[] completedContnos;
-            HashSet<(string, string)> completed;
-            await using (var w = OpenWms())
-            {
-                var compRows = await w.QueryAsync<(string ContNo, string Country)>(new CommandDefinition(
-                    "SELECT DISTINCT ContNo, Country FROM dbo.WmsBuildingCompletion WITH (NOLOCK)",
-                    commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-                completed = compRows.Select(r => (r.ContNo, r.Country)).ToHashSet();
-                completedContnos = completed.Select(x => x.Item1).Distinct().ToArray();
-            }
+        var distinctDivs = divByItem.Values.Where(d => d > 0).Distinct().ToArray();
+        if (distinctDivs.Length == 0) return new(result, blocked);
+        var completedContnos = completed.Select(x => x.ContNo).Distinct().ToArray();
 
-            // Build the approved-batch query with an anti-join at SQL level.
+        // ================= Wave 2 =================
+        progress?.Report(new AllocationProgress(0, 0, "Prefetching: wave 2 (4 lookups in parallel)"));
+
+        async Task<List<(string StoreID, string Country, int DivCode, string VolumeGroup, int MerchNeedMonth)>> LoadEomStores()
+        {
+            await using var c1 = OpenOnPremBackup();
+            return (await c1.QueryAsync<(string StoreID, string Country, int DivCode, string VolumeGroup, int MerchNeedMonth)>(
+                new CommandDefinition(@"
+                    SELECT s.StoreID, s.Country, s.DivCode, s.VolumeGroup,
+                           ISNULL(s.MerchNeedMonth, 0) AS MerchNeedMonth
+                    FROM dbo.LPM_EOM_Output s WITH (NOLOCK)
+                    WHERE s.DivCode IN @divs
+                      AND s.Month1  = MONTH(DATEADD(hour, 4, SYSUTCDATETIME()))
+                      AND s.Year1   = YEAR(DATEADD(hour, 4, SYSUTCDATETIME()))
+                      AND s.VolumeGroup IS NOT NULL
+                      AND (@noCountryFilter = 1 OR s.Country IN @countries)",
+                    new { divs = distinctDivs,
+                          noCountryFilter = hasCountryFilter ? 0 : 1,
+                          countries = countryFilter },
+                    commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).AsList();
+        }
+
+        async Task<List<(string Country, int DivCode, string GroupCode, int WHStockFrom, int WHStockTo, int SKUMax)>> LoadRulesRaw()
+        {
+            await using var c1 = OpenOnPremBackup();
+            return (await c1.QueryAsync<(string Country, int DivCode, string GroupCode, int WHStockFrom, int WHStockTo, int SKUMax)>(
+                new CommandDefinition(@"
+                    SELECT Country, DivCode, GroupCode, WHStockFrom, WHStockTo, SKUMax
+                    FROM dbo.LPM_SKUMaxRule WITH (NOLOCK)
+                    WHERE DivCode IN @divs AND IsActive = 1",
+                    new { divs = distinctDivs }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).AsList();
+        }
+
+        async Task<List<(string StoreID, int DivCode, int targetEOM, int SOH, int SalesTgtWk, int trfSum)>> LoadOtsRaw()
+        {
+            await using var c1 = OpenOnPremBackup();
+            return (await c1.QueryAsync<(string StoreID, int DivCode, int targetEOM, int SOH, int SalesTgtWk, int trfSum)>(
+                new CommandDefinition(@"
+                    WITH ranked AS (
+                        SELECT o.StoreID, o.DivCode,
+                               ISNULL(o.targetEOM,0)   AS targetEOM,
+                               ISNULL(o.SOH,0)         AS SOH,
+                               ISNULL(o.SalesTgtWk,0)  AS SalesTgtWk,
+                               ISNULL(o.trfQty1,0) + ISNULL(o.trfqty2,0) + ISNULL(o.trfqty3,0)
+                                 + ISNULL(o.trfqty4,0) + ISNULL(o.trfqty5,0) + ISNULL(o.trfqty6,0)
+                                 + ISNULL(o.trfqty7,0)                            AS trfSum,
+                               ROW_NUMBER() OVER (PARTITION BY o.StoreID, o.DivCode
+                                                  ORDER BY o.OTSDate DESC) AS rn
+                        FROM dbo.LPM_OTS_Output o WITH (NOLOCK)
+                        WHERE o.DivCode IN @divs
+                          AND o.OTSDate < CAST(DATEADD(hour, 4, SYSUTCDATETIME()) AS DATE)
+                    )
+                    SELECT StoreID, DivCode, targetEOM, SOH, SalesTgtWk, trfSum
+                      FROM ranked WHERE rn = 1",
+                    new { divs = distinctDivs }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).AsList();
+        }
+
+        async Task<List<(string ContNo, string Country, string StoreID, string Itemcode, int? Qty)>> LoadApprovedRows()
+        {
+            await using var c1 = OpenOnPremBackup();
             var excludeClause = completedContnos.Length > 0
                 ? "AND d.TcmContno NOT IN @excluded"
                 : "";
@@ -422,107 +647,28 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                   JOIN LPMSIM.dbo.WMS_ContAllocationData d   WITH (NOLOCK) ON d.BatchNo = h.BatchNo
                  WHERE h.ApprovedDt IS NOT NULL
                    {excludeClause}";
-            var approvedRows = (await c.QueryAsync<(string ContNo, string Country, string StoreID, string Itemcode, int? Qty)>(new CommandDefinition(
+            return (await c1.QueryAsync<(string ContNo, string Country, string StoreID, string Itemcode, int? Qty)>(new CommandDefinition(
                 approvedSql,
                 new { excluded = completedContnos },
                 commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).AsList();
-
-            if (approvedRows.Count > 0)
-            {
-                // Resolve DivCode for any approved-batch item not already in divByItem.
-                var extraItems = approvedRows.Select(r => r.Itemcode)
-                    .Where(i => !divByItem.ContainsKey(i)).Distinct().ToArray();
-                var divByApprovedItem = new Dictionary<string, int>(divByItem, StringComparer.OrdinalIgnoreCase);
-                if (extraItems.Length > 0)
-                {
-                    var extraDivs = await c.QueryAsync<(string itemcode, int? DivID)>(new CommandDefinition(@"
-                        SELECT itemcode, MAX(DivID) AS DivID
-                        FROM datareporting.dbo.vupc_subclass WITH (NOLOCK)
-                        WHERE itemcode IN @items GROUP BY itemcode",
-                        new { items = extraItems }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-                    foreach (var r in extraDivs) divByApprovedItem[r.itemcode] = r.DivID ?? 0;
-                }
-
-                foreach (var r in approvedRows)
-                {
-                    // Belt-and-braces: if the (ContNo, Country) tuple pair is fully
-                    // completed on the Azure side, skip. Handles the rare same-ContNo
-                    // different-Country case that the ContNo-only exclusion above
-                    // wouldn't catch.
-                    if (completed.Contains((r.ContNo, r.Country))) continue;
-                    if (!divByApprovedItem.TryGetValue(r.Itemcode, out var div) || div == 0) continue;
-                    var key = (r.StoreID, div);
-                    prevAllocatedSeed[key] = prevAllocatedSeed.GetValueOrDefault(key, 0) + (r.Qty ?? 0);
-                }
-            }
         }
 
-        // 2d. Prefetch eligible stores + SKUMax bands + latest TodayOTS for ALL DivCodes
-        // in the container — in 3 round-trips total. The per-line loop below then does
-        // an in-memory join instead of one SQL query per PO line (N+1 was the timeout cause).
-        var distinctDivs = divByItem.Values.Where(d => d > 0).Distinct().ToArray();
-        if (distinctDivs.Length == 0) return new(result, blocked);
+        var w2_eomStores  = LoadEomStores();
+        var w2_rulesRaw   = LoadRulesRaw();
+        var w2_otsRaw     = LoadOtsRaw();
+        var w2_approved   = LoadApprovedRows();
 
-        progress?.Report(new AllocationProgress(0, 0, "Prefetching: eligible stores"));
-        // eomStores narrowed by the country filter computed above.
-        var eomStores = (await c.QueryAsync<(string StoreID, string Country, int DivCode, string VolumeGroup, int MerchNeedMonth)>(
-            new CommandDefinition(@"
-                SELECT s.StoreID, s.Country, s.DivCode, s.VolumeGroup,
-                       ISNULL(s.MerchNeedMonth, 0) AS MerchNeedMonth
-                FROM dbo.LPM_EOM_Output s WITH (NOLOCK)
-                WHERE s.DivCode IN @divs
-                  AND s.Month1  = MONTH(DATEADD(hour, 4, SYSUTCDATETIME()))
-                  AND s.Year1   = YEAR(DATEADD(hour, 4, SYSUTCDATETIME()))
-                  AND s.VolumeGroup IS NOT NULL
-                  AND (@noCountryFilter = 1 OR s.Country IN @countries)",
-                new { divs = distinctDivs,
-                      noCountryFilter = hasCountryFilter ? 0 : 1,
-                      countries = countryFilter },
-                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).AsList();
+        await Task.WhenAll(w2_eomStores, w2_rulesRaw, w2_otsRaw, w2_approved);
 
-        var storesByDiv = eomStores
-            .GroupBy(s => s.DivCode)
-            .ToDictionary(g => g.Key, g => g.ToList());
+        var eomStores    = await w2_eomStores;
+        var rulesRaw     = await w2_rulesRaw;
+        var otsRaw       = await w2_otsRaw;
+        var approvedRows = await w2_approved;
 
-        progress?.Report(new AllocationProgress(0, 0, "Prefetching: SKU Max bands"));
-        var rulesRaw = (await c.QueryAsync<(string Country, int DivCode, string GroupCode, int WHStockFrom, int WHStockTo, int SKUMax)>(
-            new CommandDefinition(@"
-                SELECT Country, DivCode, GroupCode, WHStockFrom, WHStockTo, SKUMax
-                FROM dbo.LPM_SKUMaxRule WITH (NOLOCK)
-                WHERE DivCode IN @divs AND IsActive = 1",
-                new { divs = distinctDivs }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).AsList();
-
-        var rulesByKey = rulesRaw
+        var storesByDiv = eomStores.GroupBy(s => s.DivCode).ToDictionary(g => g.Key, g => g.ToList());
+        var rulesByKey  = rulesRaw
             .GroupBy(r => (r.Country, r.DivCode, r.GroupCode))
             .ToDictionary(g => g.Key, g => g.ToList());
-
-        progress?.Report(new AllocationProgress(0, 0, "Prefetching: OTS values"));
-        // Latest OTS raw components per (StoreID, DivCode). We keep targetEOM / SOH /
-        // SalesTgtWk / Σ trfQty separately so the per-item loop can recompute OTS as
-        // AllocatedQty grows during this batch. The OTS formula stays in C# now:
-        //
-        //   OTS = ((targetEOM − SOH + SalesTgtWk − AllocatedQty − PrevAllocatedQty) − Σ trfQty)
-        //         / targetEOM
-        var otsRaw = (await c.QueryAsync<(string StoreID, int DivCode, int targetEOM, int SOH, int SalesTgtWk, int trfSum)>(
-            new CommandDefinition(@"
-                WITH ranked AS (
-                    SELECT o.StoreID, o.DivCode,
-                           ISNULL(o.targetEOM,0)   AS targetEOM,
-                           ISNULL(o.SOH,0)         AS SOH,
-                           ISNULL(o.SalesTgtWk,0)  AS SalesTgtWk,
-                           ISNULL(o.trfQty1,0) + ISNULL(o.trfqty2,0) + ISNULL(o.trfqty3,0)
-                             + ISNULL(o.trfqty4,0) + ISNULL(o.trfqty5,0) + ISNULL(o.trfqty6,0)
-                             + ISNULL(o.trfqty7,0)                            AS trfSum,
-                           ROW_NUMBER() OVER (PARTITION BY o.StoreID, o.DivCode
-                                              ORDER BY o.OTSDate DESC) AS rn
-                    FROM dbo.LPM_OTS_Output o WITH (NOLOCK)
-                    WHERE o.DivCode IN @divs
-                      AND o.OTSDate < CAST(DATEADD(hour, 4, SYSUTCDATETIME()) AS DATE)
-                )
-                SELECT StoreID, DivCode, targetEOM, SOH, SalesTgtWk, trfSum
-                  FROM ranked WHERE rn = 1",
-                new { divs = distinctDivs }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).AsList();
-
         var otsRawByKey = otsRaw.ToDictionary(o => (o.StoreID, o.DivCode),
             o => (o.targetEOM, o.SOH, o.SalesTgtWk, o.trfSum));
 
@@ -530,116 +676,32 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         // OTS refresh between items. Starts at zero; grows as we allocate.
         var runningAlloc = new Dictionary<(string StoreID, int DivCode), int>();
 
-        // ============ PriorityRank prefetch (always paid) ============
-        // Stashed on every AllocationRow (persisted column) so the report grid
-        // can show it regardless of run option; FillSKUMaxRoundRobin also uses
-        // it to rank stores for the Priority Fill pass.
-        Dictionary<(string StoreID, int DivCode), int?> priorityByStoreDiv = new();
+        // ============ prevAllocatedSeed — built from wave-2 approvedRows ============
+        // Any approved-batch item whose DivCode we don't already have from itemMeta
+        // needs a small extra vupc_subclass lookup (usually 0 rows).
+        var prevAllocatedSeed = new Dictionary<(string StoreID, int DivCode), int>();
+        if (approvedRows.Count > 0)
         {
-            var nowGst = DateTime.UtcNow.AddHours(4);
-            var pRows = await c.QueryAsync<(string StoreID, int DivCode, int? PriorityRank)>(new CommandDefinition(
-                @"SELECT StoreId AS StoreID, DivCode, PriorityRank
-                    FROM dbo.LPM_EOM_Output WITH (NOLOCK)
-                   WHERE Month1 = @m AND Year1 = @y",
-                new { m = nowGst.Month, y = nowGst.Year },
-                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-            foreach (var p in pRows)
-                priorityByStoreDiv[(p.StoreID, p.DivCode)] = p.PriorityRank;
-        }
-
-        // ============ MnwToday prefetch — latest OTSOutput row ============
-        // Per (StoreID, DivCode) the row with the greatest OTSDate wins.
-        // Stashed on every AllocationRow so all report views can show it.
-        Dictionary<(string StoreID, int DivCode), int?> mnwByStoreDiv = new();
-        {
-            var mRows = await c.QueryAsync<(string StoreID, int DivCode, int? MnwToday)>(new CommandDefinition(
-                @"WITH latest AS (
-                     SELECT StoreID, DivCode, mnwtoday,
-                            rn = ROW_NUMBER() OVER (PARTITION BY StoreID, DivCode ORDER BY OTSDate DESC)
-                       FROM dbo.LPM_OTS_Output WITH (NOLOCK)
-                  )
-                  SELECT StoreID, DivCode, mnwtoday AS MnwToday
-                    FROM latest WHERE rn = 1",
-                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-            foreach (var m in mRows)
-                mnwByStoreDiv[(m.StoreID, m.DivCode)] = m.MnwToday;
-        }
-
-        // ============ FillSKUMaxRoundRobin: extra prefetches ============
-        // Only paid when the operator actually picked this run option.
-        Dictionary<(string StoreID, string ItemCode), int> initialAllocByKey = new();  // keys normalised to UPPER on both insert + lookup
-        DateTime? containerReceiptDt = null;
-        int fillRRTopN = 25;
-        if (runOption == RunOption.FillSKUMaxRoundRobin)
-        {
-            progress?.Report(new AllocationProgress(0, 0, "Prefetching: Initial Allocation + receipt date"));
-
-            // Initial allocation per (StoreID, Itemcode) from Azure WMS.
-            await using (var wms = new SqlConnection(resolver.GetWmsAzureConnectionString()))
+            var extraItems = approvedRows.Select(r => r.Itemcode)
+                .Where(i => !divByItem.ContainsKey(i)).Distinct().ToArray();
+            var divByApprovedItem = new Dictionary<string, int>(divByItem, StringComparer.OrdinalIgnoreCase);
+            if (extraItems.Length > 0)
             {
-                await wms.OpenAsync(ct);
-                var rows = await wms.QueryAsync<(string StoreID, string Itemcode, int AllocationQty)>(new CommandDefinition(
-                    @"SELECT StoreID, Itemcode, AllocationQty
-                        FROM dbo.WmsManualAllocation WITH (NOLOCK)
-                       WHERE ContNo = @c",
-                    new { c = contno }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-                foreach (var r in rows)
-                    initialAllocByKey[(r.StoreID.ToUpperInvariant(), r.Itemcode.ToUpperInvariant())] = r.AllocationQty;
-
-                var cfg = await wms.ExecuteScalarAsync<string?>(new CommandDefinition(
-                    @"SELECT TOP 1 ConfigValue FROM dbo.WmsAppConfig WITH (NOLOCK)
-                       WHERE ConfigKey = 'ContainerAlloc.FillSKUMaxRoundRobin.TopN'",
-                    commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-                if (int.TryParse(cfg, out var t) && t > 0) fillRRTopN = t;
+                await using var c1 = OpenOnPremBackup();
+                var extraDivs = await c1.QueryAsync<(string itemcode, int? DivID)>(new CommandDefinition(@"
+                    SELECT itemcode, MAX(DivID) AS DivID
+                    FROM datareporting.dbo.vupc_subclass WITH (NOLOCK)
+                    WHERE itemcode IN @items GROUP BY itemcode",
+                    new { items = extraItems }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+                foreach (var r in extraDivs) divByApprovedItem[r.itemcode] = r.DivID ?? 0;
             }
 
-            // Container receipt date from bfldata.dbo.contreceipt (receiptdt column).
-            containerReceiptDt = await c.ExecuteScalarAsync<DateTime?>(new CommandDefinition(
-                @"SELECT TOP 1 receiptdt FROM bfldata.dbo.contreceipt WITH (NOLOCK)
-                   WHERE refno = @c
-                   ORDER BY receiptdt DESC",
-                new { c = contno }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-        }
-
-        // ============ WmsOtsPoAllocationRun prefetch (Azure) ============
-        // NEW algorithm — store universe + OtsQtyToday + OtsPercentToday come
-        // from the OTS for PO Allocation report's persisted run. Filters:
-        //   - MAX(RunTS)'s (Month, Year) matches today's GST month/year
-        //   - TgtEOM > 50
-        //   - Country IN picked Allocation Countries
-        // If empty, Process is stopped upstream (validation).
-        var otsRunByKey = new Dictionary<(string StoreID, int DivCode), OtsRunLookupRow>();
-        var runningOtsQty = new Dictionary<(string StoreID, int DivCode), int>();
-        if (runOption == RunOption.FillSKUMaxRoundRobin)
-        {
-            progress?.Report(new AllocationProgress(0, 0, "Prefetching: OTS for PO Allocation run"));
-            var nowGst = DateTime.UtcNow.AddHours(4);
-            await using (var wms = new SqlConnection(resolver.GetWmsAzureConnectionString()))
+            foreach (var r in approvedRows)
             {
-                await wms.OpenAsync(ct);
-                var otsRunRows = (await wms.QueryAsync<OtsRunLookupRow>(new CommandDefinition(@"
-                    SELECT Country, StoreID, DivCode, VolumeGroup,
-                           TgtEOM, SOHToday, WeekSales, InTransit, Ex2DcSoh, CountingWIP,
-                           OtsQtyToday, OtsPercentToday
-                      FROM dbo.WmsOtsPoAllocationRun WITH (NOLOCK)
-                     WHERE [Month] = @m AND [Year] = @y
-                       AND TgtEOM > 50
-                       AND (@noCountryFilter = 1 OR Country IN @countries)",
-                    new { m = nowGst.Month, y = nowGst.Year,
-                          noCountryFilter = hasCountryFilter ? 0 : 1,
-                          countries = countryFilter },
-                    commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).ToList();
-
-                if (otsRunRows.Count == 0)
-                    throw new InvalidOperationException(
-                        $"FillSKUMax+RoundRobin needs an OTS for PO Allocation run for {nowGst:MMMM yyyy} " +
-                        "in the picked Allocation Countries with TgtEOM > 50. Generate that first, then re-run Process.");
-
-                foreach (var r in otsRunRows)
-                {
-                    otsRunByKey[(r.StoreID, r.DivCode)] = r;
-                    runningOtsQty[(r.StoreID, r.DivCode)] = r.OtsQtyToday;
-                }
+                if (completed.Contains((r.ContNo, r.Country))) continue;
+                if (!divByApprovedItem.TryGetValue(r.Itemcode, out var div) || div == 0) continue;
+                var key = (r.StoreID, div);
+                prevAllocatedSeed[key] = prevAllocatedSeed.GetValueOrDefault(key, 0) + (r.Qty ?? 0);
             }
         }
 
@@ -765,8 +827,9 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                 {
                     storeNameById.TryGetValue(sid, out var storeName);
                     pricesByCountryItem.TryGetValue((country, line.ItemCode), out var price);
-                    var priority = priorityByStoreDiv.TryGetValue((sid, divCode), out var pr) ? pr : null;
-                    var mnw      = mnwByStoreDiv.TryGetValue((sid, divCode), out var mv) ? mv : null;
+                    var priority    = priorityByStoreDiv.TryGetValue((sid, divCode), out var pr) ? pr : null;
+                    var mnw         = mnwByStoreDiv.TryGetValue((sid, divCode), out var mv) ? mv : null;
+                    var otsQtyToday = otsRunByKey.TryGetValue((sid, divCode), out var otsRun) ? (int?)otsRun.OtsQtyToday : null;
                     return new AllocationRow(
                         Contno: line.ContNo, OraPONo: line.OraPONo, ItemCode: line.ItemCode,
                         ItemName: orgRow.itemname, Brand: orgRow.vendor, PoQty: line.Qty,
@@ -779,7 +842,8 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                         PalletType: PalletFor(sid),
                         PrevAllocatedQty: prevAllocatedSeed.GetValueOrDefault((sid, divCode), 0),
                         PriorityRank: priority,
-                        MnwToday: mnw);
+                        MnwToday: mnw,
+                        OtsQtyToday: otsQtyToday);
                 }
 
                 var allocs = new Dictionary<string, AllocationRow>(StringComparer.OrdinalIgnoreCase);
@@ -1209,6 +1273,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         }
 
         // 2) Create the new Header row and read back BatchNo.
+        progress?.Report(new AllocationProgress(0, rows.Count, "Saving: creating header row"));
         var totalQty = rows.Sum(r => r.AllocQty);
         var batchNo = await c.ExecuteScalarAsync<int>(new CommandDefinition(@"
             INSERT INTO LPMSIM.dbo.WMS_Cont_Allocation_Header
@@ -1220,26 +1285,54 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                   ro = roTag, rc = rows.Count, tq = totalQty, u = user.Name },
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
 
-        // 3) Write blocked rows (small list — per-row INSERT is fine).
+        // 3) Write blocked rows via SqlBulkCopy. Large containers can produce
+        // thousands of blocked rows (item eligibility blocks), and the previous
+        // per-row Dapper Execute loop was ~10ms per round-trip — dominant cost
+        // on containers with 4k+ blocks.
         if (blocked is { Count: > 0 })
         {
-            const string blkSql = @"
-                INSERT INTO LPMSIM.dbo.WMS_ContAllocationBlocked
-                    (BatchNo, Country, ContNo, RunOption, ItemCode, ItemName, StoreID, StoreName,
-                     DivCode, Division, Department, PoQty, BlockReason, CreatedBy)
-                VALUES
-                    (@BatchNo, @Country, @ContNo, @RunOption, @ItemCode, @ItemName, @StoreID, @StoreName,
-                     @DivCode, @Division, @Department, @PoQty, @BlockReason, @CreatedBy)";
+            progress?.Report(new AllocationProgress(0, rows.Count, $"Saving: bulk inserting {blocked.Count:N0} blocked row(s)"));
+            var bdt = new System.Data.DataTable();
+            bdt.Columns.Add("BatchNo",     typeof(int));
+            bdt.Columns.Add("Country",     typeof(string));
+            bdt.Columns.Add("ContNo",      typeof(string));
+            bdt.Columns.Add("RunOption",   typeof(string));
+            bdt.Columns.Add("ItemCode",    typeof(string));
+            bdt.Columns.Add("ItemName",    typeof(string));
+            bdt.Columns.Add("StoreID",     typeof(string));
+            bdt.Columns.Add("StoreName",   typeof(string));
+            bdt.Columns.Add("DivCode",     typeof(int));
+            bdt.Columns.Add("Division",    typeof(string));
+            bdt.Columns.Add("Department",  typeof(string));
+            bdt.Columns.Add("PoQty",       typeof(int));
+            bdt.Columns.Add("BlockReason", typeof(string));
+            bdt.Columns.Add("CreatedBy",   typeof(string));
             foreach (var b in blocked)
             {
-                await c.ExecuteAsync(new CommandDefinition(blkSql, new
-                {
-                    BatchNo = batchNo, Country = b.Country, ContNo = b.Contno, RunOption = roTag,
-                    b.ItemCode, b.ItemName, b.StoreID, b.StoreName,
-                    b.DivCode, b.Division, b.Department, b.PoQty, b.BlockReason,
-                    CreatedBy = user.Name,
-                }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+                bdt.Rows.Add(
+                    batchNo,
+                    b.Country, b.Contno, roTag,
+                    b.ItemCode,
+                    (object?)b.ItemName   ?? DBNull.Value,
+                    b.StoreID,
+                    (object?)b.StoreName  ?? DBNull.Value,
+                    b.DivCode,
+                    (object?)b.Division   ?? DBNull.Value,
+                    (object?)b.Department ?? DBNull.Value,
+                    b.PoQty,
+                    (object?)b.BlockReason ?? DBNull.Value,
+                    user.Name);
             }
+
+            using var bulkBlk = new SqlBulkCopy(c)
+            {
+                DestinationTableName = "LPMSIM.dbo.WMS_ContAllocationBlocked",
+                BatchSize            = 1000,
+                BulkCopyTimeout      = CommandTimeoutSeconds,
+            };
+            foreach (System.Data.DataColumn col in bdt.Columns)
+                bulkBlk.ColumnMappings.Add(col.ColumnName, col.ColumnName);
+            await bulkBlk.WriteToServerAsync(bdt, ct);
         }
 
         // 4) Bulk-copy detail rows tagged with BatchNo + per-row Country + enrichment columns.
@@ -1288,6 +1381,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         dt.Columns.Add("Pass3Qty",         typeof(int));
         dt.Columns.Add("Pass4Qty",         typeof(int));
         dt.Columns.Add("AvgOtsPercent",    typeof(decimal));
+        dt.Columns.Add("OtsQtyToday",      typeof(int));
 
         var now = DateTime.UtcNow.AddHours(4);  // GST stamp for Trndate/Time1
         var trnDate = now.Date;
@@ -1324,7 +1418,8 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                 (object?)r.Pass2Qty ?? DBNull.Value,
                 (object?)r.Pass3Qty ?? DBNull.Value,
                 (object?)r.Pass4Qty ?? DBNull.Value,
-                (object?)r.AvgOtsPercent ?? DBNull.Value);
+                (object?)r.AvgOtsPercent ?? DBNull.Value,
+                (object?)r.OtsQtyToday ?? DBNull.Value);
         }
 
         c.ChangeDatabase("LPMSIM");
@@ -1703,10 +1798,11 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         var rows = (await c.QueryAsync<(string ContNo, string? OraPONo, string? ItemCode, string? ItemName, string? Brand,
                                        int? POQty, int? AllocatedQty, int? Phase2Qty, int? SkuMax, int? DivCode, string? StoreID, string? Country, string? GroupCode, string? Division,
                                        string? Remarks, DateTime? LPMDt, double? OTS, int? PriorityRank, int? MnwToday,
-                                       int? Pass1Qty, int? Pass2Qty, int? Pass3Qty, int? Pass4Qty, decimal? AvgOtsPercent)>(new CommandDefinition($@"
+                                       int? Pass1Qty, int? Pass2Qty, int? Pass3Qty, int? Pass4Qty, decimal? AvgOtsPercent,
+                                       int? OtsQtyToday)>(new CommandDefinition($@"
             SELECT d.ContNo, d.ORAPONo, d.Itemcode, d.Itemname, d.Brand, d.POQty, d.AllocatedQty, d.Phase2Qty, d.SkuMax, d.DivCode, d.StoreID, d.Country,
                    d.GroupCode, d.Division, d.Remarks, d.LPMDt, d.OTS, d.PriorityRank, d.MnwToday,
-                   d.Pass1Qty, d.Pass2Qty, d.Pass3Qty, d.Pass4Qty, d.AvgOtsPercent
+                   d.Pass1Qty, d.Pass2Qty, d.Pass3Qty, d.Pass4Qty, d.AvgOtsPercent, d.OtsQtyToday
               FROM LPMSIM.dbo.WMS_ContAllocationData d WITH (NOLOCK)
               {joinAndWhereSql}
              ORDER BY d.IdNo",
@@ -1802,7 +1898,8 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                 Pass2Qty: r.Pass2Qty,
                 Pass3Qty: r.Pass3Qty,
                 Pass4Qty: r.Pass4Qty,
-                AvgOtsPercent: r.AvgOtsPercent);
+                AvgOtsPercent: r.AvgOtsPercent,
+                OtsQtyToday: r.OtsQtyToday);
         }).ToList();
     }
 
