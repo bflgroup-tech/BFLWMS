@@ -614,6 +614,10 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
 
         async Task<List<(string StoreID, int DivCode, int targetEOM, int SOH, int SalesTgtWk, int trfSum)>> LoadOtsRaw()
         {
+            // FillSKUMax+RoundRobin sources OTS from WmsOtsPoAllocationRun (Live OTS%)
+            // and never touches LPM_OTS_Output — skip the query entirely for that run
+            // option so the on-prem view isn't hit for nothing.
+            if (runOption == RunOption.FillSKUMaxRoundRobin) return new();
             await using var c1 = OpenOnPremBackup();
             return (await c1.QueryAsync<(string StoreID, int DivCode, int targetEOM, int SOH, int SalesTgtWk, int trfSum)>(
                 new CommandDefinition(@"
@@ -923,8 +927,10 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                             // ONLINE isn't in the OTS PO Allocation run for this DivCode —
                             // build the row directly. Country label is hard-coded ECOM to
                             // match the store universe convention.
+                            // ONLINE isn't in the OTS PO Allocation run for this DivCode so
+                            // we have no TgtEOM/LiveOtsPct to stamp — leave OTS/TgtEOM null.
                             ecomRow = MakeRow("ONLINE", "ECOM", "", 0, ecomPreAllocTake, ecomPreAllocTake, 0)
-                                with { Pass1Qty = ecomPreAllocTake, AvgOtsPercent = avgOtsDecimal };
+                                with { Pass1Qty = ecomPreAllocTake, AvgOtsPercent = avgOtsDecimal, OTS = null };
                         }
                         allocs["ONLINE"] = ecomRow;
                         remaining -= ecomPreAllocTake;
@@ -946,7 +952,8 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                     }
 
                     // Row factory bound to this item — records which pass emitted
-                    // each piece and stamps AvgOtsPercent on every row.
+                    // each piece and stamps AvgOtsPercent + LiveOtsPct + TgtEOM
+                    // (all sourced from WmsOtsPoAllocationRun) on every row.
                     AllocationRow BumpRow(AllocationRow? existing, OtsRunLookupRow r,
                                           int delta, int rrExtra, int pass)
                     {
@@ -955,7 +962,12 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                         {
                             var initial = MakeRow(r.StoreID, r.Country,
                                 r.VolumeGroup ?? "", 0, cap, delta, rrExtra)
-                                with { AvgOtsPercent = avgOtsDecimal };
+                                with
+                                {
+                                    AvgOtsPercent = avgOtsDecimal,
+                                    OTS = LiveOtsPct(r),
+                                    TgtEOM = r.TgtEOM,
+                                };
                             return pass switch
                             {
                                 1 => initial with { Pass1Qty = delta },
@@ -1427,6 +1439,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         dt.Columns.Add("Pass4Qty",         typeof(int));
         dt.Columns.Add("AvgOtsPercent",    typeof(decimal));
         dt.Columns.Add("OtsQtyToday",      typeof(int));
+        dt.Columns.Add("TgtEOM",           typeof(int));
 
         var now = DateTime.UtcNow.AddHours(4);  // GST stamp for Trndate/Time1
         var trnDate = now.Date;
@@ -1464,7 +1477,8 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                 (object?)r.Pass3Qty ?? DBNull.Value,
                 (object?)r.Pass4Qty ?? DBNull.Value,
                 (object?)r.AvgOtsPercent ?? DBNull.Value,
-                (object?)r.OtsQtyToday ?? DBNull.Value);
+                (object?)r.OtsQtyToday ?? DBNull.Value,
+                (object?)r.TgtEOM ?? DBNull.Value);
         }
 
         c.ChangeDatabase("LPMSIM");
@@ -1844,10 +1858,10 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                                        int? POQty, int? AllocatedQty, int? Phase2Qty, int? SkuMax, int? DivCode, string? StoreID, string? Country, string? GroupCode, string? Division,
                                        string? Remarks, DateTime? LPMDt, double? OTS, int? PriorityRank, int? MnwToday,
                                        int? Pass1Qty, int? Pass2Qty, int? Pass3Qty, int? Pass4Qty, decimal? AvgOtsPercent,
-                                       int? OtsQtyToday)>(new CommandDefinition($@"
+                                       int? OtsQtyToday, int? TgtEOM)>(new CommandDefinition($@"
             SELECT d.ContNo, d.ORAPONo, d.Itemcode, d.Itemname, d.Brand, d.POQty, d.AllocatedQty, d.Phase2Qty, d.SkuMax, d.DivCode, d.StoreID, d.Country,
                    d.GroupCode, d.Division, d.Remarks, d.LPMDt, d.OTS, d.PriorityRank, d.MnwToday,
-                   d.Pass1Qty, d.Pass2Qty, d.Pass3Qty, d.Pass4Qty, d.AvgOtsPercent, d.OtsQtyToday
+                   d.Pass1Qty, d.Pass2Qty, d.Pass3Qty, d.Pass4Qty, d.AvgOtsPercent, d.OtsQtyToday, d.TgtEOM
               FROM LPMSIM.dbo.WMS_ContAllocationData d WITH (NOLOCK)
               {joinAndWhereSql}
              ORDER BY d.IdNo",
@@ -1944,7 +1958,8 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                 Pass3Qty: r.Pass3Qty,
                 Pass4Qty: r.Pass4Qty,
                 AvgOtsPercent: r.AvgOtsPercent,
-                OtsQtyToday: r.OtsQtyToday);
+                OtsQtyToday: r.OtsQtyToday,
+                TgtEOM: r.TgtEOM);
         }).ToList();
     }
 
