@@ -22,7 +22,10 @@
         <div>
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COUNTRY</label>
             <select @bind="_country" @bind:after="OnCountryChangedAsync" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" disabled="@_busy">
-                <option value="@OtsPoAllocationService.BflGroup">@OtsPoAllocationService.BflGroup</option>
+                @if (Me.HasAllCountriesAccess)
+                {
+                    <option value="@OtsPoAllocationService.BflGroup">@OtsPoAllocationService.BflGroup</option>
+                }
                 @foreach (var c in _countries) { <option value="@c">@c</option> }
             </select>
         </div>
@@ -344,6 +347,11 @@
         try
         {
             _countries = await Svc.GetCountriesAsync();
+            _countries = Me.FilterCountries(_countries).ToList();
+            // Non-admins with a restricted country set lose the BFLGroup ("see all countries")
+            // default — flip to their first allowed country instead.
+            if (!Me.HasAllCountriesAccess && string.Equals(_country, OtsPoAllocationService.BflGroup, StringComparison.OrdinalIgnoreCase))
+                _country = _countries.FirstOrDefault() ?? "";
             _monthYears = await Svc.GetAvailableMonthYearsAsync();
             _years = _monthYears.Select(x => x.Year).Distinct().OrderByDescending(y => y).ToList();
             if (_years.Count > 0)

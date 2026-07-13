@@ -160,6 +160,46 @@
     }
 </div>
 
+<div class="aiwms-section">
+    <div class="aiwms-card-header">Country Access — countries whose data this user can see in reports/pages. Admin role bypasses this list.</div>
+    <div style="display:flex; gap:10px; align-items:end; margin-bottom:12px">
+        <div>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">USER</label>
+            <select @bind="_countryUser" @bind:after="LoadCountryGrantsAsync" style="padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white; min-width:280px">
+                <option value="">-- Select user --</option>
+                @foreach (var u in _users) { <option value="@u.Username">@u.Username</option> }
+            </select>
+        </div>
+        @if (!string.IsNullOrEmpty(_countryUser))
+        {
+            <button class="aiwms-btn aiwms-btn-primary" @onclick="SaveCountryGrantsAsync">Save Country Access</button>
+            <span style="font-size:12px; color:var(--text-secondary)">@_countryGrants.Count / @_countries.Count countries</span>
+        }
+    </div>
+
+    @if (!string.IsNullOrEmpty(_countryUser))
+    {
+        var allOnC = _countries.All(c => _countryGrants.Contains(c));
+        <div style="border:1px solid var(--border-default); border-radius:var(--r-sm); padding:10px 14px; margin-bottom:10px">
+            <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px">
+                <strong style="font-size:13px">SIM Countries</strong>
+                <label style="display:flex; align-items:center; gap:6px; font-size:12px; cursor:pointer">
+                    <input type="checkbox" checked="@allOnC" @onchange="@(e => ToggleAllCountries((bool)e.Value!))" /> Select all
+                </label>
+            </div>
+            <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:6px 14px">
+                @foreach (var c in _countries)
+                {
+                    <label style="display:flex; align-items:center; gap:6px; font-size:13px; cursor:pointer">
+                        <input type="checkbox" checked="@_countryGrants.Contains(c)" @onchange="@(e => ToggleCountry(c, (bool)e.Value!))" />
+                        <span>@c</span>
+                    </label>
+                }
+            </div>
+        </div>
+    }
+</div>
+
 @code {
     private List<WmsUser> _users = new();
     private List<WmsRole> _roles = new();
@@ -337,5 +377,48 @@
         await db.SaveChangesAsync();
         Cache.Remove(AuthStateCurrentUser.ProfileCacheKey(_menuUser));
         Snack.Add($"Menu access saved for {_menuUser} ({_menuGrants.Count} grants).", Severity.Success);
+    }
+
+    // ---------------- Country access ----------------
+    private string _countryUser = "";
+    private HashSet<string> _countryGrants = new(StringComparer.OrdinalIgnoreCase);
+
+    private async Task LoadCountryGrantsAsync()
+    {
+        _countryGrants = new(StringComparer.OrdinalIgnoreCase);
+        if (string.IsNullOrEmpty(_countryUser)) return;
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var rows = await db.UserCountryAccess.AsNoTracking()
+            .Where(a => a.Username == _countryUser)
+            .Select(a => a.Country).ToListAsync();
+        _countryGrants = new HashSet<string>(rows, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private void ToggleCountry(string country, bool on)
+    {
+        if (on) _countryGrants.Add(country); else _countryGrants.Remove(country);
+    }
+
+    private void ToggleAllCountries(bool on)
+    {
+        if (on) foreach (var c in _countries) _countryGrants.Add(c);
+        else    _countryGrants.Clear();
+    }
+
+    private async Task SaveCountryGrantsAsync()
+    {
+        if (string.IsNullOrEmpty(_countryUser)) return;
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var existing = await db.UserCountryAccess.Where(a => a.Username == _countryUser).ToListAsync();
+        var existingCountries = existing.Select(e => e.Country).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var c in _countryGrants.Where(c => !existingCountries.Contains(c)))
+            db.UserCountryAccess.Add(new WmsUserCountryAccess {
+                Username = _countryUser, Country = c,
+                GrantedTS = DateTime.Now, GrantedBy = Me.Name });
+        foreach (var e in existing.Where(e => !_countryGrants.Contains(e.Country)))
+            db.UserCountryAccess.Remove(e);
+        await db.SaveChangesAsync();
+        Cache.Remove(AuthStateCurrentUser.CountryAccessCacheKey(_countryUser));
+        Snack.Add($"Country access saved for {_countryUser} ({_countryGrants.Count} countries).", Severity.Success);
     }
 }

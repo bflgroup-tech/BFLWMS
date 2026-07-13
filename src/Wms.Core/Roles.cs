@@ -25,6 +25,13 @@ public interface ICurrentUser
     string? ClientPcName { get; }
     string? Warehouse { get; }
     string? Country { get; }
+    /// <summary>true when the user has role 'Admin' — bypasses per-user country access.</summary>
+    bool HasAllCountriesAccess { get; }
+    /// <summary>Explicit country access rows from dbo.WmsUserCountryAccess. Ignored when
+    /// HasAllCountriesAccess is true. Case-insensitive comparisons expected at call sites.</summary>
+    IReadOnlyCollection<string> AllowedCountries { get; }
+    /// <summary>Return the subset of `all` the current user is allowed to see. Preserves order.</summary>
+    IEnumerable<string> FilterCountries(IEnumerable<string> all);
     /// <summary>
     /// Awaits the AuthenticationStateProvider, reads the principal, then loads the
     /// user's Country/Warehouse from the DB. Caches the result on the instance.

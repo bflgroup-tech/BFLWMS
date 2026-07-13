@@ -169,6 +169,7 @@
         try
         {
             _countries = await Svc.GetCountriesAsync();
+            _countries = Me.FilterCountries(_countries).ToList();
             _country = Me.Country is not null && _countries.Contains(Me.Country, StringComparer.OrdinalIgnoreCase)
                 ? _countries.First(c => string.Equals(c, Me.Country, StringComparison.OrdinalIgnoreCase))
                 : "";
