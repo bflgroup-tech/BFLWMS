@@ -935,17 +935,23 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                     if (eligible.Count == 0 && ecomPreAllocTake == 0) continue;
 
                     // Live OTS% per (StoreID, DivCode) driven by runningOtsQty
-                    // (decreases as we allocate).
+                    // (decreases as we allocate). Used by Passes 2, 3, 4.
                     double LiveOtsPct(OtsRunLookupRow r)
                     {
                         var qty = runningOtsQty.GetValueOrDefault((r.StoreID, r.DivCode), r.OtsQtyToday);
                         return r.TgtEOM > 0 ? (double)qty / r.TgtEOM * 100.0 : 0.0;
                     }
 
-                    // Refresh Avg OTS% for THIS Division from stores with live OTS% > 0
-                    // (ONLINE already removed above if ECOM Manual Priority was applied,
-                    // so its OTS% doesn't skew the threshold for the rest of the passes).
-                    var positives = eligible.Select(LiveOtsPct).Where(p => p > 0).ToList();
+                    // Static OTS% straight from WmsOtsPoAllocationRun.OtsPercentToday.
+                    // Doesn't change during this batch — Pass 1's filter and sort
+                    // both use this per the current spec.
+                    double StaticOtsPct(OtsRunLookupRow r) => (double)r.OtsPercentToday;
+
+                    // Avg OtsPercentToday for THIS Division from stores where
+                    // OtsPercentToday > 0. This is Pass 1's threshold.
+                    // (ONLINE already removed above if ECOM Manual Priority was
+                    // applied, so its OTS% doesn't skew the threshold.)
+                    var positives = eligible.Select(StaticOtsPct).Where(p => p > 0).ToList();
                     var avgOts = positives.Count > 0 ? positives.Average() : 0.0;
                     var avgOtsDecimal = (decimal)Math.Round(avgOts, 2);
 
@@ -1039,13 +1045,18 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                         };
                     }
 
-                    // Sort order used by every pass: VolumeGroup A+ -> E, then OTS% DESC.
+                    // Sort order used by Passes 2, 3, 4: VolumeGroup A+ -> E, then LiveOtsPct DESC.
                     IEnumerable<OtsRunLookupRow> SortByGroupThenOts(IEnumerable<OtsRunLookupRow> src) =>
                         src.OrderBy(r => VolumeGroupRank(r.VolumeGroup))
                            .ThenByDescending(LiveOtsPct);
 
-                    // ---------- Pass 1: OTS% >= AvgOTS% (sequential fill up to cap) ----------
-                    var pass1Stores = SortByGroupThenOts(eligible.Where(r => LiveOtsPct(r) >= avgOts)).ToList();
+                    // Pass 1 uses OtsPercentToday for both filter and sort.
+                    IEnumerable<OtsRunLookupRow> SortByGroupThenStaticOts(IEnumerable<OtsRunLookupRow> src) =>
+                        src.OrderBy(r => VolumeGroupRank(r.VolumeGroup))
+                           .ThenByDescending(StaticOtsPct);
+
+                    // ---------- Pass 1: OtsPercentToday >= Avg OtsPercentToday (sequential fill up to cap) ----------
+                    var pass1Stores = SortByGroupThenStaticOts(eligible.Where(r => StaticOtsPct(r) >= avgOts)).ToList();
                     foreach (var r in pass1Stores)
                     {
                         if (remaining <= 0) break;
