@@ -504,6 +504,29 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
             return (initialAlloc, topN);
         }
 
+        // FillSKUMax+RR only: pre-fetch per-(StoreId, Itemcode) SKU Max from
+        // LPMSIM.dbo.LPM_SimItemSkuMax. Any (Store, Item) with a value of 0
+        // is a hard block for that combination — the algorithm won't allocate
+        // to it, and it won't fall back to the LPM_SKUMaxRule band. (Item,
+        // Store) pairs missing from the table proceed with the band logic
+        // as before.
+        async Task<HashSet<(string StoreId, string ItemCode)>> LoadSimSkuMaxBlocked()
+        {
+            var blocked = new HashSet<(string, string)>();
+            if (runOption != RunOption.FillSKUMaxRoundRobin || distinctItemCodes.Length == 0)
+                return blocked;
+            await using var c1 = OpenOnPremBackup();
+            var rows = await c1.QueryAsync<(string StoreId, string Itemcode, int SkuMax)>(new CommandDefinition(
+                @"SELECT StoreId, Itemcode, ISNULL(SkuMax, 0) AS SkuMax
+                    FROM LPMSIM.dbo.LPM_SimItemSkuMax WITH (NOLOCK)
+                   WHERE Itemcode IN @codes",
+                new { codes = distinctItemCodes }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            foreach (var r in rows)
+                if (r.SkuMax == 0)
+                    blocked.Add((r.StoreId.ToUpperInvariant(), r.Itemcode.ToUpperInvariant()));
+            return blocked;
+        }
+
         async Task<List<OtsRunLookupRow>> LoadOtsRunRows()
         {
             if (runOption != RunOption.FillSKUMaxRoundRobin) return new();
@@ -537,11 +560,13 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         var w1_receiptDt      = LoadContainerReceiptDt();
         var w1_initialAlloc   = LoadInitialAllocAndTopN();
         var w1_otsRunRows     = LoadOtsRunRows();
+        var w1_simSkuMaxBlocked = LoadSimSkuMaxBlocked();
 
         await Task.WhenAll(
             w1_itemMeta, w1_deptBlocks, w1_divBlocks, w1_orgByItem,
             w1_storeNameById, w1_palletByStore, w1_priority, w1_mnw,
-            w1_prices, w1_completed, w1_receiptDt, w1_initialAlloc, w1_otsRunRows);
+            w1_prices, w1_completed, w1_receiptDt, w1_initialAlloc, w1_otsRunRows,
+            w1_simSkuMaxBlocked);
 
         var itemMeta          = await w1_itemMeta;
         var deptBlocks        = await w1_deptBlocks;
@@ -556,6 +581,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         var containerReceiptDt = await w1_receiptDt;
         var (initialAllocByKey, fillRRTopN) = await w1_initialAlloc;
         var otsRunRowsList    = await w1_otsRunRows;
+        var simSkuMaxBlocked  = await w1_simSkuMaxBlocked;
 
         var divByItem = itemMeta.ToDictionary(kv => kv.Key, kv => kv.Value.DivID ?? 0, StringComparer.OrdinalIgnoreCase);
 
@@ -876,6 +902,14 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                         .Where(r => r.DivCode == divCode)
                         .ToList();
 
+                    // Hard block: any (Store, Item) with LPM_SimItemSkuMax = 0
+                    // is excluded up-front so it never lands in a pass loop and
+                    // the algorithm skips straight to LPM_SKUMaxRule for the rest.
+                    var itemKey = line.ItemCode.ToUpperInvariant();
+                    bool IsSimSkuBlocked(string sid) =>
+                        simSkuMaxBlocked.Contains((sid.ToUpperInvariant(), itemKey));
+                    eligible.RemoveAll(r => IsSimSkuBlocked(r.StoreID));
+
                     // ECOM Manual Priority — when the operator ticks the checkbox
                     // on the page, we honour WmsManualAllocation.AllocationQty for
                     // (StoreID=ONLINE, itemcode) before any OTS-based pass runs.
@@ -885,6 +919,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                     OtsRunLookupRow? ecomOtsRow = null;
                     int ecomPreAllocTake = 0;
                     if (ecomManualPriority
+                        && !IsSimSkuBlocked("ONLINE")
                         && initialAllocByKey.TryGetValue(("ONLINE", line.ItemCode.ToUpperInvariant()), out var ecomManualQty)
                         && ecomManualQty > 0
                         && remaining > 0)
