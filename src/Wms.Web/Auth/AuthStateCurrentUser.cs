@@ -52,28 +52,28 @@ public class AuthStateCurrentUser(
             (cached.Item1 is not null || cached.Item2 is not null))
         {
             _warehouse = cached.Item1; _country = cached.Item2;
-            _loaded = true;
-            return;
         }
-
-        try
+        else
         {
-            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            cts.CancelAfter(TimeSpan.FromSeconds(5));
-            await using var db = await dbFactory.CreateDbContextAsync(cts.Token);
-            var row = await db.Users.AsNoTracking()
-                .Where(u => u.Username == _name)
-                .Select(u => new { u.Warehouse, u.Country })
-                .FirstOrDefaultAsync(cts.Token);
-            _warehouse = row?.Warehouse;
-            _country   = row?.Country;
-        }
-        catch { /* leave nulls */ }
+            try
+            {
+                using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                cts.CancelAfter(TimeSpan.FromSeconds(5));
+                await using var db = await dbFactory.CreateDbContextAsync(cts.Token);
+                var row = await db.Users.AsNoTracking()
+                    .Where(u => u.Username == _name)
+                    .Select(u => new { u.Warehouse, u.Country })
+                    .FirstOrDefaultAsync(cts.Token);
+                _warehouse = row?.Warehouse;
+                _country   = row?.Country;
+            }
+            catch { /* leave nulls */ }
 
-        var ttl = (_warehouse is null && _country is null)
-            ? TimeSpan.FromSeconds(5)
-            : TimeSpan.FromMinutes(2);
-        cache.Set(key, (_warehouse, _country), ttl);
+            var ttl = (_warehouse is null && _country is null)
+                ? TimeSpan.FromSeconds(5)
+                : TimeSpan.FromMinutes(2);
+            cache.Set(key, (_warehouse, _country), ttl);
+        }
 
         // Country access + admin bypass — cached separately so the shorter TTL on
         // profile-not-found doesn't repeatedly re-fetch the access rows.
