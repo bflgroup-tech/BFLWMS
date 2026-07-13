@@ -979,29 +979,41 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                         return 1 + (v[0] - 'A');
                     }
 
-                    // Cap = SKUMax(country, div, volGroup, comboPoQty) - SOHToday
-                    int CapFor(OtsRunLookupRow r)
+                    // Raw SKUMax from the LPM_SKUMaxRule band + effective cap
+                    // (max(0, raw - SOHToday)). Raw is persisted on the row as
+                    // RawSkuMax so a report reader can tell whether "SkuMax=0"
+                    // means "no band matched" (raw=0) or "SOHToday >= band"
+                    // (raw>0, cap=0).
+                    (int Raw, int Cap) SkuMaxRawAndCapFor(OtsRunLookupRow r)
                     {
                         var sk = SkuMaxForCombo(r.Country, r.DivCode, r.VolumeGroup ?? "", line.OraPONo ?? "");
-                        return Math.Max(0, sk - r.SOHToday);
+                        return (sk, Math.Max(0, sk - r.SOHToday));
                     }
+                    int CapFor(OtsRunLookupRow r) => SkuMaxRawAndCapFor(r).Cap;
 
                     // Row factory bound to this item — records which pass emitted
-                    // each piece and stamps AvgOtsPercent + LiveOtsPct + TgtEOM
-                    // (all sourced from WmsOtsPoAllocationRun) on every row.
+                    // each piece and stamps AvgOtsPercent + LiveOtsPct + TgtEOM +
+                    // RawSkuMax (all sourced from WmsOtsPoAllocationRun /
+                    // LPM_SKUMaxRule) on every row.
                     AllocationRow BumpRow(AllocationRow? existing, OtsRunLookupRow r,
                                           int delta, int rrExtra, int pass)
                     {
-                        var cap = CapFor(r);
+                        var (rawSku, cap) = SkuMaxRawAndCapFor(r);
                         if (existing is null)
                         {
+                            // OTS on the persisted row is clipped at 0 — LiveOtsPct
+                            // can go negative once runningOtsQty is over-allocated
+                            // (Pass 4 uncapped RR runs even for depleted stores).
+                            // Negative values still drive the algorithm's sort key;
+                            // only the persisted display value is clipped.
                             var initial = MakeRow(r.StoreID, r.Country,
                                 r.VolumeGroup ?? "", 0, cap, delta, rrExtra)
                                 with
                                 {
                                     AvgOtsPercent = avgOtsDecimal,
-                                    OTS = LiveOtsPct(r),
+                                    OTS = Math.Max(0, LiveOtsPct(r)),
                                     TgtEOM = r.TgtEOM,
+                                    RawSkuMax = rawSku,
                                 };
                             return pass switch
                             {
@@ -1475,6 +1487,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         dt.Columns.Add("AvgOtsPercent",    typeof(decimal));
         dt.Columns.Add("OtsQtyToday",      typeof(int));
         dt.Columns.Add("TgtEOM",           typeof(int));
+        dt.Columns.Add("RawSkuMax",        typeof(int));
 
         var now = DateTime.UtcNow.AddHours(4);  // GST stamp for Trndate/Time1
         var trnDate = now.Date;
@@ -1513,7 +1526,8 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                 (object?)r.Pass4Qty ?? DBNull.Value,
                 (object?)r.AvgOtsPercent ?? DBNull.Value,
                 (object?)r.OtsQtyToday ?? DBNull.Value,
-                (object?)r.TgtEOM ?? DBNull.Value);
+                (object?)r.TgtEOM ?? DBNull.Value,
+                (object?)r.RawSkuMax ?? DBNull.Value);
         }
 
         c.ChangeDatabase("LPMSIM");
@@ -1893,10 +1907,10 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                                        int? POQty, int? AllocatedQty, int? Phase2Qty, int? SkuMax, int? DivCode, string? StoreID, string? Country, string? GroupCode, string? Division,
                                        string? Remarks, DateTime? LPMDt, double? OTS, int? PriorityRank, int? MnwToday,
                                        int? Pass1Qty, int? Pass2Qty, int? Pass3Qty, int? Pass4Qty, decimal? AvgOtsPercent,
-                                       int? OtsQtyToday, int? TgtEOM)>(new CommandDefinition($@"
+                                       int? OtsQtyToday, int? TgtEOM, int? RawSkuMax)>(new CommandDefinition($@"
             SELECT d.ContNo, d.ORAPONo, d.Itemcode, d.Itemname, d.Brand, d.POQty, d.AllocatedQty, d.Phase2Qty, d.SkuMax, d.DivCode, d.StoreID, d.Country,
                    d.GroupCode, d.Division, d.Remarks, d.LPMDt, d.OTS, d.PriorityRank, d.MnwToday,
-                   d.Pass1Qty, d.Pass2Qty, d.Pass3Qty, d.Pass4Qty, d.AvgOtsPercent, d.OtsQtyToday, d.TgtEOM
+                   d.Pass1Qty, d.Pass2Qty, d.Pass3Qty, d.Pass4Qty, d.AvgOtsPercent, d.OtsQtyToday, d.TgtEOM, d.RawSkuMax
               FROM LPMSIM.dbo.WMS_ContAllocationData d WITH (NOLOCK)
               {joinAndWhereSql}
              ORDER BY d.IdNo",
@@ -1994,7 +2008,8 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                 Pass4Qty: r.Pass4Qty,
                 AvgOtsPercent: r.AvgOtsPercent,
                 OtsQtyToday: r.OtsQtyToday,
-                TgtEOM: r.TgtEOM);
+                TgtEOM: r.TgtEOM,
+                RawSkuMax: r.RawSkuMax);
         }).ToList();
     }
 
