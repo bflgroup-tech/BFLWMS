@@ -65,7 +65,8 @@ public record AllocationRow(
     int?     Pass4Qty         = null,    // uncapped RR fallback across all stores
     decimal? AvgOtsPercent    = null,    // per-Division AVG(OtsPercentToday WHERE > 0) at item time
     int?     OtsQtyToday      = null,    // OtsQtyToday from WmsOtsPoAllocationRun for this (StoreID, DivCode) — initial value, not decremented
-    int?     TgtEOM           = null);   // TgtEOM from WmsOtsPoAllocationRun for this (StoreID, DivCode) — FillSKUMax+RR only
+    int?     TgtEOM           = null,    // TgtEOM from WmsOtsPoAllocationRun for this (StoreID, DivCode) — FillSKUMax+RR only
+    int?     RawSkuMax        = null);   // Raw SKUMax from LPM_SKUMaxRule band lookup (before subtracting SOHToday) — FillSKUMax+RR only. 0 = no band matched.
 
 /// <summary>One row in the blocked-items list: an (item, store) pair that was
 /// excluded from allocation by LPM_StoreDeptAccess or LPM_StoreDivAccess.</summary>
