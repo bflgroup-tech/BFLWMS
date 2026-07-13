@@ -554,14 +554,19 @@
 
     protected override async Task OnInitializedAsync()
     {
+        // Default Country + Warehouse from the logged-in user's WmsUser row —
+        // load user profile FIRST so the country filter below sees the
+        // access list.
+        await CurrentUser.EnsureLoadedAsync();
+
         try { _countries = await Svc.GetCountriesAsync(); }
         catch (Exception ex) { ShowError($"Failed to load countries: {ex.Message}"); }
+        _countries = CurrentUser.FilterCountries(_countries).ToList();
 
         try { _simCountries = await Svc.GetSimCountriesAsync(); }
         catch { _simCountries = new(); }
+        _simCountries = CurrentUser.FilterCountries(_simCountries).ToList();
 
-        // Default Country + Warehouse from the logged-in user's WmsUser row.
-        await CurrentUser.EnsureLoadedAsync();
         if (!string.IsNullOrWhiteSpace(CurrentUser.Country) && _countries.Contains(CurrentUser.Country!))
         {
             _country = CurrentUser.Country!;
