@@ -1,0 +1,242 @@
+@page "/reports/transfer-gin-grn"
+@rendermode RenderMode.InteractiveServer
+@using System.Text
+@using Wms.Core
+@using Wms.Data.Lpm
+@attribute [Authorize(Policy = MenuKeys.RPT_TRANSFER_GIN_GRN)]
+@inject TransferGinGrnService Svc
+@inject ICurrentUser CurrentUser
+@inject Microsoft.JSInterop.IJSRuntime JS
+
+<PageTitle>WMS — Transfer / GIN / GRN History</PageTitle>
+
+<div class="aiwms-page-header">
+    <h2>Transfer / GIN / GRN History</h2>
+    <p>Transfer records with Pallet (GI), GIN and GRN linkage per store and date range.</p>
+</div>
+
+<div class="aiwms-section">
+    <div class="aiwms-card-header">Filters</div>
+    <div style="display:grid; grid-template-columns: repeat(4, minmax(200px, 1fr)); gap:10px; align-items:end">
+
+        <div>
+            <label class="aiwms-filter-label">COUNTRY</label>
+            <select @bind="_country" @bind:after="OnCountryChangedAsync"
+                    style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white">
+                @foreach (var c in _countries) { <option value="@c">@c</option> }
+            </select>
+        </div>
+
+        <div>
+            <label class="aiwms-filter-label">STORE</label>
+            <select @bind="_store"
+                    style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white">
+                <option value="">(All stores)</option>
+                @foreach (var s in _stores) { <option value="@s">@s</option> }
+            </select>
+        </div>
+
+        <div>
+            <label class="aiwms-filter-label">TRANSFER DATE FROM</label>
+            <input type="date" @bind="_dateFrom"
+                   style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white" />
+        </div>
+
+        <div>
+            <label class="aiwms-filter-label">TRANSFER DATE TO</label>
+            <input type="date" @bind="_dateTo"
+                   style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white" />
+        </div>
+
+        <div style="display:flex; flex-direction:column; gap:6px; padding-top:18px">
+            <label style="display:flex; align-items:center; gap:6px; font-size:12px; cursor:pointer">
+                <input type="checkbox" @bind="_withoutPallet" /> Without Pallet
+            </label>
+            <label style="display:flex; align-items:center; gap:6px; font-size:12px; cursor:pointer">
+                <input type="checkbox" @bind="_withoutGin" /> Without GIN
+            </label>
+            <label style="display:flex; align-items:center; gap:6px; font-size:12px; cursor:pointer">
+                <input type="checkbox" @bind="_withoutGrn" /> Without GRN
+            </label>
+        </div>
+
+        <div>
+            <label class="aiwms-filter-label">SEARCH BY</label>
+            <select @bind="_searchBy"
+                    style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white">
+                <option value="TrfNo">Transfer No</option>
+                <option value="PalletNo">Pallet No</option>
+                <option value="GIN">GIN</option>
+                <option value="GRN">GRN</option>
+            </select>
+        </div>
+
+        <div>
+            <label class="aiwms-filter-label">SEARCH VALUE</label>
+            <input @bind="_searchValue" placeholder="contains…"
+                   style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white" />
+        </div>
+
+    </div>
+
+    <div style="display:flex; gap:10px; margin-top:14px">
+        <button class="aiwms-btn aiwms-btn-primary" @onclick="LoadAsync" disabled="@_loading">
+            @(_loading ? "Loading…" : "Load")
+        </button>
+        <button class="aiwms-btn aiwms-btn-secondary" @onclick="ExportCsvAsync" disabled="@(_loading || _rows.Count == 0)">
+            Export to Excel
+        </button>
+        @if (_rows.Count > 0)
+        {
+            <span style="font-size:12px; color:var(--text-secondary); align-self:center">@_rows.Count rows</span>
+        }
+    </div>
+
+    @if (!string.IsNullOrEmpty(_message))
+    {
+        <div class="aiwms-alert @(_isError ? "error" : "info")" style="margin-top:12px">@_message</div>
+    }
+</div>
+
+@if (_rows.Count > 0)
+{
+    <div class="aiwms-section">
+        <table class="aiwms-table aiwms-table-dense">
+            <thead>
+                <tr>
+                    <th>#</th>
+                    <th>Store</th>
+                    <th>Transfer No</th>
+                    <th>Trf Date</th>
+                    <th>Pallet No</th>
+                    <th>Build Date</th>
+                    <th>GIN No</th>
+                    <th>GIN Date</th>
+                    <th>GRN No</th>
+                    <th>GRN Date</th>
+                    <th>Remarks</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var r in _rows)
+                {
+                    <tr>
+                        <td>@r.SrNo</td>
+                        <td>@r.ShopName</td>
+                        <td>@r.TrfNo</td>
+                        <td>@r.TrfDate.ToString("dd/MM/yyyy")</td>
+                        <td>@r.PalletNo</td>
+                        <td>@(r.BuildDate.HasValue ? r.BuildDate.Value.ToString("dd/MM/yyyy") : "")</td>
+                        <td>@r.GINNo</td>
+                        <td>@(r.GINDate.HasValue ? r.GINDate.Value.ToString("dd/MM/yyyy") : "")</td>
+                        <td>@r.GRNNo</td>
+                        <td>@(r.GRNDate.HasValue ? r.GRNDate.Value.ToString("dd/MM/yyyy") : "")</td>
+                        <td>@r.Remarks</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+@code {
+    private List<string> _countries = new();
+    private List<string> _stores    = new();
+    private List<TransferHistoryRow> _rows = new();
+
+    private string   _country       = "KSA";
+    private string   _store         = "";
+    private DateTime _dateFrom       = DateTime.Today;
+    private DateTime _dateTo         = DateTime.Today;
+    private bool     _withoutPallet;
+    private bool     _withoutGin;
+    private bool     _withoutGrn;
+    private string   _searchBy      = "TrfNo";
+    private string   _searchValue   = "";
+
+    private bool   _loading;
+    private string _message = "";
+    private bool   _isError;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            await CurrentUser.EnsureLoadedAsync();
+            _countries = Svc.GetCountries();
+
+            if (!string.IsNullOrWhiteSpace(CurrentUser.Country) && _countries.Contains(CurrentUser.Country!))
+                _country = CurrentUser.Country!;
+            else if (_countries.Count > 0 && !_countries.Contains(_country))
+                _country = _countries[0];
+
+            await LoadStoresAsync();
+        }
+        catch (Exception ex) { ShowError($"Init failed: {ex.Message}"); }
+    }
+
+    private async Task OnCountryChangedAsync()
+    {
+        _store = "";
+        await LoadStoresAsync();
+    }
+
+    private async Task LoadStoresAsync()
+    {
+        try { _stores = await Svc.GetStoresAsync(_country); }
+        catch (Exception ex) { ShowError($"Failed to load stores for {_country}: {ex.Message}"); }
+    }
+
+    private async Task LoadAsync()
+    {
+        _loading = true; _message = ""; _rows.Clear();
+        await InvokeAsync(StateHasChanged);
+        try
+        {
+            var filter = new TransferHistoryFilter(
+                Country:       _country,
+                Store:         string.IsNullOrWhiteSpace(_store) ? null : _store,
+                DateFrom:      _dateFrom,
+                DateTo:        _dateTo,
+                WithoutPallet: _withoutPallet,
+                WithoutGin:    _withoutGin,
+                WithoutGrn:    _withoutGrn,
+                SearchBy:      _searchBy,
+                SearchValue:   string.IsNullOrWhiteSpace(_searchValue) ? null : _searchValue.Trim());
+
+            _rows = await Svc.GetTransferHistoryAsync(filter);
+            ShowInfo($"Loaded {_rows.Count} rows.");
+        }
+        catch (Exception ex) { ShowError($"Load failed: {ex.Message}"); }
+        finally { _loading = false; }
+    }
+
+    private async Task ExportCsvAsync()
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("#,Store,TrfNo,TrfDate,PalletNo,BuildDate,GINNo,GINDate,GRNNo,GRNDate,Remarks");
+        foreach (var r in _rows)
+            sb.AppendLine($"{r.SrNo},{Csv(r.ShopName)},{Csv(r.TrfNo)},{r.TrfDate:yyyy-MM-dd},{Csv(r.PalletNo)}" +
+                          $",{(r.BuildDate.HasValue ? r.BuildDate.Value.ToString("yyyy-MM-dd") : "")}" +
+                          $",{Csv(r.GINNo)},{(r.GINDate.HasValue ? r.GINDate.Value.ToString("yyyy-MM-dd") : "")}" +
+                          $",{Csv(r.GRNNo)},{(r.GRNDate.HasValue ? r.GRNDate.Value.ToString("yyyy-MM-dd") : "")}" +
+                          $",{Csv(r.Remarks)}");
+
+        var b64      = Convert.ToBase64String(Encoding.UTF8.GetBytes(sb.ToString()));
+        var filename = $"TransferGinGrn_{_country}_{_dateFrom:yyyyMMdd}_{_dateTo:yyyyMMdd}.csv";
+        await JS.InvokeVoidAsync("eval",
+            $"(function(){{var a=document.createElement('a');a.href='data:text/csv;base64,{b64}';" +
+            $"a.download='{filename}';document.body.appendChild(a);a.click();document.body.removeChild(a);}})();");
+    }
+
+    private static string Csv(string? s)
+    {
+        if (s is null) return "";
+        return (s.Contains(',') || s.Contains('"') || s.Contains('\n'))
+            ? "\"" + s.Replace("\"", "\"\"") + "\""
+            : s;
+    }
+
+    private void ShowError(string msg) { _message = msg; _isError = true; }
+    private void ShowInfo(string msg)  { _message = msg; _isError = false; }
+}
