@@ -567,13 +567,21 @@
         catch { _simCountries = new(); }
         _simCountries = CurrentUser.FilterCountries(_simCountries).ToList();
 
-        if (!string.IsNullOrWhiteSpace(CurrentUser.Country) && _countries.Contains(CurrentUser.Country!))
+        // Default Country + Warehouse from the logged-in user's WmsUser row.
+        // Case-insensitive match so a WmsUser.Country of "UAE" still resolves
+        // even if the master list came back as "Uae"/"uae".
+        var matchedCountry = string.IsNullOrWhiteSpace(CurrentUser.Country)
+            ? null
+            : _countries.FirstOrDefault(c => string.Equals(c, CurrentUser.Country, StringComparison.OrdinalIgnoreCase));
+        if (matchedCountry is not null)
         {
-            _country = CurrentUser.Country!;
+            _country = matchedCountry;
             try { _warehouses = await Svc.GetWarehousesAsync(_country); }
             catch { _warehouses = new(); }
-            if (!string.IsNullOrWhiteSpace(CurrentUser.Warehouse) && _warehouses.Contains(CurrentUser.Warehouse!))
-                _warehouse = CurrentUser.Warehouse!;
+            var matchedWh = string.IsNullOrWhiteSpace(CurrentUser.Warehouse)
+                ? null
+                : _warehouses.FirstOrDefault(w => string.Equals(w, CurrentUser.Warehouse, StringComparison.OrdinalIgnoreCase));
+            if (matchedWh is not null) _warehouse = matchedWh;
         }
 
         // Default Allocation Countries to ALL SIM countries; user can trim.
