@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.RegularExpressions;
 using Wms.Data.Configuration;
 using Dapper;
 using Microsoft.Data.SqlClient;
@@ -8,20 +9,22 @@ namespace Wms.Data.Lpm;
 /// <summary>
 /// Backs the Transfer / GIN / GRN History report.
 ///
-/// Country list = countries that have a per-country connection string configured.
-/// Stores + transfer data = connect to the COUNTRY server, then use 3-part DB names:
-///   [{DataName}]..transferheader    — country DB (e.g. bflksa)
-///   BFLDATA..vGoodsIssue            — shared reporting DB on the same server
-/// DataName is resolved from BFLDATA.dbo.DataSettings on the country server.
+/// ALL queries run against OnPremBackup (192.168.5.61) where:
+///   - BFLDATA is a local database (has SIMCountry, vGoodsIssue, vGoodsIssueplt)
+///   - [{DataName}].. references are linked-server / cross-DB names (e.g. bflksa)
+///
+/// The per-country connection strings (KSA_DB_ConnectionString etc.) are NOT
+/// used here — they point to separate servers whose local BFLDATA lacks SIMCountry
+/// and whose views do not work in isolation.
 /// </summary>
 public class TransferGinGrnService(IOnPremConnectionResolver resolver)
 {
     private const int ConnectTimeoutSeconds = 60;
     private const int CommandTimeoutSeconds = 300;
 
-    private SqlConnection OpenCountry(string country)
+    private SqlConnection OpenOnPrem()
     {
-        var b = new SqlConnectionStringBuilder(resolver.GetCountryConnectionString(country))
+        var b = new SqlConnectionStringBuilder(resolver.GetOnPremBackupConnectionString())
             { ConnectTimeout = ConnectTimeoutSeconds };
         var c = new SqlConnection(b.ConnectionString);
         c.Open();
@@ -30,23 +33,37 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
 
     // ── Dropdowns ────────────────────────────────────────────────────────────
 
-    /// <summary>Returns countries that have a configured DB connection string.</summary>
-    public List<string> GetCountries() => resolver.GetConfiguredCountries().ToList();
+    /// <summary>
+    /// Countries from BFLDATA.dbo.DataSettings on OnPremBackup (SIMCountry exists there).
+    /// Filters to countries that have a DataName configured (i.e. a linked DB exists).
+    /// </summary>
+    public async Task<List<string>> GetCountriesAsync(CancellationToken ct = default)
+    {
+        await using var c = OpenOnPrem();
+        var rows = await c.QueryAsync<string>(new CommandDefinition(@"
+            SELECT DISTINCT SIMCountry
+              FROM BFLDATA.dbo.DataSettings
+             WHERE SIMCountry IS NOT NULL AND LTRIM(RTRIM(SIMCountry)) <> ''
+               AND DataName   IS NOT NULL AND LTRIM(RTRIM(DataName))   <> ''
+             ORDER BY SIMCountry",
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        return rows.AsList();
+    }
 
     /// <summary>
-    /// Stores for the selected country, queried from BFLDATA on the country's server,
-    /// excluding Warehouse-concept entries.
+    /// Stores for the country — from BFLDATA on OnPremBackup, filtered by SIMCountry.
     /// </summary>
     public async Task<List<string>> GetStoresAsync(string country, CancellationToken ct = default)
     {
-        await using var c = OpenCountry(country);
+        await using var c = OpenOnPrem();
         var rows = await c.QueryAsync<string>(new CommandDefinition(@"
             SELECT DISTINCT ShopName
               FROM BFLDATA.dbo.DataSettings
-             WHERE ShopName IS NOT NULL
-               AND ShopName <> ''
-               AND Concept  <> 'Warehouse'
+             WHERE SIMCountry = @country
+               AND ShopName   IS NOT NULL AND ShopName <> ''
+               AND Concept    <> 'Warehouse'
              ORDER BY ShopName",
+            new { country },
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         return rows.AsList();
     }
@@ -56,13 +73,15 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
     public async Task<List<TransferHistoryRow>> GetTransferHistoryAsync(
         TransferHistoryFilter f, CancellationToken ct = default)
     {
-        await using var conn = OpenCountry(f.Country);
+        await using var conn = OpenOnPrem();
 
-        // Resolve the country DB name (e.g. "bflksa") from BFLDATA on that server.
+        // DataName = linked-server / cross-DB prefix (e.g. "bflksa") on OnPremBackup.
+        // WhBoxItemsSource reads from BFLDATA.dbo.DataSettings WHERE SIMCountry = @c
+        // which works correctly on OnPremBackup.
         var dataName = await WhBoxItemsSource.ResolveDataNameAsync(conn, f.Country, ct);
         if (string.IsNullOrWhiteSpace(dataName))
             throw new InvalidOperationException(
-                $"No DataName found in BFLDATA.dbo.DataSettings for SIMCountry '{f.Country}'.");
+                $"No DataName found in BFLDATA.dbo.DataSettings for country '{f.Country}'.");
 
         var sql  = BuildSql(dataName, f, out var parms);
         var rows = await conn.QueryAsync<TransferHistoryRow>(
@@ -88,12 +107,12 @@ SELECT ROW_NUMBER() OVER (ORDER BY a.TrfNo) SrNo,
        PalletNo   = (SELECT TOP 1 PalletNo FROM BFLDATA.dbo.vGoodsIssue
                       WHERE TrfNo = a.TrfNo ORDER BY PalletNo DESC),
        b.EntryDate  BuildDate,
-       c.SrNo       GINNo,
+       CAST(c.SrNo AS nvarchar(50)) GINNo,
        c.EntryDate  GINDate,
-       d.EntryNo    GRNNo,
+       CAST(d.EntryNo AS nvarchar(50)) GRNNo,
        d.EntryDate  GRNDate,
        ISNULL(f.Remarks, '') Remarks
-  FROM [{dataName}]..transferheader   a
+  FROM [{dataName}]..transferheader    a
   LEFT JOIN BFLDATA.dbo.vGoodsIssue   b ON a.TrfNo = b.TrfNo
   LEFT JOIN BFLDATA.dbo.vGoodsIssueplt c ON a.TrfNo = c.TrfNo
   LEFT JOIN [{dataName}]..GRNHeaderRF  d ON a.TrfNo = d.TrfNo

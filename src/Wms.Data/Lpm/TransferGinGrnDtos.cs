@@ -1,7 +1,7 @@
 namespace Wms.Data.Lpm;
 
 public record TransferHistoryRow(
-    int     SrNo,
+    long    SrNo,
     string  ShopName,
     string  TrfNo,
     DateTime TrfDate,
