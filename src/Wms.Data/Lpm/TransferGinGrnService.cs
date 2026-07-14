@@ -119,10 +119,24 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
         }
         else
         {
-            // Non-UAE: connect directly to the country server.
-            // transferheader, GRNHeaderRF, TransferReverse, DataSettings and the
-            // GI views are all local on that server.
-            await using var conn = OpenCountry(f.Country);
+            // Non-UAE: connect directly to the country server, but override the
+            // default database to the country's actual DB name (e.g. "bflksa").
+            // The connection string may point to a different default DB, so we
+            // resolve the real name from OnPremBackup first.
+            await using var onprem = OpenOnPrem();
+            var dataName = await WhBoxItemsSource.ResolveDataNameAsync(onprem, f.Country, ct);
+            if (string.IsNullOrWhiteSpace(dataName))
+                throw new InvalidOperationException(
+                    $"No DataName found in BFLDATA.dbo.DataSettings for country '{f.Country}'.");
+
+            var csb = new SqlConnectionStringBuilder(resolver.GetCountryConnectionString(f.Country))
+            {
+                InitialCatalog = dataName,
+                ConnectTimeout = ConnectTimeoutSeconds
+            };
+            await using var conn = new SqlConnection(csb.ConnectionString);
+            conn.Open();
+
             var sql  = BuildSqlCountry(f, out var parms);
             var rows = await conn.QueryAsync<TransferHistoryRow>(
                 new CommandDefinition(sql, parms,
