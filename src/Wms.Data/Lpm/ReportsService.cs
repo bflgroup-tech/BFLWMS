@@ -155,6 +155,86 @@ public class ReportsService(IOnPremConnectionResolver resolver)
         return rows.Where(s => !string.IsNullOrWhiteSpace(s)).ToList();
     }
 
+    // ===================== Counting Completion Report (Summary) =====================
+    /// <summary>
+    /// Reads BFLDATA.dbo.BuildingCompletionSumm — grain is one row per ContNo x
+    /// LPM Month x Division x Brand. There is no stored Country column on that
+    /// table, so Country is derived by matching BFLDATA.dbo.DataSettings.ISOCOUNTRYCODE
+    /// against the ContNo prefix (e.g. "AE" for UAE). Output is one row per
+    /// (Country, ContNo), with LPM Months / Divisions / Brands comma-joined as
+    /// distinct values (STUFF/FOR XML PATH instead of STRING_AGG(DISTINCT ...) —
+    /// the latter needs SQL Server 2022+/compat level 160, not guaranteed here).
+    ///
+    /// ASSUMED column names on BuildingCompletionSumm — adjust if the live schema
+    /// differs: ContNo, CountingCompletionDate, PONo, CountingStartDate,
+    /// CountedQty, LPMMonth, Division, Brand.
+    /// </summary>
+    public async Task<List<CountingCompletionSummaryRow>> GetCountingCompletionSummaryAsync(
+        string? country, DateTime fromDate, DateTime toDate, CancellationToken ct = default)
+    {
+        await using var c = OpenOnPremBackup();
+        var rows = await c.QueryAsync<CountingCompletionSummaryRow>(new CommandDefinition(@"
+            ;WITH CountryCodes AS (
+                SELECT DISTINCT SIMCountry, ISOCOUNTRYCODE
+                  FROM BFLDATA.dbo.DataSettings
+                 WHERE SIMCountry IS NOT NULL
+                   AND ISOCOUNTRYCODE IS NOT NULL AND ISOCOUNTRYCODE <> ''
+            ),
+            Base AS (
+                SELECT cc.SIMCountry AS Country,
+                       s.ContNo,
+                       s.CountingCompletionDate,
+                       s.PONo,
+                       s.CountingStartDate,
+                       s.CountedQty,
+                       s.LPMMonth,
+                       s.Division,
+                       s.Brand
+                  FROM BFLDATA.dbo.BuildingCompletionSumm s
+                  JOIN CountryCodes cc ON LEFT(s.ContNo, LEN(cc.ISOCOUNTRYCODE)) = cc.ISOCOUNTRYCODE
+                 WHERE s.CountingCompletionDate >= @from
+                   AND s.CountingCompletionDate <  @toExclusive
+                   AND (@country IS NULL OR cc.SIMCountry = @country)
+            )
+            SELECT
+                b.Country,
+                b.ContNo,
+                CountingCompletionDate = MAX(b.CountingCompletionDate),
+                PONo                   = MAX(b.PONo),
+                CountingStartDate      = MIN(b.CountingStartDate),
+                CountedQty             = SUM(ISNULL(b.CountedQty, 0)),
+                LpmMonths = STUFF((
+                    SELECT ', ' + d.v
+                      FROM (SELECT DISTINCT CAST(x.LPMMonth AS varchar(20)) AS v, x.LPMMonth AS n
+                              FROM Base x
+                             WHERE x.Country = b.Country AND x.ContNo = b.ContNo
+                               AND x.LPMMonth IS NOT NULL) d
+                     ORDER BY d.n
+                       FOR XML PATH('')), 1, 2, ''),
+                Divisions = STUFF((
+                    SELECT ', ' + d.v
+                      FROM (SELECT DISTINCT x.Division AS v
+                              FROM Base x
+                             WHERE x.Country = b.Country AND x.ContNo = b.ContNo
+                               AND x.Division IS NOT NULL AND x.Division <> '') d
+                     ORDER BY d.v
+                       FOR XML PATH('')), 1, 2, ''),
+                Brands = STUFF((
+                    SELECT ', ' + d.v
+                      FROM (SELECT DISTINCT x.Brand AS v
+                              FROM Base x
+                             WHERE x.Country = b.Country AND x.ContNo = b.ContNo
+                               AND x.Brand IS NOT NULL AND x.Brand <> '') d
+                     ORDER BY d.v
+                       FOR XML PATH('')), 1, 2, '')
+              FROM Base b
+             GROUP BY b.Country, b.ContNo
+             ORDER BY b.Country, CountingCompletionDate",
+            new { country, from = fromDate.Date, toExclusive = toDate.Date.AddDays(1) },
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        return rows.AsList();
+    }
+
     // SQL prefix that materialises #BadBoxes — must be prepended to whatever
     // query references the temp table, so the build + read happen in the
     // SAME Dapper command (= same SQL Server session). Splitting it across
