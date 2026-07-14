@@ -1,0 +1,120 @@
+@page "/reports/counting-completion"
+@rendermode RenderMode.InteractiveServer
+@using Wms.Core
+@using Wms.Data.Lpm
+@attribute [Authorize(Policy = MenuKeys.RPT_COUNTING_COMPLETION)]
+@inject ReportsService Svc
+
+<PageTitle>WMS — Counting Completion Report</PageTitle>
+
+<div class="aiwms-page-header">
+    <h2>Counting Completion Report</h2>
+    <p>One row per Country + Cont No. When a container has multiple LPM Months, Divisions, or Brands, they're shown as a comma-separated list.</p>
+</div>
+
+<div class="aiwms-section">
+    <div style="display:flex; gap:14px; align-items:center; margin-bottom:14px; flex-wrap:wrap">
+        <strong style="font-size:11px; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">Report:</strong>
+        <label style="display:flex; align-items:center; gap:4px; cursor:pointer">
+            <input type="radio" name="rpt" value="Summary" checked="@(_view == "Summary")" @onchange="@(_ => _view = "Summary")" /> Summary
+        </label>
+        <label style="display:flex; align-items:center; gap:4px; opacity:0.5; cursor:not-allowed" title="Coming soon">
+            <input type="radio" name="rpt" value="Detailed" disabled /> Detailed <em style="font-size:11px">(coming soon)</em>
+        </label>
+    </div>
+
+    <div style="display:grid; grid-template-columns: 1fr 1fr 1fr auto; gap:12px; align-items:end;">
+        <div>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COUNTRY</label>
+            <select @bind="_country" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;">
+                <option value="">All</option>
+                @foreach (var c in _countries) { <option value="@c">@c</option> }
+            </select>
+        </div>
+        <div>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COMPLETION FROM *</label>
+            <input type="date" @bind="_from" max="@DateTime.Today.ToString("yyyy-MM-dd")" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
+        </div>
+        <div>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COMPLETION TO *</label>
+            <input type="date" @bind="_to" max="@DateTime.Today.ToString("yyyy-MM-dd")" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
+        </div>
+        <button class="aiwms-btn aiwms-btn-primary" @onclick="LoadAsync" disabled="@(_loading || _from > _to)">@(_loading ? "Loading…" : "Load")</button>
+    </div>
+
+    @if (!string.IsNullOrEmpty(_message))
+    {
+        <div class="aiwms-alert @(_isError ? "error" : "info")" style="margin-top:12px">@_message</div>
+    }
+</div>
+
+@if (_rows.Count > 0)
+{
+    <div class="aiwms-section">
+        <div class="aiwms-card-header">Summary — @_rows.Count row(s)</div>
+        <table class="aiwms-table aiwms-table-dense">
+            <thead>
+                <tr>
+                    <th>Country</th>
+                    <th>Cont No</th>
+                    <th>Counting Completion Date</th>
+                    <th>PO No</th>
+                    <th>Counting Start Date</th>
+                    <th style="text-align:right">Counted Qty</th>
+                    <th>LPM Months</th>
+                    <th>Divisions</th>
+                    <th>Brands</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var r in _rows)
+                {
+                    <tr>
+                        <td>@r.Country</td>
+                        <td style="font-family:var(--font-mono)"><b>@r.ContNo</b></td>
+                        <td>@FmtDate(r.CountingCompletionDate)</td>
+                        <td>@r.PONo</td>
+                        <td>@FmtDate(r.CountingStartDate)</td>
+                        <td style="text-align:right">@r.CountedQty.ToString("N0")</td>
+                        <td>@r.LpmMonths</td>
+                        <td>@r.Divisions</td>
+                        <td>@r.Brands</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+@code {
+    private string _view = "Summary";
+    private List<string> _countries = new();
+    private string _country = "";
+    private DateTime _from = DateTime.Today.AddDays(-7);
+    private DateTime _to   = DateTime.Today;
+    private bool _loading;
+    private string _message = "";
+    private bool _isError;
+    private List<CountingCompletionSummaryRow> _rows = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        try { _countries = await Svc.GetCountriesAsync(); }
+        catch { /* fall back to "All" only if the lookup fails */ }
+    }
+
+    private async Task LoadAsync()
+    {
+        _loading = true; _message = ""; _isError = false; _rows = new();
+        try
+        {
+            var country = string.IsNullOrWhiteSpace(_country) ? null : _country;
+            _rows = await Svc.GetCountingCompletionSummaryAsync(country, _from, _to);
+            if (_rows.Count == 0) _message = "No rows for the selected filters.";
+        }
+        catch (Exception ex) { _message = ex.Message; _isError = true; }
+        finally { _loading = false; }
+    }
+
+    private static string FmtDate(DateTime? d) => d?.ToString("dd-MMM-yyyy") ?? "";
+}
