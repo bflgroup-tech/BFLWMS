@@ -8,14 +8,14 @@
 #   * PRs opened by @sheeja72 auto-merge on green CI (see
 #     .github/workflows/automerge-sheeja.yml).
 #   * PRs opened by anyone else need a review from another dev with Write
-#     access — @Shyjeshk, @rijubfl, or @sheeja72 — before merging.
+#     access — @Shyjeshk, @rijubfl, @shabeelap, or @sheeja72 — before merging.
 #   * PRs touching sensitive paths below require @sheeja72's review + merge
 #     regardless of author.
 # GitHub Free on a private repo can't server-enforce this — it's team
 # discipline (see CONTRIBUTING.md).
 
 # General code — any of the team can approve + squash-merge each other's PRs
-*                                       @sheeja72 @Shyjeshk @rijubfl
+*                                       @sheeja72 @Shyjeshk @rijubfl @shabeelap
 
 # SQL schema needs an extra eye since it hits shared on-prem DBs
 /db/                                    @sheeja72
