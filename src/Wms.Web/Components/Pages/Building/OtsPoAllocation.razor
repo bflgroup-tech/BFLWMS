@@ -187,6 +187,9 @@
                         @SortHeader("PriorityRank",    "Priority Ranking", null, true)
                         @SortHeader("EOMMonth",        "EOM Month")
                         @SortHeader("TgtEOM",          "Tgt EOM",  null, true)
+                        @SortHeader("PrevMonthEOM",    "Prev Month EOM", null, true)
+                        @SortHeader("WkReduction",     "Wk Reduction",   null, true)
+                        @SortHeader("CurrentEOW",      "Current EOW",    null, true)
                         @SortHeader("SOHToday",        "SOH Today", null, true)
                         @SortHeader("WeeksToInclude",  "No. of Weeks to include Sales", null, true)
                         @SortHeader("WeekSales",       "Week Sales", null, true)
@@ -212,6 +215,9 @@
                             <td style="text-align:right">@r.PriorityRank</td>
                             <td>@r.EOMMonth</td>
                             <td style="text-align:right">@r.TgtEOM.ToString("N0")</td>
+                            <td style="text-align:right">@r.PrevMonthEOM.ToString("N0")</td>
+                            <td style="text-align:right">@(r.WkReduction == 0m ? "" : r.WkReduction.ToString("F2"))</td>
+                            <td style="text-align:right">@r.CurrentEOW.ToString("N0")</td>
                             <td style="text-align:right">@r.SOHToday.ToString("N0")</td>
                             <td style="text-align:right">@r.WeeksToInclude</td>
                             <td style="text-align:right">@r.WeekSales.ToString("N0")</td>
@@ -230,6 +236,8 @@
                         // stays in sync with the ribbon and the visible grid.
                         var tRows       = FilteredSortedRows.ToList();
                         var tTgtEOM     = tRows.Sum(r => r.TgtEOM);
+                        var tPrevEOM    = tRows.Sum(r => r.PrevMonthEOM);
+                        var tCurEOW     = tRows.Sum(r => r.CurrentEOW);
                         var tSOH        = tRows.Sum(r => r.SOHToday);
                         var tWeekSales  = tRows.Sum(r => r.WeekSales);
                         var tInTransit  = tRows.Sum(r => r.InTransit);
@@ -241,6 +249,9 @@
                     <tr>
                         <td colspan="8" style="text-align:right; padding:6px 12px; border-top:2px solid #d1d5db">Totals</td>
                         <td style="text-align:right; padding:6px 12px; border-top:2px solid #d1d5db">@tTgtEOM.ToString("N0")</td>
+                        <td style="text-align:right; padding:6px 12px; border-top:2px solid #d1d5db">@tPrevEOM.ToString("N0")</td>
+                        <td style="padding:6px 12px; border-top:2px solid #d1d5db"></td>
+                        <td style="text-align:right; padding:6px 12px; border-top:2px solid #d1d5db">@tCurEOW.ToString("N0")</td>
                         <td style="text-align:right; padding:6px 12px; border-top:2px solid #d1d5db">@tSOH.ToString("N0")</td>
                         <td style="padding:6px 12px; border-top:2px solid #d1d5db"></td>
                         <td style="text-align:right; padding:6px 12px; border-top:2px solid #d1d5db">@tWeekSales.ToString("N0")</td>
@@ -462,7 +473,8 @@
         string[] headers =
         {
             "Country","StoreID","Store Name","Divcode","Division","Volume Group","Priority Ranking",
-            "EOM Month","Tgt EOM","SOH Today","No. of Weeks to include Sales","Week Sales",
+            "EOM Month","Tgt EOM","Prev Month EOM","Wk Reduction","Current EOW",
+            "SOH Today","No. of Weeks to include Sales","Week Sales",
             "InTransit","Ex2 DC SOH","Counting WIP","OTS Qty Today","OTS % Today","OTS Today Required"
         };
         for (int i = 0; i < headers.Length; i++) ws.Cell(1, i + 1).Value = headers[i];
@@ -479,27 +491,32 @@
             ws.Cell(row, 7).Value  = r.PriorityRank ?? 0;
             ws.Cell(row, 8).Value  = r.EOMMonth;
             ws.Cell(row, 9).Value  = r.TgtEOM;
-            ws.Cell(row,10).Value  = r.SOHToday;
-            ws.Cell(row,11).Value  = r.WeeksToInclude;
-            ws.Cell(row,12).Value  = r.WeekSales;
-            ws.Cell(row,13).Value  = r.InTransit;
-            ws.Cell(row,14).Value  = r.Ex2DcSoh;
-            ws.Cell(row,15).Value  = r.CountingWIP;
-            ws.Cell(row,16).Value  = r.OtsQtyToday;
-            ws.Cell(row,17).Value  = (int)Math.Round(r.OtsPercentToday);
-            ws.Cell(row,18).Value  = req > 0 ? req : 0;
+            ws.Cell(row,10).Value  = r.PrevMonthEOM;
+            ws.Cell(row,11).Value  = r.WkReduction;
+            ws.Cell(row,12).Value  = r.CurrentEOW;
+            ws.Cell(row,13).Value  = r.SOHToday;
+            ws.Cell(row,14).Value  = r.WeeksToInclude;
+            ws.Cell(row,15).Value  = r.WeekSales;
+            ws.Cell(row,16).Value  = r.InTransit;
+            ws.Cell(row,17).Value  = r.Ex2DcSoh;
+            ws.Cell(row,18).Value  = r.CountingWIP;
+            ws.Cell(row,19).Value  = r.OtsQtyToday;
+            ws.Cell(row,20).Value  = (int)Math.Round(r.OtsPercentToday);
+            ws.Cell(row,21).Value  = req > 0 ? req : 0;
             row++;
         }
-        // Totals row
+        // Totals row (column indices match the header layout above)
         ws.Cell(row, 1).Value = "Totals";
         ws.Cell(row, 9).Value  = _totTgtEOM;
-        ws.Cell(row,10).Value  = _totSOH;
-        ws.Cell(row,12).Value  = _totWeekSales;
-        ws.Cell(row,13).Value  = _totInTransit;
-        ws.Cell(row,14).Value  = _totEx2;
-        ws.Cell(row,15).Value  = _totWIP;
-        ws.Cell(row,16).Value  = _totOtsQty;
-        ws.Cell(row,18).Value  = _totOtsRequired;
+        ws.Cell(row,10).Value  = SortedRows.Sum(r => r.PrevMonthEOM);
+        ws.Cell(row,12).Value  = SortedRows.Sum(r => r.CurrentEOW);
+        ws.Cell(row,13).Value  = _totSOH;
+        ws.Cell(row,15).Value  = _totWeekSales;
+        ws.Cell(row,16).Value  = _totInTransit;
+        ws.Cell(row,17).Value  = _totEx2;
+        ws.Cell(row,18).Value  = _totWIP;
+        ws.Cell(row,19).Value  = _totOtsQty;
+        ws.Cell(row,21).Value  = _totOtsRequired;
         ws.Row(row).Style.Font.Bold = true;
         ws.Columns().AdjustToContents();
         using var ms = new MemoryStream();
@@ -607,6 +624,9 @@
                 "PriorityRank"    => r => r.PriorityRank ?? int.MaxValue,
                 "EOMMonth"        => r => r.EOMMonth,
                 "TgtEOM"          => r => r.TgtEOM,
+                "PrevMonthEOM"    => r => r.PrevMonthEOM,
+                "WkReduction"     => r => r.WkReduction,
+                "CurrentEOW"      => r => r.CurrentEOW,
                 "SOHToday"        => r => r.SOHToday,
                 "WeeksToInclude"  => r => r.WeeksToInclude,
                 "WeekSales"       => r => r.WeekSales,
