@@ -164,9 +164,10 @@ public class ReportsService(IOnPremConnectionResolver resolver)
     /// STRING_AGG(DISTINCT ...) — the latter needs SQL Server 2022+/compat
     /// level 160, not guaranteed here).
     ///
-    /// ASSUMED column names on BuildingCompletionSumm — adjust if the live schema
-    /// differs: Country, ContNo, CountingCompletionDate, PONo, CountingStartDate,
-    /// CountedQty, LPMMonth, Division, Brand.
+    /// ASSUMED column names/types on BuildingCompletionSumm — adjust if the live
+    /// schema differs: Country, ContNo, CountingCompletionDate, PONo,
+    /// CountingStartDate, CountedQty, LPMMonth (date), Division, Brand.
+    /// LPMMonth is rendered as "MMMM/yyyy" (e.g. "January/2026").
     /// </summary>
     public async Task<List<CountingCompletionSummaryRow>> GetCountingCompletionSummaryAsync(
         string? country, DateTime fromDate, DateTime toDate, CancellationToken ct = default)
@@ -197,7 +198,9 @@ public class ReportsService(IOnPremConnectionResolver resolver)
                 CountedQty             = SUM(ISNULL(b.CountedQty, 0)),
                 LpmMonths = STUFF((
                     SELECT ', ' + d.v
-                      FROM (SELECT DISTINCT CAST(x.LPMMonth AS varchar(20)) AS v, x.LPMMonth AS n
+                      FROM (SELECT DISTINCT
+                                   FORMAT(x.LPMMonth, 'MMMM/yyyy') AS v,
+                                   DATEFROMPARTS(YEAR(x.LPMMonth), MONTH(x.LPMMonth), 1) AS n
                               FROM Base x
                              WHERE x.Country = b.Country AND x.ContNo = b.ContNo
                                AND x.LPMMonth IS NOT NULL) d
