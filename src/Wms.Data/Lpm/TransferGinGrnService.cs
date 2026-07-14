@@ -63,22 +63,39 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
     }
 
     /// <summary>
-    /// Stores for the country — always from OnPremBackup using SIMCountry filter,
-    /// because country-server DataSettings contains all countries' stores.
+    /// Stores for the country.
+    /// UAE → OnPremBackup with SIMCountry filter (no dedicated UAE connection string).
+    /// Others → country server's local BFLDATA.dbo.DataSettings, which only contains
+    ///          that country's stores so no SIMCountry filter is needed.
     /// </summary>
     public async Task<List<string>> GetStoresAsync(string country, CancellationToken ct = default)
     {
-        await using var c = OpenOnPrem();
-        var rows = await c.QueryAsync<string>(new CommandDefinition(@"
-            SELECT DISTINCT ShopName
-              FROM BFLDATA.dbo.DataSettings
-             WHERE SIMCountry = @country
-               AND ShopName   IS NOT NULL AND ShopName <> ''
-               AND Concept    <> 'Warehouse'
-             ORDER BY ShopName",
-            new { country },
-            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-        return rows.AsList();
+        if (country == UaeCountry)
+        {
+            await using var c = OpenOnPrem();
+            var rows = await c.QueryAsync<string>(new CommandDefinition(@"
+                SELECT DISTINCT ShopName
+                  FROM BFLDATA.dbo.DataSettings
+                 WHERE SIMCountry = @country
+                   AND ShopName   IS NOT NULL AND ShopName <> ''
+                   AND Concept    <> 'Warehouse'
+                 ORDER BY ShopName",
+                new { country },
+                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            return rows.AsList();
+        }
+        else
+        {
+            await using var c = OpenCountry(country);
+            var rows = await c.QueryAsync<string>(new CommandDefinition(@"
+                SELECT DISTINCT ShopName
+                  FROM BFLDATA.dbo.DataSettings
+                 WHERE ShopName IS NOT NULL AND ShopName <> ''
+                   AND Concept  <> 'Warehouse'
+                 ORDER BY ShopName",
+                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            return rows.AsList();
+        }
     }
 
     // ── Main query ────────────────────────────────────────────────────────────
