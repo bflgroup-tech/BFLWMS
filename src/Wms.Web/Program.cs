@@ -76,6 +76,7 @@ public class Program
 
         builder.Services.AddScoped<ReportsService>();
         builder.Services.AddScoped<WarehouseBoxesService>();
+        builder.Services.AddScoped<TransferGinGrnService>();
         builder.Services.AddScoped<MissingExcessSnapshotService>();
         builder.Services.AddScoped<CountingReportsService>();
         builder.Services.AddScoped<OtsPoAllocationService>();
