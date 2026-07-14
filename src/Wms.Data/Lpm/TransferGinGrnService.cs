@@ -107,9 +107,9 @@ SELECT ROW_NUMBER() OVER (ORDER BY a.TrfNo) SrNo,
        PalletNo   = (SELECT TOP 1 PalletNo FROM BFLDATA.dbo.vGoodsIssue
                       WHERE TrfNo = a.TrfNo ORDER BY PalletNo DESC),
        b.EntryDate  BuildDate,
-       c.SrNo       GINNo,
+       CAST(c.SrNo AS nvarchar(50)) GINNo,
        c.EntryDate  GINDate,
-       d.EntryNo    GRNNo,
+       CAST(d.EntryNo AS nvarchar(50)) GRNNo,
        d.EntryDate  GRNDate,
        ISNULL(f.Remarks, '') Remarks
   FROM [{dataName}]..transferheader    a
