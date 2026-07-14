@@ -1,0 +1,58 @@
+name: Auto-merge sheeja72 PRs
+
+# Fires when the CI workflow finishes. If that CI run was for a PR whose
+# author is @sheeja72 and CI passed, this job squash-merges the PR, deletes
+# the branch, and then explicitly dispatches the Azure deploy workflow
+# (GITHUB_TOKEN pushes don't trigger downstream `push` workflows on their
+# own — so the deploy needs a manual `workflow_run` dispatch to fire).
+#
+# PRs opened by anyone else are ignored — a reviewer with Write access has
+# to approve + merge them manually on GitHub (see CONTRIBUTING.md).
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+jobs:
+  automerge:
+    if: >
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    steps:
+      - name: Find PR matching this CI run
+        id: findpr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          PR_JSON=$(gh pr list --repo "$REPO" --state open --json number,author,headRefOid --search "sha:$HEAD_SHA")
+          PR_NUM=$(echo "$PR_JSON" | jq -r '.[0].number // empty')
+          AUTHOR=$(echo "$PR_JSON" | jq -r '.[0].author.login // empty')
+          echo "Matched PR: #$PR_NUM (author=$AUTHOR)"
+          echo "pr_number=$PR_NUM" >> "$GITHUB_OUTPUT"
+          echo "author=$AUTHOR" >> "$GITHUB_OUTPUT"
+
+      - name: Squash-merge if PR author is sheeja72
+        if: steps.findpr.outputs.author == 'sheeja72' && steps.findpr.outputs.pr_number != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUM: ${{ steps.findpr.outputs.pr_number }}
+        run: |
+          echo "Auto-merging PR #$PR_NUM (author sheeja72)…"
+          gh pr merge --repo "$REPO" "$PR_NUM" --squash --delete-branch
+
+      - name: Dispatch Azure deploy (GITHUB_TOKEN pushes don't cascade)
+        if: steps.findpr.outputs.author == 'sheeja72' && steps.findpr.outputs.pr_number != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh workflow run --repo "$REPO" main_bfl-wms.yml --ref main
