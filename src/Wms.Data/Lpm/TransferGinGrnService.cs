@@ -178,7 +178,7 @@ SELECT ROW_NUMBER() OVER (ORDER BY a.TrfNo) SrNo,
    )");
 
         AppendCommonFilters(sb, p, f);
-        sb.Append("\n ORDER BY e.ShopName, a.TrfNo");
+        sb.Append("\n ORDER BY a.TrfDate, a.TrfNo");
         return sb.ToString();
     }
 
@@ -212,7 +212,7 @@ SELECT ROW_NUMBER() OVER (ORDER BY a.TrfNo) SrNo,
    )");
 
         AppendCommonFilters(sb, p, f);
-        sb.Append("\n ORDER BY e.ShopName, a.TrfNo");
+        sb.Append("\n ORDER BY a.TrfDate, a.TrfNo");
         return sb.ToString();
     }
 
