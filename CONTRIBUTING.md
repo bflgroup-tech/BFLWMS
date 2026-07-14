@@ -19,7 +19,7 @@ You need:
 
 ## Branching & pull-request flow
 
-`main` is protected. **No direct commits or force pushes** — everything goes through a PR.
+`main` is convention-protected. **No direct commits or force pushes** — everything goes through a PR.
 
 ```powershell
 git checkout main
@@ -34,9 +34,14 @@ git push -u origin feature/<short-kebab-name>
 Then on github.com:
 - Open a Pull Request → base `main`
 - Fill in the PR template
-- Tag a teammate for review
-- After @sheeja72 approves and CI is green → **@sheeja72 squash-merges** — no other dev merges to `main`.
-  - Note: this is enforced by team discipline, not by GitHub (private repo on Free plan has no server-side branch protection). Anyone with Write access could technically bypass it — don't. If you need a merge urgently and @sheeja72 is offline, message them; don't self-merge.
+
+### Merging
+
+- **PRs opened by @sheeja72 auto-merge as soon as CI is green.** The `automerge-sheeja` workflow squash-merges the PR, deletes the branch, and dispatches the Azure deploy. No review click needed.
+- **PRs opened by anyone else** need a review from another dev with Write access (@Shyjeshk, @rijubfl, or @sheeja72). Once approved and CI is green, the reviewer clicks **Squash and merge** on GitHub — no need to wait for @sheeja72 unless a sensitive path is touched.
+- **PRs touching `/db/`, `/src/Wms.Web/Auth/`, `Program.cs`, or `/.github/workflows/`** still require @sheeja72's review + merge regardless of author (see `.github/CODEOWNERS`).
+- **@jijeshBFL** has Read access — can open PRs, can't merge. Ask an admin to bump to Write role if that changes.
+- **Enforcement is team discipline** — private repo on GitHub Free has no server-side branch protection. Anyone with Write access could technically bypass it — don't.
 
 ### Branch naming
 - `feature/<thing>` — new functionality
