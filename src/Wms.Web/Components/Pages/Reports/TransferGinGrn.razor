@@ -163,7 +163,7 @@
         try
         {
             await CurrentUser.EnsureLoadedAsync();
-            _countries = Svc.GetCountries();
+            _countries = await Svc.GetCountriesAsync();
 
             if (!string.IsNullOrWhiteSpace(CurrentUser.Country) && _countries.Contains(CurrentUser.Country!))
                 _country = CurrentUser.Country!;
