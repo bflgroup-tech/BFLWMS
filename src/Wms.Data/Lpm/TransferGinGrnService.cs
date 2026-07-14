@@ -167,9 +167,9 @@ SELECT ROW_NUMBER() OVER (ORDER BY a.TrfNo) SrNo,
        CAST(d.EntryNo AS nvarchar(50)) GRNNo,
        d.EntryDate  GRNDate,
        ISNULL(f.Remarks, '') Remarks
-  FROM [{dataName}]..transferheader    a
-  LEFT JOIN [{dataName}]..GRNHeaderRF  d ON a.TrfNo = d.TrfNo
-  JOIN  BFLDATA.dbo.DataSettings       e ON a.CostCodeTo = e.CostCodeTo
+  FROM [{dataName}]..transferheader      a
+  LEFT JOIN [{dataName}]..GRNHeaderRF    d ON a.TrfNo = d.TrfNo
+  JOIN  BFLDATA.dbo.DataSettings         e ON a.CostCodeTo = e.CostCodeTo
   LEFT JOIN [{dataName}]..TransferReverse f ON a.TrfNo = f.TrfNo
  WHERE a.TrfNo NOT LIKE 'FN%'
    AND a.TrfDate >= @from AND a.TrfDate <= @to
