@@ -4,17 +4,19 @@
 # Format: <path-pattern> <github-username-or-team>
 # More specific patterns below override more general ones.
 #
-# Policy (Option B): no wildcard. Most PRs (UI, pages, services, CSS)
-# can be self-merged after CI passes. Only the paths listed here —
-# database schema, auth/startup, and CI/deploy workflows — require an
-# approving review from the other team member.
+# Policy: every PR requires @sheeja72 as the reviewer + merger. Only
+# @sheeja72 clicks Merge into `main`. GitHub Free on a private repo
+# can't server-enforce this — it's team discipline (see CONTRIBUTING.md).
+
+# All PRs — @sheeja72 is auto-requested as reviewer.
+*                                       @sheeja72
 
 # SQL schema needs an extra eye since it hits shared on-prem DBs
-/db/                                    @sheeja72 @rijubfl
+/db/                                    @sheeja72
 
 # Auth + Program.cs changes need careful review — can break login for everyone
-/src/Wms.Web/Auth/                    @sheeja72 @rijubfl
-/src/Wms.Web/Program.cs               @sheeja72 @rijubfl
+/src/Wms.Web/Auth/                    @sheeja72
+/src/Wms.Web/Program.cs               @sheeja72
 
 # CI / deploy workflows — controls what ships to production
-/.github/workflows/                     @sheeja72 @rijubfl
+/.github/workflows/                     @sheeja72

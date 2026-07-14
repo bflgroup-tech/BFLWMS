@@ -9,14 +9,23 @@ public static class MenuKeys
 {
     public const string LPM_MANUAL_BUILDING       = "LPM_MANUAL_BUILDING";
     public const string CONTAINER_ALLOCATION      = "CONTAINER_ALLOCATION";
+    public const string OTS_FOR_PO_ALLOCATION     = "OTS_FOR_PO_ALLOCATION";
+    public const string MANUAL_ALLOCATION_UPLOAD  = "MANUAL_ALLOCATION_UPLOAD";
+    public const string OPEN_CONTAINER            = "OPEN_CONTAINER";
+    public const string DATASYNC_CONTAINER_ALLOCATION = "DATASYNC_CONTAINER_ALLOCATION";
+    public const string DATASYNC_MASTER               = "DATASYNC_MASTER";
+    public const string DATASYNC_BOXES_TO_WMSPROD     = "DATASYNC_BOXES_TO_WMSPROD";
     public const string ITEM_ENCODING             = "ITEM_ENCODING";
     public const string LPM_PRODUCTION            = "LPM_PRODUCTION";
 
+    public const string RPT_COUNTING              = "RPT_COUNTING";
+    public const string RPT_CONT_COUNTING_PROD    = "RPT_CONT_COUNTING_PROD";
     public const string RPT_MISSING_EXCESS        = "RPT_MISSING_EXCESS";
     public const string RPT_NON_LPM_WH_STOCK      = "RPT_NON_LPM_WH_STOCK";
     public const string RPT_LPM_WH_STOCK          = "RPT_LPM_WH_STOCK";
     public const string RPT_PRODUCTION_SUMMARY    = "RPT_PRODUCTION_SUMMARY";
     public const string RPT_WAREHOUSE_BOXES       = "RPT_WAREHOUSE_BOXES";
+    public const string RPT_RACKS                 = "RPT_RACKS";
     public const string RPT_TRANSFER_GIN_GRN      = "RPT_TRANSFER_GIN_GRN";
 
     public const string ADMIN_USERS               = "ADMIN_USERS";
@@ -39,18 +48,28 @@ public static class MenuKeys
     /// </summary>
     public static readonly IReadOnlyList<MenuEntry> All = new[]
     {
-        new MenuEntry(LPM_MANUAL_BUILDING,   "Container Building",  "LPM Manual Building",       "building/manual",           new[] { Roles.Admin, Roles.WHAssociate, Roles.WHSupervisor, Roles.WHManager }),
-        new MenuEntry(CONTAINER_ALLOCATION,  "Container Building",  "Container Allocation",      "building/container-allocation", new[] { Roles.Admin, Roles.WHManager }),
+        new MenuEntry(LPM_MANUAL_BUILDING,   "Container Counting",  "LPM Manual Counting",       "counting/manual",           new[] { Roles.Admin, Roles.WHAssociate, Roles.WHSupervisor, Roles.WHManager }),
+        new MenuEntry(CONTAINER_ALLOCATION,  "Container Counting",  "Container Allocation",      "counting/container-allocation", new[] { Roles.Admin, Roles.WHManager }),
+        new MenuEntry(OTS_FOR_PO_ALLOCATION, "Container Counting",  "OTS for PO Allocation",     "counting/ots-po-allocation", new[] { Roles.Admin, Roles.WHManager }),
+        new MenuEntry(MANUAL_ALLOCATION_UPLOAD, "Container Counting","Manual Allocation Upload",  "counting/manual-allocation-upload", new[] { Roles.Admin, Roles.WHManager }),
+        new MenuEntry(OPEN_CONTAINER,        "Container Counting",  "Open Container",            "counting/open-container",   new[] { Roles.Admin, Roles.WHManager, Roles.WHSupervisor }),
+
+        new MenuEntry(DATASYNC_CONTAINER_ALLOCATION, "Data Sync",   "Container Allocation Data Sync", "datasync/container-allocation", new[] { Roles.Admin, Roles.WHManager }),
+        new MenuEntry(DATASYNC_MASTER,               "Data Sync",   "Master Data Sync",               "datasync/master",               new[] { Roles.Admin, Roles.WHManager }),
+        new MenuEntry(DATASYNC_BOXES_TO_WMSPROD,     "Data Sync",   "Boxes Data Sync to WMSPROD",     "datasync/boxes-to-wmsprod",     new[] { Roles.Admin, Roles.WHManager }),
 
         new MenuEntry(ITEM_ENCODING,         "Item Encoding",       "Item Encoding",             "encoding",                  new[] { Roles.Admin, Roles.WHAssociate, Roles.WHSupervisor, Roles.WHManager }),
 
         new MenuEntry(LPM_PRODUCTION,        "Production to Stores","LPM Production",            "production/lpm",            new[] { Roles.Admin, Roles.WHAssociate, Roles.WHSupervisor, Roles.WHManager }),
 
+        new MenuEntry(RPT_COUNTING,          "Reports",             "Counting Report",           "reports/counting",          new[] { Roles.Admin, Roles.Reports, Roles.WHManager, Roles.WHSupervisor }),
+        new MenuEntry(RPT_CONT_COUNTING_PROD,"Reports",             "Cont Counting Production Report", "reports/cont-counting-production", new[] { Roles.Admin, Roles.Reports, Roles.WHManager, Roles.WHSupervisor }),
         new MenuEntry(RPT_MISSING_EXCESS,    "Reports",             "Missing / Excess Items from Production", "reports/missing-excess",   new[] { Roles.Admin, Roles.Reports }),
         new MenuEntry(RPT_NON_LPM_WH_STOCK,  "Reports",             "Non-LPM WH Stock Report",   "reports/non-lpm-wh-stock",  new[] { Roles.Admin, Roles.Reports }),
         new MenuEntry(RPT_LPM_WH_STOCK,      "Reports",             "LPM WH Stock Report",       "reports/lpm-wh-stock",      new[] { Roles.Admin, Roles.Reports }),
         new MenuEntry(RPT_PRODUCTION_SUMMARY,"Reports",             "Production Summary Report", "reports/production-summary",new[] { Roles.Admin, Roles.Reports }),
         new MenuEntry(RPT_WAREHOUSE_BOXES,   "Reports",             "Warehouse Boxes",           "reports/warehouse-boxes",   new[] { Roles.Admin, Roles.Reports }),
+        new MenuEntry(RPT_RACKS,             "Reports",             "WH-Racks",                  "reports/racks",             new[] { Roles.Admin, Roles.Reports }),
         new MenuEntry(RPT_TRANSFER_GIN_GRN,  "Reports",             "Transfer/GIN/GRN History",  "reports/transfer-gin-grn",  new[] { Roles.Admin, Roles.Reports }),
 
         new MenuEntry(ADMIN_USERS,           "Admin",               "Users & Roles",             "admin/users",               new[] { Roles.Admin }),

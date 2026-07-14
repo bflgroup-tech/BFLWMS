@@ -57,11 +57,32 @@ public class Program
         builder.Services.AddScoped<IActionLogger, ActionLogger>();
         builder.Services.AddScoped<BuildingService>();
         builder.Services.AddScoped<ContainerAllocationService>();
+        builder.Services.AddScoped<ContainerAllocationDataSyncService>();
+        builder.Services.AddScoped<OpenContainerService>();
+        builder.Services.AddScoped<ManualAllocationService>();
+        builder.Services.AddScoped<Wms.Data.Encoding.ItemEncodingService>();
+
+        // WMS Itemmaster external API — Building's Tier-3 fallback goes through
+        // this before falling through to Generated Barcode / usa.upcbarcodes.
+        builder.Services.Configure<Wms.Data.ItemMaster.ItemMasterApiOptions>(
+            builder.Configuration.GetSection(Wms.Data.ItemMaster.ItemMasterApiOptions.SectionName));
+        // Short HttpClient timeout so an unreachable API host fails fast and
+        // the scan flow falls through to Generated Barcode / usa.upcbarcodes
+        // instead of hanging on the default 100-second timeout.
+        builder.Services.AddHttpClient<Wms.Data.ItemMaster.ItemMasterApiClient>(c =>
+        {
+            c.Timeout = TimeSpan.FromSeconds(5);
+        });
+
         builder.Services.AddScoped<ReportsService>();
         builder.Services.AddScoped<WarehouseBoxesService>();
         builder.Services.AddScoped<TransferGinGrnService>();
         builder.Services.AddScoped<MissingExcessSnapshotService>();
+        builder.Services.AddScoped<CountingReportsService>();
+        builder.Services.AddScoped<OtsPoAllocationService>();
         builder.Services.AddHostedService<Wms.Web.Hosting.NightlyBatchService>();
+        builder.Services.AddHostedService<Wms.Web.Hosting.ToteMasterScheduledService>();
+        builder.Services.AddHostedService<Wms.Web.Hosting.BoxesToWmsProdScheduledService>();
 
         // WMS DbContext — Azure SQL via AAD (Managed Identity in App Service,
         // AAD Default locally via `az login`). NO password in code.
@@ -78,16 +99,16 @@ public class Program
             .AddAuthentication(OpenIdConnectDefaults.AuthenticationScheme)
             .AddMicrosoftIdentityWebApp(builder.Configuration.GetSection("AzureAd"));
 
-        // Auth cookie expires 1 hour after the last HTTP request; SlidingExpiration
-        // renews the cookie on activity so an active user isn't kicked off.
-        // Pairs with the in-browser idle timer in App.razor to cover the closed-tab
-        // / circuit-disconnected case.
+        // Auth cookie has a hard 24-hour lifetime from sign-in. SlidingExpiration is OFF
+        // so the cookie does NOT roll on activity — users are signed in once per day
+        // (morning login lasts the whole working day, then re-auth next morning).
+        // Pairs with the in-browser idle timer in App.razor.
         builder.Services.Configure<Microsoft.AspNetCore.Authentication.Cookies.CookieAuthenticationOptions>(
             Microsoft.AspNetCore.Authentication.Cookies.CookieAuthenticationDefaults.AuthenticationScheme,
             o =>
             {
-                o.ExpireTimeSpan    = TimeSpan.FromHours(1);
-                o.SlidingExpiration = true;
+                o.ExpireTimeSpan    = TimeSpan.FromHours(24);
+                o.SlidingExpiration = false;
             });
 
         builder.Services.AddControllersWithViews();

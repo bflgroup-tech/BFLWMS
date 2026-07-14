@@ -44,7 +44,44 @@ public record AllocationRow(
     int     DivCode,
     int     RoundRobinExtra,
     string? LPM,
-    DateTime? LPMDt);
+    DateTime? LPMDt,
+    double? OTS = null,
+    // P3 enrichment + audit fields.
+    string?  Season           = null,    // usa.USAOrgFile.season
+    string?  Style            = null,    // usa.USAOrgFile.Style
+    string?  Size             = null,    // usa.USAOrgFile.Size
+    string?  Department       = null,    // datareporting.vupc_subclass.Department
+    decimal? SalesPrice       = null,    // hodata.salesprice or <DataName>.RFSalesprice (per store country)
+    string?  PalletType       = null,    // WMS_Building_PalletTypes.PalletTypeS (or PalletTypeW when season='W')
+    int      PrevAllocatedQty = 0,       // (StoreID, DivCode) seed at allocation time
+    int?     PriorityRank     = null,    // LPM_EOM_Output.PriorityRank per (StoreID, DivCode) — lower = higher priority
+    int?     MnwToday         = null,    // OTSOutput.Mnwtoday latest per (StoreID, DivCode) by OTSDate DESC
+    int?     Phase2Qty        = null,    // pcs of AllocQty coming from Phase 2 (RR-Rest + Overflow of FillSKUMax+RR)
+    // OTS-run-based FillSKUMax+RR pass tracking (new algorithm — see
+    // ContainerAllocationService FillSKUMaxRoundRobin branch).
+    int?     Pass1Qty         = null,    // OTS% >= AvgOTS% pass
+    int?     Pass2Qty         = null,    // 0 < OTS% < AvgOTS% pass
+    int?     Pass3Qty         = null,    // OTS% <= 0 round-robin pass
+    int?     Pass4Qty         = null,    // uncapped RR fallback across all stores
+    decimal? AvgOtsPercent    = null,    // per-Division AVG(OtsPercentToday WHERE > 0) at item time
+    int?     OtsQtyToday      = null,    // OtsQtyToday from WmsOtsPoAllocationRun for this (StoreID, DivCode) — initial value, not decremented
+    int?     TgtEOM           = null,    // TgtEOM from WmsOtsPoAllocationRun for this (StoreID, DivCode) — FillSKUMax+RR only
+    int?     RawSkuMax        = null);   // Raw SKUMax from LPM_SKUMaxRule band lookup (before subtracting SOHToday) — FillSKUMax+RR only. 0 = no band matched.
+
+/// <summary>One row in the blocked-items list: an (item, store) pair that was
+/// excluded from allocation by LPM_StoreDeptAccess or LPM_StoreDivAccess.</summary>
+public record BlockedItemRow(
+    string  Contno,
+    string  ItemCode,
+    string? ItemName,
+    string? Division,
+    string? Department,
+    string  StoreID,
+    string? StoreName,
+    string  Country,
+    int     PoQty,
+    int     DivCode,
+    string  BlockReason);   // 'DeptAccess' / 'DivAccess' / 'DeptAccess+DivAccess'
 
 /// <summary>State info shown above the buttons. Now tracks per-RunOption final
 /// row counts so the page knows whether each algorithm has been run for this container.</summary>
@@ -56,7 +93,31 @@ public record AllocationStatus(
     DateTime? FinalAt,
     string? DraftRunOption,
     int  FillSkuMaxRows,
-    int  RoundRobinRows);
+    int  RoundRobinRows,
+    int  FillSKUMaxRoundRobinRows = 0,
+    int  AzureAllocRows           = 0);  // dbo.WMS_ContAllocationData row count on Azure — > 0 means the container has been synced and Delete should be blocked at UI level
 
 /// <summary>How to distribute qty across eligible stores.</summary>
-public enum RunOption { FillSKUMax = 0, RoundRobin = 1 }
+public enum RunOption { FillSKUMax = 0, RoundRobin = 1, FillSKUMaxRoundRobin = 2 }
+
+/// <summary>What ProcessAllocationAsync returns — allocations + the
+/// (item, store) pairs blocked by LPM_StoreDeptAccess / LPM_StoreDivAccess.</summary>
+public record AllocationProcessResult(
+    List<AllocationRow>    Allocations,
+    List<BlockedItemRow>   Blocked);
+
+/// <summary>Header row read back for the "Processed Contnos" dropdown banner.
+/// Mirrors WMS_Cont_Allocation_Header columns.</summary>
+public record BatchInfo(
+    int       BatchNo,
+    string    ContNo,
+    string?   Warehouse,
+    string    GenCountry,
+    string    Country,            // comma-separated allocation destinations
+    string    RunOption,
+    int?      RowCount1,
+    int?      TotalQty,
+    DateTime  ProcessedTS,
+    string?   ProcessedBy,
+    DateTime? ApprovedDt,
+    string?   ApprovedBy);

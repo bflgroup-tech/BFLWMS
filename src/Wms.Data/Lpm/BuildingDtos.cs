@@ -44,20 +44,56 @@ public enum ItemAvailability
 
 public record AllocationResult(
     bool Found,
-    string Result,        // SHOP / TERR / etc
+    string Result,           // SHOP / TERR / etc
     DateTime? LpmDt,
     string? PoNumber,
     string? PalletType,
     AllocationTier Tier,
-    long? PcrId,           // identity of lpm.dbo.PhotoCheckingResultLPM row updated/inserted
-    char PcrAction = 'I'); // 'U' = QtyIssue+=1 on existing row; 'I' = inserted new row (tier 2/3/4)
+    int? AllocationIdNo,     // dbo.WMS_ContAllocationData.IdNo (the row updated or inserted)
+    char Action = 'I',       // 'U' = QtyIssue+=1 on existing row; 'I' = inserted new row
+    string? StoreId = null,
+    string? StoreName = null,// PBFullname from dbo.WMS_DataSettings, looked up by StoreId
+    string? Division = null,
+    bool Manual = false,
+    string? Error = null,
+    string? PalletTypeName = null,   // TypeName from dbo.WmsPalletType, looked up by PalletType code
+    string? ItemSource = null,       // "Order Sheet" | "WMS Itemmaster" | "Generated Barcode" | "USA Item Master"
+    string? Country = null);         // Country of the resolved allocation row (or current user's country for Tier 3)
+
+/// <summary>Outcome of the LPM Manual Building "Close Logistics" button —
+/// flips WmsKNBBoxes.closed='Y' and writes a row to WmsLogisticsBoxClosure_Log.
+/// PcsScanned is the count of non-reversed scans WMSContBuildScanData rows
+/// landed in any WmsOpenBox whose LogisticsBoxNo matches.</summary>
+public record CloseLogisticsResult(bool Ok, string? Error, int PcsScanned);
+
+/// <summary>One row in the LPM Manual Building "Exception" dropdown —
+/// PalletType master rows where BuildingException = 'Y'.</summary>
+public record ExceptionPalletTypeRow(string PalletType, string TypeName);
+
+/// <summary>One row in the LPM Manual Building "My Activity Today" grid —
+/// today's scans by the current user, newest first.</summary>
+public record TodayScanRow(
+    long      ScanId,
+    DateTime  ScannedTS,
+    string    ContNo,
+    string    Itemcode,
+    string?   Result,
+    string?   StoreID,
+    string?   StoreName,    // PBFullname
+    string?   Division,
+    string    BoxNo,
+    string?   ToteID,
+    byte      Tier,
+    string?   Manual,
+    string?   PalletType,
+    string?   PalletTypeName,
+    string?   LogisticsBoxNo);  // WmsOpenBox.LogisticsBoxNo (SIM-side label, e.g. AELOC6928-406330/001/010)
 
 public enum AllocationTier
 {
-    Tier1_ExactPoQty0 = 1,
-    Tier2_ExactNoQty  = 2,
-    Tier3_StyleMatch  = 3,
-    Tier4_NewItem     = 4,
+    Tier1_HasCapacity   = 1,   // existing row, QtyIssue < Qty, incremented
+    Tier2_OtsOverflow   = 2,   // item in container but all rows full; OTS pick + new row
+    Tier3_ManualNewItem = 3,   // item NOT in container; usa.upcbarcodes lookup + OTS pick
 }
 
 public record CheckInResult(bool Ok, string? Error, string? BoxNumber);
@@ -68,6 +104,7 @@ public record OpenBoxRow(
     string BoxNumber,
     string? Division,
     string? PalletType,
+    string? PalletTypeName,
     string? Season,
     DateTime? LpmDt,
     string? ToteId,

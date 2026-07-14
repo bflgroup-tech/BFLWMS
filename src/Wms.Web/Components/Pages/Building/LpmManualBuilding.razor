@@ -1,4 +1,4 @@
-@page "/building/manual"
+@page "/counting/manual"
 @rendermode RenderMode.InteractiveServer
 @attribute [Authorize(Policy = Wms.Core.MenuKeys.LPM_MANUAL_BUILDING)]
 @using Wms.Core
@@ -10,10 +10,10 @@
 @inject ICurrentUser Me
 @inject IJSRuntime JS
 
-<PageTitle>WMS — LPM Manual Building</PageTitle>
+<PageTitle>WMS — LPM Manual Counting</PageTitle>
 
 <div class="aiwms-page-header">
-    <h2>LPM Manual Building</h2>
+    <h2>LPM Manual Counting</h2>
     <p>Press <kbd>Enter</kbd> in each field — focus advances automatically. New (PalletType/Div/Season/LPMDt) combos require a Tote scan before item details show.</p>
 </div>
 
@@ -86,21 +86,46 @@ else
                        placeholder="AEINT6078-406330/001/010" autocomplete="off"
                        disabled="@(!_contOk || _busy)" />
             </div>
-            <div class="aiwms-input-row">
-                <label class="aiwms-input-lbl">PO No</label>
-                <input class="aiwms-input" value="@(_poNumber ?? (_boxOk ? "NA" : ""))" disabled />
+            <div class="aiwms-input-row" style="display:grid; grid-template-columns: minmax(0,150px) minmax(0,1fr); gap:12px">
+                <div>
+                    <label class="aiwms-input-lbl">PO No</label>
+                    <input class="aiwms-input" value="@(_poNumber ?? (_boxOk ? "NA" : ""))" disabled />
+                </div>
+                <div>
+                    <label class="aiwms-input-lbl">Exception</label>
+                    <select class="aiwms-input" @bind="_exceptionSelected"
+                            disabled="@(!_boxOk || _busy || _exceptionOptions.Count == 0)"
+                            title="Applies to the next scan only, then auto-clears">
+                        <option value="">— none —</option>
+                        @foreach (var e in _exceptionOptions)
+                        {
+                            <option value="@e.PalletType">@e.PalletType — @e.TypeName</option>
+                        }
+                    </select>
+                </div>
             </div>
             <div class="aiwms-input-row">
                 <label class="aiwms-input-lbl">Itemcode (UPC) <span class="req">*</span></label>
-                <input @ref="_itemRef" @bind="_itemInput" @bind:event="oninput" @onkeydown="OnItemKey"
+                <input @ref="_itemRef"
+                       @bind="_itemInput" @bind:event="oninput"
+                       @onkeydown="OnItemKey"
                        class="aiwms-input"
-                       placeholder="Scan item code" autocomplete="off"
+                       placeholder="Scan or type item code" autocomplete="off"
                        disabled="@(!_boxOk || _busy)" />
             </div>
         </div>
 
-        <div class="aiwms-input-actions">
+        <div class="aiwms-input-actions" style="display:flex; gap:10px; align-items:center; flex-wrap:wrap">
             <button class="aiwms-btn aiwms-btn-secondary" @onclick="ResetAll">Reset all</button>
+            <div style="font-size:13px; color:var(--text-secondary)">
+                Scanned Box Qty: <b style="font-size:14px; color:var(--text-primary)">@_stagedItems.Sum(x => x.Qty)</b>
+            </div>
+            <div style="flex:1"></div>
+            <button class="aiwms-btn aiwms-btn-danger" @onclick="CloseLogisticsAsync"
+                    disabled="@(!_boxOk || _busy)"
+                    title="Mark this logistics box closed in WmsKNBBoxes">
+                Close Logistics
+            </button>
         </div>
     </div>
 
@@ -114,38 +139,80 @@ else
         else
         {
             var it = _lastItem;
-            <div class="aiwms-upc-display">@it.ItemCode</div>
-            <div class="aiwms-item-grid">
-                <div class="cell"><div class="lbl">Description</div><div class="val">@it.ItemName</div></div>
-                <div class="cell"><div class="lbl">Group</div><div class="val">@it.GroupCode @(it.GroupName is null ? "" : "— " + it.GroupName)</div></div>
-                <div class="cell"><div class="lbl">Style</div><div class="val">@it.Style</div></div>
-                <div class="cell"><div class="lbl">Size</div><div class="val">@it.Size</div></div>
-                <div class="cell"><div class="lbl">Color</div><div class="val">@it.Color</div></div>
-                <div class="cell"><div class="lbl">Brand</div><div class="val">@it.Brand</div></div>
-                <div class="cell"><div class="lbl">Gender</div><div class="val">@it.Gender</div></div>
-                <div class="cell"><div class="lbl">Season</div><div class="val">@it.Season</div></div>
-                <div class="cell"><div class="lbl">HS Code</div><div class="val">@it.HsCode</div></div>
-                <div class="cell"><div class="lbl">LPM</div><div class="val">@it.Lpm</div></div>
-                <div class="cell"><div class="lbl">Division</div><div class="val">@it.Division</div></div>
-                <div class="cell"><div class="lbl">Department</div><div class="val">@it.Department</div></div>
-                <div class="cell"><div class="lbl">Class</div><div class="val">@it.Class</div></div>
-                <div class="cell"><div class="lbl">Family</div><div class="val">@it.Family</div></div>
-                <div class="cell"><div class="lbl">Subclass</div><div class="val">@it.Subclass</div></div>
+            <div class="aiwms-upc-display" style="font-size:14px; padding:4px 8px">
+                @it.ItemCode
+                @if (_lastAlloc?.ItemSource is { Length: > 0 } src)
+                {
+                    <span class="aiwms-pill" style="margin-left:8px; font-size:10px; background:#eef; color:#334; border:1px solid #ccd"
+                          title="Source: @src">SRC: @src</span>
+                }
+                @if (_lastAlloc?.Tier == Wms.Data.Lpm.AllocationTier.Tier2_OtsOverflow)
+                {
+                    <span class="aiwms-pill" style="margin-left:6px; font-size:10px; background:#fee; color:#933; border:1px solid #f99"
+                          title="Item is in the container's Order Sheet but all planned qty has been issued — surplus piece.">EXCESS QTY</span>
+                }
+                else if (_lastAlloc?.Tier == Wms.Data.Lpm.AllocationTier.Tier3_ManualNewItem)
+                {
+                    <span class="aiwms-pill" style="margin-left:6px; font-size:10px; background:#fee; color:#933; border:1px solid #f99"
+                          title="Item is not on the container's Order Sheet at all — sourced from @(_lastAlloc?.ItemSource ?? "external").">EXCESS ITEM</span>
+                }
+            </div>
+            <div class="aiwms-item-grid" style="grid-template-columns: repeat(3, 1fr); gap:4px 12px; font-size:11px">
+                <div class="cell"><div class="lbl" style="font-size:9px">Description</div><div class="val" style="font-size:11px; line-height:1.2">@it.ItemName</div></div>
+                <div class="cell"><div class="lbl" style="font-size:9px">Style</div><div class="val" style="font-size:11px; line-height:1.2">@it.Style</div></div>
+                <div class="cell"><div class="lbl" style="font-size:9px">Size</div><div class="val" style="font-size:11px; line-height:1.2">@it.Size</div></div>
+                <div class="cell"><div class="lbl" style="font-size:9px">Color</div><div class="val" style="font-size:11px; line-height:1.2">@it.Color</div></div>
+                <div class="cell"><div class="lbl" style="font-size:9px">Brand</div><div class="val" style="font-size:11px; line-height:1.2">@it.Brand</div></div>
+                <div class="cell"><div class="lbl" style="font-size:9px">Gender</div><div class="val" style="font-size:11px; line-height:1.2">@it.Gender</div></div>
+                <div class="cell"><div class="lbl" style="font-size:9px">Season</div><div class="val" style="font-size:11px; line-height:1.2">@it.Season</div></div>
+                <div class="cell"><div class="lbl" style="font-size:9px">HS Code</div><div class="val" style="font-size:11px; line-height:1.2">@it.HsCode</div></div>
+                <div class="cell"><div class="lbl" style="font-size:9px">Division</div><div class="val" style="font-size:11px; line-height:1.2">@it.Division</div></div>
+                <div class="cell"><div class="lbl" style="font-size:9px">Department</div><div class="val" style="font-size:11px; line-height:1.2">@it.Department</div></div>
+                <div class="cell"><div class="lbl" style="font-size:9px">Class</div><div class="val" style="font-size:11px; line-height:1.2">@it.Class</div></div>
+                <div class="cell"><div class="lbl" style="font-size:9px">Family / Subclass</div><div class="val" style="font-size:11px; line-height:1.2">@it.Family @(string.IsNullOrEmpty(it.Subclass) ? "" : " / " + it.Subclass)</div></div>
             </div>
         }
 
         @if (_lastAlloc is { } al)
         {
-            <div class="aiwms-result-row">
-                <div class="aiwms-result-tag">RESULT</div>
-                <div class="aiwms-result-value">
-                    @al.Result @(_lastItem?.Season is { Length: > 0 } s ? " - " + s : "")
-                    <span class="aiwms-pill tier@((int)al.Tier)" style="margin-left:10px;font-size:11px">Tier @((int)al.Tier)</span>
+            <div class="aiwms-result-row" style="background:@(_lastAppliedException is null ? "#22c55e" : "#fde68a"); color:@(_lastAppliedException is null ? "#ffffff" : "inherit"); padding:10px 12px; border-radius:var(--r-sm); border:1px solid @(_lastAppliedException is null ? "#16a34a" : "#f59e0b")">
+                <div class="aiwms-result-tag" style="@(_lastAppliedException is null ? "background:#ffffff; color:#166534;" : "")">@(_lastAppliedException is null ? "RESULT" : "EXCEPTION")</div>
+                <div class="aiwms-result-value" style="font-size:22px; font-weight:800; line-height:1.2; color:#ffffff">
+                    @if (_lastAppliedException is (var exPt, var exName))
+                    {
+                        <b>@exPt@(string.IsNullOrEmpty(exName) ? "" : " — " + exName)</b>
+                        <span class="aiwms-pill tier@((int)al.Tier)" style="margin-left:10px;font-size:11px;font-weight:600"
+                              title="Underlying Tier — allocation row @al.AllocationIdNo was tagged with the exception">Tier @((int)al.Tier)</span>
+                    }
+                    else
+                    {
+                        @(al.PalletType ?? al.Result)@(string.IsNullOrEmpty(al.PalletTypeName) ? "" : " — " + al.PalletTypeName)
+                        @if (!string.IsNullOrEmpty(al.Country))
+                        {
+                            <span class="aiwms-pill" style="margin-left:10px;font-size:11px;font-weight:700;background:#ffffff;color:#166534;border:1px solid #16a34a"
+                                  title="Country of the resolved allocation row">@al.Country</span>
+                        }
+                        <span class="aiwms-pill tier@((int)al.Tier)" style="margin-left:10px;font-size:11px;font-weight:600"
+                              title="@TierTitle(al.Tier)">Tier @((int)al.Tier) — @TierShort(al.Tier)</span>
+                        @if (al.Manual)
+                        {
+                            <span class="aiwms-pill tier4" style="margin-left:6px;font-size:11px;background:#fff3cd;color:#664d03;border:1px solid #ffe69c"
+                                  title="Item not in container — added from usa.upcbarcodes at scan time">MANUAL</span>
+                        }
+                    }
                 </div>
             </div>
             <div class="aiwms-result-meta">
-                <div><span class="lbl">PalletType</span> <b>@al.PalletType</b></div>
-                <div><span class="lbl">LPMDt</span> <b>@al.LpmDt?.ToString("yyyy-MM-dd")</b></div>
+                @if (_lastAppliedException is null)
+                {
+                    <div style="grid-column: span 2"><span class="lbl">Store</span> <b>@(al.StoreId ?? "—")</b>@(string.IsNullOrEmpty(al.StoreName) ? "" : $" — {al.StoreName}")</div>
+                    <div><span class="lbl">Division</span> <b>@(al.Division ?? "—")</b></div>
+                }
+                else
+                {
+                    <div style="grid-column: span 3; color:#92400e; font-weight:600">Item held for exception — not routed to a store.</div>
+                }
+                <div><span class="lbl">LPMDt</span> <b>@(al.LpmDt?.ToString("dd/MM/yyyy") ?? "—")</b></div>
                 <div><span class="lbl">PO</span> <b>@(al.PoNumber ?? "NA")</b></div>
                 @if (_currentBoxNo is not null) { <div><span class="lbl">Box</span> <b>@_currentBoxNo</b></div> }
             </div>
@@ -169,7 +236,7 @@ else
                         var isActive = b.BoxNumber == _currentBoxNo;
                         <tr class="@(isActive ? "is-active" : "")" @onclick="() => SelectBox(b.BoxNumber)" style="cursor:pointer">
                             <td><b>@b.BoxNumber</b></td>
-                            <td>@b.PalletType</td>
+                            <td title="@b.PalletTypeName">@b.PalletType@(string.IsNullOrEmpty(b.PalletTypeName) ? "" : " — " + b.PalletTypeName)</td>
                             <td>@b.Division</td>
                             <td>@b.Season</td>
                             <td>@b.LpmDt?.ToString("yyyy-MM-dd")</td>
@@ -193,7 +260,8 @@ else
                                         <button class="aiwms-btn @(string.IsNullOrEmpty(b.ToteId) ? "aiwms-btn-primary" : "aiwms-btn-secondary")"
                                                 style="padding:3px 10px;font-size:11px"
                                                 @onclick='() => StartRowEdit(b.BoxNumber, b.ToteId, "checkin")'
-                                                title="@(string.IsNullOrEmpty(b.ToteId) ? "Scan tote to attach" : "Re-attach tote")">Check-In</button>
+                                                disabled="@(!string.IsNullOrEmpty(b.ToteId))"
+                                                title="@(string.IsNullOrEmpty(b.ToteId) ? "Scan tote to attach" : "Tote already attached — locked. Clear the box to re-tote.")">Check-In</button>
                                         <span style="width:1px;height:20px;background:var(--border);margin:0 4px"></span>
                                         <button class="aiwms-btn aiwms-btn-success"
                                                 style="padding:3px 10px;font-size:11px"
@@ -249,6 +317,66 @@ else
 
 </div>
 
+<div class="aiwms-section" style="margin-top:14px">
+    <div class="aiwms-card-header" style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px">
+        <span>
+            My Scans
+            @if (_contOk) { <text>— container <b>@_contno</b> — @_todayScans.Count scan(s)</text> }
+            else          { <text>— today's scans across all containers — @_todayScans.Count scan(s)</text> }
+        </span>
+        <button class="aiwms-btn aiwms-btn-secondary" style="font-size:11px; padding:4px 10px"
+                @onclick="RefreshTodayScansAsync" disabled="@_busy">Refresh</button>
+    </div>
+    @if (_todayScans.Count == 0)
+    {
+        <div style="padding:14px; font-style:italic; color:var(--text-secondary)">
+            @(_contOk ? $"No scans by you into container {_contno} yet." : "No scans by you today yet.")
+        </div>
+    }
+    else
+    {
+        <div style="max-height:340px; overflow:auto">
+            <table class="aiwms-table aiwms-table-dense" style="font-size:11px">
+                <thead style="position:sticky; top:0; background:white; z-index:1">
+                    <tr>
+                        <th style="cursor:pointer" @onclick='() => SortScans("TrnDate")'>TrnDate @ScanSortArrow("TrnDate")</th>
+                        <th style="cursor:pointer" @onclick='() => SortScans("Time")'>Time @ScanSortArrow("Time")</th>
+                        <th style="cursor:pointer" @onclick='() => SortScans("ContNo")'>ContNo @ScanSortArrow("ContNo")</th>
+                        <th style="cursor:pointer" @onclick='() => SortScans("ItemCode")'>ItemCode @ScanSortArrow("ItemCode")</th>
+                        <th style="cursor:pointer" @onclick='() => SortScans("FinalResult")'>Final Result @ScanSortArrow("FinalResult")</th>
+                        <th style="cursor:pointer" @onclick='() => SortScans("Tier")'>Tier @ScanSortArrow("Tier")</th>
+                        <th style="cursor:pointer" @onclick='() => SortScans("Store")'>Store @ScanSortArrow("Store")</th>
+                        <th style="cursor:pointer" @onclick='() => SortScans("StoreName")'>Store Name @ScanSortArrow("StoreName")</th>
+                        <th style="cursor:pointer" @onclick='() => SortScans("Division")'>Division @ScanSortArrow("Division")</th>
+                        <th style="cursor:pointer" @onclick='() => SortScans("Box")'>Box @ScanSortArrow("Box")</th>
+                        <th style="cursor:pointer" @onclick='() => SortScans("LogisticsBox")'>Logistics Box @ScanSortArrow("LogisticsBox")</th>
+                        <th style="cursor:pointer" @onclick='() => SortScans("Tote")'>Tote @ScanSortArrow("Tote")</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var r in SortedScans)
+                    {
+                        <tr>
+                            <td>@r.ScannedTS.ToString("dd/MM/yyyy")</td>
+                            <td>@r.ScannedTS.ToString("HH:mm:ss")</td>
+                            <td style="font-family:var(--font-mono)">@r.ContNo</td>
+                            <td style="font-family:var(--font-mono)"><b>@r.Itemcode</b></td>
+                            <td title="@r.PalletTypeName">@r.PalletType@(string.IsNullOrEmpty(r.PalletTypeName) ? "" : " — " + r.PalletTypeName)@(r.Manual == "Y" ? " ★" : "")</td>
+                            <td><span class="aiwms-pill tier@(r.Tier)" style="font-size:10px; padding:1px 6px">@r.Tier</span></td>
+                            <td style="font-family:var(--font-mono)">@r.StoreID</td>
+                            <td>@r.StoreName</td>
+                            <td>@r.Division</td>
+                            <td style="font-family:var(--font-mono)">@r.BoxNo</td>
+                            <td style="font-family:var(--font-mono)">@r.LogisticsBoxNo</td>
+                            <td style="font-family:var(--font-mono)">@r.ToteID</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+</div>
+
 }
 
 @code {
@@ -262,7 +390,6 @@ else
 
     private string _contInput = "", _contno = "";
     private bool _contOk;
-    private PhotoQtyMatchResult? _photoMatch;
 
     private string _boxInput = "", _boxLabel = "";
     private bool _boxOk;
@@ -279,13 +406,78 @@ else
     private RowEdit? _rowEdit;
 
     private List<OpenBoxRow> _openBoxes = new();
+    private List<TodayScanRow> _todayScans = new();
+    // My Scans grid — default: newest first (by ScannedTS DESC).
+    private string _scanSortKey = "TrnDate";
+    private bool   _scanSortAsc = false;
 
-    protected override async Task OnInitializedAsync() => await Me.EnsureLoadedAsync();
+    private void SortScans(string key)
+    {
+        if (_scanSortKey == key) _scanSortAsc = !_scanSortAsc;
+        else { _scanSortKey = key; _scanSortAsc = key == "ItemCode" || key == "ContNo" || key == "Store" || key == "StoreName" || key == "Division" || key == "Box" || key == "LogisticsBox" || key == "Tote"; }
+    }
+    private string ScanSortArrow(string key) => _scanSortKey != key ? "" : (_scanSortAsc ? "▲" : "▼");
+
+    private IEnumerable<TodayScanRow> SortedScans
+    {
+        get
+        {
+            Func<TodayScanRow, object?> k = _scanSortKey switch
+            {
+                "TrnDate"      => r => r.ScannedTS,
+                "Time"         => r => r.ScannedTS,
+                "ContNo"       => r => r.ContNo,
+                "ItemCode"     => r => r.Itemcode,
+                "FinalResult"  => r => r.PalletType,
+                "Tier"         => r => r.Tier,
+                "Store"        => r => r.StoreID,
+                "StoreName"    => r => r.StoreName,
+                "Division"     => r => r.Division,
+                "Box"          => r => r.BoxNo,
+                "LogisticsBox" => r => r.LogisticsBoxNo,
+                "Tote"         => r => r.ToteID,
+                _              => r => r.ScannedTS,
+            };
+            return _scanSortAsc ? _todayScans.OrderBy(k) : _todayScans.OrderByDescending(k);
+        }
+    }
+
+    // Exception dropdown — one-shot: applies to next scan, then auto-clears.
+    private List<ExceptionPalletTypeRow> _exceptionOptions = new();
+    private string _exceptionSelected = "";
+    private (string PalletType, string? TypeName)? _lastAppliedException;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await Me.EnsureLoadedAsync();
+        try { _exceptionOptions = await Build.GetExceptionPalletTypesAsync(); }
+        catch { _exceptionOptions = new(); }
+        // Load today's scans across all containers upfront so the operator sees
+        // recent activity immediately. Once ValidateContainer fires, the grid
+        // narrows to just the entered ContNo.
+        await RefreshTodayScansAsync();
+    }
+
+    private async Task RefreshTodayScansAsync()
+    {
+        try { _todayScans = await Build.GetTodayScansAsync(contno: _contOk ? _contno : null); }
+        catch { /* keep prior list; surface via _globalErr if needed */ }
+    }
+
+    // Focus survives every re-render caused by ScanItem (RefreshOpenBoxes /
+    // RefreshTodayScansAsync) by scheduling focus in OnAfterRenderAsync instead
+    // of racing against the render pipeline from inside ScanItem itself.
+    private bool _needFocusItem;
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         if (firstRender && !string.IsNullOrEmpty(Me.Warehouse))
             await TryFocus(_contRef);
+        if (_needFocusItem)
+        {
+            _needFocusItem = false;
+            await TryFocus(_itemRef);
+        }
     }
 
     private async Task OnContKey(KeyboardEventArgs e) { if (e.Key == "Enter") await ValidateContainer(); }
@@ -302,10 +494,9 @@ else
             if (string.IsNullOrEmpty(input)) { _globalErr = "Container number is required."; return; }
             var v = await Build.ValidateContainerAsync(input);
             if (!v.Ok) { _globalErr = v.Error; await Beep(); return; }
-            var pm = await Build.EnsurePhotoQtyMatchAsync(input);
-            if (!pm.Ok) { _globalErr = pm.Error; await Beep(); return; }
-            _contno = input; _photoMatch = pm; _contOk = true;
+            _contno = input; _contOk = true;
             await RefreshOpenBoxes();
+            await RefreshTodayScansAsync();
             await Audit.LogAsync("Building.Container", _contno, 'X', $"Building/{_contno}", new { event_ = "validate" });
             await TryFocus(_boxRef);
         }
@@ -335,10 +526,26 @@ else
     {
         ClearTransient(); _busy = true;
         var raw = _itemInput ?? "";
+
+        // Clear the previous item's details + result immediately so the panel
+        // doesn't show stale data while the new fetch runs.
+        _lastItem = null; _lastAlloc = null; _lastAppliedException = null;
+        await InvokeAsync(StateHasChanged);
+
         try
         {
             if (!_boxOk) { _globalErr = "Validate box first."; return; }
             if (string.IsNullOrWhiteSpace(raw)) { _globalErr = "Item code is required."; await Beep(); await TryFocus(_itemRef); return; }
+
+            // Tote-required gate: refuse new scans while any of this user's open boxes
+            // in this container has no tote attached. Operator must Check-In tote first.
+            await RefreshOpenBoxes();
+            var noToteBox = _openBoxes.FirstOrDefault(b => string.IsNullOrEmpty(b.ToteId));
+            if (noToteBox is not null)
+            {
+                _globalErr = $"Cannot scan: box {noToteBox.BoxNumber} has no Tote attached. Click Check-In on its row in the Boxes grid first.";
+                await Beep(); await TryFocus(_itemRef); return;
+            }
 
             var iv = ItemCodeValidator.Validate(raw);
             if (!iv.IsValid) { _globalErr = iv.Error; await Beep(); await TryFocus(_itemRef); return; }
@@ -353,47 +560,118 @@ else
             }
 
             var alloc = await Build.ResolveAllocationAsync(_contno, code, _poNumber, item.Style);
-            if (!alloc.Found) { _globalErr = "Could not resolve allocation."; await Beep(); return; }
+            if (!alloc.Found) { _globalErr = alloc.Error ?? "Could not resolve allocation."; await Beep(); return; }
 
-            var palletType = alloc.PalletType ?? "STD";
-            var division   = item.Division;
-            var season     = item.Season;
-            var lpmDt      = alloc.LpmDt;
+            // One-shot exception: if operator picked an Exception, stamp
+            // FinalResult + Remarks on the resolved WMS_ContAllocationData row,
+            // then clear the dropdown.
+            if (!string.IsNullOrEmpty(_exceptionSelected) && alloc.AllocationIdNo is int aid)
+            {
+                var exOpt = _exceptionOptions.FirstOrDefault(e => e.PalletType == _exceptionSelected);
+                var exName = exOpt?.TypeName;
+                var (exOk, exErr) = await Build.ApplyExceptionToAllocationAsync(aid, _exceptionSelected, exName);
+                if (!exOk)
+                {
+                    _globalErr = $"Exception apply failed: {exErr}. Item scan will still record without the exception.";
+                    await Beep();
+                }
+                else
+                {
+                    _lastAppliedException = (_exceptionSelected, exName);
+                }
+                _exceptionSelected = ""; // one-shot: always clear after attempt
+            }
+
+            // Exception scans go to a dedicated box partitioned by
+            // (exceptionPalletType, LogisticsBoxNo, LPMDt) — Division/Season are
+            // ignored so all exception items for a given PONO+LPMDt collect in
+            // one exception box. Non-exception scans use the normal partition
+            // (PalletType, Division, Season, LPMDt).
+            string palletType;
+            string? division, season;
+            DateTime? lpmDt = alloc.LpmDt;
+            bool isException = _lastAppliedException is not null;
+            if (isException)
+            {
+                palletType = _lastAppliedException!.Value.PalletType;
+                division   = null;  // ignored by the exception-partition query
+                season     = null;
+            }
+            else
+            {
+                palletType = alloc.PalletType ?? "STD";
+                division   = alloc.Division ?? item.Division;
+                season     = item.Season;
+            }
 
             // Find or auto-create the open box for this combo (no tote required up front).
             var boxNo = await Build.FindOrCreateOpenBoxAsync(
-                _contno, palletType, division, season, lpmDt, _boxLabel);
+                _contno, palletType, division, season, lpmDt, _boxLabel,
+                matchDivSeason: !isException);
 
-            // Stage the item; logs PCR effect for Clear reversal.
-            await Build.StageItemToBoxAsync(boxNo, code, alloc.Result, alloc.PcrId, alloc.PcrAction,
-                item.Size, item.Color, item.Style, item.GroupCode, item.Season);
+            // Stage the item + record the scan in WMSContBuildScanData (audit + reversal).
+            await Build.StageItemToBoxAsync(_contno, boxNo, code, alloc, item);
 
             _currentBoxNo = boxNo;
             _lastItem = item; _lastAlloc = alloc;
             _stagedItems = await Build.GetStagedItemsAsync(boxNo);
             await RefreshOpenBoxes();
+            await RefreshTodayScansAsync();
 
             // Surface the tote requirement only if THIS box still has no tote attached.
             var thisBox = _openBoxes.FirstOrDefault(b => b.BoxNumber == boxNo);
             if (thisBox is not null && string.IsNullOrEmpty(thisBox.ToteId))
                 _globalInfo = $"Box {boxNo} has no Tote attached — click Check-In on its row in the grid below to scan a tote.";
-            else if (item.Availability == ItemAvailability.InItemMaster)
-                _globalInfo = $"Note: {code} not in container {_contno}; SHOP fallback applied.";
+            else if (alloc.Tier == AllocationTier.Tier2_OtsOverflow)
+                _globalInfo = $"Overflow piece — all allocated rows for {code} are full. Routed to store {alloc.StoreId} by OTS.";
+            else if (alloc.Tier == AllocationTier.Tier3_ManualNewItem)
+                _globalInfo = $"{code} was not in container {_contno} — added from item master and routed to store {alloc.StoreId} by OTS.";
 
             await Audit.LogAsync("Building.Item", $"{_contno}/{boxNo}/{code}", 'I',
                 $"Building/{_contno}/{boxNo}",
-                new { code, alloc.Result, tier = (int)alloc.Tier, pcr_action = alloc.PcrAction.ToString() });
+                new { code, alloc.Result, tier = (int)alloc.Tier, action = alloc.Action.ToString(),
+                      store = alloc.StoreId, manual = alloc.Manual });
 
             _itemInput = "";
-            await TryFocus(_itemRef);
+            _needFocusItem = true;   // OnAfterRenderAsync refocuses once the render completes
         }
         catch (Exception ex) { CaptureException(ex, $"ScanItem failed (item='{raw}', cont='{_contno}', box='{_boxLabel}')"); await Beep(); }
+        finally { _busy = false; _needFocusItem = true; }
+    }
+
+    private async Task CloseLogisticsAsync()
+    {
+        if (!_boxOk || string.IsNullOrWhiteSpace(_boxLabel)) return;
+        ClearTransient();
+        int pcs = 0;
+        try { pcs = await Build.GetLogisticsBoxScanCountAsync(_contno, _boxLabel); } catch { }
+        var ok = await ConfirmAsync(
+            $"Close logistics box {_boxLabel}?\n\n" +
+            $"{pcs} piece(s) scanned into this logistics box so far. " +
+            "This marks it Closed='Y' in WmsKNBBoxes. The corresponding WMS open boxes are NOT closed by this — they still need Check-Out.");
+        if (!ok) return;
+        _busy = true;
+        try
+        {
+            var result = await Build.CloseLogisticsBoxAsync(_contno, _boxLabel);
+            if (!result.Ok) { _globalErr = result.Error; await Beep(); return; }
+            _globalInfo = $"Logistics box {_boxLabel} closed ({result.PcsScanned} pcs recorded).";
+            await Audit.LogAsync("Building.CloseLogistics", $"{_contno}/{_boxLabel}", 'U',
+                $"Building/{_contno}/{_boxLabel}", new { pcs = result.PcsScanned });
+            // Box label is now closed — reset the local box state so the operator
+            // is prompted to scan the next logistics label.
+            _boxInput = ""; _boxLabel = ""; _poNumber = null; _boxOk = false;
+            _itemInput = ""; _lastItem = null; _lastAlloc = null;
+            _currentBoxNo = null; _stagedItems.Clear();
+            await TryFocus(_boxRef);
+        }
+        catch (Exception ex) { CaptureException(ex, $"CloseLogistics failed (cont='{_contno}', box='{_boxLabel}')"); await Beep(); }
         finally { _busy = false; }
     }
 
     private async Task ClearBox(string boxNo)
     {
-        if (!await ConfirmAsync($"Clear box {boxNo}? This reverses every PCR change made by scans into this box, and deletes all staged items."))
+        if (!await ConfirmAsync($"Clear box {boxNo}? This reverses every scan made into this box (decrementing or deleting the corresponding WMS_ContAllocationData rows) and deletes the box."))
             return;
         ClearTransient(); _busy = true;
         try
@@ -405,6 +683,7 @@ else
                 $"Building/{_contno}/{boxNo}", new { reversed });
             if (_currentBoxNo == boxNo) { _currentBoxNo = null; _stagedItems.Clear(); _lastItem = null; _lastAlloc = null; }
             await RefreshOpenBoxes();
+            await RefreshTodayScansAsync();
         }
         catch (Exception ex) { CaptureException(ex, $"ClearBox failed (box='{boxNo}')"); }
         finally { _busy = false; }
@@ -457,6 +736,7 @@ else
             }
             _rowEdit = null;
             await RefreshOpenBoxes();
+            await RefreshTodayScansAsync();
         }
         catch (Exception ex) { CaptureException(ex, $"ApplyRowEdit failed ({_rowEdit?.Action} on {_rowEdit?.BoxNo})"); await Beep(); }
         finally { _busy = false; }
@@ -464,7 +744,7 @@ else
 
     private async Task ResetAll()
     {
-        _contInput = ""; _contno = ""; _contOk = false; _photoMatch = null;
+        _contInput = ""; _contno = ""; _contOk = false;
         _boxInput = ""; _boxLabel = ""; _poNumber = null; _boxOk = false;
         _itemInput = ""; _lastItem = null; _lastAlloc = null;
         _currentBoxNo = null; _stagedItems.Clear();
@@ -499,4 +779,20 @@ else
         try { await JS.InvokeVoidAsync("eval", "var a=new AudioContext();var o=a.createOscillator();o.frequency.value=200;o.connect(a.destination);o.start();setTimeout(()=>o.stop(),120);"); }
         catch { }
     }
+
+    private static string TierShort(AllocationTier t) => t switch
+    {
+        AllocationTier.Tier1_HasCapacity   => "matched",
+        AllocationTier.Tier2_OtsOverflow   => "OTS overflow",
+        AllocationTier.Tier3_ManualNewItem => "manual",
+        _ => t.ToString(),
+    };
+
+    private static string TierTitle(AllocationTier t) => t switch
+    {
+        AllocationTier.Tier1_HasCapacity   => "Tier 1 — existing allocation row had capacity (QtyIssue<Qty); QtyIssue incremented.",
+        AllocationTier.Tier2_OtsOverflow   => "Tier 2 — item is in this container but every allocation row is full. Best store picked by remaining OTS (division-scoped, recomputed on the fly).",
+        AllocationTier.Tier3_ManualNewItem => "Tier 3 — item was not in this container. Item details pulled from usa.upcbarcodes; best store picked by remaining OTS.",
+        _ => "",
+    };
 }

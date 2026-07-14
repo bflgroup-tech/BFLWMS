@@ -1,13 +1,517 @@
 @page "/encoding"
+@rendermode RenderMode.InteractiveServer
+@using System.Text.RegularExpressions
+@using Wms.Core
+@using Wms.Data.Encoding
 @attribute [Authorize(Policy = Wms.Core.MenuKeys.ITEM_ENCODING)]
+@inject ItemEncodingService Svc
+@inject ICurrentUser Me
 
 <PageTitle>WMS — Item Encoding</PageTitle>
 
-<div class="aiwms-page-header">
-    <h2>Item Encoding</h2>
-    <p>Add new items not yet in the item master. Scope to be defined in next iteration.</p>
+<style>
+    /* Local compaction — scoped to this page only. */
+    .ie-page .aiwms-section        { padding: 10px 12px; margin-bottom: 8px; }
+    .ie-page .aiwms-card-header    { font-size: 11px; margin-bottom: 6px; }
+    .ie-page .aiwms-input-lbl      { font-size: 10.5px; margin-bottom: 2px; }
+    .ie-page .aiwms-input          { padding: 5px 8px; font-size: 12px; }
+    .ie-page .aiwms-btn            { padding: 6px 12px; font-size: 12px; }
+    .ie-page h2                    { font-size: 18px; margin-bottom: 2px; }
+    .ie-page .ie-desc              { font-size: 11.5px; color:var(--text-secondary); margin: 0 0 8px 0; }
+    .ie-page .ie-grid              { gap: 8px; }
+    .ie-page .ie-err               { font-size: 10.5px; color:#D1435B; margin-top: 2px; }
+    .ie-page .ie-hint              { font-size: 10.5px; color:var(--text-muted); margin-top: 2px; }
+    .ie-page table.aiwms-table th,
+    .ie-page table.aiwms-table td  { padding: 4px 6px; font-size: 11.5px; }
+</style>
+
+<div class="ie-page">
+    <div class="aiwms-page-header" style="margin-bottom:6px">
+        <h2>Item Encoding</h2>
+        <p class="ie-desc">Encode a new item against an open container. Pick a container to enable Style / MH4 / manifest brands. Size becomes available after Division is picked.</p>
+    </div>
+
+    @if (!string.IsNullOrEmpty(_message))
+    {
+        <div class="aiwms-alert @(_isError ? "error" : "info")" style="margin-bottom:6px">@_message</div>
+    }
+
+    <div class="aiwms-section">
+        <div class="aiwms-card-header">Item</div>
+        <div class="ie-grid" style="display:grid; grid-template-columns: minmax(0,180px) minmax(0,120px) minmax(0,190px) auto minmax(0,1fr); align-items:end">
+            <div>
+                <label class="aiwms-input-lbl">CONTAINER *</label>
+                <select class="aiwms-input" @bind="_contno" @bind:after="OnContnoChangedAsync" disabled="@_busy">
+                    <option value="">(pick)</option>
+                    @foreach (var c in _contnos)
+                    {
+                        <option value="@c.ContNo">@c.ContNo@(string.IsNullOrEmpty(c.ContDesc) ? "" : $" — {c.ContDesc}")</option>
+                    }
+                </select>
+            </div>
+            <div>
+                <label class="aiwms-input-lbl">PO NO</label>
+                <input class="aiwms-input" list="pono-list" @bind="_pono"
+                       placeholder="@(_ponos.Count == 0 ? "type PO" : "pick or type")"
+                       disabled="@(_busy || string.IsNullOrEmpty(_contno))" />
+                <datalist id="pono-list">
+                    @foreach (var p in _ponos) { <option value="@p.PONo"></option> }
+                </datalist>
+            </div>
+            <div>
+                <label class="aiwms-input-lbl">ITEMCODE (barcode) *</label>
+                <input class="aiwms-input" @bind="_itemcode" @bind:after="OnItemcodeChangedAsync"
+                       maxlength="15" placeholder="e.g. 62810734"
+                       style="text-transform:uppercase" disabled="@_busy" />
+                @if (!string.IsNullOrEmpty(_itemcodeErr)) { <div class="ie-err">@_itemcodeErr</div> }
+            </div>
+            <button class="aiwms-btn"
+                    @onclick="GenerateBarcodeAsync"
+                    disabled="@(_busy || string.IsNullOrWhiteSpace(_contno) || string.IsNullOrWhiteSpace(_pono))"
+                    style="background:#facc15; border:1px solid #ca8a04; color:#422006; padding:5px 10px; font-size:11px; white-space:nowrap"
+                    title="@(string.IsNullOrWhiteSpace(_pono) ? "Pick PONo first" : "Generate the next barcode for this Container + PONo")">
+                Generate Barcode
+            </button>
+            <div>
+                <label class="aiwms-input-lbl">ITEM NAME</label>
+                <input class="aiwms-input" @bind="_itemname" @bind:after="OnItemnameChanged"
+                       maxlength="100" placeholder="Item name / description" disabled="@_busy"
+                       style="font-size:14px; padding:6px 10px" />
+                @if (!string.IsNullOrEmpty(_itemnameErr)) { <div class="ie-err">@_itemnameErr</div> }
+            </div>
+        </div>
+    </div>
+
+    <div class="aiwms-section">
+        <div class="aiwms-card-header">MH4 Hierarchy</div>
+        <div class="ie-grid" style="display:grid; grid-template-columns: repeat(5, minmax(0,1fr))">
+            <div>
+                <label class="aiwms-input-lbl">DIVISION</label>
+                <select class="aiwms-input" @bind="_division" @bind:after="OnMh4ChangedAsync" disabled="@(_busy || _mh4All.Count == 0)">
+                    <option value=""></option>
+                    @foreach (var d in DivisionOptions) { <option value="@d.key">@d.label</option> }
+                </select>
+            </div>
+            <div>
+                <label class="aiwms-input-lbl">DEPARTMENT</label>
+                <select class="aiwms-input" @bind="_department" @bind:after="OnMh4ChangedAsync" disabled="@(_busy || string.IsNullOrEmpty(_division))">
+                    <option value=""></option>
+                    @foreach (var d in DepartmentOptions) { <option value="@d">@d</option> }
+                </select>
+            </div>
+            <div>
+                <label class="aiwms-input-lbl">CLASS</label>
+                <select class="aiwms-input" @bind="_class" @bind:after="OnMh4ChangedAsync" disabled="@(_busy || string.IsNullOrEmpty(_department))">
+                    <option value=""></option>
+                    @foreach (var d in ClassOptions) { <option value="@d">@d</option> }
+                </select>
+            </div>
+            <div>
+                <label class="aiwms-input-lbl">FAMILY</label>
+                <select class="aiwms-input" @bind="_family" @bind:after="OnMh4ChangedAsync" disabled="@(_busy || string.IsNullOrEmpty(_class))">
+                    <option value=""></option>
+                    @foreach (var d in FamilyOptions) { <option value="@d">@d</option> }
+                </select>
+            </div>
+            <div>
+                <label class="aiwms-input-lbl">SUBCLASS</label>
+                <select class="aiwms-input" @bind="_subclass" disabled="@(_busy || string.IsNullOrEmpty(_family))">
+                    <option value=""></option>
+                    @foreach (var d in SubclassOptions) { <option value="@d">@d</option> }
+                </select>
+            </div>
+        </div>
+        <p class="ie-hint" style="margin-top:6px">Only combinations from the picked container's items are listed.</p>
+    </div>
+
+    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px">
+        <div class="aiwms-section">
+            <div class="aiwms-card-header">Attributes</div>
+            <div class="ie-grid" style="display:grid; grid-template-columns: repeat(3, minmax(0,1fr))">
+                <div>
+                    <label class="aiwms-input-lbl">BRAND</label>
+                    <input class="aiwms-input" list="brands-list" @bind="_brand" placeholder="manifest / master…" disabled="@_busy" />
+                    <datalist id="brands-list">
+                        @foreach (var b in _manifestBrands) { <option value="@b.Brand">from manifest</option> }
+                        @foreach (var b in _masterBrands.Where(x => !_manifestBrands.Any(m => string.Equals(m.Brand, x.Brand, StringComparison.OrdinalIgnoreCase))))
+                        { <option value="@b.Brand">from master</option> }
+                    </datalist>
+                </div>
+                <div>
+                    <label class="aiwms-input-lbl">GENDER</label>
+                    <select class="aiwms-input" @bind="_gender" disabled="@_busy">
+                        <option value=""></option>
+                        @foreach (var g in _genders) { <option value="@g.Gender">@g.Gender</option> }
+                    </select>
+                </div>
+                <div>
+                    <label class="aiwms-input-lbl">COLOR</label>
+                    <select class="aiwms-input" @bind="_color" disabled="@_busy">
+                        <option value=""></option>
+                        @foreach (var col in _colors) { <option value="@col.Color">@col.Color</option> }
+                    </select>
+                </div>
+            </div>
+        </div>
+        <div class="aiwms-section">
+            <div class="aiwms-card-header">Style + Size</div>
+            <div class="ie-grid" style="display:grid; grid-template-columns: 2fr 1fr">
+                <div>
+                    <label class="aiwms-input-lbl">STYLE</label>
+                    <input class="aiwms-input" list="styles-list" @bind="_style"
+                           placeholder="pick from container styles or type new"
+                           disabled="@(_busy || string.IsNullOrEmpty(_contno))" />
+                    <datalist id="styles-list">
+                        @foreach (var s in _styles) { <option value="@s.Style"></option> }
+                    </datalist>
+                </div>
+                <div>
+                    <label class="aiwms-input-lbl">SIZE</label>
+                    <select class="aiwms-input" @bind="_size" disabled="@(_busy || _sizes.Count == 0)">
+                        <option value=""></option>
+                        @foreach (var s in _sizes) { <option value="@s.Size">@s.Size</option> }
+                    </select>
+                    @if (string.IsNullOrEmpty(_division))
+                    {
+                        <div class="ie-hint">Pick Division first to see sizes.</div>
+                    }
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="aiwms-section">
+        <div class="aiwms-card-header" style="display:flex; justify-content:space-between; align-items:center">
+            <span>Recent Activity</span>
+            <span style="font-size:10.5px; color:var(--text-muted); font-weight:400">@(_activityRows.Count) row(s)</span>
+        </div>
+        <div class="ie-grid" style="display:grid; grid-template-columns: minmax(0,200px) auto auto; align-items:end; margin-bottom:6px">
+            <div>
+                <label class="aiwms-input-lbl">FILTER: CONTAINER NO</label>
+                <input class="aiwms-input" @bind="_activityContnoFilter"
+                       placeholder="leave blank for today's rows" disabled="@_activityBusy" />
+            </div>
+            <button class="aiwms-btn" @onclick="RefreshActivityAsync" disabled="@_activityBusy"
+                    style="background:#facc15; border:1px solid #ca8a04; color:#422006; padding:3px 8px; font-size:10.5px; white-space:nowrap">
+                @(_activityBusy ? "Loading…" : "Refresh")
+            </button>
+            <div class="ie-hint" style="align-self:center">
+                @if (string.IsNullOrWhiteSpace(_activityContnoFilter))
+                { <span>Showing <b>today's</b> encodings (GST).</span> }
+                else
+                { <span>Showing ALL encodings for <b>@_activityContnoFilter</b>.</span> }
+            </div>
+        </div>
+        <div style="max-height:380px; overflow:auto">
+            <table class="aiwms-table aiwms-table-dense">
+                <thead style="position:sticky; top:0; background:white; z-index:1">
+                    <tr>
+                        <th>Barcode</th>
+                        <th>Item Name</th>
+                        <th>Contno</th>
+                        <th>Brand</th>
+                        <th>Gender</th>
+                        <th>Color</th>
+                        <th>Size</th>
+                        <th>Style</th>
+                        <th>Division</th>
+                        <th>Department</th>
+                        <th>Class</th>
+                        <th>SubClass</th>
+                        <th>Family</th>
+                        <th>TrnDate</th>
+                        <th>Time</th>
+                        <th>CreatedBy</th>
+                    </tr>
+                </thead>
+                <tbody>
+                @if (_activityRows.Count == 0)
+                {
+                    <tr><td colspan="16" style="text-align:center; color:var(--text-muted); padding:12px">No rows.</td></tr>
+                }
+                else
+                {
+                    @foreach (var r in _activityRows)
+                    {
+                        <tr>
+                            <td style="font-family:var(--font-mono)"><b>@r.Barcode</b></td>
+                            <td>@r.Itemname</td>
+                            <td style="font-family:var(--font-mono)">@r.Contno</td>
+                            <td>@r.Brand</td>
+                            <td>@r.Gender</td>
+                            <td>@r.Color</td>
+                            <td>@r.Size</td>
+                            <td>@r.Style</td>
+                            <td>@r.Division</td>
+                            <td>@r.Department</td>
+                            <td>@r.Class</td>
+                            <td>@r.SubClass</td>
+                            <td>@r.Family</td>
+                            <td>@(r.Trndate?.ToString("yyyy-MM-dd") ?? r.CreateTS.ToString("yyyy-MM-dd"))</td>
+                            <td>@(string.IsNullOrEmpty(r.Tim1) ? r.CreateTS.ToString("HH:mm") : r.Tim1)</td>
+                            <td>@r.CreatedBy</td>
+                        </tr>
+                    }
+                }
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="aiwms-section" style="display:flex; align-items:center; gap:12px">
+        <button class="aiwms-btn aiwms-btn-primary" @onclick="SaveAsync"
+                disabled="@(_busy || !CanSave)"
+                style="padding:8px 24px; font-size:14px; font-weight:700"
+                title="@(CanSave ? "Save this item into dbo.WMS_Generatebarcode" : "Fill Container, Itemcode and Division at minimum")">
+            Save
+        </button>
+        <button class="aiwms-btn aiwms-btn-secondary" @onclick="ClearForm" disabled="@_busy">Clear</button>
+        <span class="ie-hint" style="align-self:center">
+            Required: Container, Itemcode, Division. All other fields optional.
+        </span>
+    </div>
 </div>
 
-<div class="aiwms-section">
-    <div class="aiwms-alert info">This page is a stub — workflow will be added when scope is shared.</div>
-</div>
+@code {
+    private string _contno = "";
+    private string _pono = "";
+    private string _itemcode = "";
+    private string _itemname = "";
+    private string _brand = "";
+    private string _gender = "";
+    private string _color = "";
+    private string _division = "";      // "DivID|Division"
+    private string _department = "";
+    private string _class = "";
+    private string _family = "";
+    private string _subclass = "";
+    private string _style = "";
+    private string _size = "";
+    private bool   _busy;
+    private string _message = "";
+    private bool   _isError;
+
+    private string _itemcodeErr = "";
+    private string _itemnameErr = "";
+
+    private List<OpenContnoRow> _contnos        = new();
+    private List<PONoRow>       _ponos          = new();
+    private List<BrandRow>      _manifestBrands = new();
+    private List<BrandRow>      _masterBrands   = new();
+    private List<GenderRow>     _genders        = new();
+    private List<ColorRow>      _colors         = new();
+    private List<StyleRow>      _styles         = new();
+    private List<SizeRow>       _sizes          = new();
+    private List<Mh4Row>        _mh4All         = new();
+
+    private string _activityContnoFilter = "";
+    private bool   _activityBusy;
+    private List<RecentEncodingRow> _activityRows = new();
+
+    private static readonly Regex _itemcodeRegex = new(@"^[0-9A-Z\-]{1,15}$", RegexOptions.Compiled);
+    private static readonly Regex _itemnameRegex = new(@"^[A-Za-z0-9 ]{1,100}$", RegexOptions.Compiled);
+
+    private IEnumerable<(string key, string label)> DivisionOptions =>
+        _mh4All
+            .GroupBy(r => (r.DivID, r.Division))
+            .OrderBy(g => g.Key.Division)
+            .Select(g => ($"{g.Key.DivID}|{g.Key.Division}", $"{g.Key.Division}"));
+
+    private int SelectedDivId
+    {
+        get
+        {
+            if (string.IsNullOrEmpty(_division)) return 0;
+            var parts = _division.Split('|', 2);
+            return int.TryParse(parts[0], out var id) ? id : 0;
+        }
+    }
+
+    private IEnumerable<string> DepartmentOptions =>
+        _mh4All.Where(r => r.DivID == SelectedDivId)
+               .Select(r => r.Department).Where(s => !string.IsNullOrEmpty(s))
+               .Distinct().OrderBy(s => s)!;
+
+    private IEnumerable<string> ClassOptions =>
+        _mh4All.Where(r => r.DivID == SelectedDivId && r.Department == _department)
+               .Select(r => r.Class).Where(s => !string.IsNullOrEmpty(s))
+               .Distinct().OrderBy(s => s)!;
+
+    private IEnumerable<string> FamilyOptions =>
+        _mh4All.Where(r => r.DivID == SelectedDivId && r.Department == _department && r.Class == _class)
+               .Select(r => r.Family).Where(s => !string.IsNullOrEmpty(s))
+               .Distinct().OrderBy(s => s)!;
+
+    private IEnumerable<string> SubclassOptions =>
+        _mh4All.Where(r => r.DivID == SelectedDivId && r.Department == _department && r.Class == _class && r.Family == _family)
+               .Select(r => r.Subclass).Where(s => !string.IsNullOrEmpty(s))
+               .Distinct().OrderBy(s => s)!;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await Me.EnsureLoadedAsync();
+        _busy = true;
+        try
+        {
+            _contnos      = await Svc.GetOpenContainersAsync();
+            _masterBrands = await Svc.GetMasterBrandsAsync();
+            _genders      = await Svc.GetGendersAsync();
+            _colors       = await Svc.GetColorsAsync();
+        }
+        catch (Exception ex) { ShowError($"Load failed: {ex.Message}"); }
+        finally { _busy = false; }
+
+        await RefreshActivityAsync();
+    }
+
+    private async Task OnContnoChangedAsync()
+    {
+        _mh4All         = new(); _division = ""; _department = ""; _class = ""; _family = ""; _subclass = "";
+        _styles         = new(); _style = "";
+        _sizes          = new(); _size = "";
+        _ponos          = new(); _pono = "";
+        _manifestBrands = new();
+        if (string.IsNullOrWhiteSpace(_contno)) return;
+        _busy = true;
+        try
+        {
+            _ponos          = await Svc.GetPONosForContnoAsync(_contno);
+            _mh4All         = await Svc.GetMh4ForContnoAsync(_contno);
+            _styles         = await Svc.GetStylesForContnoAsync(_contno);
+            _manifestBrands = await Svc.GetManifestBrandsForContnoAsync(_contno);
+        }
+        catch (Exception ex) { ShowError($"Container lookup failed: {ex.Message}"); }
+        finally { _busy = false; }
+    }
+
+    private async Task OnItemcodeChangedAsync()
+    {
+        _itemcodeErr = "";
+        _itemcode = (_itemcode ?? "").Trim().ToUpperInvariant();
+        if (string.IsNullOrEmpty(_itemcode)) return;
+        if (!_itemcodeRegex.IsMatch(_itemcode))
+        {
+            _itemcodeErr = "Only 0-9, A-Z and '-'. Max 15 chars.";
+            return;
+        }
+        try
+        {
+            var exists = await Svc.ItemcodeExistsAsync(_itemcode);
+            if (exists.InAllocation && exists.InGenerated)
+                _itemcodeErr = "Already exists in Allocation AND already encoded.";
+            else if (exists.InAllocation)
+                _itemcodeErr = "Already exists as an allocated item.";
+            else if (exists.InGenerated)
+                _itemcodeErr = "Barcode already encoded.";
+        }
+        catch (Exception ex) { _itemcodeErr = $"Duplicate check failed: {ex.Message}"; }
+    }
+
+    private void OnItemnameChanged()
+    {
+        _itemnameErr = "";
+        if (string.IsNullOrEmpty(_itemname)) return;
+        var trimmed = _itemname.TrimEnd();
+        if (trimmed != _itemname) _itemname = trimmed;
+        if (!_itemnameRegex.IsMatch(_itemname))
+            _itemnameErr = "Letters, digits and spaces only. Max 100 chars.";
+    }
+
+    private async Task OnMh4ChangedAsync()
+    {
+        if (string.IsNullOrEmpty(_division)) { _department = _class = _family = _subclass = ""; }
+        if (!DepartmentOptions.Contains(_department)) _department = "";
+        if (!ClassOptions.Contains(_class))           _class = "";
+        if (!FamilyOptions.Contains(_family))         _family = "";
+        if (!SubclassOptions.Contains(_subclass))     _subclass = "";
+
+        if (SelectedDivId > 0)
+        {
+            try   { _sizes = await Svc.GetSizesForDivIdAsync(SelectedDivId); }
+            catch (Exception ex) { ShowError($"Size lookup failed: {ex.Message}"); }
+        }
+        else { _sizes = new(); _size = ""; }
+    }
+
+    private async Task GenerateBarcodeAsync()
+    {
+        _itemcodeErr = "";
+        if (string.IsNullOrWhiteSpace(_contno) || string.IsNullOrWhiteSpace(_pono)) return;
+        _busy = true;
+        try
+        {
+            var next = await Svc.GetNextBarcodeSrnoAsync(_contno, _pono);
+            var candidate = $"{_pono.Trim()}-{next:0000}";
+            if (candidate.Length > 15)
+            {
+                _itemcodeErr = $"Generated barcode '{candidate}' > 15 chars.";
+                return;
+            }
+            _itemcode = candidate;
+            await OnItemcodeChangedAsync();
+        }
+        catch (Exception ex) { ShowError($"Generate Barcode failed: {ex.Message}"); }
+        finally { _busy = false; }
+    }
+
+    private bool CanSave =>
+        !string.IsNullOrWhiteSpace(_contno)
+        && !string.IsNullOrWhiteSpace(_itemcode)
+        && string.IsNullOrEmpty(_itemcodeErr)
+        && string.IsNullOrEmpty(_itemnameErr)
+        && SelectedDivId > 0;
+
+    private async Task SaveAsync()
+    {
+        if (!CanSave) return;
+        _busy = true; _message = "";
+        try
+        {
+            var req = new ItemEncodingService.SaveEncodingRequest
+            {
+                Contno     = _contno.Trim(),
+                Barcode    = _itemcode.Trim(),
+                Itemname   = string.IsNullOrWhiteSpace(_itemname) ? null : _itemname.Trim(),
+                Brand      = string.IsNullOrWhiteSpace(_brand)    ? null : _brand.Trim(),
+                Gender     = string.IsNullOrWhiteSpace(_gender)   ? null : _gender,
+                Color      = string.IsNullOrWhiteSpace(_color)    ? null : _color,
+                Size       = string.IsNullOrWhiteSpace(_size)     ? null : _size,
+                Style      = string.IsNullOrWhiteSpace(_style)    ? null : _style.Trim(),
+                Division   = string.IsNullOrEmpty(_division) ? null : _division.Split('|', 2).LastOrDefault(),
+                Department = string.IsNullOrWhiteSpace(_department) ? null : _department,
+                Class      = string.IsNullOrWhiteSpace(_class)      ? null : _class,
+                Family     = string.IsNullOrWhiteSpace(_family)     ? null : _family,
+                SubClass   = string.IsNullOrWhiteSpace(_subclass)   ? null : _subclass,
+            };
+            var id = await Svc.SaveEncodingAsync(req);
+            ShowInfo($"Saved barcode {req.Barcode} (id {id}).");
+            ClearForm();
+            await RefreshActivityAsync();
+        }
+        catch (Exception ex) { ShowError($"Save failed: {ex.Message}"); }
+        finally { _busy = false; }
+    }
+
+    private void ClearForm()
+    {
+        // Keep the container + PO context so the operator can quickly encode
+        // the next item for the same shipment; clear only the item-specific fields.
+        _itemcode = ""; _itemname = ""; _brand = ""; _gender = ""; _color = "";
+        _style = ""; _size = "";
+        _itemcodeErr = ""; _itemnameErr = "";
+    }
+
+    private async Task RefreshActivityAsync()
+    {
+        _activityBusy = true;
+        try
+        {
+            _activityRows = await Svc.GetRecentEncodingsAsync(_activityContnoFilter);
+        }
+        catch (Exception ex) { ShowError($"Recent Activity load failed: {ex.Message}"); }
+        finally { _activityBusy = false; }
+    }
+
+    private void ShowError(string m) { _message = m; _isError = true; }
+    private void ShowInfo(string m)  { _message = m; _isError = false; }
+}

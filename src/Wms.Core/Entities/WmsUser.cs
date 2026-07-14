@@ -45,3 +45,13 @@ public class WmsUserMenuAccess
     public DateTime GrantedTS { get; set; }
     public string   GrantedBy { get; set; } = "";
 }
+
+/// <summary>Per-user grant of the countries whose data the user is allowed to see in
+/// reports/pages. Admin role bypasses this table (sees all). Empty rows = no access.</summary>
+public class WmsUserCountryAccess
+{
+    public string   Username  { get; set; } = "";
+    public string   Country   { get; set; } = "";
+    public DateTime GrantedTS { get; set; }
+    public string   GrantedBy { get; set; } = "";
+}

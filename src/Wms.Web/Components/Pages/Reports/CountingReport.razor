@@ -1,0 +1,162 @@
+@page "/reports/counting"
+@rendermode RenderMode.InteractiveServer
+@using Wms.Core
+@using Wms.Data.Lpm
+@attribute [Authorize(Policy = MenuKeys.RPT_COUNTING)]
+@inject CountingReportsService Svc
+@inject ICurrentUser Me
+
+<PageTitle>WMS — Counting Report</PageTitle>
+
+<div class="aiwms-page-header">
+    <h2>Counting Report</h2>
+    <p>Summary shows one row per (ContNo, PO). Detailed shows one row per <code>WmsUPCBoxDet</code> aggregate (per BoxNo × Store × Itemcode) for a single container. Use the toggle then click <b>Load</b>.</p>
+</div>
+
+<div class="aiwms-section">
+    <div style="display:flex; gap:14px; align-items:center; margin-bottom:10px; flex-wrap:wrap">
+        <strong style="font-size:11px; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">View:</strong>
+        <label style="display:flex; align-items:center; gap:4px; cursor:pointer"><input type="radio" name="vw" value="Summary"  checked="@(_view == "Summary")"  @onchange="@(_ => { _view = "Summary"; _summary.Clear(); _detail.Clear(); })" /> Summary</label>
+        <label style="display:flex; align-items:center; gap:4px; cursor:pointer"><input type="radio" name="vw" value="Detailed" checked="@(_view == "Detailed")" @onchange="@(_ => { _view = "Detailed"; _summary.Clear(); _detail.Clear(); })" /> Detailed</label>
+    </div>
+
+    @if (_view == "Detailed")
+    {
+        <div style="display:grid; grid-template-columns: 1fr auto auto; gap:12px; align-items:end">
+            <div>
+                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">CONT NO *</label>
+                <input @bind="_contno" placeholder="e.g. AELOC6928"
+                       style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-family:var(--font-mono); font-size:13px; background:white;" />
+            </div>
+            <button class="aiwms-btn aiwms-btn-primary" @onclick="LoadAsync" disabled="@(_loading || string.IsNullOrWhiteSpace(_contno))">@(_loading ? "Loading…" : "Load")</button>
+        </div>
+    }
+    else
+    {
+        <div style="display:flex; gap:12px; align-items:end">
+            <button class="aiwms-btn aiwms-btn-primary" @onclick="LoadAsync" disabled="@_loading">@(_loading ? "Loading…" : "Load")</button>
+        </div>
+    }
+
+    @if (!string.IsNullOrEmpty(_message))
+    {
+        <div class="aiwms-alert @(_isError ? "error" : "info")" style="margin-top:12px">@_message</div>
+    }
+</div>
+
+@if (_view == "Summary" && _summary.Count > 0)
+{
+    <div class="aiwms-section">
+        <div class="aiwms-card-header">Summary — @_summary.Count row(s)</div>
+        <table class="aiwms-table aiwms-table-dense">
+            <thead>
+                <tr>
+                    <th>ContNo</th>
+                    <th>Receipt Dt</th>
+                    <th>Counting Started Dt</th>
+                    <th>PO No</th>
+                    <th style="text-align:right">Order Sheet Qty</th>
+                    <th style="text-align:right">Counted Qty</th>
+                    <th style="text-align:right">RTV Qty</th>
+                    <th style="text-align:right">MC Hold Qty</th>
+                    <th>Counting Completed Dt</th>
+                    <th>Purchase Dt</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var r in _summary)
+                {
+                    <tr>
+                        <td style="font-family:var(--font-mono)"><b>@r.ContNo</b></td>
+                        <td>@FmtDate(r.ReceiptDt)</td>
+                        <td>@FmtDateTime(r.CountingStartedDt)</td>
+                        <td>@r.PONo</td>
+                        <td style="text-align:right">@r.OrderSheetQty.ToString("N0")</td>
+                        <td style="text-align:right">@r.CountedQty.ToString("N0")</td>
+                        <td style="text-align:right">@r.RtvQty.ToString("N0")</td>
+                        <td style="text-align:right">@r.McHoldQty.ToString("N0")</td>
+                        <td>@FmtDateTime(r.CountingCompletedDt)</td>
+                        <td>@FmtDate(r.PurchaseDt)</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+else if (_view == "Detailed" && _detail.Count > 0)
+{
+    <div class="aiwms-section">
+        <div class="aiwms-card-header">Detail — Cont <b>@_contno</b> — @_detail.Count row(s)</div>
+        <table class="aiwms-table aiwms-table-dense">
+            <thead>
+                <tr>
+                    <th>ContNo</th>
+                    <th>PO No</th>
+                    <th>Box No</th>
+                    <th>LPMDt</th>
+                    <th>Tote ID</th>
+                    <th>Pallet Type</th>
+                    <th>Type Name</th>
+                    <th>Store ID</th>
+                    <th>Itemcode</th>
+                    <th style="text-align:right">Qty</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var r in _detail)
+                {
+                    <tr>
+                        <td style="font-family:var(--font-mono)">@r.ContNo</td>
+                        <td>@r.PONo</td>
+                        <td style="font-family:var(--font-mono)">@r.BoxNo</td>
+                        <td>@FmtDate(r.LpmDt)</td>
+                        <td style="font-family:var(--font-mono)">@r.ToteId</td>
+                        <td>@r.PalletType</td>
+                        <td>@r.PalletTypeName</td>
+                        <td style="font-family:var(--font-mono)">@r.StoreId</td>
+                        <td style="font-family:var(--font-mono)">@r.Itemcode</td>
+                        <td style="text-align:right"><b>@r.Qty.ToString("N0")</b></td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+@code {
+    private string _view = "Summary";
+    private string _contno = "";
+    private bool _loading;
+    private string _message = "";
+    private bool _isError;
+    private List<CountingSummaryRow> _summary = new();
+    private List<CountingDetailRow>  _detail  = new();
+
+    private async Task LoadAsync()
+    {
+        _loading = true; _message = ""; _isError = false;
+        try
+        {
+            await Me.EnsureLoadedAsync();
+            var country = Me.Country;
+            if (_view == "Summary")
+            {
+                _summary = await Svc.GetSummaryAsync(country);
+                _detail = new();
+                if (_summary.Count == 0) { _message = "No rows."; }
+            }
+            else
+            {
+                if (string.IsNullOrWhiteSpace(_contno)) { _message = "Cont No is required."; _isError = true; return; }
+                _detail = await Svc.GetDetailByContnoAsync(_contno.Trim(), country);
+                _summary = new();
+                if (_detail.Count == 0) { _message = $"No detail rows for {_contno}."; }
+            }
+        }
+        catch (Exception ex) { _message = ex.Message; _isError = true; }
+        finally { _loading = false; }
+    }
+
+    private static string FmtDate(DateTime? d)     => d?.ToString("dd/MM/yyyy") ?? "";
+    private static string FmtDateTime(DateTime? d) => d?.ToString("dd/MM/yyyy HH:mm") ?? "";
+}
