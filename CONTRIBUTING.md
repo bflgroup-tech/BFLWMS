@@ -38,7 +38,7 @@ Then on github.com:
 ### Merging
 
 - **PRs opened by @sheeja72 auto-merge as soon as CI is green.** The `automerge-sheeja` workflow squash-merges the PR, deletes the branch, and dispatches the Azure deploy. No review click needed.
-- **PRs opened by anyone else** need a review from another dev with Write access (@Shyjeshk, @rijubfl, or @sheeja72). Once approved and CI is green, the reviewer clicks **Squash and merge** on GitHub — no need to wait for @sheeja72 unless a sensitive path is touched.
+- **PRs opened by anyone else** need a review from another dev with Write access (@Shyjeshk, @rijubfl, @shabeelap, or @sheeja72). Once approved and CI is green, the reviewer clicks **Squash and merge** on GitHub — no need to wait for @sheeja72 unless a sensitive path is touched.
 - **PRs touching `/db/`, `/src/Wms.Web/Auth/`, `Program.cs`, or `/.github/workflows/`** still require @sheeja72's review + merge regardless of author (see `.github/CODEOWNERS`).
 - **@jijeshBFL** has Read access — can open PRs, can't merge. Ask an admin to bump to Write role if that changes.
 - **Enforcement is team discipline** — private repo on GitHub Free has no server-side branch protection. Anyone with Write access could technically bypass it — don't.
