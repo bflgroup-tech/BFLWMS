@@ -167,7 +167,7 @@ public class ReportsService(IOnPremConnectionResolver resolver)
     /// ASSUMED column names/types on BuildingCompletionSumm — adjust if the live
     /// schema differs: Country, ContNo, CountingCompletionDate, PONo,
     /// CountingStartDate, CountedQty, LPMMonth (date), Division, Brand.
-    /// LPMMonth is rendered as "MMMM/yyyy" (e.g. "January/2026").
+    /// LPMMonth is rendered as "MMM-yyyy" (e.g. "Jan-2026").
     /// </summary>
     public async Task<List<CountingCompletionSummaryRow>> GetCountingCompletionSummaryAsync(
         string? country, DateTime fromDate, DateTime toDate, CancellationToken ct = default)
@@ -199,7 +199,7 @@ public class ReportsService(IOnPremConnectionResolver resolver)
                 LpmMonths = STUFF((
                     SELECT ', ' + d.v
                       FROM (SELECT DISTINCT
-                                   FORMAT(x.LPMMonth, 'MMMM/yyyy') AS v,
+                                   FORMAT(x.LPMMonth, 'MMM-yyyy') AS v,
                                    DATEFROMPARTS(YEAR(x.LPMMonth), MONTH(x.LPMMonth), 1) AS n
                               FROM Base x
                              WHERE x.Country = b.Country AND x.ContNo = b.ContNo
