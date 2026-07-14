@@ -902,13 +902,27 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                         .Where(r => r.DivCode == divCode)
                         .ToList();
 
-                    // Hard block: any (Store, Item) with LPM_SimItemSkuMax = 0
-                    // is excluded up-front so it never lands in a pass loop and
-                    // the algorithm skips straight to LPM_SKUMaxRule for the rest.
+                    // Hard block: any (Store, Item) whose LPM_SimItemSkuMax.SkuMax
+                    // = 0 is not eligible for allocation for this item. Excluded
+                    // from every pass AND added to the Blocked Items list so the
+                    // operator can see the shortfall.
+                    // (Rows with SimItemSkuMax > 0 or no row at all proceed through
+                    // the LPM_SKUMaxRule band lookup — same as the pre-existing
+                    // logic; Pass 4 uncapped RR fills anything the band misses.)
                     var itemKey = line.ItemCode.ToUpperInvariant();
                     bool IsSimSkuBlocked(string sid) =>
                         simSkuMaxBlocked.Contains((sid.ToUpperInvariant(), itemKey));
-                    eligible.RemoveAll(r => IsSimSkuBlocked(r.StoreID));
+                    var simBlockedStores = eligible.Where(r => IsSimSkuBlocked(r.StoreID)).ToList();
+                    foreach (var r in simBlockedStores)
+                    {
+                        eligible.Remove(r);
+                        storeNameById.TryGetValue(r.StoreID, out var sName);
+                        blocked.Add(new BlockedItemRow(
+                            Contno: line.ContNo, ItemCode: line.ItemCode, ItemName: orgRow.itemname,
+                            Division: itemRow.Division, Department: itemRow.Department,
+                            StoreID: r.StoreID, StoreName: sName, Country: r.Country,
+                            PoQty: line.Qty, DivCode: divCode, BlockReason: "LPM_SimItemSkuMax.SkuMax=0"));
+                    }
 
                     // ECOM Manual Priority — when the operator ticks the checkbox
                     // on the page, we honour WmsManualAllocation.AllocationQty for
@@ -932,9 +946,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                         }
                     }
 
-                    // (cap-0 pre-filter below runs the equivalent early-exit
-                    //  after excluding blocked stores; leaving the second check
-                    //  as the authoritative one.)
+                    if (eligible.Count == 0 && ecomPreAllocTake == 0) continue;
 
                     // Live OTS% per (StoreID, DivCode) driven by runningOtsQty
                     // (decreases as we allocate). Used by Passes 2, 3, 4.
@@ -948,34 +960,6 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                     // Doesn't change during this batch — Pass 1's filter and sort
                     // both use this per the current spec.
                     double StaticOtsPct(OtsRunLookupRow r) => (double)r.OtsPercentToday;
-
-                    // Hard block: any (Store, Item) whose SkuMax cap = 0 is excluded
-                    // from every pass and added to the Blocked Items list. Reason
-                    // distinguishes "no band matched" from "SOHToday >= band value".
-                    var capByStore = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-                    var storesToBlock = new List<OtsRunLookupRow>();
-                    foreach (var r in eligible)
-                    {
-                        var (raw, cap) = SkuMaxRawAndCapFor(r);
-                        capByStore[r.StoreID] = cap;
-                        if (cap == 0) storesToBlock.Add(r);
-                    }
-                    foreach (var r in storesToBlock)
-                    {
-                        eligible.Remove(r);
-                        storeNameById.TryGetValue(r.StoreID, out var sName);
-                        var raw = SkuMaxRawAndCapFor(r).Raw;
-                        var reason = raw == 0
-                            ? "SkuMax=0 (no LPM_SKUMaxRule band matched)"
-                            : $"SkuMax=0 (SOHToday >= band SkuMax {raw})";
-                        blocked.Add(new BlockedItemRow(
-                            Contno: line.ContNo, ItemCode: line.ItemCode, ItemName: orgRow.itemname,
-                            Division: itemRow.Division, Department: itemRow.Department,
-                            StoreID: r.StoreID, StoreName: sName, Country: r.Country,
-                            PoQty: line.Qty, DivCode: divCode, BlockReason: reason));
-                    }
-
-                    if (eligible.Count == 0 && ecomPreAllocTake == 0) continue;
 
                     // Avg OtsPercentToday for THIS Division from stores where
                     // OtsPercentToday > 0. This is Pass 1's threshold.
@@ -1136,27 +1120,22 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                         }
                     }
 
-                    // ---------- Pass 4: cap-respecting RR across remaining eligible stores ----------
-                    // Since cap-0 stores were pre-excluded and Passes 1-3 already
-                    // fill up to cap, Pass 4 will most often be a no-op — kept as
-                    // a safety sweep in case any RR ordering left a store below cap.
+                    // ---------- Pass 4: uncapped RR across all eligible stores ----------
+                    // Last-resort fallback so no leftover POqty stays unallocated
+                    // when LPM_SKUMaxRule bands are missing / SOH is already at cap.
+                    // Only skipped for SimItemSkuMax=0 stores (already pre-excluded above).
                     if (remaining > 0)
                     {
                         var pass4Stores = SortByGroupThenOts(eligible).ToList();
+                        int idx = 0;
                         while (remaining > 0 && pass4Stores.Count > 0)
                         {
-                            bool any = false;
-                            foreach (var r in pass4Stores)
-                            {
-                                if (remaining <= 0) break;
-                                var cap = capByStore.TryGetValue(r.StoreID, out var cc) ? cc : 0;
-                                var current = allocs.TryGetValue(r.StoreID, out var row) ? row.AllocQty : 0;
-                                if (current >= cap) continue;
-                                allocs[r.StoreID] = BumpRow(row, r, 1, 1, pass: 4);
-                                remaining--;
-                                any = true;
-                            }
-                            if (!any) break;
+                            var r = pass4Stores[idx % pass4Stores.Count];
+                            var current = allocs.TryGetValue(r.StoreID, out var row) ? row.AllocQty : 0;
+                            allocs[r.StoreID] = BumpRow(row, r, 1, 1, pass: 4);
+                            remaining--;
+                            idx++;
+                            if (idx > 1_000_000) break;  // hard safety
                         }
                     }
 
