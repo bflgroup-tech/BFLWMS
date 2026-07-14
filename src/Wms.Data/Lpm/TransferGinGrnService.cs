@@ -148,9 +148,9 @@ SELECT ROW_NUMBER() OVER (ORDER BY a.TrfNo) SrNo,
        a.TrfDate,
        PalletNo   = (SELECT TOP 1 PalletNo FROM BFLDATA.dbo.vGoodsIssue
                       WHERE TrfNo = a.TrfNo ORDER BY PalletNo DESC),
-       b.EntryDate  BuildDate,
+       c.BuildDate  BuildDate,
        CAST(c.SrNo AS nvarchar(50)) GINNo,
-       c.EntryDate  GINDate,
+       b.EntryDate  GINDate,
        CAST(d.EntryNo AS nvarchar(50)) GRNNo,
        d.EntryDate  GRNDate,
        ISNULL(f.Remarks, '') Remarks
@@ -185,9 +185,9 @@ SELECT ROW_NUMBER() OVER (ORDER BY a.TrfNo) SrNo,
        a.TrfDate,
        PalletNo   = (SELECT TOP 1 PalletNo FROM BFLDATA.dbo.vGoodsIssue
                       WHERE TrfNo = a.TrfNo ORDER BY PalletNo DESC),
-       b.EntryDate  BuildDate,
+       c.BuildDate  BuildDate,
        CAST(c.SrNo AS nvarchar(50)) GINNo,
-       c.EntryDate  GINDate,
+       b.EntryDate  GINDate,
        CAST(d.EntryNo AS nvarchar(50)) GRNNo,
        d.EntryDate  GRNDate,
        ISNULL(f.Remarks, '') Remarks
