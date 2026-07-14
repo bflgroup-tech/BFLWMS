@@ -58,11 +58,16 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
     {
         await using var conn = OpenCountry(f.Country);
 
-        // Resolve the country DB name (e.g. "bflksa") from BFLDATA on that server.
-        var dataName = await WhBoxItemsSource.ResolveDataNameAsync(conn, f.Country, ct);
+        // Resolve the country DB name (e.g. "bflksa") from BFLDATA on the country server.
+        // Do NOT use WhBoxItemsSource (it filters by SIMCountry which doesn't exist on country servers).
+        var dataName = await conn.QueryFirstOrDefaultAsync<string>(new CommandDefinition(@"
+            SELECT TOP 1 DataName
+              FROM BFLDATA.dbo.DataSettings
+             WHERE DataName IS NOT NULL AND LTRIM(RTRIM(DataName)) <> ''",
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         if (string.IsNullOrWhiteSpace(dataName))
             throw new InvalidOperationException(
-                $"No DataName found in BFLDATA.dbo.DataSettings for SIMCountry '{f.Country}'.");
+                $"No DataName found in BFLDATA.dbo.DataSettings on the {f.Country} server.");
 
         var sql  = BuildSql(dataName, f, out var parms);
         var rows = await conn.QueryAsync<TransferHistoryRow>(
