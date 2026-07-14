@@ -932,7 +932,9 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                         }
                     }
 
-                    if (eligible.Count == 0 && ecomPreAllocTake == 0) continue;
+                    // (cap-0 pre-filter below runs the equivalent early-exit
+                    //  after excluding blocked stores; leaving the second check
+                    //  as the authoritative one.)
 
                     // Live OTS% per (StoreID, DivCode) driven by runningOtsQty
                     // (decreases as we allocate). Used by Passes 2, 3, 4.
@@ -947,10 +949,38 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                     // both use this per the current spec.
                     double StaticOtsPct(OtsRunLookupRow r) => (double)r.OtsPercentToday;
 
+                    // Hard block: any (Store, Item) whose SkuMax cap = 0 is excluded
+                    // from every pass and added to the Blocked Items list. Reason
+                    // distinguishes "no band matched" from "SOHToday >= band value".
+                    var capByStore = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                    var storesToBlock = new List<OtsRunLookupRow>();
+                    foreach (var r in eligible)
+                    {
+                        var (raw, cap) = SkuMaxRawAndCapFor(r);
+                        capByStore[r.StoreID] = cap;
+                        if (cap == 0) storesToBlock.Add(r);
+                    }
+                    foreach (var r in storesToBlock)
+                    {
+                        eligible.Remove(r);
+                        storeNameById.TryGetValue(r.StoreID, out var sName);
+                        var raw = SkuMaxRawAndCapFor(r).Raw;
+                        var reason = raw == 0
+                            ? "SkuMax=0 (no LPM_SKUMaxRule band matched)"
+                            : $"SkuMax=0 (SOHToday >= band SkuMax {raw})";
+                        blocked.Add(new BlockedItemRow(
+                            Contno: line.ContNo, ItemCode: line.ItemCode, ItemName: orgRow.itemname,
+                            Division: itemRow.Division, Department: itemRow.Department,
+                            StoreID: r.StoreID, StoreName: sName, Country: r.Country,
+                            PoQty: line.Qty, DivCode: divCode, BlockReason: reason));
+                    }
+
+                    if (eligible.Count == 0 && ecomPreAllocTake == 0) continue;
+
                     // Avg OtsPercentToday for THIS Division from stores where
                     // OtsPercentToday > 0. This is Pass 1's threshold.
                     // (ONLINE already removed above if ECOM Manual Priority was
-                    // applied, so its OTS% doesn't skew the threshold.)
+                    // applied; cap-0 stores also removed above.)
                     var positives = eligible.Select(StaticOtsPct).Where(p => p > 0).ToList();
                     var avgOts = positives.Count > 0 ? positives.Average() : 0.0;
                     var avgOtsDecimal = (decimal)Math.Round(avgOts, 2);
@@ -1106,19 +1136,27 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                         }
                     }
 
-                    // ---------- Pass 4: uncapped RR across all eligible stores ----------
+                    // ---------- Pass 4: cap-respecting RR across remaining eligible stores ----------
+                    // Since cap-0 stores were pre-excluded and Passes 1-3 already
+                    // fill up to cap, Pass 4 will most often be a no-op — kept as
+                    // a safety sweep in case any RR ordering left a store below cap.
                     if (remaining > 0)
                     {
                         var pass4Stores = SortByGroupThenOts(eligible).ToList();
-                        int idx = 0;
                         while (remaining > 0 && pass4Stores.Count > 0)
                         {
-                            var r = pass4Stores[idx % pass4Stores.Count];
-                            var current = allocs.TryGetValue(r.StoreID, out var row) ? row.AllocQty : 0;
-                            allocs[r.StoreID] = BumpRow(row, r, 1, 1, pass: 4);
-                            remaining--;
-                            idx++;
-                            if (idx > 1_000_000) break;  // hard safety
+                            bool any = false;
+                            foreach (var r in pass4Stores)
+                            {
+                                if (remaining <= 0) break;
+                                var cap = capByStore.TryGetValue(r.StoreID, out var cc) ? cc : 0;
+                                var current = allocs.TryGetValue(r.StoreID, out var row) ? row.AllocQty : 0;
+                                if (current >= cap) continue;
+                                allocs[r.StoreID] = BumpRow(row, r, 1, 1, pass: 4);
+                                remaining--;
+                                any = true;
+                            }
+                            if (!any) break;
                         }
                     }
 
