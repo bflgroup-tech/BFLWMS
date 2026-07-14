@@ -43,12 +43,10 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
         var rows = await c.QueryAsync<string>(new CommandDefinition(@"
             SELECT DISTINCT ShopName
               FROM BFLDATA.dbo.DataSettings
-             WHERE SIMCountry   = @country
-               AND ShopName     IS NOT NULL
-               AND ShopName     <> ''
-               AND Concept      <> 'Warehouse'
+             WHERE ShopName IS NOT NULL
+               AND ShopName <> ''
+               AND Concept  <> 'Warehouse'
              ORDER BY ShopName",
-            new { country },
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         return rows.AsList();
     }
