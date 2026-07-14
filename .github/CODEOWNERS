@@ -7,8 +7,10 @@
 # Policy:
 #   * PRs opened by @sheeja72 auto-merge on green CI (see
 #     .github/workflows/automerge-sheeja.yml).
-#   * PRs opened by anyone else need a review from another dev with Write
-#     access — @Shyjeshk, @rijubfl, @shabeelap, or @sheeja72 — before merging.
+#   * PRs opened by anyone else (@Shyjeshk, @rijubfl, @shabeelap) can be
+#     self-merged on green CI — GitHub disables the Approve button on your
+#     own PR but the Merge button is enabled. Review is encouraged but not
+#     required (Free plan has no server-side enforcement).
 #   * PRs touching sensitive paths below require @sheeja72's review + merge
 #     regardless of author.
 # GitHub Free on a private repo can't server-enforce this — it's team
