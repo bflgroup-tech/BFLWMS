@@ -504,6 +504,29 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
             return (initialAlloc, topN);
         }
 
+        // FillSKUMax+RR only: pre-fetch per-(StoreId, Itemcode) SOH from
+        // racks.LPM_locstock. This drives the CapFor calculation
+        //   cap = max(0, LPM_SKUMaxRule.SkuMax - SOH(store, item))
+        // Using WmsOtsPoAllocationRun.SOHToday (division-level) here gave
+        // cap=0 for every store because per-item band SkuMax (~18) got
+        // subtracted from a much larger division-level SOH.
+        async Task<Dictionary<(string StoreId, string ItemCode), int>> LoadItemSohByStore()
+        {
+            var d = new Dictionary<(string, string), int>();
+            if (runOption != RunOption.FillSKUMaxRoundRobin || distinctItemCodes.Length == 0)
+                return d;
+            await using var c1 = OpenOnPremBackup();
+            var rows = await c1.QueryAsync<(string storeid, string itemcode, int SOH)>(new CommandDefinition(@"
+                SELECT storeid, itemcode, SUM(CAST(ISNULL(SOH,0) AS INT)) AS SOH
+                  FROM racks.dbo.LPM_locstock WITH (NOLOCK)
+                 WHERE itemcode IN @codes
+                 GROUP BY storeid, itemcode",
+                new { codes = distinctItemCodes }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            foreach (var r in rows)
+                d[(r.storeid.ToUpperInvariant(), r.itemcode.ToUpperInvariant())] = r.SOH;
+            return d;
+        }
+
         // FillSKUMax+RR only: pre-fetch per-(StoreId, Itemcode) SKU Max from
         // LPMSIM.dbo.LPM_SimItemSkuMax. Any (Store, Item) with a value of 0
         // is a hard block for that combination — the algorithm won't allocate
@@ -561,12 +584,13 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         var w1_initialAlloc   = LoadInitialAllocAndTopN();
         var w1_otsRunRows     = LoadOtsRunRows();
         var w1_simSkuMaxBlocked = LoadSimSkuMaxBlocked();
+        var w1_itemSohByStore = LoadItemSohByStore();
 
         await Task.WhenAll(
             w1_itemMeta, w1_deptBlocks, w1_divBlocks, w1_orgByItem,
             w1_storeNameById, w1_palletByStore, w1_priority, w1_mnw,
             w1_prices, w1_completed, w1_receiptDt, w1_initialAlloc, w1_otsRunRows,
-            w1_simSkuMaxBlocked);
+            w1_simSkuMaxBlocked, w1_itemSohByStore);
 
         var itemMeta          = await w1_itemMeta;
         var deptBlocks        = await w1_deptBlocks;
@@ -582,6 +606,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         var (initialAllocByKey, fillRRTopN) = await w1_initialAlloc;
         var otsRunRowsList    = await w1_otsRunRows;
         var simSkuMaxBlocked  = await w1_simSkuMaxBlocked;
+        var itemSohByStore    = await w1_itemSohByStore;
 
         var divByItem = itemMeta.ToDictionary(kv => kv.Key, kv => kv.Value.DivID ?? 0, StringComparer.OrdinalIgnoreCase);
 
@@ -1000,14 +1025,17 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                     }
 
                     // Raw SKUMax from the LPM_SKUMaxRule band + effective cap
-                    // (max(0, raw - SOHToday)). Raw is persisted on the row as
-                    // RawSkuMax so a report reader can tell whether "SkuMax=0"
-                    // means "no band matched" (raw=0) or "SOHToday >= band"
-                    // (raw>0, cap=0).
+                    // (max(0, raw - per-(Store, Item) SOH)). SOH comes from
+                    // racks.dbo.LPM_locstock — matches RawSkuMax's per-item grain.
+                    // (Using r.SOHToday from the OTS run here was wrong: division-
+                    // level SOH subtracted from a per-item band ceiling always
+                    // clipped cap to 0.)
                     (int Raw, int Cap) SkuMaxRawAndCapFor(OtsRunLookupRow r)
                     {
                         var sk = SkuMaxForCombo(r.Country, r.DivCode, r.VolumeGroup ?? "", line.OraPONo ?? "");
-                        return (sk, Math.Max(0, sk - r.SOHToday));
+                        var soh = itemSohByStore.GetValueOrDefault(
+                            (r.StoreID.ToUpperInvariant(), line.ItemCode.ToUpperInvariant()), 0);
+                        return (sk, Math.Max(0, sk - soh));
                     }
                     int CapFor(OtsRunLookupRow r) => SkuMaxRawAndCapFor(r).Cap;
 
