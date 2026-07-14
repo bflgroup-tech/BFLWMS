@@ -158,15 +158,14 @@ public class ReportsService(IOnPremConnectionResolver resolver)
     // ===================== Counting Completion Report (Summary) =====================
     /// <summary>
     /// Reads BFLDATA.dbo.BuildingCompletionSumm — grain is one row per ContNo x
-    /// LPM Month x Division x Brand. There is no stored Country column on that
-    /// table, so Country is derived by matching BFLDATA.dbo.DataSettings.ISOCOUNTRYCODE
-    /// against the ContNo prefix (e.g. "AE" for UAE). Output is one row per
-    /// (Country, ContNo), with LPM Months / Divisions / Brands comma-joined as
-    /// distinct values (STUFF/FOR XML PATH instead of STRING_AGG(DISTINCT ...) —
-    /// the latter needs SQL Server 2022+/compat level 160, not guaranteed here).
+    /// LPM Month x Division x Brand, with Country stored directly on the table.
+    /// Output is one row per (Country, ContNo), with LPM Months / Divisions /
+    /// Brands comma-joined as distinct values (STUFF/FOR XML PATH instead of
+    /// STRING_AGG(DISTINCT ...) — the latter needs SQL Server 2022+/compat
+    /// level 160, not guaranteed here).
     ///
     /// ASSUMED column names on BuildingCompletionSumm — adjust if the live schema
-    /// differs: ContNo, CountingCompletionDate, PONo, CountingStartDate,
+    /// differs: Country, ContNo, CountingCompletionDate, PONo, CountingStartDate,
     /// CountedQty, LPMMonth, Division, Brand.
     /// </summary>
     public async Task<List<CountingCompletionSummaryRow>> GetCountingCompletionSummaryAsync(
@@ -174,14 +173,8 @@ public class ReportsService(IOnPremConnectionResolver resolver)
     {
         await using var c = OpenOnPremBackup();
         var rows = await c.QueryAsync<CountingCompletionSummaryRow>(new CommandDefinition(@"
-            ;WITH CountryCodes AS (
-                SELECT DISTINCT SIMCountry, ISOCOUNTRYCODE
-                  FROM BFLDATA.dbo.DataSettings
-                 WHERE SIMCountry IS NOT NULL
-                   AND ISOCOUNTRYCODE IS NOT NULL AND ISOCOUNTRYCODE <> ''
-            ),
-            Base AS (
-                SELECT cc.SIMCountry AS Country,
+            ;WITH Base AS (
+                SELECT s.Country,
                        s.ContNo,
                        s.CountingCompletionDate,
                        s.PONo,
@@ -191,10 +184,9 @@ public class ReportsService(IOnPremConnectionResolver resolver)
                        s.Division,
                        s.Brand
                   FROM BFLDATA.dbo.BuildingCompletionSumm s
-                  JOIN CountryCodes cc ON LEFT(s.ContNo, LEN(cc.ISOCOUNTRYCODE)) = cc.ISOCOUNTRYCODE
                  WHERE s.CountingCompletionDate >= @from
                    AND s.CountingCompletionDate <  @toExclusive
-                   AND (@country IS NULL OR cc.SIMCountry = @country)
+                   AND (@country IS NULL OR s.Country = @country)
             )
             SELECT
                 b.Country,
