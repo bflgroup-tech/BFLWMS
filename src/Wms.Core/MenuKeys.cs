@@ -28,6 +28,7 @@ public static class MenuKeys
     public const string RPT_RACKS                 = "RPT_RACKS";
     public const string RPT_TRANSFER_GIN_GRN      = "RPT_TRANSFER_GIN_GRN";
     public const string RPT_COUNTING_COMPLETION   = "RPT_COUNTING_COMPLETION";
+    public const string RPT_SYNC_DATA_COUNT       = "RPT_SYNC_DATA_COUNT";
 
     public const string ADMIN_USERS               = "ADMIN_USERS";
     public const string ADMIN_WH_MASTER           = "ADMIN_WH_MASTER";
@@ -73,6 +74,7 @@ public static class MenuKeys
         new MenuEntry(RPT_RACKS,             "Reports",             "Test Racks",                "reports/racks",             new[] { Roles.Admin, Roles.Reports }),
         new MenuEntry(RPT_TRANSFER_GIN_GRN,  "Reports",             "Transfer/GIN/GRN History",  "reports/transfer-gin-grn",  new[] { Roles.Admin, Roles.Reports }),
         new MenuEntry(RPT_COUNTING_COMPLETION,"Reports",            "Counting Completion Report","reports/counting-completion",new[] { Roles.Admin, Roles.Reports }),
+        new MenuEntry(RPT_SYNC_DATA_COUNT,   "Reports",            "Sync Data Count",           "reports/sync-data-count",   new[] { Roles.Admin, Roles.Reports }),
 
         new MenuEntry(ADMIN_USERS,           "Admin",               "Users & Roles",             "admin/users",               new[] { Roles.Admin }),
         new MenuEntry(ADMIN_WH_MASTER,       "Admin",               "WH Master",                 "admin/wh-master",           new[] { Roles.Admin }),
