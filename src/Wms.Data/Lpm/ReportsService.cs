@@ -166,7 +166,7 @@ public class ReportsService(IOnPremConnectionResolver resolver)
     /// 2022+/compat level 160, not guaranteed here).
     ///
     /// Column names confirmed against the live schema (2026-07-15): Country,
-    /// ContNo, Trndate (completion date), PUnumber (PO number), EntrDate (start
+    /// ContNo, Trndate (completion date), POnumber (PO number), EntrDate (start
     /// date), TotalCheckedQty, Division on BuildingCompletionSumm; ContNo, LPMDT
     /// (date) on BuildingCompletionDet. LPMDT is rendered as "MMM-yyyy" (e.g.
     /// "Jan-2026").
@@ -180,7 +180,7 @@ public class ReportsService(IOnPremConnectionResolver resolver)
                 SELECT s.Country,
                        s.ContNo,
                        s.Trndate         AS CountingCompletionDate,
-                       s.PUnumber        AS PONo,
+                       s.POnumber        AS PONo,
                        s.EntrDate        AS CountingStartDate,
                        s.TotalCheckedQty AS CountedQty,
                        s.Division
