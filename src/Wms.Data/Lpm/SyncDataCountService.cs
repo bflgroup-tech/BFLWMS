@@ -45,12 +45,15 @@ public class SyncDataCountService(IOnPremConnectionResolver resolver)
 
     public async Task<int> GetUpcBoxCountAsync(DateTime date, CancellationToken ct = default)
     {
-        await using var conn = new SqlConnection(OnPremCs());
+        // Connect directly to KSA server (bflksa DB) — avoids slow linked-server hop from OnPremBackup
+        var cs = new SqlConnectionStringBuilder(resolver.GetCountryConnectionString("KSA"))
+            { InitialCatalog = "bflksa", ConnectTimeout = 30 }.ConnectionString;
+        await using var conn = new SqlConnection(cs);
         await conn.OpenAsync(ct);
         return await conn.ExecuteScalarAsync<int>(new CommandDefinition(
-            "SELECT COUNT(boxno) FROM [bflksa]..upcboxhead WITH(NOLOCK) WHERE CAST(TrnDate AS DATE) = @date",
+            "SELECT COUNT(boxno) FROM usa..upcboxhead WITH(NOLOCK) WHERE CAST(TrnDate AS DATE) = @date",
             new { date = date.Date },
-            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            commandTimeout: 30, cancellationToken: ct));
     }
 
     public async Task<List<string>> GetCountriesAsync(CancellationToken ct = default)
