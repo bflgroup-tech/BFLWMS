@@ -166,10 +166,10 @@ public class ReportsService(IOnPremConnectionResolver resolver)
     /// 2022+/compat level 160, not guaranteed here).
     ///
     /// Column names confirmed against the live schema (2026-07-15): Country,
-    /// ContNo, Trndate (completion date), POnumber (PO number), EntrDate (start
-    /// date), TotalCheckedQty, Division on BuildingCompletionSumm; ContNo, LPMDT
-    /// (date) on BuildingCompletionDet. LPMDT is rendered as "MMM-yyyy" (e.g.
-    /// "Jan-2026").
+    /// ContNo, Trndate (completion date), POnumber (PO number), EntryDate
+    /// (start date), TotalCheckedQty, Division on BuildingCompletionSumm;
+    /// ContNo, LPMDT (date) on BuildingCompletionDet. LPMDT is rendered as
+    /// "MMM-yyyy" (e.g. "Jan-2026").
     /// </summary>
     public async Task<List<CountingCompletionSummaryRow>> GetCountingCompletionSummaryAsync(
         string? country, DateTime fromDate, DateTime toDate, CancellationToken ct = default)
@@ -181,7 +181,7 @@ public class ReportsService(IOnPremConnectionResolver resolver)
                        s.ContNo,
                        s.Trndate         AS CountingCompletionDate,
                        s.POnumber        AS PONo,
-                       s.EntrDate        AS CountingStartDate,
+                       s.EntryDate       AS CountingStartDate,
                        s.TotalCheckedQty AS CountedQty,
                        s.Division
                   FROM BFLDATA.dbo.BuildingCompletionSumm s
