@@ -45,6 +45,70 @@ public class SyncDataCountService(IOnPremConnectionResolver resolver)
         new SqlConnectionStringBuilder(resolver.GetCountryConnectionString(country))
             { InitialCatalog = dataName, ConnectTimeout = ConnectTimeoutSeconds }.ConnectionString;
 
+    public static readonly string[] AllCountries = ["KSA", "Qatar", "Bahrain", "Kuwait", "Malaysia"];
+
+    // Active countries — only these are queried; others show blanks
+    private static readonly HashSet<string> ActiveCountries = new(["KSA"], StringComparer.OrdinalIgnoreCase);
+
+    public async Task<List<SyncRowMulti>> GetMultiCountryAsync(DateTime date, CancellationToken ct = default)
+    {
+        // Run each active country in parallel; inactive ones get empty counts
+        var countryTasks = AllCountries.Select(async country =>
+        {
+            if (!ActiveCountries.Contains(country))
+                return (country, Descriptions.Select(d => (d, new CountryCount(null, null, null, null))).ToList());
+
+            // Resolve dataName for this country
+            string? dataName = null;
+            string? prefix   = null;
+            string  dbName   = country;
+            bool    isKsa    = string.Equals(country, "KSA", StringComparison.OrdinalIgnoreCase);
+
+            try
+            {
+                await using var setup = new SqlConnection(OnPremCs());
+                await setup.OpenAsync(ct);
+                dataName = await WhBoxItemsSource.ResolveDataNameAsync(setup, country, ct);
+            }
+            catch (Exception ex)
+            {
+                var err = $"Setup: {ex.Message}";
+                return (country, Descriptions.Select(d => (d, new CountryCount(null, err, null, err))).ToList());
+            }
+
+            if (string.IsNullOrWhiteSpace(dataName) || !DataNameToPrefix.TryGetValue(dataName, out prefix))
+            {
+                var err = $"No config for '{country}'";
+                return (country, Descriptions.Select(d => (d, new CountryCount(null, err, null, err))).ToList());
+            }
+
+            dbName = DataNameToDbName.GetValueOrDefault(dataName, dataName.ToUpperInvariant());
+            var onpremCs  = OnPremCs();
+            var countryCs = CountryCs(country, dataName);
+
+            var rowTasks = Descriptions.Select(async desc =>
+            {
+                var regTask = QueryOneAsync(desc, countryCs, dbName, dataName, prefix, isKsa, date.Date, date.Date, isHo: false, ct);
+                var hoTask  = QueryOneAsync(desc, onpremCs,  dbName, dataName, prefix, isKsa, date.Date, date.Date, isHo: true,  ct);
+                await Task.WhenAll(regTask, hoTask);
+                return (desc, new CountryCount(regTask.Result.Count, regTask.Result.Error, hoTask.Result.Count, hoTask.Result.Error));
+            });
+
+            return (country, (await Task.WhenAll(rowTasks)).ToList());
+        });
+
+        var countryResults = await Task.WhenAll(countryTasks);
+
+        // Pivot: description → country → CountryCount
+        return Descriptions.Select((desc, i) => new SyncRowMulti(
+            desc,
+            countryResults.ToDictionary(
+                cr => cr.country,
+                cr => cr.Item2.First(r => r.Item1 == desc).Item2,
+                StringComparer.OrdinalIgnoreCase)
+        )).ToList();
+    }
+
     public static List<SyncRow> AllErrorRows(string msg) =>
         Descriptions.Select(d => new SyncRow(d, null, null, msg, msg)).ToList();
 
