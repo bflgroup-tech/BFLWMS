@@ -105,17 +105,27 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
     {
         if (f.Country == UaeCountry)
         {
-            // UAE: everything runs on OnPremBackup via linked-server prefix.
-            await using var conn = OpenOnPrem();
-            var dataName = await WhBoxItemsSource.ResolveDataNameAsync(conn, f.Country, ct);
-            if (string.IsNullOrWhiteSpace(dataName))
-                throw new InvalidOperationException(
-                    $"No DataName found in BFLDATA.dbo.DataSettings for country '{f.Country}'.");
-            var sql  = BuildSqlOnPrem(dataName, f, out var parms);
-            var rows = await conn.QueryAsync<TransferHistoryRow>(
-                new CommandDefinition(sql, parms,
-                    commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-            return rows.AsList();
+            // UAE stores each have their own linked-server DataName on OnPremBackup.
+            // GRNHeaderRF/TransferReverse live in those linked-server DBs, not in
+            // BFLDATA.dbo. Resolve all UAE DataNames then query each via linked server.
+            await using var onprem = OpenOnPrem();
+            var uaeDataNames = (await onprem.QueryAsync<string>(new CommandDefinition(@"
+                SELECT DISTINCT DataName
+                  FROM BFLDATA.dbo.DataSettings
+                 WHERE SIMCountry = 'UAE'
+                   AND DataName IS NOT NULL AND LTRIM(RTRIM(DataName)) <> ''",
+                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).AsList();
+
+            var all = new List<TransferHistoryRow>();
+            foreach (var dn in uaeDataNames)
+            {
+                var sql  = BuildSqlOnPrem(dn, f, out var parms, simCountry: UaeCountry);
+                var rows = await onprem.QueryAsync<TransferHistoryRow>(
+                    new CommandDefinition(sql, parms,
+                        commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+                all.AddRange(rows);
+            }
+            return all.OrderBy(r => r.TrfDate).ThenBy(r => r.TrfNo).ToList();
         }
         else
         {
@@ -147,16 +157,20 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
 
     // ── SQL builders ─────────────────────────────────────────────────────────
 
-    // OnPremBackup path (UAE): country DB tables accessed via linked-server prefix.
+    // OnPremBackup path: tables accessed via linked-server prefix [{dataName}].
+    // Pass simCountry (e.g. "UAE") to add a SIMCountry filter on DataSettings.
     private static string BuildSqlOnPrem(
-        string dataName, TransferHistoryFilter f, out DynamicParameters p)
+        string dataName, TransferHistoryFilter f, out DynamicParameters p,
+        string? simCountry = null)
     {
         p = new DynamicParameters();
         p.Add("@from", f.DateFrom.Date);
         p.Add("@to",   f.DateTo.Date.AddDays(1).AddSeconds(-1));
 
+        var simFilter = simCountry is null ? "" : $"\n   AND e.SIMCountry = '{simCountry}'";
+
         var sb = new StringBuilder($@"
-SELECT ROW_NUMBER() OVER (ORDER BY a.TrfNo) SrNo,
+SELECT ROW_NUMBER() OVER (ORDER BY a.TrfDate, a.TrfNo) SrNo,
        e.ShopName,
        a.TrfNo,
        a.TrfDate,
@@ -172,13 +186,13 @@ SELECT ROW_NUMBER() OVER (ORDER BY a.TrfNo) SrNo,
   JOIN  BFLDATA.dbo.DataSettings         e ON a.CostCodeTo = e.CostCodeTo
   LEFT JOIN [{dataName}]..TransferReverse f ON a.TrfNo = f.TrfNo
  WHERE a.TrfNo NOT LIKE 'FN%'
-   AND a.TrfDate >= @from AND a.TrfDate <= @to
+   AND a.TrfDate >= @from AND a.TrfDate <= @to{simFilter}
    AND e.ShopName NOT IN (
        SELECT ShopName FROM BFLDATA.dbo.DataSettings WHERE Concept = 'Warehouse'
    )");
 
         AppendCommonFilters(sb, p, f);
-        sb.Append("\n ORDER BY e.ShopName, a.TrfNo");
+        sb.Append("\n ORDER BY a.TrfDate, a.TrfNo");
         return sb.ToString();
     }
 
@@ -212,7 +226,7 @@ SELECT ROW_NUMBER() OVER (ORDER BY a.TrfNo) SrNo,
    )");
 
         AppendCommonFilters(sb, p, f);
-        sb.Append("\n ORDER BY e.ShopName, a.TrfNo");
+        sb.Append("\n ORDER BY a.TrfDate, a.TrfNo");
         return sb.ToString();
     }
 
