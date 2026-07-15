@@ -43,17 +43,46 @@ public class SyncDataCountService(IOnPremConnectionResolver resolver)
         new SqlConnectionStringBuilder(resolver.GetCountryConnectionString(country))
             { InitialCatalog = dataName, ConnectTimeout = ConnectTimeoutSeconds }.ConnectionString;
 
-    public async Task<int> GetUpcBoxCountAsync(DateTime date, CancellationToken ct = default)
+    public async Task<(int? Ho, string? HoError, int? Regional, string? RegionalError)> GetUpcBoxCountAsync(
+        DateTime date, CancellationToken ct = default)
     {
-        // Connect directly to KSA server (bflksa DB) — avoids slow linked-server hop from OnPremBackup
-        var cs = new SqlConnectionStringBuilder(resolver.GetCountryConnectionString("KSA"))
-            { InitialCatalog = "bflksa", ConnectTimeout = 30 }.ConnectionString;
-        await using var conn = new SqlConnection(cs);
-        await conn.OpenAsync(ct);
-        return await conn.ExecuteScalarAsync<int>(new CommandDefinition(
-            "SELECT COUNT(boxno) FROM usa..upcboxhead WITH(NOLOCK) WHERE CAST(TrnDate AS DATE) = @date",
-            new { date = date.Date },
-            commandTimeout: 30, cancellationToken: ct));
+        var hoTask       = QueryUpcBoxHoAsync(date, ct);
+        var regionalTask = QueryUpcBoxRegionalAsync(date, ct);
+        await Task.WhenAll(hoTask, regionalTask);
+        return (hoTask.Result.Count, hoTask.Result.Error,
+                regionalTask.Result.Count, regionalTask.Result.Error);
+    }
+
+    private async Task<(int? Count, string? Error)> QueryUpcBoxHoAsync(DateTime date, CancellationToken ct)
+    {
+        try
+        {
+            var cs = new SqlConnectionStringBuilder(resolver.GetOnPremBackupConnectionString())
+                { ConnectTimeout = 30 }.ConnectionString;
+            await using var conn = new SqlConnection(cs);
+            await conn.OpenAsync(ct);
+            var count = await conn.ExecuteScalarAsync<int>(new CommandDefinition(
+                "SELECT COUNT(boxno) FROM [bflksa]..upcboxhead WITH(NOLOCK) WHERE CAST(TrnDate AS DATE) = @date",
+                new { date = date.Date }, commandTimeout: 30, cancellationToken: ct));
+            return (count, null);
+        }
+        catch (Exception ex) { return (null, ex.Message); }
+    }
+
+    private async Task<(int? Count, string? Error)> QueryUpcBoxRegionalAsync(DateTime date, CancellationToken ct)
+    {
+        try
+        {
+            var cs = new SqlConnectionStringBuilder(resolver.GetCountryConnectionString("KSA"))
+                { InitialCatalog = "bflksa", ConnectTimeout = 30 }.ConnectionString;
+            await using var conn = new SqlConnection(cs);
+            await conn.OpenAsync(ct);
+            var count = await conn.ExecuteScalarAsync<int>(new CommandDefinition(
+                "SELECT COUNT(boxno) FROM usa..upcboxhead WITH(NOLOCK) WHERE CAST(TrnDate AS DATE) = @date",
+                new { date = date.Date }, commandTimeout: 30, cancellationToken: ct));
+            return (count, null);
+        }
+        catch (Exception ex) { return (null, ex.Message); }
     }
 
     public async Task<List<string>> GetCountriesAsync(CancellationToken ct = default)
