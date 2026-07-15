@@ -62,7 +62,7 @@ public class SyncDataCountService(IOnPremConnectionResolver resolver)
 
     public async Task<List<string>> GetCountriesAsync(CancellationToken ct = default)
     {
-        await using var c = OpenOnPrem();
+        using var c = OpenOnPrem();
         var rows = await c.QueryAsync<string>(new CommandDefinition(@"
             SELECT DISTINCT SIMCountry
               FROM BFLDATA.dbo.DataSettings
@@ -76,27 +76,53 @@ public class SyncDataCountService(IOnPremConnectionResolver resolver)
 
     public async Task<List<SyncRow>> GetCountsAsync(SyncFilter f, CancellationToken ct = default)
     {
-        await using var onprem = OpenOnPrem();
+        string? setupError = null;
+        string? dataName   = null;
+        string? prefix     = null;
+        string  dbName     = f.Country.ToUpperInvariant();
+        var     isKsa      = string.Equals(f.Country, "KSA", StringComparison.OrdinalIgnoreCase);
+        var     from       = f.DateFrom.Date;
+        var     to         = f.DateTo.Date;
 
-        var dataName = await WhBoxItemsSource.ResolveDataNameAsync(onprem, f.Country, ct);
-        if (string.IsNullOrWhiteSpace(dataName))
-            throw new InvalidOperationException($"No DataName found for country '{f.Country}'.");
+        SqlConnection? onprem   = null;
+        SqlConnection? regional = null;
 
-        if (!DataNameToPrefix.TryGetValue(dataName, out var prefix))
-            throw new InvalidOperationException($"No prefix mapping for DataName '{dataName}'.");
+        try
+        {
+            onprem   = OpenOnPrem();
+            dataName = await WhBoxItemsSource.ResolveDataNameAsync(onprem, f.Country, ct);
+            if (string.IsNullOrWhiteSpace(dataName))
+                setupError = $"No DataName found for country '{f.Country}' in BFLDATA.dbo.DataSettings.";
+            else if (!DataNameToPrefix.TryGetValue(dataName, out prefix))
+                setupError = $"No prefix mapping for DataName '{dataName}'.";
+            else
+                dbName = DataNameToDbName.GetValueOrDefault(dataName, dataName.ToUpperInvariant());
 
-        var dbName = DataNameToDbName.GetValueOrDefault(dataName, dataName.ToUpperInvariant());
-        var isKsa  = string.Equals(f.Country, "KSA", StringComparison.OrdinalIgnoreCase);
-        var from   = f.DateFrom.Date;
-        var to     = f.DateTo.Date;
+            if (setupError is null)
+                regional = OpenCountry(f.Country, dataName!);
+        }
+        catch (Exception ex)
+        {
+            setupError = ex.Message;
+        }
 
-        await using var regional = OpenCountry(f.Country, dataName);
+        if (setupError is not null || regional is null || onprem is null)
+        {
+            // Return all rows with the setup error so the table is visible
+            return Descriptions.Select(d => new SyncRow(d, null, null, setupError, setupError)).ToList();
+        }
 
-        // Run all per-table queries independently so one failure doesn't block others
-        var queries = Descriptions.Select(desc => RunBothAsync(
-            desc, regional, onprem, dbName, dataName, prefix, isKsa, from, to, ct)).ToList();
-
-        return (await Task.WhenAll(queries)).ToList();
+        try
+        {
+            var queries = Descriptions.Select(desc => RunBothAsync(
+                desc, regional, onprem, dbName, dataName!, prefix!, isKsa, from, to, ct)).ToList();
+            return (await Task.WhenAll(queries)).ToList();
+        }
+        finally
+        {
+            await regional.DisposeAsync();
+            await onprem.DisposeAsync();
+        }
     }
 
     private async Task<SyncRow> RunBothAsync(

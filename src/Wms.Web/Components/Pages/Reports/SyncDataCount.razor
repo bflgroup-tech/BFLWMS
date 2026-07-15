@@ -39,7 +39,7 @@
     <div class="aiwms-alert aiwms-alert-error" style="margin-bottom:16px;">@_error</div>
 }
 
-@if (_rows is not null)
+@if (_rows is not null || _loaded)
 {
     <div style="overflow-x:auto;">
         <table class="aiwms-table" style="min-width:420px;">
@@ -51,7 +51,7 @@
                 </tr>
             </thead>
             <tbody>
-                @foreach (var r in _rows)
+                @foreach (var r in (_rows ?? new()))
                 {
                     var mismatch = r.Regional.HasValue && r.HO.HasValue && r.Regional != r.HO;
                     <tr style="@(mismatch ? "background:var(--color-error-subtle, #fff0f0);" : "")">
@@ -90,6 +90,7 @@
     private DateTime _dateFrom = DateTime.Today.AddDays(-1);
     private DateTime _dateTo   = DateTime.Today.AddDays(-1);
     private bool    _loading;
+    private bool    _loaded;
     private string? _error;
 
     protected override async Task OnInitializedAsync()
@@ -106,6 +107,7 @@
     {
         if (string.IsNullOrEmpty(_country)) return;
         _loading = true;
+        _loaded  = false;
         _error   = null;
         _rows    = null;
         StateHasChanged();
@@ -120,6 +122,7 @@
         finally
         {
             _loading = false;
+            _loaded  = true;
             StateHasChanged();
         }
     }
