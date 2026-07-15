@@ -485,8 +485,10 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         var weeksInMonth  = (int)Math.Ceiling(daysInMonth / 7.0);
         var runDay        = DateTime.UtcNow.AddHours(4);
         var isCurrentGst  = runDay.Year == year && runDay.Month == month;
+        // Weeks fully completed as of the run day — integer division rounds
+        // DOWN (day 15 → 2 weeks, not 3; day 21 → 3; day 28 → 4).
         var weeksElapsed  = isCurrentGst
-            ? Math.Min(weeksInMonth, (int)Math.Ceiling(runDay.Day / 7.0))
+            ? Math.Min(weeksInMonth, runDay.Day / 7)
             : weeksInMonth;    // for past/future months, treat as fully-elapsed
         var results = new List<OtsPoAllocationRow>(baseRows.Count);
         foreach (var r in baseRows)
