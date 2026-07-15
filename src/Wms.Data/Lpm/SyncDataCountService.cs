@@ -48,7 +48,7 @@ public class SyncDataCountService(IOnPremConnectionResolver resolver)
         await using var conn = new SqlConnection(OnPremCs());
         await conn.OpenAsync(ct);
         return await conn.ExecuteScalarAsync<int>(new CommandDefinition(
-            "SELECT COUNT(boxno) FROM usa..upcboxhead WITH(NOLOCK) WHERE CAST(TrnDate AS DATE) = @date",
+            "SELECT COUNT(boxno) FROM [bflksa]..upcboxhead WITH(NOLOCK) WHERE CAST(TrnDate AS DATE) = @date",
             new { date = date.Date },
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
     }
