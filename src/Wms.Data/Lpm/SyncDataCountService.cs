@@ -45,7 +45,7 @@ public class SyncDataCountService(IOnPremConnectionResolver resolver)
         new SqlConnectionStringBuilder(resolver.GetCountryConnectionString(country))
             { InitialCatalog = dataName, ConnectTimeout = ConnectTimeoutSeconds }.ConnectionString;
 
-    internal static readonly string[] AllCountries = ["KSA", "Qatar", "Bahrain", "Kuwait", "Malaysia"];
+    public static readonly string[] AllCountries = ["KSA", "Qatar", "Bahrain", "Kuwait", "Malaysia"];
 
     // Active countries — only these are queried; others show blanks
     private static readonly HashSet<string> ActiveCountries = new(["KSA"], StringComparer.OrdinalIgnoreCase);
