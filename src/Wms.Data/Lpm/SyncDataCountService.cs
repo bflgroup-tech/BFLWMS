@@ -104,7 +104,7 @@ public class SyncDataCountService(IOnPremConnectionResolver resolver)
             desc,
             countryResults.ToDictionary(
                 cr => cr.country,
-                cr => cr.Item2.First(r => r.d == desc).Item2,
+                cr => cr.Item2.First(r => r.Item1 == desc).Item2,
                 StringComparer.OrdinalIgnoreCase)
         )).ToList();
     }
