@@ -38,13 +38,13 @@
 
         <div>
             <label class="aiwms-filter-label">TRANSFER DATE FROM</label>
-            <input type="date" @bind="_dateFrom"
+            <input type="date" @bind="_dateFrom" @bind:format="yyyy-MM-dd"
                    style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white" />
         </div>
 
         <div>
             <label class="aiwms-filter-label">TRANSFER DATE TO</label>
-            <input type="date" @bind="_dateTo"
+            <input type="date" @bind="_dateTo" @bind:format="yyyy-MM-dd"
                    style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white" />
         </div>
 
