@@ -15,7 +15,6 @@
     <div>
         <label class="aiwms-filter-label">COUNTRY</label>
         <select @bind="_country" style="width:160px; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;">
-            <option value="">-- Select --</option>
             @foreach (var c in _countries) { <option value="@c">@c</option> }
         </select>
     </div>
@@ -77,7 +76,11 @@
 
     protected override async Task OnInitializedAsync()
     {
-        try { _countries = await Svc.GetCountriesAsync(); }
+        try
+        {
+            _countries = await Svc.GetCountriesAsync();
+            if (_countries.Count > 0) _country = _countries[0];
+        }
         catch (Exception ex) { _error = $"Could not load countries: {ex.Message}"; }
     }
 
