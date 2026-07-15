@@ -216,7 +216,7 @@
                             <td>@r.EOMMonth</td>
                             <td style="text-align:right">@r.TgtEOM.ToString("N0")</td>
                             <td style="text-align:right">@r.PrevMonthEOM.ToString("N0")</td>
-                            <td style="text-align:right">@(r.WkReduction == 0m ? "" : r.WkReduction.ToString("F2"))</td>
+                            <td style="text-align:right">@(r.WkReduction == 0m ? "" : Math.Round(r.WkReduction).ToString("N0"))</td>
                             <td style="text-align:right">@r.CurrentEOW.ToString("N0")</td>
                             <td style="text-align:right">@r.SOHToday.ToString("N0")</td>
                             <td style="text-align:right">@r.WeeksToInclude</td>
@@ -492,7 +492,7 @@
             ws.Cell(row, 8).Value  = r.EOMMonth;
             ws.Cell(row, 9).Value  = r.TgtEOM;
             ws.Cell(row,10).Value  = r.PrevMonthEOM;
-            ws.Cell(row,11).Value  = r.WkReduction;
+            ws.Cell(row,11).Value  = (int)Math.Round(r.WkReduction);
             ws.Cell(row,12).Value  = r.CurrentEOW;
             ws.Cell(row,13).Value  = r.SOHToday;
             ws.Cell(row,14).Value  = r.WeeksToInclude;
