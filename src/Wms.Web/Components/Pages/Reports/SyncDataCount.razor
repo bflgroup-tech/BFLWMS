@@ -21,26 +21,64 @@
     </button>
 </div>
 
-<p style="font-size:15px; margin-top:8px;">@_message</p>
+@if (_loaded)
+{
+    <table class="aiwms-table" style="max-width:500px;">
+        <thead>
+            <tr>
+                <th>Table</th>
+                <th style="text-align:right;">HO (OnPremBackup)</th>
+                <th style="text-align:right;">Regional (KSA)</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr style="@(_hoCount.HasValue && _regCount.HasValue && _hoCount != _regCount ? "background:#fff0f0;" : "")">
+                <td>UPC Box</td>
+                <td style="text-align:right; @(_hoError is not null ? "color:orange;" : "")">
+                    @if (_hoError is not null)
+                    { <span title="@_hoError">⚠ @_hoError</span> }
+                    else
+                    { @(_hoCount?.ToString("N0") ?? "–") }
+                </td>
+                <td style="text-align:right; @(_regError is not null ? "color:orange;" : "")">
+                    @if (_regError is not null)
+                    { <span title="@_regError">⚠ @_regError</span> }
+                    else
+                    { @(_regCount?.ToString("N0") ?? "–") }
+                </td>
+            </tr>
+        </tbody>
+    </table>
+}
 
 @code {
-    private DateTime _date    = DateTime.Today.AddDays(-1);
-    private bool     _loading = false;
-    private string   _message = "Select a date and click Load.";
+    private DateTime _date     = DateTime.Today.AddDays(-1);
+    private bool     _loading  = false;
+    private bool     _loaded   = false;
+    private int?     _hoCount;
+    private int?     _regCount;
+    private string?  _hoError;
+    private string?  _regError;
 
     private async Task LoadAsync()
     {
         _loading = true;
-        _message = "Querying…";
+        _loaded  = false;
         StateHasChanged();
         try
         {
-            var count = await Svc.GetUpcBoxCountAsync(_date);
-            _message = $"UPC Box count for KSA on {_date:yyyy-MM-dd}: {count:N0}";
+            var result = await Svc.GetUpcBoxCountAsync(_date);
+            _hoCount  = result.Ho;
+            _hoError  = result.HoError;
+            _regCount = result.Regional;
+            _regError = result.RegionalError;
+            _loaded   = true;
         }
         catch (Exception ex)
         {
-            _message = $"Error: {ex.Message}";
+            _hoError  = ex.Message;
+            _regError = ex.Message;
+            _loaded   = true;
         }
         finally
         {
