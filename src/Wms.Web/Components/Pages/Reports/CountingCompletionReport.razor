@@ -1,11 +1,11 @@
-@page "/reports/counting-completion"
+﻿@page "/reports/counting-completion"
 @rendermode RenderMode.InteractiveServer
 @using Wms.Core
 @using Wms.Data.Lpm
 @attribute [Authorize(Policy = MenuKeys.RPT_COUNTING_COMPLETION)]
 @inject ReportsService Svc
 
-<PageTitle>WMS — Counting Completion Report</PageTitle>
+<PageTitle>WMS â€” Counting Completion Report</PageTitle>
 
 <div class="aiwms-page-header">
     <h2>Counting Completion Report</h2>
@@ -26,20 +26,20 @@
     <div style="display:grid; grid-template-columns: 1fr 1fr 1fr auto; gap:12px; align-items:end;">
         <div>
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COUNTRY</label>
-            <select @bind="_country" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;">
+            <select @bind="_country" @bind:format="yyyy-MM-dd" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;">
                 <option value="">All</option>
                 @foreach (var c in _countries) { <option value="@c">@c</option> }
             </select>
         </div>
         <div>
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COMPLETION FROM *</label>
-            <input type="date" @bind="_from" max="@DateTime.Today.ToString("yyyy-MM-dd")" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
+            <input type="date" @bind="_from" @bind:format="yyyy-MM-dd" max="@DateTime.Today.ToString("yyyy-MM-dd")" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
         </div>
         <div>
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COMPLETION TO *</label>
-            <input type="date" @bind="_to" max="@DateTime.Today.ToString("yyyy-MM-dd")" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
+            <input type="date" @bind="_to" @bind:format="yyyy-MM-dd" max="@DateTime.Today.ToString("yyyy-MM-dd")" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
         </div>
-        <button class="aiwms-btn aiwms-btn-primary" @onclick="LoadAsync" disabled="@(_loading || _from > _to)">@(_loading ? "Loading…" : "Load")</button>
+        <button class="aiwms-btn aiwms-btn-primary" @onclick="LoadAsync" disabled="@(_loading || _from > _to)">@(_loading ? "Loadingâ€¦" : "Load")</button>
     </div>
 
     @if (!string.IsNullOrEmpty(_message))
@@ -51,7 +51,7 @@
 @if (_rows.Count > 0)
 {
     <div class="aiwms-section">
-        <div class="aiwms-card-header">Summary — @_rows.Count row(s)</div>
+        <div class="aiwms-card-header">Summary â€” @_rows.Count row(s)</div>
         <table class="aiwms-table aiwms-table-dense">
             <thead>
                 <tr>
@@ -118,3 +118,4 @@
 
     private static string FmtDate(DateTime? d) => d?.ToString("dd-MMM-yyyy") ?? "";
 }
+

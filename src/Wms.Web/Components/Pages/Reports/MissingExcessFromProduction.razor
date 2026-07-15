@@ -1,4 +1,4 @@
-@page "/reports/missing-excess"
+﻿@page "/reports/missing-excess"
 @rendermode RenderMode.InteractiveServer
 @using System.Text
 @using Wms.Core
@@ -7,7 +7,7 @@
 @inject ReportsService Svc
 @inject Microsoft.JSInterop.IJSRuntime JS
 
-<PageTitle>WMS — Missing / Excess Items from Production</PageTitle>
+<PageTitle>WMS â€” Missing / Excess Items from Production</PageTitle>
 
 <div class="aiwms-page-header">
     <h2>Missing / Excess Items from Production</h2>
@@ -19,18 +19,18 @@
     <div style="display:grid; grid-template-columns: 1fr 1fr 1fr auto; gap:12px; align-items:end;">
         <div>
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COUNTRY *</label>
-            <select @bind="_country" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-family:var(--font-body); font-size:13px; background:white;">
+            <select @bind="_country" @bind:format="yyyy-MM-dd" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-family:var(--font-body); font-size:13px; background:white;">
                 <option value="">-- Select --</option>
                 @foreach (var c in _countries) { <option value="@c">@c</option> }
             </select>
         </div>
         <div>
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">FROM</label>
-            <input type="date" @bind="_fromDt" min="2026-02-21" max="@DateTime.Today.ToString("yyyy-MM-dd")" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-family:var(--font-body); font-size:13px; background:white;" />
+            <input type="date" @bind="_fromDt" @bind:format="yyyy-MM-dd" min="2026-02-21" max="@DateTime.Today.ToString("yyyy-MM-dd")" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-family:var(--font-body); font-size:13px; background:white;" />
         </div>
         <div>
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">TO</label>
-            <input type="date" @bind="_toDt" min="2026-02-21" max="@DateTime.Today.ToString("yyyy-MM-dd")" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-family:var(--font-body); font-size:13px; background:white;" />
+            <input type="date" @bind="_toDt" @bind:format="yyyy-MM-dd" min="2026-02-21" max="@DateTime.Today.ToString("yyyy-MM-dd")" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-family:var(--font-body); font-size:13px; background:white;" />
         </div>
         <button class="aiwms-btn aiwms-btn-primary" @onclick="LoadAsync" disabled="@(_busy || !CanLoad)">Load</button>
     </div>
@@ -44,7 +44,7 @@
 
     @if (_busy)
     {
-        <div style="margin-top:14px; padding:12px 14px; background:var(--bfl-yellow-lite); border:1px solid var(--bfl-yellow); border-radius:var(--r-sm); font-family:var(--font-display); font-size:13px; font-weight:800; color:var(--bfl-black)">@(_busyMsg ?? "Loading…")</div>
+        <div style="margin-top:14px; padding:12px 14px; background:var(--bfl-yellow-lite); border:1px solid var(--bfl-yellow); border-radius:var(--r-sm); font-family:var(--font-display); font-size:13px; font-weight:800; color:var(--bfl-black)">@(_busyMsg ?? "Loadingâ€¦")</div>
     }
     @if (!string.IsNullOrEmpty(_message))
     {
@@ -56,7 +56,7 @@
 {
     <div class="aiwms-section">
         <div class="aiwms-card-header" style="display:flex; align-items:center; justify-content:space-between">
-            <span>Box Detail — Excel only (Missing + Excess combined)</span>
+            <span>Box Detail â€” Excel only (Missing + Excess combined)</span>
             <button class="aiwms-btn aiwms-btn-secondary" @onclick="ExportBoxDetailAsync" disabled="@(_busy || !CanLoad)">Export to Excel</button>
         </div>
         <div style="padding:12px 14px; font-size:13px; color:var(--text-secondary)">
@@ -83,7 +83,7 @@ else if (_loaded && _view == "BoxSummary")
             </div>
         </div>
         <div class="aiwms-card-header" style="display:flex; align-items:center; justify-content:space-between">
-            <span>Box Summary by Month — @_boxMonths.Count rows</span>
+            <span>Box Summary by Month â€” @_boxMonths.Count rows</span>
             <button class="aiwms-btn aiwms-btn-secondary" @onclick="ExportBoxSummaryAsync" disabled="@_busy">Export to Excel</button>
         </div>
         <table class="aiwms-table aiwms-table-dense">
@@ -133,7 +133,7 @@ else if (_loaded && _view == "ItemSummary")
             </div>
         </div>
         <div class="aiwms-card-header" style="display:flex; align-items:center; justify-content:space-between">
-            <span>Item Summary by Division × Department — @_itemDivDept.Count rows</span>
+            <span>Item Summary by Division Ã— Department â€” @_itemDivDept.Count rows</span>
             <button class="aiwms-btn aiwms-btn-secondary" @onclick="ExportItemDetailsAsync" disabled="@_busy">Item Details Export</button>
         </div>
         <table class="aiwms-table aiwms-table-dense">
@@ -198,20 +198,20 @@ else if (_loaded && _view == "ItemSummary")
     private async Task LoadAsync()
     {
         if (!CanLoad) return;
-        _busy = true; _busyMsg = "Loading…"; _message = ""; _loaded = false; _sortKey = null;
+        _busy = true; _busyMsg = "Loadingâ€¦"; _message = ""; _loaded = false; _sortKey = null;
         try
         {
             switch (_view)
             {
                 case "BoxSummary":  _boxMonths   = await Svc.BoxSummaryByMonthFromSnapshotAsync(_country, _fromDt, _toDt); break;
                 case "ItemSummary": _itemDivDept = await Svc.ItemSummaryByDivDeptFromSnapshotAsync(_country, _fromDt, _toDt); break;
-                case "BoxDetail":   /* no UI — Export does the work */ break;
+                case "BoxDetail":   /* no UI â€” Export does the work */ break;
             }
             _loaded = true;
             var count = _view == "BoxSummary" ? _boxMonths.Count
                       : _view == "ItemSummary" ? _itemDivDept.Count
                       : 0;
-            ShowInfo(_view == "BoxDetail" ? "Ready — click Export to Excel." : $"Loaded {count} rows.");
+            ShowInfo(_view == "BoxDetail" ? "Ready â€” click Export to Excel." : $"Loaded {count} rows.");
         }
         catch (Exception ex) { ShowError($"Load failed: {ex.Message}"); }
         finally { _busy = false; _busyMsg = null; }
@@ -223,7 +223,7 @@ else if (_loaded && _view == "ItemSummary")
         if (_sortKey == key) _sortAsc = !_sortAsc;
         else { _sortKey = key; _sortAsc = true; }
     }
-    private string SortArrow(string key) => _sortKey == key ? (_sortAsc ? "▲" : "▼") : "";
+    private string SortArrow(string key) => _sortKey == key ? (_sortAsc ? "â–²" : "â–¼") : "";
 
     private IEnumerable<BoxSummaryMonthRow> SortedBoxMonths
     {
@@ -255,7 +255,7 @@ else if (_loaded && _view == "ItemSummary")
 
     private async Task ExportBoxSummaryAsync()
     {
-        _busy = true; _busyMsg = "Building Box Summary export…"; await InvokeAsync(StateHasChanged);
+        _busy = true; _busyMsg = "Building Box Summary exportâ€¦"; await InvokeAsync(StateHasChanged);
         try
         {
             var rows = await Svc.BoxSummaryFromSnapshotAsync(_country, _fromDt, _toDt);
@@ -273,7 +273,7 @@ else if (_loaded && _view == "ItemSummary")
     private async Task ExportBoxDetailAsync()
     {
         if (!CanLoad) return;
-        _busy = true; _busyMsg = "Building Box Detail export…"; await InvokeAsync(StateHasChanged);
+        _busy = true; _busyMsg = "Building Box Detail exportâ€¦"; await InvokeAsync(StateHasChanged);
         try
         {
             var rows = await Svc.BoxDetailCombinedFromSnapshotAsync(_country, _fromDt, _toDt);
@@ -290,7 +290,7 @@ else if (_loaded && _view == "ItemSummary")
 
     private async Task ExportItemDetailsAsync()
     {
-        _busy = true; _busyMsg = "Building Item Details export…"; await InvokeAsync(StateHasChanged);
+        _busy = true; _busyMsg = "Building Item Details exportâ€¦"; await InvokeAsync(StateHasChanged);
         try
         {
             var rows = await Svc.ItemSummaryFromSnapshotAsync(_country, _fromDt, _toDt);
@@ -318,3 +318,4 @@ else if (_loaded && _view == "ItemSummary")
     private void ShowError(string msg) { _message = msg; _messageIsError = true; }
     private void ShowInfo(string msg)  { _message = msg; _messageIsError = false; }
 }
+

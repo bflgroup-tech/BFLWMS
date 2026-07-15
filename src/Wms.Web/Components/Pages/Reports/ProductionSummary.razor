@@ -1,4 +1,4 @@
-@page "/reports/production-summary"
+﻿@page "/reports/production-summary"
 @rendermode RenderMode.InteractiveServer
 @using System.Text
 @using Wms.Core
@@ -7,30 +7,30 @@
 @inject ReportsService Svc
 @inject Microsoft.JSInterop.IJSRuntime JS
 
-<PageTitle>WMS — Production Summary Report</PageTitle>
+<PageTitle>WMS â€” Production Summary Report</PageTitle>
 
 <div class="aiwms-page-header">
     <h2>Production Summary Report</h2>
-    <p>Per-batch view of items scanned through QC (<code>usa.dbo.amechecking</code>), split by LPM vs Non-LPM via <code>LPMSIM_Batch.Sources</code>. Each picked date is one WH production day: <strong>06:00 GST → 06:00 GST next day</strong>.</p>
+    <p>Per-batch view of items scanned through QC (<code>usa.dbo.amechecking</code>), split by LPM vs Non-LPM via <code>LPMSIM_Batch.Sources</code>. Each picked date is one WH production day: <strong>06:00 GST â†’ 06:00 GST next day</strong>.</p>
 </div>
 
 <div class="aiwms-section">
     <div style="display:grid; grid-template-columns: 1fr 1fr 1fr auto auto; gap:12px; align-items:end;">
         <div>
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COUNTRY *</label>
-            <select @bind="_country" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;">
+            <select @bind="_country" @bind:format="yyyy-MM-dd" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;">
                 @foreach (var c in _countries) { <option value="@c">@c</option> }
             </select>
         </div>
         <div>
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">FROM</label>
-            <input type="date" @bind="_from" max="@DateTime.Today.ToString("yyyy-MM-dd")" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
+            <input type="date" @bind="_from" @bind:format="yyyy-MM-dd" max="@DateTime.Today.ToString("yyyy-MM-dd")" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
         </div>
         <div>
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">TO</label>
-            <input type="date" @bind="_to" max="@DateTime.Today.ToString("yyyy-MM-dd")" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
+            <input type="date" @bind="_to" @bind:format="yyyy-MM-dd" max="@DateTime.Today.ToString("yyyy-MM-dd")" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
         </div>
-        <button class="aiwms-btn aiwms-btn-primary" @onclick="LoadAsync" disabled="@(_loading || !CanLoad)">@(_loading ? "Loading…" : "Load")</button>
+        <button class="aiwms-btn aiwms-btn-primary" @onclick="LoadAsync" disabled="@(_loading || !CanLoad)">@(_loading ? "Loadingâ€¦" : "Load")</button>
         <button class="aiwms-btn aiwms-btn-secondary" @onclick="ExportCsvAsync" disabled="@(_rows.Count == 0 || _loading)">Export to Excel</button>
     </div>
 
@@ -44,7 +44,7 @@
 {
     <div class="aiwms-section" style="padding:0; overflow:hidden">
         <MudProgressLinear Color="Color.Primary" Indeterminate="true" Size="Size.Medium" />
-        <div style="padding:14px; font-style:italic; color:var(--text-secondary)">@(_loadingMsg ?? "Loading…")</div>
+        <div style="padding:14px; font-style:italic; color:var(--text-secondary)">@(_loadingMsg ?? "Loadingâ€¦")</div>
     </div>
 }
 else if (_rows.Count > 0)
@@ -242,8 +242,8 @@ else if (_loadedOnce && _rows.Count == 0)
         if (!CanLoad) return;
         _loading = true; _message = ""; _loadedOnce = false;
         _loadingMsg = string.Equals(_country, "UAE", StringComparison.OrdinalIgnoreCase)
-            ? "Reading scans from UAE master…"
-            : $"Connecting to {_country} server, reading scans, then enriching against LPMSIM_Batch…";
+            ? "Reading scans from UAE masterâ€¦"
+            : $"Connecting to {_country} server, reading scans, then enriching against LPMSIM_Batchâ€¦";
         _rows.Clear(); _summary.Clear(); _overallStoreQty = 0; _transferQty = 0;
         await InvokeAsync(StateHasChanged);
         try
@@ -323,3 +323,4 @@ else if (_loadedOnce && _rows.Count == 0)
     private void ShowError(string msg) { _message = msg; _isError = true; }
     private void ShowInfo(string msg)  { _message = msg; _isError = false; }
 }
+

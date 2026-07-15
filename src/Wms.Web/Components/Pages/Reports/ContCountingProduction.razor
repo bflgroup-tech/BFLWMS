@@ -1,4 +1,4 @@
-@page "/reports/cont-counting-production"
+﻿@page "/reports/cont-counting-production"
 @rendermode RenderMode.InteractiveServer
 @using Wms.Core
 @using Wms.Data.Lpm
@@ -6,26 +6,26 @@
 @inject CountingReportsService Svc
 @inject ICurrentUser Me
 
-<PageTitle>WMS — Cont Counting Production Report</PageTitle>
+<PageTitle>WMS â€” Cont Counting Production Report</PageTitle>
 
 <div class="aiwms-page-header">
     <h2>Cont Counting Production Report</h2>
-    <p>Non-reversed scans from <code>dbo.WMSContBuildScanData</code> grouped by <b>ContNo × TrnDate × User</b>. Defaults to today.</p>
+    <p>Non-reversed scans from <code>dbo.WMSContBuildScanData</code> grouped by <b>ContNo Ã— TrnDate Ã— User</b>. Defaults to today.</p>
 </div>
 
 <div class="aiwms-section">
     <div style="display:grid; grid-template-columns: 1fr 1fr auto; gap:12px; align-items:end">
         <div>
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">FROM</label>
-            <input type="date" @bind="_from" max="@DateTime.Today.ToString("yyyy-MM-dd")"
+            <input type="date" @bind="_from" @bind:format="yyyy-MM-dd" max="@DateTime.Today.ToString("yyyy-MM-dd")"
                    style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
         </div>
         <div>
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">TO</label>
-            <input type="date" @bind="_to" max="@DateTime.Today.ToString("yyyy-MM-dd")"
+            <input type="date" @bind="_to" @bind:format="yyyy-MM-dd" max="@DateTime.Today.ToString("yyyy-MM-dd")"
                    style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
         </div>
-        <button class="aiwms-btn aiwms-btn-primary" @onclick="LoadAsync" disabled="@(_loading || _to < _from)">@(_loading ? "Loading…" : "Load")</button>
+        <button class="aiwms-btn aiwms-btn-primary" @onclick="LoadAsync" disabled="@(_loading || _to < _from)">@(_loading ? "Loadingâ€¦" : "Load")</button>
     </div>
     @if (!string.IsNullOrEmpty(_message))
     {
@@ -36,7 +36,7 @@
 @if (_rows.Count > 0)
 {
     <div class="aiwms-section">
-        <div class="aiwms-card-header">@_rows.Count row(s) — @_rows.Sum(r => r.Qty).ToString("N0") total scan(s)</div>
+        <div class="aiwms-card-header">@_rows.Count row(s) â€” @_rows.Sum(r => r.Qty).ToString("N0") total scan(s)</div>
         <table class="aiwms-table aiwms-table-dense">
             <thead>
                 <tr>
@@ -82,3 +82,4 @@
         finally { _loading = false; }
     }
 }
+
