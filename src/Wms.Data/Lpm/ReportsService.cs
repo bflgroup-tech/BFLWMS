@@ -158,17 +158,17 @@ public class ReportsService(IOnPremConnectionResolver resolver)
     // ===================== Counting Completion Report (Summary) =====================
     /// <summary>
     /// Reads BFLDATA.dbo.BuildingCompletionSumm — grain is one row per ContNo x
-    /// LPM Month x Division, with Country stored directly on the table.
-    /// Output is one row per (Country, ContNo), with LPM Months / Divisions
-    /// comma-joined as distinct values (STUFF/FOR XML PATH instead of
-    /// STRING_AGG(DISTINCT ...) — the latter needs SQL Server 2022+/compat
-    /// level 160, not guaranteed here).
+    /// Division, with Country stored directly on the table. LPM Months come from
+    /// a separate detail table, BFLDATA.dbo.BuildingCompletionDet (LPMDT column),
+    /// correlated by ContNo. Output is one row per (Country, ContNo), with LPM
+    /// Months / Divisions comma-joined as distinct values (STUFF/FOR XML PATH
+    /// instead of STRING_AGG(DISTINCT ...) — the latter needs SQL Server
+    /// 2022+/compat level 160, not guaranteed here).
     ///
-    /// Column names on BuildingCompletionSumm, confirmed against the live schema
-    /// (2026-07-14) except LPMMonth, which is still unverified — adjust if it
-    /// differs: Country, ContNo, Trndate (completion date), POnumber,
-    /// EntrDate (start date), TotalQty, LPMMonth (date), Division.
-    /// LPMMonth is rendered as "MMM-yyyy" (e.g. "Jan-2026").
+    /// Column names confirmed against the live schema (2026-07-15): Country,
+    /// ContNo, Trndate (completion date), POnumber, EntrDate (start date),
+    /// TotalQty, Division on BuildingCompletionSumm; ContNo, LPMDT (date) on
+    /// BuildingCompletionDet. LPMDT is rendered as "MMM-yyyy" (e.g. "Jan-2026").
     /// </summary>
     public async Task<List<CountingCompletionSummaryRow>> GetCountingCompletionSummaryAsync(
         string? country, DateTime fromDate, DateTime toDate, CancellationToken ct = default)
@@ -182,7 +182,6 @@ public class ReportsService(IOnPremConnectionResolver resolver)
                        s.POnumber   AS PONo,
                        s.EntrDate   AS CountingStartDate,
                        s.TotalQty   AS CountedQty,
-                       s.LPMMonth,
                        s.Division
                   FROM BFLDATA.dbo.BuildingCompletionSumm s
                  WHERE s.Trndate >= @from
@@ -199,11 +198,10 @@ public class ReportsService(IOnPremConnectionResolver resolver)
                 LpmMonths = STUFF((
                     SELECT ', ' + d.v
                       FROM (SELECT DISTINCT
-                                   FORMAT(x.LPMMonth, 'MMM-yyyy') AS v,
-                                   DATEFROMPARTS(YEAR(x.LPMMonth), MONTH(x.LPMMonth), 1) AS n
-                              FROM Base x
-                             WHERE x.Country = b.Country AND x.ContNo = b.ContNo
-                               AND x.LPMMonth IS NOT NULL) d
+                                   FORMAT(det.LPMDT, 'MMM-yyyy') AS v,
+                                   DATEFROMPARTS(YEAR(det.LPMDT), MONTH(det.LPMDT), 1) AS n
+                              FROM BFLDATA.dbo.BuildingCompletionDet det
+                             WHERE det.ContNo = b.ContNo AND det.LPMDT IS NOT NULL) d
                      ORDER BY d.n
                        FOR XML PATH('')), 1, 2, ''),
                 Divisions = STUFF((
