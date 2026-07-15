@@ -158,15 +158,16 @@ public class ReportsService(IOnPremConnectionResolver resolver)
     // ===================== Counting Completion Report (Summary) =====================
     /// <summary>
     /// Reads BFLDATA.dbo.BuildingCompletionSumm — grain is one row per ContNo x
-    /// LPM Month x Division x Brand, with Country stored directly on the table.
-    /// Output is one row per (Country, ContNo), with LPM Months / Divisions /
-    /// Brands comma-joined as distinct values (STUFF/FOR XML PATH instead of
+    /// LPM Month x Division, with Country stored directly on the table.
+    /// Output is one row per (Country, ContNo), with LPM Months / Divisions
+    /// comma-joined as distinct values (STUFF/FOR XML PATH instead of
     /// STRING_AGG(DISTINCT ...) — the latter needs SQL Server 2022+/compat
     /// level 160, not guaranteed here).
     ///
-    /// ASSUMED column names/types on BuildingCompletionSumm — adjust if the live
-    /// schema differs: Country, ContNo, CountingCompletionDate, PONo,
-    /// CountingStartDate, CountedQty, LPMMonth (date), Division, Brand.
+    /// Column names on BuildingCompletionSumm, confirmed against the live schema
+    /// (2026-07-14) except LPMMonth, which is still unverified — adjust if it
+    /// differs: Country, ContNo, Trndate (completion date), POnumber,
+    /// EntrDate (start date), TotalQty, LPMMonth (date), Division.
     /// LPMMonth is rendered as "MMM-yyyy" (e.g. "Jan-2026").
     /// </summary>
     public async Task<List<CountingCompletionSummaryRow>> GetCountingCompletionSummaryAsync(
@@ -177,16 +178,15 @@ public class ReportsService(IOnPremConnectionResolver resolver)
             ;WITH Base AS (
                 SELECT s.Country,
                        s.ContNo,
-                       s.CountingCompletionDate,
-                       s.PONo,
-                       s.CountingStartDate,
-                       s.CountedQty,
+                       s.Trndate    AS CountingCompletionDate,
+                       s.POnumber   AS PONo,
+                       s.EntrDate   AS CountingStartDate,
+                       s.TotalQty   AS CountedQty,
                        s.LPMMonth,
-                       s.Division,
-                       s.Brand
+                       s.Division
                   FROM BFLDATA.dbo.BuildingCompletionSumm s
-                 WHERE s.CountingCompletionDate >= @from
-                   AND s.CountingCompletionDate <  @toExclusive
+                 WHERE s.Trndate >= @from
+                   AND s.Trndate <  @toExclusive
                    AND (@country IS NULL OR s.Country = @country)
             )
             SELECT
@@ -212,14 +212,6 @@ public class ReportsService(IOnPremConnectionResolver resolver)
                               FROM Base x
                              WHERE x.Country = b.Country AND x.ContNo = b.ContNo
                                AND x.Division IS NOT NULL AND x.Division <> '') d
-                     ORDER BY d.v
-                       FOR XML PATH('')), 1, 2, ''),
-                Brands = STUFF((
-                    SELECT ', ' + d.v
-                      FROM (SELECT DISTINCT x.Brand AS v
-                              FROM Base x
-                             WHERE x.Country = b.Country AND x.ContNo = b.ContNo
-                               AND x.Brand IS NOT NULL AND x.Brand <> '') d
                      ORDER BY d.v
                        FOR XML PATH('')), 1, 2, '')
               FROM Base b
