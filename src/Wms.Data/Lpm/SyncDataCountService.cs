@@ -43,6 +43,16 @@ public class SyncDataCountService(IOnPremConnectionResolver resolver)
         new SqlConnectionStringBuilder(resolver.GetCountryConnectionString(country))
             { InitialCatalog = dataName, ConnectTimeout = ConnectTimeoutSeconds }.ConnectionString;
 
+    public async Task<int> GetUpcBoxCountAsync(DateTime date, CancellationToken ct = default)
+    {
+        await using var conn = new SqlConnection(OnPremCs());
+        await conn.OpenAsync(ct);
+        return await conn.ExecuteScalarAsync<int>(new CommandDefinition(
+            "SELECT COUNT(boxno) FROM usa..upcboxhead WITH(NOLOCK) WHERE CAST(TrnDate AS DATE) = @date",
+            new { date = date.Date },
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+    }
+
     public async Task<List<string>> GetCountriesAsync(CancellationToken ct = default)
     {
         await using var c = new SqlConnection(OnPremCs());
