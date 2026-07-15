@@ -2,8 +2,8 @@ namespace Wms.Data.Lpm;
 
 /// <summary>
 /// One row of the Counting Completion Report — Summary. One per (Country, ContNo);
-/// LpmMonths / Divisions are comma-joined distinct values across the
-/// container's underlying BuildingCompletionSumm rows.
+/// LpmMonths / Divisions / Brands are comma-joined distinct values across the
+/// container's underlying BuildingCompletionSumm/Det rows.
 /// </summary>
 public record CountingCompletionSummaryRow(
     string    Country,
@@ -13,4 +13,5 @@ public record CountingCompletionSummaryRow(
     DateTime? CountingStartDate,
     int       CountedQty,
     string?   LpmMonths,
-    string?   Divisions);
+    string?   Divisions,
+    string?   Brands);

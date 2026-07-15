@@ -9,7 +9,7 @@
 
 <div class="aiwms-page-header">
     <h2>Counting Completion Report</h2>
-    <p>One row per Country + Cont No. When a container has multiple LPM Months or Divisions, they're shown as a comma-separated list.</p>
+    <p>One row per Country + Cont No. When a container has multiple LPM Months, Divisions, or Brands, they're shown as a comma-separated list.</p>
 </div>
 
 <div class="aiwms-section">
@@ -63,6 +63,7 @@
                     <th style="text-align:right">Counted Qty</th>
                     <th>LPM Months</th>
                     <th>Divisions</th>
+                    <th>Brands</th>
                 </tr>
             </thead>
             <tbody>
@@ -77,6 +78,7 @@
                         <td style="text-align:right">@r.CountedQty.ToString("N0")</td>
                         <td>@r.LpmMonths</td>
                         <td>@r.Divisions</td>
+                        <td>@r.Brands</td>
                     </tr>
                 }
             </tbody>
