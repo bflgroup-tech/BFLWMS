@@ -21,69 +21,36 @@
     </button>
 </div>
 
-@if (_loaded)
-{
-    <table class="aiwms-table" style="max-width:500px;">
-        <thead>
-            <tr>
-                <th>Table</th>
-                <th style="text-align:right;">HO (OnPremBackup)</th>
-                <th style="text-align:right;">Regional (KSA)</th>
-            </tr>
-        </thead>
-        <tbody>
-            <tr style="@(_hoCount.HasValue && _regCount.HasValue && _hoCount != _regCount ? "background:#fff0f0;" : "")">
-                <td>UPC Box</td>
-                <td style="text-align:right; @(_hoError is not null ? "color:orange;" : "")">
-                    @if (_hoError is not null)
-                    { <span title="@_hoError">⚠ @_hoError</span> }
-                    else
-                    { @(_hoCount?.ToString("N0") ?? "–") }
-                </td>
-                <td style="text-align:right; @(_regError is not null ? "color:orange;" : "")">
-                    @if (_regError is not null)
-                    { <span title="@_regError">⚠ @_regError</span> }
-                    else
-                    { @(_regCount?.ToString("N0") ?? "–") }
-                </td>
-            </tr>
-        </tbody>
-    </table>
-}
+<p style="font-size:14px; white-space:pre-wrap;">@_message</p>
 
 @code {
-    private DateTime _date     = DateTime.Today.AddDays(-1);
-    private bool     _loading  = false;
-    private bool     _loaded   = false;
-    private int?     _hoCount;
-    private int?     _regCount;
-    private string?  _hoError;
-    private string?  _regError;
+    private DateTime _date    = DateTime.Today.AddDays(-1);
+    private bool     _loading = false;
+    private string   _message = "Select a date and click Load.";
 
-    private async Task LoadAsync()
+    private void LoadAsync()
     {
         _loading = true;
-        _loaded  = false;
-        StateHasChanged();
-        try
+        _message = "Connecting to KSA…";
+
+        _ = Task.Run(async () =>
         {
-            var result = await Svc.GetUpcBoxCountAsync(_date);
-            _hoCount  = result.Ho;
-            _hoError  = result.HoError;
-            _regCount = result.Regional;
-            _regError = result.RegionalError;
-            _loaded   = true;
-        }
-        catch (Exception ex)
-        {
-            _hoError  = ex.Message;
-            _regError = ex.Message;
-            _loaded   = true;
-        }
-        finally
-        {
-            _loading = false;
-            StateHasChanged();
-        }
+            string msg;
+            try
+            {
+                var count = await Svc.GetUpcBoxKsaCountAsync(_date);
+                msg = $"KSA (Regional) upcboxhead on {_date:yyyy-MM-dd}: {count:N0}";
+            }
+            catch (Exception ex)
+            {
+                msg = $"Error: {ex.Message}";
+            }
+            await InvokeAsync(() =>
+            {
+                _message = msg;
+                _loading  = false;
+                StateHasChanged();
+            });
+        });
     }
 }
