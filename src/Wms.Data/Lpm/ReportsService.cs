@@ -158,16 +158,18 @@ public class ReportsService(IOnPremConnectionResolver resolver)
     // ===================== Counting Completion Report (Summary) =====================
     /// <summary>
     /// Reads BFLDATA.dbo.BuildingCompletionSumm — grain is one row per ContNo x
-    /// LPM Month x Division x Brand, with Country stored directly on the table.
-    /// Output is one row per (Country, ContNo), with LPM Months / Divisions /
-    /// Brands comma-joined as distinct values (STUFF/FOR XML PATH instead of
-    /// STRING_AGG(DISTINCT ...) — the latter needs SQL Server 2022+/compat
-    /// level 160, not guaranteed here).
+    /// Division, with Country stored directly on the table. LPM Months come from
+    /// a separate detail table, BFLDATA.dbo.BuildingCompletionDet (LPMDT column),
+    /// correlated by ContNo. Output is one row per (Country, ContNo), with LPM
+    /// Months / Divisions comma-joined as distinct values (STUFF/FOR XML PATH
+    /// instead of STRING_AGG(DISTINCT ...) — the latter needs SQL Server
+    /// 2022+/compat level 160, not guaranteed here).
     ///
-    /// ASSUMED column names/types on BuildingCompletionSumm — adjust if the live
-    /// schema differs: Country, ContNo, CountingCompletionDate, PONo,
-    /// CountingStartDate, CountedQty, LPMMonth (date), Division, Brand.
-    /// LPMMonth is rendered as "MMM-yyyy" (e.g. "Jan-2026").
+    /// Column names confirmed against the live schema (2026-07-15): Country,
+    /// ContNo, Trndate (completion date), POnumber (PO number), EntrDate (start
+    /// date), TotalCheckedQty, Division on BuildingCompletionSumm; ContNo, LPMDT
+    /// (date) on BuildingCompletionDet. LPMDT is rendered as "MMM-yyyy" (e.g.
+    /// "Jan-2026").
     /// </summary>
     public async Task<List<CountingCompletionSummaryRow>> GetCountingCompletionSummaryAsync(
         string? country, DateTime fromDate, DateTime toDate, CancellationToken ct = default)
@@ -177,16 +179,14 @@ public class ReportsService(IOnPremConnectionResolver resolver)
             ;WITH Base AS (
                 SELECT s.Country,
                        s.ContNo,
-                       s.CountingCompletionDate,
-                       s.PONo,
-                       s.CountingStartDate,
-                       s.CountedQty,
-                       s.LPMMonth,
-                       s.Division,
-                       s.Brand
+                       s.Trndate         AS CountingCompletionDate,
+                       s.POnumber        AS PONo,
+                       s.EntrDate        AS CountingStartDate,
+                       s.TotalCheckedQty AS CountedQty,
+                       s.Division
                   FROM BFLDATA.dbo.BuildingCompletionSumm s
-                 WHERE s.CountingCompletionDate >= @from
-                   AND s.CountingCompletionDate <  @toExclusive
+                 WHERE s.Trndate >= @from
+                   AND s.Trndate <  @toExclusive
                    AND (@country IS NULL OR s.Country = @country)
             )
             SELECT
@@ -199,11 +199,10 @@ public class ReportsService(IOnPremConnectionResolver resolver)
                 LpmMonths = STUFF((
                     SELECT ', ' + d.v
                       FROM (SELECT DISTINCT
-                                   FORMAT(x.LPMMonth, 'MMM-yyyy') AS v,
-                                   DATEFROMPARTS(YEAR(x.LPMMonth), MONTH(x.LPMMonth), 1) AS n
-                              FROM Base x
-                             WHERE x.Country = b.Country AND x.ContNo = b.ContNo
-                               AND x.LPMMonth IS NOT NULL) d
+                                   FORMAT(det.LPMDT, 'MMM-yyyy') AS v,
+                                   DATEFROMPARTS(YEAR(det.LPMDT), MONTH(det.LPMDT), 1) AS n
+                              FROM BFLDATA.dbo.BuildingCompletionDet det
+                             WHERE det.ContNo = b.ContNo AND det.LPMDT IS NOT NULL) d
                      ORDER BY d.n
                        FOR XML PATH('')), 1, 2, ''),
                 Divisions = STUFF((
@@ -212,14 +211,6 @@ public class ReportsService(IOnPremConnectionResolver resolver)
                               FROM Base x
                              WHERE x.Country = b.Country AND x.ContNo = b.ContNo
                                AND x.Division IS NOT NULL AND x.Division <> '') d
-                     ORDER BY d.v
-                       FOR XML PATH('')), 1, 2, ''),
-                Brands = STUFF((
-                    SELECT ', ' + d.v
-                      FROM (SELECT DISTINCT x.Brand AS v
-                              FROM Base x
-                             WHERE x.Country = b.Country AND x.ContNo = b.ContNo
-                               AND x.Brand IS NOT NULL AND x.Brand <> '') d
                      ORDER BY d.v
                        FOR XML PATH('')), 1, 2, '')
               FROM Base b
