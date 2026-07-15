@@ -32,11 +32,11 @@
     {
         _loading = true;
         _message = "Querying…";
-        await InvokeAsync(StateHasChanged);
+        StateHasChanged();
         try
         {
             var count = await Svc.GetUpcBoxCountAsync(_date);
-            _message = $"UPC Box count for UAE on {_date:yyyy-MM-dd}: {count:N0}";
+            _message = $"UPC Box count for KSA on {_date:yyyy-MM-dd}: {count:N0}";
         }
         catch (Exception ex)
         {
@@ -45,7 +45,7 @@
         finally
         {
             _loading = false;
-            await InvokeAsync(StateHasChanged);
+            StateHasChanged();
         }
     }
 }
