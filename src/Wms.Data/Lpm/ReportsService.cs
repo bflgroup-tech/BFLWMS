@@ -165,6 +165,13 @@ public class ReportsService(IOnPremConnectionResolver resolver)
     /// instead of STRING_AGG(DISTINCT ...) — the latter needs SQL Server
     /// 2022+/compat level 160, not guaranteed here).
     ///
+    /// Materialized into #CCBase / #CCLpm temp tables (with indexes) rather than
+    /// CTEs — a CTE referenced from multiple correlated subqueries gets
+    /// re-evaluated on every call, and the original version re-scanned all of
+    /// BuildingCompletionDet (unfiltered by date/ContNo) once per output row,
+    /// which timed out in production. Same materialize-then-index pattern as
+    /// BadBoxesPrefix below.
+    ///
     /// Column names confirmed against the live schema (2026-07-15): Country,
     /// ContNo, Trndate (completion date), POnumber (PO number), EntryDate
     /// (start date), TotalCheckedQty, Division on BuildingCompletionSumm;
@@ -176,19 +183,36 @@ public class ReportsService(IOnPremConnectionResolver resolver)
     {
         await using var c = OpenOnPremBackup();
         var rows = await c.QueryAsync<CountingCompletionSummaryRow>(new CommandDefinition(@"
-            ;WITH Base AS (
-                SELECT s.Country,
-                       s.ContNo,
-                       s.Trndate         AS CountingCompletionDate,
-                       s.POnumber        AS PONo,
-                       s.EntryDate       AS CountingStartDate,
-                       s.TotalCheckedQty AS CountedQty,
-                       s.Division
-                  FROM BFLDATA.dbo.BuildingCompletionSumm s
-                 WHERE s.Trndate >= @from
-                   AND s.Trndate <  @toExclusive
-                   AND (@country IS NULL OR s.Country = @country)
-            )
+            SET NOCOUNT ON;
+            IF OBJECT_ID('tempdb..#CCBase') IS NOT NULL DROP TABLE #CCBase;
+            IF OBJECT_ID('tempdb..#CCLpm')  IS NOT NULL DROP TABLE #CCLpm;
+
+            SELECT s.Country,
+                   s.ContNo,
+                   s.Trndate         AS CountingCompletionDate,
+                   s.POnumber        AS PONo,
+                   s.EntryDate       AS CountingStartDate,
+                   s.TotalCheckedQty AS CountedQty,
+                   s.Division
+              INTO #CCBase
+              FROM BFLDATA.dbo.BuildingCompletionSumm s WITH (NOLOCK)
+             WHERE s.Trndate >= @from
+               AND s.Trndate <  @toExclusive
+               AND (@country IS NULL OR s.Country = @country);
+
+            CREATE CLUSTERED INDEX IX_CCBase ON #CCBase (Country, ContNo);
+
+            SELECT DISTINCT
+                   det.ContNo,
+                   FORMAT(det.LPMDT, 'MMM-yyyy') AS LpmMonthText,
+                   DATEFROMPARTS(YEAR(det.LPMDT), MONTH(det.LPMDT), 1) AS LpmMonthSort
+              INTO #CCLpm
+              FROM BFLDATA.dbo.BuildingCompletionDet det WITH (NOLOCK)
+             WHERE det.LPMDT IS NOT NULL
+               AND det.ContNo IN (SELECT DISTINCT ContNo FROM #CCBase);
+
+            CREATE CLUSTERED INDEX IX_CCLpm ON #CCLpm (ContNo, LpmMonthSort);
+
             SELECT
                 b.Country,
                 b.ContNo,
@@ -197,25 +221,24 @@ public class ReportsService(IOnPremConnectionResolver resolver)
                 CountingStartDate      = MIN(b.CountingStartDate),
                 CountedQty             = SUM(ISNULL(b.CountedQty, 0)),
                 LpmMonths = STUFF((
-                    SELECT ', ' + d.v
-                      FROM (SELECT DISTINCT
-                                   FORMAT(det.LPMDT, 'MMM-yyyy') AS v,
-                                   DATEFROMPARTS(YEAR(det.LPMDT), MONTH(det.LPMDT), 1) AS n
-                              FROM BFLDATA.dbo.BuildingCompletionDet det
-                             WHERE det.ContNo = b.ContNo AND det.LPMDT IS NOT NULL) d
-                     ORDER BY d.n
+                    SELECT ', ' + l.LpmMonthText
+                      FROM #CCLpm l
+                     WHERE l.ContNo = b.ContNo
+                     ORDER BY l.LpmMonthSort
                        FOR XML PATH('')), 1, 2, ''),
                 Divisions = STUFF((
                     SELECT ', ' + d.v
                       FROM (SELECT DISTINCT x.Division AS v
-                              FROM Base x
+                              FROM #CCBase x
                              WHERE x.Country = b.Country AND x.ContNo = b.ContNo
                                AND x.Division IS NOT NULL AND x.Division <> '') d
                      ORDER BY d.v
                        FOR XML PATH('')), 1, 2, '')
-              FROM Base b
+              FROM #CCBase b
              GROUP BY b.Country, b.ContNo
-             ORDER BY b.Country, CountingCompletionDate",
+             ORDER BY b.Country, CountingCompletionDate;
+
+            DROP TABLE #CCBase, #CCLpm;",
             new { country, from = fromDate.Date, toExclusive = toDate.Date.AddDays(1) },
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         return rows.AsList();
