@@ -31,10 +31,7 @@ public class SyncDataCountService(IOnPremConnectionResolver resolver)
 
     private static readonly string[] Descriptions =
     {
-        "Transfer Header", "Transfer Detail", "RF Pair", "Sales Price",
-        "Building Completion", "UPC Box", "Goods Issue Plt", "PLT Delivery",
-        "Goods Issue", "GRN", "USA Org File", "USA Purchase",
-        "PLT Issue", "Cont Receipt", "Cont Receipt Export",
+        "UPC Box",
     };
 
     // Connection string builders — each query opens its own connection from the pool
