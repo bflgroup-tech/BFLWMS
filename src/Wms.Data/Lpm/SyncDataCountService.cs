@@ -6,8 +6,8 @@ namespace Wms.Data.Lpm;
 
 public class SyncDataCountService(IOnPremConnectionResolver resolver)
 {
-    private const int ConnectTimeoutSeconds = 60;
-    private const int CommandTimeoutSeconds = 120;
+    private const int ConnectTimeoutSeconds = 30;
+    private const int CommandTimeoutSeconds = 60;
 
     private static readonly Dictionary<string, string> DataNameToPrefix = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -31,10 +31,12 @@ public class SyncDataCountService(IOnPremConnectionResolver resolver)
 
     private static readonly string[] Descriptions =
     {
-        "UPC Box",
+        "Transfer Header", "Transfer Detail", "RF Pair", "Sales Price",
+        "Building Completion", "UPC Box", "Goods Issue Plt", "PLT Delivery",
+        "Goods Issue", "GRN", "USA Org File", "USA Purchase",
+        "PLT Issue", "Cont Receipt", "Cont Receipt Export",
     };
 
-    // Connection string builders — each query opens its own connection from the pool
     private string OnPremCs() =>
         new SqlConnectionStringBuilder(resolver.GetOnPremBackupConnectionString())
             { ConnectTimeout = ConnectTimeoutSeconds }.ConnectionString;
@@ -43,58 +45,8 @@ public class SyncDataCountService(IOnPremConnectionResolver resolver)
         new SqlConnectionStringBuilder(resolver.GetCountryConnectionString(country))
             { InitialCatalog = dataName, ConnectTimeout = ConnectTimeoutSeconds }.ConnectionString;
 
-    public async Task<int> GetUpcBoxKsaCountAsync(DateTime date, CancellationToken ct = default)
-    {
-        var cs = new SqlConnectionStringBuilder(resolver.GetCountryConnectionString("KSA"))
-            { InitialCatalog = "bflksa", ConnectTimeout = 10 }.ConnectionString;
-        await using var conn = new SqlConnection(cs);
-        await conn.OpenAsync(ct);
-        return await conn.ExecuteScalarAsync<int>(new CommandDefinition(
-            "SELECT COUNT(boxno) FROM usa..upcboxhead WITH(NOLOCK) WHERE CAST(TrnDate AS DATE) = @date",
-            new { date = date.Date }, commandTimeout: 10, cancellationToken: ct));
-    }
-
-    public async Task<(int? Ho, string? HoError, int? Regional, string? RegionalError)> GetUpcBoxCountAsync(
-        DateTime date, CancellationToken ct = default)
-    {
-        var hoTask       = QueryUpcBoxHoAsync(date, ct);
-        var regionalTask = QueryUpcBoxRegionalAsync(date, ct);
-        await Task.WhenAll(hoTask, regionalTask);
-        return (hoTask.Result.Count, hoTask.Result.Error,
-                regionalTask.Result.Count, regionalTask.Result.Error);
-    }
-
-    private async Task<(int? Count, string? Error)> QueryUpcBoxHoAsync(DateTime date, CancellationToken ct)
-    {
-        try
-        {
-            var cs = new SqlConnectionStringBuilder(resolver.GetOnPremBackupConnectionString())
-                { ConnectTimeout = 30 }.ConnectionString;
-            await using var conn = new SqlConnection(cs);
-            await conn.OpenAsync(ct);
-            var count = await conn.ExecuteScalarAsync<int>(new CommandDefinition(
-                "SELECT COUNT(boxno) FROM [bflksa]..upcboxhead WITH(NOLOCK) WHERE CAST(TrnDate AS DATE) = @date",
-                new { date = date.Date }, commandTimeout: 30, cancellationToken: ct));
-            return (count, null);
-        }
-        catch (Exception ex) { return (null, ex.Message); }
-    }
-
-    private async Task<(int? Count, string? Error)> QueryUpcBoxRegionalAsync(DateTime date, CancellationToken ct)
-    {
-        try
-        {
-            var cs = new SqlConnectionStringBuilder(resolver.GetCountryConnectionString("KSA"))
-                { InitialCatalog = "bflksa", ConnectTimeout = 30 }.ConnectionString;
-            await using var conn = new SqlConnection(cs);
-            await conn.OpenAsync(ct);
-            var count = await conn.ExecuteScalarAsync<int>(new CommandDefinition(
-                "SELECT COUNT(boxno) FROM usa..upcboxhead WITH(NOLOCK) WHERE CAST(TrnDate AS DATE) = @date",
-                new { date = date.Date }, commandTimeout: 30, cancellationToken: ct));
-            return (count, null);
-        }
-        catch (Exception ex) { return (null, ex.Message); }
-    }
+    public static List<SyncRow> AllErrorRows(string msg) =>
+        Descriptions.Select(d => new SyncRow(d, null, null, msg, msg)).ToList();
 
     public async Task<List<string>> GetCountriesAsync(CancellationToken ct = default)
     {
@@ -107,13 +59,12 @@ public class SyncDataCountService(IOnPremConnectionResolver resolver)
                AND SIMCountry <> 'UAE'
                AND DataName   IS NOT NULL AND LTRIM(RTRIM(DataName))   <> ''
              ORDER BY SIMCountry",
-            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            commandTimeout: 30, cancellationToken: ct));
         return rows.AsList();
     }
 
     public async Task<List<SyncRow>> GetCountsAsync(SyncFilter f, CancellationToken ct = default)
     {
-        // Resolve dataName and prefix using a short-lived connection
         string? dataName;
         string? prefix;
         string  dbName;
@@ -129,31 +80,29 @@ public class SyncDataCountService(IOnPremConnectionResolver resolver)
         }
         catch (Exception ex)
         {
-            return AllError($"OnPremBackup connection failed: {ex.Message}");
+            return AllErrorRows($"OnPremBackup connection failed: {ex.Message}");
         }
 
         if (string.IsNullOrWhiteSpace(dataName))
-            return AllError($"No DataName found for country '{f.Country}' in BFLDATA.dbo.DataSettings.");
+            return AllErrorRows($"No DataName found for '{f.Country}' in BFLDATA.dbo.DataSettings.");
 
         if (!DataNameToPrefix.TryGetValue(dataName, out prefix))
-            return AllError($"No prefix mapping for DataName '{dataName}'.");
+            return AllErrorRows($"No prefix mapping for DataName '{dataName}'.");
 
         dbName = DataNameToDbName.GetValueOrDefault(dataName, dataName.ToUpperInvariant());
 
-        string onpremCs  = OnPremCs();
-        string countryCs = "";
+        string onpremCs;
+        string countryCs;
+        try { onpremCs  = OnPremCs(); }
+        catch (Exception ex) { return AllErrorRows($"OnPremBackup CS error: {ex.Message}"); }
         try { countryCs = CountryCs(f.Country, dataName); }
-        catch (Exception ex) { return AllError($"Country connection string missing: {ex.Message}"); }
+        catch (Exception ex) { return AllErrorRows($"Country CS error: {ex.Message}"); }
 
-        // Each row gets its own pair of connections — SqlConnection is not safe to share across parallel queries
         var tasks = Descriptions.Select(desc =>
             RunBothAsync(desc, onpremCs, countryCs, dbName, dataName, prefix, isKsa, from, to, ct)).ToList();
 
         return (await Task.WhenAll(tasks)).ToList();
     }
-
-    private static List<SyncRow> AllError(string msg) =>
-        Descriptions.Select(d => new SyncRow(d, null, null, msg, msg)).ToList();
 
     private static async Task<SyncRow> RunBothAsync(
         string desc, string onpremCs, string countryCs,
@@ -221,9 +170,9 @@ public class SyncDataCountService(IOnPremConnectionResolver resolver)
             ("UPC Box", false) =>
                 "SELECT COUNT(boxno) FROM usa..upcboxhead WITH(NOLOCK) WHERE CAST(TrnDate AS DATE) BETWEEN @from AND @to",
             ("UPC Box", true) when isKsa =>
-                "SELECT COUNT(boxno) FROM usa..upcboxhead WITH(NOLOCK) WHERE CAST(TrnDate AS DATE) BETWEEN @from AND @to AND Remarks NOT LIKE '%KSA transfer AutoBox-Create %'",
+                $"SELECT COUNT(boxno) FROM [{dn}]..upcboxhead WITH(NOLOCK) WHERE CAST(TrnDate AS DATE) BETWEEN @from AND @to AND Remarks NOT LIKE '%KSA transfer AutoBox-Create %'",
             ("UPC Box", true) =>
-                "SELECT COUNT(boxno) FROM usa..upcboxhead WITH(NOLOCK) WHERE CAST(TrnDate AS DATE) BETWEEN @from AND @to",
+                $"SELECT COUNT(boxno) FROM [{dn}]..upcboxhead WITH(NOLOCK) WHERE CAST(TrnDate AS DATE) BETWEEN @from AND @to",
 
             ("Goods Issue Plt", false) =>
                 "SELECT COUNT(SrNo) FROM BFLDATA..vGoodsIssuePlt WITH(NOLOCK) WHERE CAST(EntryDate AS DATE) BETWEEN @from AND @to",
