@@ -105,13 +105,11 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
     {
         if (f.Country == UaeCountry)
         {
-            // UAE: everything runs on OnPremBackup via linked-server prefix.
+            // UAE has no linked-server DataName — its data is local on OnPremBackup
+            // in BFLDATA. Connect directly and use BFLDATA.. prefix, filtering
+            // DataSettings by SIMCountry = 'UAE' to scope to UAE stores.
             await using var conn = OpenOnPrem();
-            var dataName = await WhBoxItemsSource.ResolveDataNameAsync(conn, f.Country, ct);
-            if (string.IsNullOrWhiteSpace(dataName))
-                throw new InvalidOperationException(
-                    $"No DataName found in BFLDATA.dbo.DataSettings for country '{f.Country}'.");
-            var sql  = BuildSqlOnPrem(dataName, f, out var parms);
+            var sql  = BuildSqlUae(f, out var parms);
             var rows = await conn.QueryAsync<TransferHistoryRow>(
                 new CommandDefinition(sql, parms,
                     commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
@@ -173,6 +171,42 @@ SELECT ROW_NUMBER() OVER (ORDER BY a.TrfNo) SrNo,
   LEFT JOIN [{dataName}]..TransferReverse f ON a.TrfNo = f.TrfNo
  WHERE a.TrfNo NOT LIKE 'FN%'
    AND a.TrfDate >= @from AND a.TrfDate <= @to
+   AND e.ShopName NOT IN (
+       SELECT ShopName FROM BFLDATA.dbo.DataSettings WHERE Concept = 'Warehouse'
+   )");
+
+        AppendCommonFilters(sb, p, f);
+        sb.Append("\n ORDER BY a.TrfDate, a.TrfNo");
+        return sb.ToString();
+    }
+
+    // UAE path: data is local on OnPremBackup in BFLDATA. No linked-server prefix needed.
+    // DataSettings filtered by SIMCountry = 'UAE' to scope stores to UAE only.
+    private static string BuildSqlUae(TransferHistoryFilter f, out DynamicParameters p)
+    {
+        p = new DynamicParameters();
+        p.Add("@from", f.DateFrom.Date);
+        p.Add("@to",   f.DateTo.Date.AddDays(1).AddSeconds(-1));
+
+        var sb = new StringBuilder(@"
+SELECT ROW_NUMBER() OVER (ORDER BY a.TrfDate, a.TrfNo) SrNo,
+       e.ShopName,
+       a.TrfNo,
+       a.TrfDate,
+       PalletNo  = (SELECT TOP 1 PalletNo   FROM BFLDATA.dbo.vGoodsIssue    WHERE TrfNo = a.TrfNo ORDER BY PalletNo DESC),
+       BuildDate = (SELECT TOP 1 BuildDate   FROM BFLDATA.dbo.vGoodsIssueplt WHERE TrfNo = a.TrfNo ORDER BY SrNo DESC),
+       GINNo     = (SELECT TOP 1 CAST(SrNo AS nvarchar(50)) FROM BFLDATA.dbo.vGoodsIssueplt WHERE TrfNo = a.TrfNo ORDER BY SrNo DESC),
+       GINDate   = (SELECT TOP 1 EntryDate   FROM BFLDATA.dbo.vGoodsIssue    WHERE TrfNo = a.TrfNo ORDER BY Sn   DESC),
+       CAST(d.EntryNo AS nvarchar(50)) GRNNo,
+       d.EntryDate  GRNDate,
+       ISNULL(f.Remarks, '') Remarks
+  FROM BFLDATA.dbo.transferheader      a
+  LEFT JOIN BFLDATA.dbo.GRNHeaderRF    d ON a.TrfNo = d.TrfNo
+  JOIN  BFLDATA.dbo.DataSettings       e ON a.CostCodeTo = e.CostCodeTo
+  LEFT JOIN BFLDATA.dbo.TransferReverse f ON a.TrfNo = f.TrfNo
+ WHERE a.TrfNo NOT LIKE 'FN%'
+   AND a.TrfDate >= @from AND a.TrfDate <= @to
+   AND e.SIMCountry = 'UAE'
    AND e.ShopName NOT IN (
        SELECT ShopName FROM BFLDATA.dbo.DataSettings WHERE Concept = 'Warehouse'
    )");
