@@ -19,38 +19,36 @@
     <button class="aiwms-btn aiwms-btn-primary" @onclick="LoadAsync" disabled="@_loading">
         @(_loading ? "Loading…" : "Load")
     </button>
+    <span style="font-size:12px; color:gray;">clicks: @_clicks</span>
 </div>
 
-<p style="font-size:14px; white-space:pre-wrap;">@_message</p>
+<p style="font-size:14px; white-space:pre-wrap; margin-top:8px;">@_message</p>
 
 @code {
     private DateTime _date    = DateTime.Today.AddDays(-1);
     private bool     _loading = false;
     private string   _message = "Select a date and click Load.";
+    private int      _clicks  = 0;
 
-    private void LoadAsync()
+    private async Task LoadAsync()
     {
+        _clicks++;
         _loading = true;
-        _message = "Connecting to KSA…";
+        _message = $"Querying… (click #{_clicks})";
+        await Task.Yield(); // let Blazor render "Loading…" before the query starts
 
-        _ = Task.Run(async () =>
+        try
         {
-            string msg;
-            try
-            {
-                var count = await Svc.GetUpcBoxKsaCountAsync(_date);
-                msg = $"KSA (Regional) upcboxhead on {_date:yyyy-MM-dd}: {count:N0}";
-            }
-            catch (Exception ex)
-            {
-                msg = $"Error: {ex.Message}";
-            }
-            await InvokeAsync(() =>
-            {
-                _message = msg;
-                _loading  = false;
-                StateHasChanged();
-            });
-        });
+            var count = await Svc.GetUpcBoxKsaCountAsync(_date);
+            _message = $"KSA upcboxhead on {_date:yyyy-MM-dd}: {count:N0}";
+        }
+        catch (Exception ex)
+        {
+            _message = $"Error: {ex.Message}";
+        }
+        finally
+        {
+            _loading = false;
+        }
     }
 }
