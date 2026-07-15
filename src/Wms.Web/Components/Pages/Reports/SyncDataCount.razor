@@ -54,10 +54,28 @@
                 @foreach (var r in _rows)
                 {
                     var mismatch = r.Regional.HasValue && r.HO.HasValue && r.Regional != r.HO;
-                    <tr style="@(mismatch ? "background:var(--color-error-subtle, #fff0f0); color:var(--color-error, #c00);" : "")">
+                    <tr style="@(mismatch ? "background:var(--color-error-subtle, #fff0f0);" : "")">
                         <td>@r.Description</td>
-                        <td style="text-align:right; font-variant-numeric:tabular-nums;">@(r.Regional?.ToString("N0") ?? "–")</td>
-                        <td style="text-align:right; font-variant-numeric:tabular-nums;">@(r.HO?.ToString("N0") ?? "–")</td>
+                        <td style="text-align:right; font-variant-numeric:tabular-nums; @(mismatch ? "color:var(--color-error,#c00);" : "") @(r.RegionalError is not null ? "color:orange;" : "")">
+                            @if (r.RegionalError is not null)
+                            {
+                                <span title="@r.RegionalError">⚠ ERR</span>
+                            }
+                            else
+                            {
+                                @(r.Regional?.ToString("N0") ?? "–")
+                            }
+                        </td>
+                        <td style="text-align:right; font-variant-numeric:tabular-nums; @(mismatch ? "color:var(--color-error,#c00);" : "") @(r.HoError is not null ? "color:orange;" : "")">
+                            @if (r.HoError is not null)
+                            {
+                                <span title="@r.HoError">⚠ ERR</span>
+                            }
+                            else
+                            {
+                                @(r.HO?.ToString("N0") ?? "–")
+                            }
+                        </td>
                     </tr>
                 }
             </tbody>
@@ -90,6 +108,7 @@
         _loading = true;
         _error   = null;
         _rows    = null;
+        StateHasChanged();
         try
         {
             _rows = await Svc.GetCountsAsync(new SyncFilter(_country, _dateFrom, _dateTo));
@@ -98,6 +117,10 @@
         {
             _error = $"Load failed: {ex.Message}";
         }
-        finally { _loading = false; }
+        finally
+        {
+            _loading = false;
+            StateHasChanged();
+        }
     }
 }
