@@ -72,7 +72,7 @@
                     <th>Counting Completion Date</th>
                     <th>PO No</th>
                     <th>Counting Start Date</th>
-                    <th style="text-align:right">Counted Qty</th>
+                    <th style="text-align:center">Counted Qty</th>
                     <th>LPM Months</th>
                     <th>Divisions</th>
                     <th>Brands</th>
@@ -87,7 +87,7 @@
                         <td>@FmtDate(r.CountingCompletionDate)</td>
                         <td style="word-break:break-word">@r.PONo</td>
                         <td>@FmtDate(r.CountingStartDate)</td>
-                        <td style="text-align:right">@r.CountedQty.ToString("N0")</td>
+                        <td style="text-align:center">@r.CountedQty.ToString("N0")</td>
                         <td style="word-break:break-word">@r.LpmMonths</td>
                         <td style="word-break:break-word">@r.Divisions</td>
                         <td style="word-break:break-word">@r.Brands</td>
