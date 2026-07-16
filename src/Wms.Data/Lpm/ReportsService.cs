@@ -224,7 +224,7 @@ public class ReportsService(IOnPremConnectionResolver resolver)
                               FROM #CCDet x
                              WHERE x.ContNo = b.ContNo AND x.LPMDT IS NOT NULL) d
                      ORDER BY d.n
-                       FOR XML PATH('')), 1, 2, ''),
+                       FOR XML PATH(''), TYPE).value('.', 'NVARCHAR(MAX)'), 1, 2, ''),
                 Divisions = STUFF((
                     SELECT ', ' + d.v
                       FROM (SELECT DISTINCT x.Division AS v
@@ -232,14 +232,14 @@ public class ReportsService(IOnPremConnectionResolver resolver)
                              WHERE x.Country = b.Country AND x.ContNo = b.ContNo
                                AND x.Division IS NOT NULL AND x.Division <> '') d
                      ORDER BY d.v
-                       FOR XML PATH('')), 1, 2, ''),
+                       FOR XML PATH(''), TYPE).value('.', 'NVARCHAR(MAX)'), 1, 2, ''),
                 Brands = STUFF((
                     SELECT ', ' + d.v
                       FROM (SELECT DISTINCT x.Brand AS v
                               FROM #CCDet x
                              WHERE x.ContNo = b.ContNo AND x.Brand IS NOT NULL AND x.Brand <> '') d
                      ORDER BY d.v
-                       FOR XML PATH('')), 1, 2, '')
+                       FOR XML PATH(''), TYPE).value('.', 'NVARCHAR(MAX)'), 1, 2, '')
               FROM #CCBase b
              GROUP BY b.Country, b.ContNo
              ORDER BY b.Country, CountingCompletionDate;
