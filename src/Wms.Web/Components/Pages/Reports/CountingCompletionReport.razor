@@ -25,10 +25,16 @@
 
     <div style="display:grid; grid-template-columns: 1fr 1fr 1fr auto; gap:12px; align-items:end;">
         <div>
-            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COUNTRY (multi-select)</label>
-            <select multiple @bind="_selectedCountries" @bind:after="LoadAsync" size="4" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;">
-                @foreach (var c in _countries) { <option value="@c">@DisplayCountry(c)</option> }
-            </select>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COUNTRY (select any)</label>
+            <div style="display:flex; flex-direction:column; gap:4px; max-height:120px; overflow-y:auto; border:1px solid var(--border-default); border-radius:var(--r-sm); padding:8px 10px; background:white;">
+                @foreach (var c in _countries)
+                {
+                    <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:13px">
+                        <input type="checkbox" checked="@_selectedCountries.Contains(c)" @onchange="@(e => ToggleCountry(c, (bool)e.Value!))" />
+                        @DisplayCountry(c)
+                    </label>
+                }
+            </div>
         </div>
         <div>
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COMPLETION FROM *</label>
@@ -125,7 +131,7 @@
 @code {
     private string _view = "Summary";
     private List<string> _countries = new();
-    private string[] _selectedCountries = Array.Empty<string>();
+    private HashSet<string> _selectedCountries = new();
     private DateTime _from = DateTime.Today.AddDays(-7);
     private DateTime _to   = DateTime.Today;
     private bool _loading;
@@ -139,9 +145,17 @@
         try
         {
             var list = await Svc.GetCountriesAsync();
-            _countries = list.Where(c => !string.Equals(c, "Ex2Locations", StringComparison.OrdinalIgnoreCase)).ToList();
+            var excluded = new[] { "Ex2Locations", "Ecom" };
+            _countries = list.Where(c => !excluded.Contains(c, StringComparer.OrdinalIgnoreCase)).ToList();
         }
         catch { /* fall back to empty list if the lookup fails */ }
+    }
+
+    private async Task ToggleCountry(string country, bool isChecked)
+    {
+        if (isChecked) _selectedCountries.Add(country);
+        else _selectedCountries.Remove(country);
+        await LoadAsync();
     }
 
     private async Task LoadAsync()
@@ -179,7 +193,7 @@
     }
 
     private static string DisplayCountry(string c) =>
-        string.IsNullOrEmpty(c) ? c : char.ToUpper(c[0]) + c.Substring(1).ToLower();
+        string.IsNullOrEmpty(c) ? c : c.ToUpper();
 
     private static string FmtDate(DateTime? d) => d?.ToString("dd-MMM-yyyy") ?? "";
 }
