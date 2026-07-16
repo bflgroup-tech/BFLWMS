@@ -179,8 +179,11 @@ public class ReportsService(IOnPremConnectionResolver resolver)
     /// as "MMM-yyyy" (e.g. "Jan-2026").
     /// </summary>
     public async Task<List<CountingCompletionSummaryRow>> GetCountingCompletionSummaryAsync(
-        string? country, DateTime fromDate, DateTime toDate, CancellationToken ct = default)
+        IEnumerable<string>? countries, DateTime fromDate, DateTime toDate, CancellationToken ct = default)
     {
+        var countryList = countries?.Where(s => !string.IsNullOrWhiteSpace(s)).ToArray() ?? Array.Empty<string>();
+        var noCountryFilter = countryList.Length == 0;
+
         await using var c = OpenOnPremBackup();
         var rows = await c.QueryAsync<CountingCompletionSummaryRow>(new CommandDefinition(@"
             SET NOCOUNT ON;
@@ -198,7 +201,7 @@ public class ReportsService(IOnPremConnectionResolver resolver)
               FROM BFLDATA.dbo.BuildingCompletionSumm s WITH (NOLOCK)
              WHERE s.Trndate >= @from
                AND s.Trndate <  @toExclusive
-               AND (@country IS NULL OR s.Country = @country);
+               AND (@noCountryFilter = 1 OR s.Country IN @countries);
 
             CREATE CLUSTERED INDEX IX_CCBase ON #CCBase (Country, ContNo);
 
@@ -245,7 +248,7 @@ public class ReportsService(IOnPremConnectionResolver resolver)
              ORDER BY b.Country, CountingCompletionDate;
 
             DROP TABLE #CCBase, #CCDet;",
-            new { country, from = fromDate.Date, toExclusive = toDate.Date.AddDays(1) },
+            new { countries = countryList, noCountryFilter = noCountryFilter ? 1 : 0, from = fromDate.Date, toExclusive = toDate.Date.AddDays(1) },
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         return rows.AsList();
     }
