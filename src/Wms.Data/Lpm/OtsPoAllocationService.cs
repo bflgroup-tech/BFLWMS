@@ -480,14 +480,36 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         //   OTS %       = OTS Qty / CurrentEOW * 100  (0 when CurrentEOW <= 0)
         // Stores with PrevMonthEOM = 0 fall back to CurrentEOW = TgtEOM so the
         // formula reduces to today's behaviour for stores without history.
-        var eomLabel      = new DateTime(year, month, 1).ToString("MMM-yyyy");
-        var daysInMonth   = DateTime.DaysInMonth(year, month);
-        var weeksInMonth  = (int)Math.Ceiling(daysInMonth / 7.0);
-        var runDay        = DateTime.UtcNow.AddHours(4);
-        var isCurrentGst  = runDay.Year == year && runDay.Month == month;
+        //
+        // weeksInMonth  = distinct wk values in lpm_salestgtwk_stores for stores
+        //                 active in this month's LPM_EOM_Output. Falls back to
+        //                 ceiling(daysInMonth / 7) if the salestgtwk source is
+        //                 empty or unavailable (SafeAsync catches errors).
+        // weeksElapsed  = runDay.Day / 7 (integer division: only fully completed
+        //                 weeks count). Unchanged from prior spec.
+        var eomLabel   = new DateTime(year, month, 1).ToString("MMM-yyyy");
+        var daysInMonth = DateTime.DaysInMonth(year, month);
+        var weeksInMonth = await SafeAsync(warnings, "weeksInMonth (lpm_salestgtwk_stores)", async () =>
+        {
+            await using var c = OpenOnPremBackup();
+            var v = await c.ExecuteScalarAsync<int?>(new CommandDefinition(@"
+                SELECT COUNT(DISTINCT s.wk)
+                  FROM dbo.lpm_salestgtwk_stores s WITH (NOLOCK)
+                  JOIN dbo.LPM_EOM_Output e WITH (NOLOCK)
+                    ON e.StoreID = s.StoreID AND e.DivCode = s.DivCode
+                 WHERE e.Month1 = @month AND e.Year1 = @year",
+                new { month, year },
+                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            return v ?? 0;
+        }, () => 0);
+        if (weeksInMonth <= 0)
+            weeksInMonth = (int)Math.Ceiling(daysInMonth / 7.0);
+
+        var runDay       = DateTime.UtcNow.AddHours(4);
+        var isCurrentGst = runDay.Year == year && runDay.Month == month;
         // Weeks fully completed as of the run day — integer division rounds
         // DOWN (day 15 → 2 weeks, not 3; day 21 → 3; day 28 → 4).
-        var weeksElapsed  = isCurrentGst
+        var weeksElapsed = isCurrentGst
             ? Math.Min(weeksInMonth, runDay.Day / 7)
             : weeksInMonth;    // for past/future months, treat as fully-elapsed
         var results = new List<OtsPoAllocationRow>(baseRows.Count);

@@ -555,7 +555,11 @@ else
             if (item is null || item.Availability == ItemAvailability.NotFound)
             {
                 _lastItem = null; _lastAlloc = null;
-                _globalErr = $"Item {code} is new — please add it via Item Encoding before scanning here.";
+                // NotFound means all 3 tiers returned nothing: WMS Itemmaster API,
+                // Generated Barcode, and usa.upcbarcodes. If the item is expected to
+                // exist, check Azure App Service logs for the API tier's warning.
+                _globalErr = $"Item {code} not found in Item Master API, Generated Barcodes, or usa.upcbarcodes. " +
+                             "Add via Item Encoding, or check the WMS Itemmaster API is reachable and this UPC exists there.";
                 await Beep(); await TryFocus(_itemRef); return;
             }
 

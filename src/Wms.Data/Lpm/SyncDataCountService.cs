@@ -48,7 +48,8 @@ public class SyncDataCountService(IOnPremConnectionResolver resolver)
     public static readonly string[] AllCountries = ["KSA", "Qatar", "Bahrain", "Kuwait", "Malaysia"];
 
     // Active countries — only these are queried; others show blanks
-    private static readonly HashSet<string> ActiveCountries = new(["KSA"], StringComparer.OrdinalIgnoreCase);
+    private static readonly HashSet<string> ActiveCountries = new(
+        ["KSA", "Qatar", "Bahrain", "Kuwait", "Malaysia"], StringComparer.OrdinalIgnoreCase);
 
     public async Task<List<SyncRowMulti>> GetMultiCountryAsync(DateTime date, CancellationToken ct = default)
     {
@@ -241,17 +242,17 @@ public class SyncDataCountService(IOnPremConnectionResolver resolver)
             ("Goods Issue Plt", false) =>
                 "SELECT COUNT(SrNo) FROM BFLDATA..vGoodsIssuePlt WITH(NOLOCK) WHERE CAST(EntryDate AS DATE) BETWEEN @from AND @to",
             ("Goods Issue Plt", true) =>
-                "SELECT COUNT(SrNo) FROM BFLDATA.dbo.vGoodsIssuePlt WITH(NOLOCK) WHERE CAST(EntryDate AS DATE) BETWEEN @from AND @to",
+                $"SELECT COUNT(SrNo) FROM [{dn}]..vGoodsIssuePlt WITH(NOLOCK) WHERE CAST(EntryDate AS DATE) BETWEEN @from AND @to",
 
             ("PLT Delivery", false) =>
                 "SELECT COUNT(SrNo) FROM BFLDATA..PLTDeliveryHead WITH(NOLOCK) WHERE CAST(EntryDate AS DATE) BETWEEN @from AND @to",
             ("PLT Delivery", true) =>
-                "SELECT COUNT(SrNo) FROM BFLDATA.dbo.PLTDeliveryHead WITH(NOLOCK) WHERE CAST(EntryDate AS DATE) BETWEEN @from AND @to",
+                $"SELECT COUNT(SrNo) FROM [{dn}]..PLTDeliveryHead WITH(NOLOCK) WHERE CAST(EntryDate AS DATE) BETWEEN @from AND @to",
 
             ("Goods Issue", false) =>
                 "SELECT COUNT(Sn) FROM BFLDATA..GoodsIssueHead WITH(NOLOCK) WHERE CAST(EntryDate AS DATE) BETWEEN @from AND @to",
             ("Goods Issue", true) =>
-                "SELECT COUNT(Sn) FROM BFLDATA.dbo.GoodsIssueHead WITH(NOLOCK) WHERE CAST(EntryDate AS DATE) BETWEEN @from AND @to",
+                $"SELECT COUNT(Sn) FROM [{dn}]..GoodsIssueHead WITH(NOLOCK) WHERE CAST(EntryDate AS DATE) BETWEEN @from AND @to",
 
             ("GRN", false) =>
                 "SELECT COUNT(1) FROM GRNHeaderRF WITH(NOLOCK) WHERE CAST(EntryDate AS DATE) BETWEEN @from AND @to",
@@ -271,7 +272,7 @@ public class SyncDataCountService(IOnPremConnectionResolver resolver)
             ("PLT Issue", false) =>
                 "SELECT COUNT(SrNo) FROM BFLDATA..PLTIssueHead WITH(NOLOCK) WHERE CAST(EntryDate AS DATE) BETWEEN @from AND @to",
             ("PLT Issue", true) =>
-                "SELECT COUNT(SrNo) FROM BFLDATA.dbo.PLTIssueHead WITH(NOLOCK) WHERE CAST(EntryDate AS DATE) BETWEEN @from AND @to",
+                $"SELECT COUNT(SrNo) FROM [{dn}]..PLTIssueHead WITH(NOLOCK) WHERE CAST(EntryDate AS DATE) BETWEEN @from AND @to",
 
             ("Cont Receipt", false) =>
                 "SELECT COUNT(DISTINCT TCMNo) FROM BFLDATA..ContReceipt WITH(NOLOCK) WHERE CAST(ReceiptDt AS DATE) BETWEEN @from AND @to AND TCMNo LIKE @cPrefix",
