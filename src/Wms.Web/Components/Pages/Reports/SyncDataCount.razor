@@ -57,12 +57,12 @@
                         {
                             var c = row.Countries.GetValueOrDefault(country);
                             var mismatch = c?.Regional.HasValue == true && c?.HO.HasValue == true && c.Regional != c.HO;
-                            <td style="text-align:right; font-variant-numeric:tabular-nums; border-left:2px solid var(--border-default); @(c?.RegionalError is not null ? "color:orange;" : mismatch ? "color:var(--color-error,#c00);" : "")">
+                            <td style="text-align:right; font-variant-numeric:tabular-nums; border-left:2px solid var(--border-default); @(c?.RegionalError is not null ? "color:orange;" : mismatch ? "color:var(--color-error,#c00); background:#fff0f0; font-weight:600;" : "")">
                                 @if (c?.RegionalError is not null) { <span title="@c.RegionalError">⚠</span> }
                                 else if (c?.Regional is not null) { @c.Regional.Value.ToString("N0") }
                                 else { <span style="color:gray;">–</span> }
                             </td>
-                            <td style="text-align:right; font-variant-numeric:tabular-nums; @(c?.HoError is not null ? "color:orange;" : mismatch ? "color:var(--color-error,#c00);" : "")">
+                            <td style="text-align:right; font-variant-numeric:tabular-nums; @(c?.HoError is not null ? "color:orange;" : mismatch ? "color:var(--color-error,#c00); background:#fff0f0; font-weight:600;" : "")">
                                 @if (c?.HoError is not null) { <span title="@c.HoError">⚠</span> }
                                 else if (c?.HO is not null) { @c.HO.Value.ToString("N0") }
                                 else { <span style="color:gray;">–</span> }
