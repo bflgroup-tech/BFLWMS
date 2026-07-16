@@ -1,11 +1,11 @@
-﻿@page "/reports/counting-completion"
+@page "/reports/counting-completion"
 @rendermode RenderMode.InteractiveServer
 @using Wms.Core
 @using Wms.Data.Lpm
 @attribute [Authorize(Policy = MenuKeys.RPT_COUNTING_COMPLETION)]
 @inject ReportsService Svc
 
-<PageTitle>WMS â€” Counting Completion Report</PageTitle>
+<PageTitle>WMS - Counting Completion Report</PageTitle>
 
 <div class="aiwms-page-header">
     <h2>Counting Completion Report</h2>
@@ -39,7 +39,7 @@
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COMPLETION TO *</label>
             <input type="date" @bind="_to" @bind:format="yyyy-MM-dd" max="@DateTime.Today.ToString("yyyy-MM-dd")" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
         </div>
-        <button class="aiwms-btn aiwms-btn-primary" @onclick="LoadAsync" disabled="@(_loading || _from > _to)">@(_loading ? "Loadingâ€¦" : "Load")</button>
+        <button class="aiwms-btn aiwms-btn-primary" @onclick="LoadAsync" disabled="@(_loading || _from > _to)">@(_loading ? "Loading..." : "Load")</button>
     </div>
 
     @if (!string.IsNullOrEmpty(_message))
@@ -51,8 +51,20 @@
 @if (_rows.Count > 0)
 {
     <div class="aiwms-section">
-        <div class="aiwms-card-header">Summary â€” @_rows.Count row(s)</div>
-        <table class="aiwms-table aiwms-table-dense">
+        <div class="aiwms-card-header">Summary - @_rows.Count row(s)</div>
+        <div style="overflow-x:auto">
+        <table class="aiwms-table aiwms-table-dense" style="table-layout:fixed; width:100%">
+            <colgroup>
+                <col style="width:70px" />
+                <col style="width:110px" />
+                <col style="width:130px" />
+                <col style="width:160px" />
+                <col style="width:130px" />
+                <col style="width:100px" />
+                <col style="width:140px" />
+                <col style="width:200px" />
+                <col style="width:220px" />
+            </colgroup>
             <thead>
                 <tr>
                     <th>Country</th>
@@ -60,7 +72,7 @@
                     <th>Counting Completion Date</th>
                     <th>PO No</th>
                     <th>Counting Start Date</th>
-                    <th style="text-align:right">Counted Qty</th>
+                    <th style="text-align:center">Counted Qty</th>
                     <th>LPM Months</th>
                     <th>Divisions</th>
                     <th>Brands</th>
@@ -73,16 +85,17 @@
                         <td>@r.Country</td>
                         <td style="font-family:var(--font-mono)"><b>@r.ContNo</b></td>
                         <td>@FmtDate(r.CountingCompletionDate)</td>
-                        <td>@r.PONo</td>
+                        <td style="word-break:break-word">@r.PONo</td>
                         <td>@FmtDate(r.CountingStartDate)</td>
-                        <td style="text-align:right">@r.CountedQty.ToString("N0")</td>
-                        <td>@r.LpmMonths</td>
-                        <td>@r.Divisions</td>
-                        <td>@r.Brands</td>
+                        <td style="text-align:center">@r.CountedQty.ToString("N0")</td>
+                        <td style="word-break:break-word">@r.LpmMonths</td>
+                        <td style="word-break:break-word">@r.Divisions</td>
+                        <td style="word-break:break-word">@r.Brands</td>
                     </tr>
                 }
             </tbody>
         </table>
+        </div>
     </div>
 }
 
@@ -118,4 +131,3 @@
 
     private static string FmtDate(DateTime? d) => d?.ToString("dd-MMM-yyyy") ?? "";
 }
-
