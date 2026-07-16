@@ -66,7 +66,13 @@ public sealed class ItemMasterApiClient
     public async Task<ItemMasterItem?> GetByUpcAsync(string upc, CancellationToken ct = default)
     {
         var opts = _opts.Value;
-        if (!opts.IsConfigured || string.IsNullOrWhiteSpace(upc)) return null;
+        if (!opts.IsConfigured)
+        {
+            // Explicit skip log so ops can see the API tier wasn't consulted at all.
+            _log.LogInformation("WMS Itemmaster API skipped for UPC {Upc} — client not configured (missing BaseUrl / Username / Password).", upc);
+            return null;
+        }
+        if (string.IsNullOrWhiteSpace(upc)) return null;
 
         try
         {
@@ -81,10 +87,28 @@ public sealed class ItemMasterApiClient
                 res = await SendUpcRequestAsync(opts, upc, ct);
             }
 
-            if (!res.IsSuccessStatusCode) return null;
+            if (!res.IsSuccessStatusCode)
+            {
+                // Grab a body snippet so ops can see WHY the API rejected the call.
+                string bodySnippet = "";
+                try
+                {
+                    var body = await res.Content.ReadAsStringAsync(ct);
+                    bodySnippet = body.Length > 500 ? body[..500] + "…" : body;
+                }
+                catch { /* ignore body read errors */ }
+                _log.LogWarning("WMS Itemmaster API returned {Status} for UPC {Upc}. Body: {Body}",
+                    (int)res.StatusCode, upc, bodySnippet);
+                return null;
+            }
 
             var payload = await res.Content.ReadFromJsonAsync<UpcResponse>(_json, ct);
-            if (payload?.Data is null || payload.Status != true) return null;
+            if (payload?.Data is null || payload.Status != true)
+            {
+                _log.LogInformation("WMS Itemmaster API returned 200 but no data for UPC {Upc} (status={Status}, message={Msg}).",
+                    upc, payload?.Status, payload?.Message);
+                return null;
+            }
 
             var d = payload.Data;
             return new ItemMasterItem(
