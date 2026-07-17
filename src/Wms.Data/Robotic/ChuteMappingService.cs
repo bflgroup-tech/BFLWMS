@@ -13,6 +13,8 @@ namespace Wms.Data.Robotic;
 /// Backing service for the Chute Mapping page — reads/writes the Robotics SQL
 /// Server (ROBOTICS.dbo.ChuteConfiguration / ChuteIdMaster / ChuteConfigChangeLog,
 /// BFLDATA.dbo.DataSettings) and calls the two external chute-mapping/status APIs.
+/// Every method takes a warehouse code (e.g. "JAFZA", "TECHNO") since each
+/// warehouse has its own Robotics DB connection and its own API endpoints/tokens.
 /// </summary>
 public class ChuteMappingService(
     HttpClient http,
@@ -20,13 +22,19 @@ public class ChuteMappingService(
     IOptions<RoboticApiOptions> apiOptions,
     ICurrentUser currentUser)
 {
-    private RoboticApiOptions Api => apiOptions.Value;
-
-    private SqlConnection OpenRobo() => new(resolver.GetJafazaRoboDbConnectionString());
-
-    public async Task<Dictionary<string, int>> GetAllocatedChuteCountsAsync(CancellationToken ct = default)
+    private RoboticWarehouseOptions GetWarehouseConfig(string warehouse)
     {
-        await using var robo = OpenRobo();
+        if (!apiOptions.Value.Warehouses.TryGetValue(warehouse, out var cfg))
+            throw new InvalidOperationException($"No RoboticApi configuration found for warehouse '{warehouse}'.");
+        return cfg;
+    }
+
+    private SqlConnection OpenRobo(string warehouse) =>
+        new(resolver.GetRoboticsConnectionString(GetWarehouseConfig(warehouse).ConnectionStringKey));
+
+    public async Task<Dictionary<string, int>> GetAllocatedChuteCountsAsync(string warehouse, CancellationToken ct = default)
+    {
+        await using var robo = OpenRobo(warehouse);
         await robo.OpenAsync(ct);
         var rows = await robo.QueryAsync<ChuteCountRow>(new CommandDefinition(
             @"SELECT CAST(ShopId AS VARCHAR) AS ShopId, COUNT(ChuteId) AS ChuteCount
@@ -39,9 +47,9 @@ public class ChuteMappingService(
             .ToDictionary(r => r.ShopId!, r => r.ChuteCount);
     }
 
-    public async Task<int> GetChutePendingQtyAsync(string chuteId, CancellationToken ct = default)
+    public async Task<int> GetChutePendingQtyAsync(string warehouse, string chuteId, CancellationToken ct = default)
     {
-        await using var robo = OpenRobo();
+        await using var robo = OpenRobo(warehouse);
         await robo.OpenAsync(ct);
         var qty = await robo.QuerySingleOrDefaultAsync<int?>(new CommandDefinition(
             @"SELECT ISNULL(SUM(qty), 0)
@@ -51,14 +59,16 @@ public class ChuteMappingService(
         return qty ?? 0;
     }
 
-    public async Task<string> SaveChuteMappingAsync(string chuteId, string shopId, string shopName, CancellationToken ct = default)
+    public async Task<string> SaveChuteMappingAsync(string warehouse, string chuteId, string shopId, string shopName, CancellationToken ct = default)
     {
+        var cfg  = GetWarehouseConfig(warehouse);
         var body = $"{{\"mapping\":[{{\"chute_id\":\"{chuteId}\",\"shop_id\":\"{shopId}\",\"shop_name\":\"{shopName}\"}}]}}";
-        var req  = new HttpRequestMessage(HttpMethod.Post, Api.ChuteMappingApiUrl)
+        var req  = new HttpRequestMessage(HttpMethod.Post, cfg.ChuteMappingApiUrl)
         {
             Content = new StringContent(body, System.Text.Encoding.UTF8, "application/json"),
         };
-        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", Api.ChuteMappingApiToken);
+        if (!string.IsNullOrEmpty(cfg.ChuteMappingApiToken))
+            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", cfg.ChuteMappingApiToken);
         req.Headers.Add("Accept", "application/json");
         var resp    = await http.SendAsync(req, ct);
         var content = await resp.Content.ReadAsStringAsync(ct);
@@ -76,7 +86,7 @@ public class ChuteMappingService(
         catch (JsonException) { }
 
         // Update local DB after API confirms success
-        await using var robo = OpenRobo();
+        await using var robo = OpenRobo(warehouse);
         await robo.OpenAsync(ct);
 
         // Verify the row exists before updating (diagnose WHERE-clause mismatch)
@@ -115,17 +125,19 @@ public class ChuteMappingService(
         return $"{apiMessage} (DB: {rowsAffected} row updated, was ShopId={existing.ShopId})";
     }
 
-    public async Task ToggleChuteStatusAsync(string chuteId, int currentStatus, CancellationToken ct = default)
+    public async Task ToggleChuteStatusAsync(string warehouse, string chuteId, int currentStatus, CancellationToken ct = default)
     {
+        var cfg    = GetWarehouseConfig(warehouse);
         var enable = currentStatus != 0;
 
         // Call external API
         var body = $"{{\"chuteId\":\"{chuteId}\",\"status\":{(enable ? "true" : "false")}}}";
-        var req  = new HttpRequestMessage(HttpMethod.Post, Api.ChuteStatusApiUrl)
+        var req  = new HttpRequestMessage(HttpMethod.Post, cfg.ChuteStatusApiUrl)
         {
             Content = new StringContent(body, System.Text.Encoding.UTF8, "application/json"),
         };
-        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", Api.ChuteStatusApiToken);
+        if (!string.IsNullOrEmpty(cfg.ChuteStatusApiToken))
+            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", cfg.ChuteStatusApiToken);
         var resp    = await http.SendAsync(req, ct);
         var content = await resp.Content.ReadAsStringAsync(ct);
 
@@ -143,7 +155,7 @@ public class ChuteMappingService(
 
         // API confirmed success — update DB
         var newStatus = enable ? 0 : 2;
-        await using var robo = OpenRobo();
+        await using var robo = OpenRobo(warehouse);
         await robo.OpenAsync(ct);
         await robo.ExecuteAsync(new CommandDefinition(
             "UPDATE ROBOTICS.dbo.ChuteIdMaster SET Status = @Status WHERE ChuteId = @ChuteId",
@@ -156,9 +168,9 @@ public class ChuteMappingService(
             commandTimeout: 15, cancellationToken: ct));
     }
 
-    public async Task<List<ChuteConfigRow>> GetChuteConfigAsync(int layer, CancellationToken ct = default)
+    public async Task<List<ChuteConfigRow>> GetChuteConfigAsync(string warehouse, int layer, CancellationToken ct = default)
     {
-        await using var robo = OpenRobo();
+        await using var robo = OpenRobo(warehouse);
         await robo.OpenAsync(ct);
         var rows = await robo.QueryAsync<ChuteConfigRow>(new CommandDefinition(
             @"SELECT a.ChuteId, a.Status, a.direction, b.ShopId, b.ShopName, b.TotId
@@ -169,9 +181,9 @@ public class ChuteMappingService(
         return rows.ToList();
     }
 
-    public async Task<List<ShopNameRow>> GetShopNamesForContainerAsync(string contNo, CancellationToken ct = default)
+    public async Task<List<ShopNameRow>> GetShopNamesForContainerAsync(string warehouse, string contNo, CancellationToken ct = default)
     {
-        await using var robo = OpenRobo();
+        await using var robo = OpenRobo(warehouse);
         await robo.OpenAsync(ct);
         var rows = await robo.QueryAsync<ShopNameRow>(new CommandDefinition(
             "EXEC bfldata.dbo.stp_LoadShopNames @ContNo",
@@ -179,9 +191,9 @@ public class ChuteMappingService(
         return rows.ToList();
     }
 
-    public async Task<List<ShopNameRow>> GetAllShopNamesAsync(CancellationToken ct = default)
+    public async Task<List<ShopNameRow>> GetAllShopNamesAsync(string warehouse, CancellationToken ct = default)
     {
-        await using var robo = OpenRobo();
+        await using var robo = OpenRobo(warehouse);
         await robo.OpenAsync(ct);
         var rows = await robo.QueryAsync<ShopNameRow>(new CommandDefinition(
             "SELECT RoboShopId, ShopName FROM BFLDATA.dbo.DataSettings WHERE active='Y' ORDER BY ShopName",
@@ -189,9 +201,9 @@ public class ChuteMappingService(
         return rows.ToList();
     }
 
-    public async Task<List<ShopNameRow>> SearchShopsAsync(string term, CancellationToken ct = default)
+    public async Task<List<ShopNameRow>> SearchShopsAsync(string warehouse, string term, CancellationToken ct = default)
     {
-        await using var robo = OpenRobo();
+        await using var robo = OpenRobo(warehouse);
         await robo.OpenAsync(ct);
         var rows = await robo.QueryAsync<ShopNameRow>(new CommandDefinition(
             @"SELECT RoboShopId, ShopName FROM BFLDATA.dbo.DataSettings
@@ -200,6 +212,41 @@ public class ChuteMappingService(
                      OR ShopName LIKE '%' + @term + '%')
               ORDER BY ShopName",
             new { term }, commandTimeout: 15, cancellationToken: ct));
+        return rows.ToList();
+    }
+
+    // --- Techno-specific reads ---
+    // Techno's ChuteIdMaster has no usable "layer" column (always NULL — no Single/Double
+    // concept) and encodes direction in the ChuteId itself ("UP-A-01" / "DN-A-01") rather
+    // than in a "direction" column. It also has no BFLDATA.dbo.DataSettings / stp_LoadShopNames
+    // to source a shop list from, so the shop list is derived from ChuteConfiguration instead.
+
+    public async Task<List<ChuteConfigRow>> GetChuteConfigTechnoAsync(string warehouse, CancellationToken ct = default)
+    {
+        await using var robo = OpenRobo(warehouse);
+        await robo.OpenAsync(ct);
+        var rows = await robo.QueryAsync<ChuteConfigRow>(new CommandDefinition(
+            @"SELECT a.ChuteId, a.Status,
+                     CASE WHEN a.ChuteId LIKE 'UP-%' THEN 'UP' ELSE 'DOWN' END AS Direction,
+                     b.ShopId, b.ShopName, b.TotId
+              FROM ROBOTICS.dbo.ChuteIdMaster a, ROBOTICS.dbo.ChuteConfiguration b
+              WHERE a.ChuteId = b.ChuteId
+              ORDER BY a.ChuteId",
+            commandTimeout: 30, cancellationToken: ct));
+        return rows.ToList();
+    }
+
+    // Shop list for the "Shop" / "Building - Division" dropdown modes, read from the requesting
+    // warehouse's own BFLDATA.dbo.DataSettings ('N' = Shop, 'Y' = Building - Division). Per-shop
+    // chute counts still come separately from that warehouse's ROBOTICS.dbo.ChuteConfiguration
+    // via GetAllocatedChuteCountsAsync.
+    public async Task<List<ShopNameRow>> GetShopsByBuildingFlagAsync(string warehouse, string buildingFlag, CancellationToken ct = default)
+    {
+        await using var robo = OpenRobo(warehouse);
+        await robo.OpenAsync(ct);
+        var rows = await robo.QueryAsync<ShopNameRow>(new CommandDefinition(
+            "SELECT RoboShopId, ShopName FROM BFLDATA.dbo.DataSettings WHERE building=@Building AND active='Y'",
+            new { Building = buildingFlag }, commandTimeout: 15, cancellationToken: ct));
         return rows.ToList();
     }
 }

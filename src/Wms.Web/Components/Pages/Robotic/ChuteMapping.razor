@@ -7,6 +7,7 @@
 @inject IJSRuntime JS
 @inject ISnackbar Snack
 @inject ICurrentUser Me
+@inject IDialogService Dialog
 
 <PageTitle>WMS — Chute Mapping</PageTitle>
 
@@ -42,10 +43,7 @@
         <h2>Chute Mapping</h2>
         <p>
             Visual layout of all chute positions by section and direction.
-            @if (!string.IsNullOrEmpty(Me.Warehouse))
-            {
-                <span style="color:#dc2626"> — Warehouse: <strong>@Me.Warehouse</strong></span>
-            }
+            <span style="color:#dc2626"> — Warehouse: <strong>@_warehouse</strong></span>
         </p>
     </div>
 
@@ -369,6 +367,8 @@
         "011","012","013","014","015","016","017","018"
     ];
 
+    private const string _warehouse = "JAFZA";
+
     private string _layer     = "Single";
     private string _direction = "UP";
     private bool   _loading;
@@ -414,14 +414,14 @@
     // Default state (no container loaded yet): straight list from BFLDATA.dbo.DataSettings.
     private async Task LoadShopNamesAsync()
     {
-        try { _shopNames = await Chute.GetAllShopNamesAsync(); }
+        try { _shopNames = await Chute.GetAllShopNamesAsync(_warehouse); }
         catch { _shopNames = []; }
     }
 
     // Only once "Load" is pressed with a container number: per-container list + Qty from the stored procedure.
     private async Task<bool> LoadShopNamesFromProcAsync()
     {
-        try { _shopNames = await Chute.GetShopNamesForContainerAsync(_globalContainerNo); return true; }
+        try { _shopNames = await Chute.GetShopNamesForContainerAsync(_warehouse, _globalContainerNo); return true; }
         catch { _shopNames = []; return false; }
     }
 
@@ -459,7 +459,7 @@
         try
         {
             await Task.Delay(400, token);
-            _shopNames = await Chute.SearchShopsAsync(_searchTerm, token);
+            _shopNames = await Chute.SearchShopsAsync(_warehouse, _searchTerm, token);
             StateHasChanged();
         }
         catch (OperationCanceledException) { }
@@ -468,7 +468,8 @@
 
     protected override async Task OnInitializedAsync()
     {
-        await Task.WhenAll(Me.EnsureLoadedAsync(), LoadAsync(), LoadShopNamesAsync());
+        await Me.EnsureLoadedAsync();
+        await Task.WhenAll(LoadAsync(), LoadShopNamesAsync());
     }
 
     private async Task ChangeLayerAsync(string layer)
@@ -487,8 +488,8 @@
         try
         {
             int layerNum = _layer == "Double" ? 2 : 1;
-            var gridTask   = Chute.GetChuteConfigAsync(layerNum);
-            var countTask  = Chute.GetAllocatedChuteCountsAsync();
+            var gridTask   = Chute.GetChuteConfigAsync(_warehouse, layerNum);
+            var countTask  = Chute.GetAllocatedChuteCountsAsync(_warehouse);
             await Task.WhenAll(gridTask, countTask);
             _rows            = gridTask.Result;
             _allocatedCounts = countTask.Result;
@@ -532,15 +533,15 @@
     private async Task SaveCellAsync(string? chuteId)
     {
         if (chuteId == null || !_cellOverrides.TryGetValue(chuteId, out var ovr)) return;
-        var confirmed = await JS.InvokeAsync<bool>("confirm", $"Save mapping for chute {chuteId}?");
-        if (!confirmed) return;
+        var confirmed = await Dialog.ShowMessageBox("Confirm", $"Save mapping for chute {chuteId}?", yesText: "OK", cancelText: "Cancel");
+        if (confirmed != true) return;
         _savingChuteId = chuteId;
         _cellErrors.Remove(chuteId);
         _cellSuccess.Remove(chuteId);
         StateHasChanged();
         try
         {
-            var msg = await Chute.SaveChuteMappingAsync(chuteId, ovr.ShopId, ovr.ShopName);
+            var msg = await Chute.SaveChuteMappingAsync(_warehouse, chuteId, ovr.ShopId, ovr.ShopName);
             _cellOverrides.Remove(chuteId);
             _cellErrors.Remove(chuteId);
             _cellSuccess[chuteId] = msg;
@@ -614,7 +615,7 @@
         }
         try
         {
-            var pendingQty = await Chute.GetChutePendingQtyAsync(chuteId);
+            var pendingQty = await Chute.GetChutePendingQtyAsync(_warehouse, chuteId);
             if (pendingQty > 0)
             {
                 Snack.Add($"This chute has {pendingQty} pending item(s) not yet transferred. Please clear them before reassigning.", Severity.Warning);
@@ -651,11 +652,11 @@
             return;
         }
         var action = currentStatus == 0 ? "disable" : "enable";
-        var confirmed = await JS.InvokeAsync<bool>("confirm", $"Are you sure you want to {action} chute {chuteId}?");
-        if (!confirmed) return;
+        var confirmed = await Dialog.ShowMessageBox("Confirm", $"Are you sure you want to {action} chute {chuteId}?", yesText: "OK", cancelText: "Cancel");
+        if (confirmed != true) return;
         try
         {
-            await Chute.ToggleChuteStatusAsync(chuteId, currentStatus ?? 0);
+            await Chute.ToggleChuteStatusAsync(_warehouse, chuteId, currentStatus ?? 0);
             await LoadAsync();
         }
         catch (Exception ex) { Snack.Add(ex.Message, Severity.Error); }
@@ -732,7 +733,7 @@
                 var chuteId = freeCells[cellIdx++];
 
                 int pendingQty;
-                try { pendingQty = await Chute.GetChutePendingQtyAsync(chuteId); }
+                try { pendingQty = await Chute.GetChutePendingQtyAsync(_warehouse, chuteId); }
                 catch { continue; }             // couldn't verify — leave this chute untouched
 
                 if (pendingQty > 0) continue;   // has pending items — same rule as a manual drop
@@ -757,8 +758,8 @@
     private async Task SaveAllAsync()
     {
         if (_cellOverrides.Count == 0) return;
-        var confirmed = await JS.InvokeAsync<bool>("confirm", $"Save all {_cellOverrides.Count} pending change(s)?");
-        if (!confirmed) return;
+        var confirmed = await Dialog.ShowMessageBox("Confirm", $"Save all {_cellOverrides.Count} pending change(s)?", yesText: "OK", cancelText: "Cancel");
+        if (confirmed != true) return;
         _savingAll = true;
         StateHasChanged();
         var ids = _cellOverrides.Keys.ToList();
@@ -773,7 +774,7 @@
             StateHasChanged();
             try
             {
-                var msg = await Chute.SaveChuteMappingAsync(chuteId, ovr.ShopId, ovr.ShopName);
+                var msg = await Chute.SaveChuteMappingAsync(_warehouse, chuteId, ovr.ShopId, ovr.ShopName);
                 _cellOverrides.Remove(chuteId);
                 _cellSuccess[chuteId] = msg;
                 savedCount++;

@@ -13,6 +13,7 @@ public static class MenuKeys
     public const string OPEN_CONTAINER            = "OPEN_CONTAINER";
     public const string ROBOTIC                   = "ROBOTIC";
     public const string ROBOTIC_CHUTE_MAPPING     = "ROBOTIC_CHUTE_MAPPING";
+    public const string ROBOTIC_CHUTE_MAPPING_TECHNO = "ROBOTIC_CHUTE_MAPPING_TECHNO";
 
     public const string DATASYNC_CONTAINER_ALLOCATION = "DATASYNC_CONTAINER_ALLOCATION";
     public const string DATASYNC_MASTER               = "DATASYNC_MASTER";
@@ -53,6 +54,7 @@ public static class MenuKeys
 
         new MenuEntry(ROBOTIC,                "Robotic",             "Robotic",                   "robotic/dashboard",         new[] { Roles.Admin, Roles.WHAssociate, Roles.WHSupervisor, Roles.WHManager }),
         new MenuEntry(ROBOTIC_CHUTE_MAPPING,  "Robotic",             "Chute Mapping",              "robotic/chute-mapping",     new[] { Roles.Admin, Roles.WHAssociate, Roles.WHSupervisor, Roles.WHManager }),
+        new MenuEntry(ROBOTIC_CHUTE_MAPPING_TECHNO, "Robotic",       "Chute Mapping (Techno)",     "robotic/chute-mapping-techno", new[] { Roles.Admin, Roles.WHAssociate, Roles.WHSupervisor, Roles.WHManager }),
 
         new MenuEntry(DATASYNC_CONTAINER_ALLOCATION, "Data Sync",   "Container Allocation Data Sync", "datasync/container-allocation", new[] { Roles.Admin, Roles.WHManager }),
         new MenuEntry(DATASYNC_MASTER,               "Data Sync",   "Master Data Sync",               "datasync/master",               new[] { Roles.Admin, Roles.WHManager }),
