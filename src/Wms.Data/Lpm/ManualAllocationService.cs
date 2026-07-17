@@ -123,58 +123,127 @@ public class ManualAllocationService(IOnPremConnectionResolver resolver, ICurren
         var month = now.Month;
         var year  = now.Year;
 
-        await using var src = OpenOnPremBackup();
+        // Wave 1 — three item-level lookups run in parallel. Each opens its
+        // own SqlConnection because Dapper + SqlConnection are not thread-safe
+        // for concurrent commands.
 
         // 1) Division + DivCode per itemcode.
-        var divByItem = (await src.QueryAsync<(string Itemcode, int? DivCode, string? Division)>(new CommandDefinition(
-            @"SELECT itemcode, DivID AS DivCode, Division
-                FROM datareporting.dbo.vupc_subclass WITH (NOLOCK)
-               WHERE itemcode IN @codes",
-            new { codes }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
-            .GroupBy(r => r.Itemcode, StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+        async Task<Dictionary<string, (int? DivCode, string? Division)>> LoadDivByItem()
+        {
+            await using var c = OpenOnPremBackup();
+            return (await c.QueryAsync<(string Itemcode, int? DivCode, string? Division)>(new CommandDefinition(
+                @"SELECT itemcode, DivID AS DivCode, Division
+                    FROM datareporting.dbo.vupc_subclass WITH (NOLOCK)
+                   WHERE itemcode IN @codes",
+                new { codes }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
+                .GroupBy(r => r.Itemcode, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(g => g.Key, g => (g.First().DivCode, g.First().Division), StringComparer.OrdinalIgnoreCase);
+        }
 
         // 2) POQty + GroupCode aggregated per itemcode for this ContNo.
         //    GroupCode is later joined to LPM_SKUMaxRule bands.
-        var poAndGroup = (await src.QueryAsync<(string Itemcode, int POQty, string? GroupCode)>(new CommandDefinition(
-            @"SELECT ItemCode,
-                     SUM(CAST(ISNULL(orgqty,0) AS INT)) AS POQty,
-                     MAX(GroupCode)                     AS GroupCode
-                FROM usa.dbo.usaorgfile WITH (NOLOCK)
-               WHERE ContNo = @c AND ItemCode IN @codes
-               GROUP BY ItemCode",
-            new { c = contno, codes }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
-            .ToDictionary(r => r.Itemcode, r => (r.POQty, r.GroupCode), StringComparer.OrdinalIgnoreCase);
+        async Task<Dictionary<string, (int POQty, string? GroupCode)>> LoadPoAndGroup()
+        {
+            await using var c = OpenOnPremBackup();
+            return (await c.QueryAsync<(string Itemcode, int POQty, string? GroupCode)>(new CommandDefinition(
+                @"SELECT ItemCode,
+                         SUM(CAST(ISNULL(orgqty,0) AS INT)) AS POQty,
+                         MAX(GroupCode)                     AS GroupCode
+                    FROM usa.dbo.usaorgfile WITH (NOLOCK)
+                   WHERE ContNo = @c AND ItemCode IN @codes
+                   GROUP BY ItemCode",
+                new { c = contno, codes }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
+                .ToDictionary(r => r.Itemcode, r => (r.POQty, r.GroupCode), StringComparer.OrdinalIgnoreCase);
+        }
 
         // 3) eCom SOH per itemcode at StoreID. Column is racks.LPM_locstock.SOH.
-        var sohByItem = (await src.QueryAsync<(string Itemcode, int SOH)>(new CommandDefinition(
-            @"SELECT itemcode, SUM(CAST(ISNULL(SOH,0) AS INT)) AS SOH
-                FROM racks.dbo.LPM_locstock WITH (NOLOCK)
-               WHERE storeid = @s AND itemcode IN @codes
-               GROUP BY itemcode",
-            new { s = storeId, codes }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
-            .ToDictionary(r => r.Itemcode, r => r.SOH, StringComparer.OrdinalIgnoreCase);
-
-        // 4) SkuMax via LPMSIM.dbo.LPM_SKUMaxRule — banded by
-        //    (Country, DivCode, GroupCode, WHStockFrom..WHStockTo). Rules
-        //    fetched once for the whole (Country, div-set), then per item
-        //    the band matching POQty is picked (same pattern as
-        //    ContainerAllocationService).
-        var divCodesForRules = divByItem.Values
-            .Select(v => v.DivCode ?? 0)
-            .Where(d => d != 0)
-            .Distinct()
-            .ToArray();
-        var skuBands = new List<(string Country, int DivCode, string? GroupCode, int WHStockFrom, int WHStockTo, int SKUMax)>();
-        if (!string.IsNullOrWhiteSpace(simCountry) && divCodesForRules.Length > 0)
+        async Task<Dictionary<string, int>> LoadSohByItem()
         {
-            skuBands = (await src.QueryAsync<(string Country, int DivCode, string? GroupCode, int WHStockFrom, int WHStockTo, int SKUMax)>(new CommandDefinition(
+            await using var c = OpenOnPremBackup();
+            return (await c.QueryAsync<(string Itemcode, int SOH)>(new CommandDefinition(
+                @"SELECT itemcode, SUM(CAST(ISNULL(SOH,0) AS INT)) AS SOH
+                    FROM racks.dbo.LPM_locstock WITH (NOLOCK)
+                   WHERE storeid = @s AND itemcode IN @codes
+                   GROUP BY itemcode",
+                new { s = storeId, codes }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
+                .ToDictionary(r => r.Itemcode, r => r.SOH, StringComparer.OrdinalIgnoreCase);
+        }
+
+        var w1 = LoadDivByItem();
+        var w2 = LoadPoAndGroup();
+        var w3 = LoadSohByItem();
+        await Task.WhenAll(w1, w2, w3);
+        var divByItem  = await w1;
+        var poAndGroup = await w2;
+        var sohByItem  = await w3;
+
+        // Restrict wave-2 aggregate queries to the DivCodes / Divisions that
+        // actually appear in this upload — Q6 in particular used to join the
+        // entire store's locstock through vupc_subclass with no division
+        // filter, which was the dominant cost for large e-com uploads.
+        var divCodes  = divByItem.Values.Select(v => v.DivCode ?? 0).Where(d => d != 0).Distinct().ToArray();
+        var divisions = divByItem.Values.Select(v => v.Division ?? "").Where(d => !string.IsNullOrEmpty(d))
+                                       .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+
+        // Wave 2 — three aggregate lookups keyed off wave-1 dimensions,
+        // in parallel on independent connections.
+
+        // 4) SkuMax bands via LPMSIM.dbo.LPM_SKUMaxRule.
+        async Task<List<(string Country, int DivCode, string? GroupCode, int WHStockFrom, int WHStockTo, int SKUMax)>> LoadSkuBands()
+        {
+            if (string.IsNullOrWhiteSpace(simCountry) || divCodes.Length == 0)
+                return new();
+            await using var c = OpenOnPremBackup();
+            return (await c.QueryAsync<(string Country, int DivCode, string? GroupCode, int WHStockFrom, int WHStockTo, int SKUMax)>(new CommandDefinition(
                 @"SELECT Country, DivCode, GroupCode, WHStockFrom, WHStockTo, SKUMax
                     FROM LPMSIM.dbo.LPM_SKUMaxRule WITH (NOLOCK)
                    WHERE Country = @country AND DivCode IN @divs AND IsActive = 1",
-                new { country = simCountry, divs = divCodesForRules },
+                new { country = simCountry, divs = divCodes },
                 commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).AsList();
         }
+
+        // 5) Div EOM aggregated per DivCode for this StoreID + current GST month/year.
+        async Task<Dictionary<int, int>> LoadEomByDivCode()
+        {
+            if (divCodes.Length == 0) return new();
+            await using var c = OpenOnPremBackup();
+            return (await c.QueryAsync<(int DivCode, int TargetEOM)>(new CommandDefinition(
+                @"SELECT DivCode, SUM(CAST(ISNULL(TargetEOM,0) AS INT)) AS TargetEOM
+                    FROM LPMSIM.dbo.LPM_EOM_Output WITH (NOLOCK)
+                   WHERE StoreId = @s AND Month1 = @m AND Year1 = @y AND DivCode IN @divs
+                   GROUP BY DivCode",
+                new { s = storeId, m = month, y = year, divs = divCodes },
+                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
+                .ToDictionary(r => r.DivCode, r => r.TargetEOM);
+        }
+
+        // 6) Div SOH per Division text for this StoreID — restricted to the
+        // divisions actually referenced by the upload.
+        async Task<Dictionary<string, int>> LoadSohByDiv()
+        {
+            if (divisions.Length == 0)
+                return new(StringComparer.OrdinalIgnoreCase);
+            await using var c = OpenOnPremBackup();
+            return (await c.QueryAsync<(string Division, int SOH)>(new CommandDefinition(
+                @"SELECT v.Division, SUM(CAST(ISNULL(ls.SOH,0) AS INT)) AS SOH
+                    FROM racks.dbo.LPM_locstock ls WITH (NOLOCK)
+                    JOIN datareporting.dbo.vupc_subclass v WITH (NOLOCK) ON v.itemcode = ls.itemcode
+                   WHERE ls.storeid = @s AND v.Division IN @divs
+                   GROUP BY v.Division",
+                new { s = storeId, divs = divisions },
+                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
+                .Where(r => !string.IsNullOrEmpty(r.Division))
+                .ToDictionary(r => r.Division!, r => r.SOH, StringComparer.OrdinalIgnoreCase);
+        }
+
+        var w4 = LoadSkuBands();
+        var w5 = LoadEomByDivCode();
+        var w6 = LoadSohByDiv();
+        await Task.WhenAll(w4, w5, w6);
+        var skuBands     = await w4;
+        var eomByDivCode = await w5;
+        var sohByDiv     = await w6;
+
         var skuBandsByKey = skuBands
             .GroupBy(b => (b.DivCode, GroupCode: (b.GroupCode ?? "").Trim().ToUpperInvariant()))
             .ToDictionary(g => g.Key, g => g.OrderBy(b => b.WHStockFrom).ToList());
@@ -187,28 +256,6 @@ public class ManualAllocationService(IOnPremConnectionResolver resolver, ICurren
                 if (poQty >= b.WHStockFrom && poQty <= b.WHStockTo) return b.SKUMax;
             return null;
         }
-
-        // 5) Div EOM aggregated per DivCode for this StoreID + current GST month/year.
-        var eomByDivCode = (await src.QueryAsync<(int DivCode, int TargetEOM)>(new CommandDefinition(
-            @"SELECT DivCode, SUM(CAST(ISNULL(TargetEOM,0) AS INT)) AS TargetEOM
-                FROM LPMSIM.dbo.LPM_EOM_Output WITH (NOLOCK)
-               WHERE StoreId = @s AND Month1 = @m AND Year1 = @y
-               GROUP BY DivCode",
-            new { s = storeId, m = month, y = year }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
-            .ToDictionary(r => r.DivCode, r => r.TargetEOM);
-
-        // 6) Div SOH per Division text for this StoreID. Column is
-        // racks.LPM_locstock.SOH; vupc_subclass carries Division text
-        // directly so no SubclassMaster join needed.
-        var sohByDiv = (await src.QueryAsync<(string Division, int SOH)>(new CommandDefinition(
-            @"SELECT v.Division, SUM(CAST(ISNULL(ls.SOH,0) AS INT)) AS SOH
-                FROM racks.dbo.LPM_locstock ls WITH (NOLOCK)
-                JOIN datareporting.dbo.vupc_subclass v WITH (NOLOCK) ON v.itemcode = ls.itemcode
-               WHERE ls.storeid = @s AND v.Division IS NOT NULL
-               GROUP BY v.Division",
-            new { s = storeId }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
-            .Where(r => !string.IsNullOrEmpty(r.Division))
-            .ToDictionary(r => r.Division!, r => r.SOH, StringComparer.OrdinalIgnoreCase);
 
         // Merge everything row-by-row.
         var result = new List<ManualAllocationRow>(uploaded.Count);

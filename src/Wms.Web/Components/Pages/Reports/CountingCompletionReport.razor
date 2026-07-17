@@ -1,0 +1,199 @@
+@page "/reports/counting-completion"
+@rendermode RenderMode.InteractiveServer
+@using Wms.Core
+@using Wms.Data.Lpm
+@attribute [Authorize(Policy = MenuKeys.RPT_COUNTING_COMPLETION)]
+@inject ReportsService Svc
+
+<PageTitle>WMS - Counting Completion Report</PageTitle>
+
+<div class="aiwms-page-header">
+    <h2>Counting Completion Report</h2>
+    <p>One row per Country + Cont No. When a container has multiple LPM Months, Divisions, or Brands, they're shown as a comma-separated list.</p>
+</div>
+
+<div class="aiwms-section">
+    <div style="display:flex; gap:14px; align-items:center; margin-bottom:14px; flex-wrap:wrap">
+        <strong style="font-size:11px; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">Report:</strong>
+        <label style="display:flex; align-items:center; gap:4px; cursor:pointer">
+            <input type="radio" name="rpt" value="Summary" checked="@(_view == "Summary")" @onchange="@(_ => _view = "Summary")" /> Summary
+        </label>
+        <label style="display:flex; align-items:center; gap:4px; opacity:0.5; cursor:not-allowed" title="Coming soon">
+            <input type="radio" name="rpt" value="Detailed" disabled /> Detailed <em style="font-size:11px">(coming soon)</em>
+        </label>
+    </div>
+
+    <div style="display:grid; grid-template-columns: 1fr 1fr 1fr auto; gap:12px; align-items:end;">
+        <div>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COUNTRY (select any)</label>
+            <div style="display:flex; flex-direction:column; gap:4px; max-height:120px; overflow-y:auto; border:1px solid var(--border-default); border-radius:var(--r-sm); padding:8px 10px; background:white;">
+                @foreach (var c in _countries)
+                {
+                    <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:13px">
+                        <input type="checkbox" checked="@_selectedCountries.Contains(c)" @onchange="@(e => ToggleCountry(c, (bool)e.Value!))" />
+                        @DisplayCountry(c)
+                    </label>
+                }
+            </div>
+        </div>
+        <div>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COMPLETION FROM *</label>
+            <input type="date" @bind="_from" @bind:format="yyyy-MM-dd" max="@DateTime.Today.ToString("yyyy-MM-dd")" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
+        </div>
+        <div>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COMPLETION TO *</label>
+            <input type="date" @bind="_to" @bind:format="yyyy-MM-dd" max="@DateTime.Today.ToString("yyyy-MM-dd")" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
+        </div>
+        <button class="aiwms-btn aiwms-btn-primary" @onclick="LoadAsync" disabled="@(_loading || _from > _to)">@(_loading ? "Loading..." : "Load")</button>
+    </div>
+
+    @if (!string.IsNullOrEmpty(_message))
+    {
+        <div class="aiwms-alert @(_isError ? "error" : "info")" style="margin-top:12px">@_message</div>
+    }
+</div>
+
+@if (_rows.Count > 0)
+{
+    <div class="aiwms-section">
+        <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:12px;">
+            <div style="background:var(--surface-1, #f7f7f5); border-radius:var(--r-sm); padding:12px 16px;">
+                <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">Total Containers</div>
+                <div style="font-size:1.4rem; font-weight:800">@FilteredRows().Count.ToString("N0")</div>
+            </div>
+            <div style="background:var(--surface-1, #f7f7f5); border-radius:var(--r-sm); padding:12px 16px;">
+                <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">Total PO Count</div>
+                <div style="font-size:1.4rem; font-weight:800">@TotalPoCount().ToString("N0")</div>
+            </div>
+            <div style="background:var(--surface-1, #f7f7f5); border-radius:var(--r-sm); padding:12px 16px;">
+                <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">Total Counted Qty</div>
+                <div style="font-size:1.4rem; font-weight:800">@FilteredRows().Sum(r => r.CountedQty).ToString("N0")</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="aiwms-section">
+        <div style="display:flex; gap:12px; align-items:end; margin-bottom:14px; flex-wrap:wrap">
+            <div style="flex:1; min-width:240px">
+                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">SEARCH (CONT NO / PO NO / DIVISION / BRAND)</label>
+                <input @bind="_search" @bind:event="oninput" placeholder="Type to filter..." style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
+            </div>
+        </div>
+
+        <div class="aiwms-card-header">Summary - @FilteredRows().Count row(s)</div>
+        <div style="overflow-x:auto">
+        <table class="aiwms-table aiwms-table-dense" style="table-layout:fixed; width:100%">
+            <colgroup>
+                <col style="width:70px" />
+                <col style="width:110px" />
+                <col style="width:160px" />
+                <col style="width:130px" />
+                <col style="width:130px" />
+                <col style="width:100px" />
+                <col style="width:140px" />
+                <col style="width:200px" />
+                <col style="width:220px" />
+            </colgroup>
+            <thead>
+                <tr>
+                    <th>Country</th>
+                    <th>Cont No</th>
+                    <th>PO No</th>
+                    <th>Counting Start Date</th>
+                    <th>Counting Completion Date</th>
+                    <th style="text-align:center">Counted Qty</th>
+                    <th>LPM Months</th>
+                    <th>Divisions</th>
+                    <th>Brands</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var r in FilteredRows())
+                {
+                    <tr>
+                        <td>@DisplayCountry(r.Country)</td>
+                        <td style="font-family:var(--font-mono)"><b>@r.ContNo</b></td>
+                        <td style="word-break:break-word">@r.PONo</td>
+                        <td>@FmtDate(r.CountingStartDate)</td>
+                        <td>@FmtDate(r.CountingCompletionDate)</td>
+                        <td style="text-align:center">@r.CountedQty.ToString("N0")</td>
+                        <td style="word-break:break-word">@r.LpmMonths</td>
+                        <td style="word-break:break-word">@r.Divisions</td>
+                        <td style="word-break:break-word">@r.Brands</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+        </div>
+    </div>
+}
+
+@code {
+    private string _view = "Summary";
+    private List<string> _countries = new();
+    private HashSet<string> _selectedCountries = new();
+    private DateTime _from = DateTime.Today.AddDays(-7);
+    private DateTime _to   = DateTime.Today;
+    private bool _loading;
+    private string _message = "";
+    private bool _isError;
+    private string _search = "";
+    private List<CountingCompletionSummaryRow> _rows = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            var list = await Svc.GetCountriesAsync();
+            var excluded = new[] { "Ex2Locations", "Ecom" };
+            _countries = list.Where(c => !excluded.Contains(c, StringComparer.OrdinalIgnoreCase)).ToList();
+        }
+        catch { /* fall back to empty list if the lookup fails */ }
+    }
+
+    private async Task ToggleCountry(string country, bool isChecked)
+    {
+        if (isChecked) _selectedCountries.Add(country);
+        else _selectedCountries.Remove(country);
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        _loading = true; _message = ""; _isError = false; _rows = new();
+        try
+        {
+            _rows = await Svc.GetCountingCompletionSummaryAsync(_selectedCountries, _from, _to);
+            if (_rows.Count == 0) _message = "No rows for the selected filters.";
+        }
+        catch (Exception ex) { _message = ex.Message; _isError = true; }
+        finally { _loading = false; }
+    }
+
+    private List<CountingCompletionSummaryRow> FilteredRows()
+    {
+        if (string.IsNullOrWhiteSpace(_search)) return _rows;
+        var term = _search.Trim();
+        return _rows.Where(r =>
+            Matches(r.ContNo, term) ||
+            Matches(r.PONo, term) ||
+            Matches(r.Divisions, term) ||
+            Matches(r.Brands, term)).ToList();
+    }
+
+    private static bool Matches(string? value, string term) =>
+        !string.IsNullOrEmpty(value) && value.Contains(term, StringComparison.OrdinalIgnoreCase);
+
+    private int TotalPoCount()
+    {
+        return FilteredRows()
+            .SelectMany(r => (r.PONo ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Count();
+    }
+
+    private static string DisplayCountry(string c) =>
+        string.IsNullOrEmpty(c) ? c : c.ToUpper();
+
+    private static string FmtDate(DateTime? d) => d?.ToString("dd-MMM-yyyy") ?? "";
+}

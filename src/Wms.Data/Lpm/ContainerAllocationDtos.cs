@@ -56,7 +56,17 @@ public record AllocationRow(
     int      PrevAllocatedQty = 0,       // (StoreID, DivCode) seed at allocation time
     int?     PriorityRank     = null,    // LPM_EOM_Output.PriorityRank per (StoreID, DivCode) — lower = higher priority
     int?     MnwToday         = null,    // OTSOutput.Mnwtoday latest per (StoreID, DivCode) by OTSDate DESC
-    int?     Phase2Qty        = null);   // pcs of AllocQty coming from Phase 2 (RR-Rest + Overflow of FillSKUMax+RR)
+    int?     Phase2Qty        = null,    // pcs of AllocQty coming from Phase 2 (RR-Rest + Overflow of FillSKUMax+RR)
+    // OTS-run-based FillSKUMax+RR pass tracking (new algorithm — see
+    // ContainerAllocationService FillSKUMaxRoundRobin branch).
+    int?     Pass1Qty         = null,    // OTS% >= AvgOTS% pass
+    int?     Pass2Qty         = null,    // 0 < OTS% < AvgOTS% pass
+    int?     Pass3Qty         = null,    // OTS% <= 0 round-robin pass
+    int?     Pass4Qty         = null,    // uncapped RR fallback across all stores
+    decimal? AvgOtsPercent    = null,    // per-Division AVG(OtsPercentToday WHERE > 0) at item time
+    int?     OtsQtyToday      = null,    // OtsQtyToday from WmsOtsPoAllocationRun for this (StoreID, DivCode) — initial value, not decremented
+    int?     TgtEOM           = null,    // TgtEOM from WmsOtsPoAllocationRun for this (StoreID, DivCode) — FillSKUMax+RR only
+    int?     RawSkuMax        = null);   // Raw SKUMax from LPM_SKUMaxRule band lookup (before subtracting SOHToday) — FillSKUMax+RR only. 0 = no band matched.
 
 /// <summary>One row in the blocked-items list: an (item, store) pair that was
 /// excluded from allocation by LPM_StoreDeptAccess or LPM_StoreDivAccess.</summary>

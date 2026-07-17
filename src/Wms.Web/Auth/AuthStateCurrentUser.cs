@@ -17,8 +17,11 @@ public class AuthStateCurrentUser(
     private string? _name;
     private string? _warehouse;
     private string? _country;
+    private bool _hasAllCountriesAccess;
+    private IReadOnlyCollection<string> _allowedCountries = Array.Empty<string>();
 
     public static string ProfileCacheKey(string username) => $"profile:{username}";
+    public static string CountryAccessCacheKey(string username) => $"countryAccess:{username}";
 
     public async Task EnsureLoadedAsync(CancellationToken ct = default)
     {
@@ -49,28 +52,58 @@ public class AuthStateCurrentUser(
             (cached.Item1 is not null || cached.Item2 is not null))
         {
             _warehouse = cached.Item1; _country = cached.Item2;
-            _loaded = true;
-            return;
         }
-
-        try
+        else
         {
-            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            cts.CancelAfter(TimeSpan.FromSeconds(5));
-            await using var db = await dbFactory.CreateDbContextAsync(cts.Token);
-            var row = await db.Users.AsNoTracking()
-                .Where(u => u.Username == _name)
-                .Select(u => new { u.Warehouse, u.Country })
-                .FirstOrDefaultAsync(cts.Token);
-            _warehouse = row?.Warehouse;
-            _country   = row?.Country;
-        }
-        catch { /* leave nulls */ }
+            try
+            {
+                using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                cts.CancelAfter(TimeSpan.FromSeconds(5));
+                await using var db = await dbFactory.CreateDbContextAsync(cts.Token);
+                var row = await db.Users.AsNoTracking()
+                    .Where(u => u.Username == _name)
+                    .Select(u => new { u.Warehouse, u.Country })
+                    .FirstOrDefaultAsync(cts.Token);
+                _warehouse = row?.Warehouse;
+                _country   = row?.Country;
+            }
+            catch { /* leave nulls */ }
 
-        var ttl = (_warehouse is null && _country is null)
-            ? TimeSpan.FromSeconds(5)
-            : TimeSpan.FromMinutes(2);
-        cache.Set(key, (_warehouse, _country), ttl);
+            var ttl = (_warehouse is null && _country is null)
+                ? TimeSpan.FromSeconds(5)
+                : TimeSpan.FromMinutes(2);
+            cache.Set(key, (_warehouse, _country), ttl);
+        }
+
+        // Country access + admin bypass — cached separately so the shorter TTL on
+        // profile-not-found doesn't repeatedly re-fetch the access rows.
+        var caKey = CountryAccessCacheKey(_name);
+        if (cache.TryGetValue<(bool IsAdmin, IReadOnlyCollection<string> Countries)>(caKey, out var caCached))
+        {
+            _hasAllCountriesAccess = caCached.IsAdmin;
+            _allowedCountries      = caCached.Countries;
+        }
+        else
+        {
+            try
+            {
+                using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                cts.CancelAfter(TimeSpan.FromSeconds(5));
+                await using var db = await dbFactory.CreateDbContextAsync(cts.Token);
+                var isAdmin = await db.UserRoles.AsNoTracking()
+                    .AnyAsync(r => r.Username == _name && r.RoleCode == Roles.Admin, cts.Token);
+                var countries = await db.UserCountryAccess.AsNoTracking()
+                    .Where(a => a.Username == _name)
+                    .Select(a => a.Country)
+                    .ToListAsync(cts.Token);
+                _hasAllCountriesAccess = isAdmin;
+                _allowedCountries      = new HashSet<string>(countries, StringComparer.OrdinalIgnoreCase);
+            }
+            catch { /* leave defaults — empty access */ }
+
+            cache.Set(caKey, (_hasAllCountriesAccess, _allowedCountries), TimeSpan.FromMinutes(2));
+        }
+
         _loaded = true;
     }
 
@@ -133,4 +166,12 @@ public class AuthStateCurrentUser(
 
     public string? Warehouse => _warehouse;
     public string? Country   => _country;
+    public bool HasAllCountriesAccess => _hasAllCountriesAccess;
+    public IReadOnlyCollection<string> AllowedCountries => _allowedCountries;
+    public IEnumerable<string> FilterCountries(IEnumerable<string> all)
+    {
+        if (_hasAllCountriesAccess) return all;
+        var allowed = _allowedCountries;
+        return all.Where(c => c is not null && allowed.Contains(c!));
+    }
 }

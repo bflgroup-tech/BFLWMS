@@ -1,0 +1,646 @@
+@page "/counting/ots-po-allocation"
+@rendermode RenderMode.InteractiveServer
+@using System.Globalization
+@using System.IO
+@using ClosedXML.Excel
+@using Wms.Core
+@using Wms.Data.Lpm
+@attribute [Authorize(Policy = MenuKeys.OTS_FOR_PO_ALLOCATION)]
+@inject OtsPoAllocationService Svc
+@inject ICurrentUser Me
+@inject IJSRuntime JS
+
+<PageTitle>WMS — OTS for PO Allocation</PageTitle>
+
+<div class="aiwms-page-header">
+    <h2>OTS for PO Allocation</h2>
+    <p>Per-(Country, StoreID, DivCode) OTS math for a picked Month/Year + RunDate. <b>Generate</b> runs the heavy cross-DB compute and persists to <code>dbo.WmsOtsPoAllocationRun</code> stamped with today's <b>OTSDate</b> (GST); <b>Load</b> reads by the picked RunDate. Generate is only enabled when RunDate = today. Rundate now (GST): <b>@_today.ToString("dd/MM/yyyy")</b>. Last generated for @_month/@_year: <b>@(_lastGenerated?.ToString("dd/MM/yyyy HH:mm") ?? "never")</b>.</p>
+</div>
+
+<div class="aiwms-section">
+    <div style="display:grid; grid-template-columns: 1.2fr 1fr 1fr 1.4fr auto auto auto; gap:12px; align-items:end">
+        <div>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COUNTRY</label>
+            <select @bind="_country" @bind:after="OnCountryChangedAsync" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" disabled="@_busy">
+                @if (Me.HasAllCountriesAccess)
+                {
+                    <option value="@OtsPoAllocationService.BflGroup">@OtsPoAllocationService.BflGroup</option>
+                }
+                @foreach (var c in _countries) { <option value="@c">@c</option> }
+            </select>
+        </div>
+        <div>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">MONTH *</label>
+            <select @bind="_month" @bind:after="RefreshDivisionsAsync" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" disabled="@_busy">
+                @foreach (var m in _monthsForSelectedYear) { <option value="@m">@(CultureInfo.InvariantCulture.DateTimeFormat.GetMonthName(m)) (@m)</option> }
+            </select>
+        </div>
+        <div>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">YEAR *</label>
+            <select @bind="_year" @bind:after="OnYearChangedAsync" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" disabled="@_busy">
+                @foreach (var y in _years) { <option value="@y">@y</option> }
+            </select>
+        </div>
+        <div>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">RUN DATE (GST) *</label>
+            <select @bind="_runDateStr" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" disabled="@_busy">
+                <option value="@_today.ToString("yyyy-MM-dd")">@_today.ToString("dd/MM/yyyy")</option>
+                @foreach (var d in _availableDates.Where(x => x != _today))
+                {
+                    <option value="@d.ToString("yyyy-MM-dd")">@d.ToString("dd/MM/yyyy")</option>
+                }
+            </select>
+        </div>
+        <button class="aiwms-btn aiwms-btn-primary" @onclick="GenerateAsync"
+                disabled="@(!CanGenerate)"
+                title="@(CanGenerate ? "Recompute + persist for all countries" : "Generate is only enabled when Country = BFLGroup and RunDate = today")">
+            @(_busy && _busyKind == "gen" ? "Generating…" : "Generate")
+        </button>
+        <button class="aiwms-btn aiwms-btn-secondary" @onclick="LoadAsync" disabled="@(_busy || _month == 0 || _year == 0)">
+            @(_busy && _busyKind == "load" ? "Loading…" : "Load")
+        </button>
+        <button class="aiwms-btn aiwms-btn-secondary" @onclick="ExportExcelAsync" disabled="@(_rows.Count == 0 || _busy)">Export Excel</button>
+    </div>
+    @if (!string.IsNullOrEmpty(_message))
+    {
+        <div class="aiwms-alert @(_isError ? "error" : "info")" style="margin-top:12px">@_message</div>
+    }
+    @if (_warnings.Count > 0)
+    {
+        <div class="aiwms-alert" style="margin-top:8px; background:#fef3c7; border:1px solid #f59e0b; color:#92400e">
+            <b>Partial data during Generate:</b>
+            <ul style="margin:6px 0 0 20px; padding:0">
+                @foreach (var w in _warnings) { <li>@w</li> }
+            </ul>
+        </div>
+    }
+    @if (_validationIssues.Count > 0)
+    {
+        <div class="aiwms-alert" style="margin-top:8px; background:#fee2e2; border:1px solid #f87171; color:#991b1b">
+            <b>Coverage validation — @_validationIssues.Count issue(s):</b>
+            <ul style="margin:6px 0 0 20px; padding:0">
+                @foreach (var w in _validationIssues) { <li>@w</li> }
+            </ul>
+            <label style="display:inline-flex; align-items:center; gap:6px; margin-top:8px; font-size:12px; cursor:pointer">
+                <input type="checkbox" @bind="_proceedAnyway" /> <b>Proceed anyway</b> — I understand the affected countries' Week Sales will be under-counted.
+            </label>
+        </div>
+    }
+</div>
+
+@if (_rows.Count > 0)
+{
+    <div class="aiwms-section">
+        <div class="aiwms-card-header">Filter rows (in memory)</div>
+        <div style="display:grid; grid-template-columns: 1.2fr 1.8fr 2fr 1fr auto; gap:12px; align-items:end">
+            <div>
+                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COUNTRY</label>
+                <MudSelect T="string" Dense="true" MultiSelection="true" SelectAll="true"
+                           SelectedValues="_fCountries"
+                           SelectedValuesChanged="@(v => _fCountries = v.ToHashSet(StringComparer.OrdinalIgnoreCase))"
+                           MultiSelectionTextFunc="@(v => string.Join(", ", v))"
+                           Placeholder="all"
+                           Variant="Variant.Outlined" Margin="Margin.Dense">
+                    @foreach (var c in _rows.Select(r => r.Country).Distinct().OrderBy(x => x))
+                    { <MudSelectItem T="string" Value="@c">@c</MudSelectItem> }
+                </MudSelect>
+            </div>
+            <div>
+                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">DIVISIONS</label>
+                <MudSelect T="int" Dense="true" MultiSelection="true" SelectAll="true"
+                           SelectedValues="_selectedDivs"
+                           SelectedValuesChanged="@(v => _selectedDivs = v.ToHashSet())"
+                           MultiSelectionTextFunc="@FormatSelectedDivs"
+                           Placeholder="all"
+                           Variant="Variant.Outlined" Margin="Margin.Dense">
+                    @foreach (var d in _divisions)
+                    {
+                        <MudSelectItem T="int" Value="@d.DivCode">@d.DivCode — @d.Division</MudSelectItem>
+                    }
+                </MudSelect>
+            </div>
+            <div>
+                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">STORE (search by ID or name)</label>
+                <MudAutocomplete T="string" Dense="true" Clearable="true"
+                                 Value="_fStoreLabel"
+                                 ValueChanged="OnStoreFilterChanged"
+                                 SearchFunc="@SearchStoreOptions"
+                                 Placeholder="type to search…"
+                                 CoerceText="false"
+                                 CoerceValue="false"
+                                 ResetValueOnEmptyText="true"
+                                 Variant="Variant.Outlined" Margin="Margin.Dense" />
+            </div>
+            <div>
+                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">VOLUME GROUP</label>
+                <MudSelect T="string" Dense="true" MultiSelection="true" SelectAll="true"
+                           SelectedValues="_fVolumeGroups"
+                           SelectedValuesChanged="@(v => _fVolumeGroups = v.ToHashSet(StringComparer.OrdinalIgnoreCase))"
+                           MultiSelectionTextFunc="@(v => string.Join(", ", v))"
+                           Placeholder="all"
+                           Variant="Variant.Outlined" Margin="Margin.Dense">
+                    @foreach (var g in _rows.Select(r => r.VolumeGroup ?? "").Where(x => x.Length > 0).Distinct().OrderBy(x => x))
+                    { <MudSelectItem T="string" Value="@g">@g</MudSelectItem> }
+                </MudSelect>
+            </div>
+            <button class="aiwms-btn aiwms-btn-secondary" @onclick="ClearFilters" style="height:36px">Clear</button>
+        </div>
+    </div>
+    <div class="aiwms-section" style="padding:14px">
+        @{
+            var fRows = FilteredSortedRows.ToList();
+            var fEOM  = fRows.Sum(r => r.TgtEOM);
+            var fSOH  = fRows.Sum(r => r.SOHToday);
+            var fWS   = fRows.Sum(r => r.WeekSales);
+            var fInT  = fRows.Sum(r => r.InTransit);
+            var fEx2  = fRows.Sum(r => r.Ex2DcSoh);
+            var fOTS  = fRows.Sum(r => r.OtsQtyToday);
+            var fReq  = fRows.Sum(r => Math.Max(0, r.OtsQtyToday));
+        }
+        <div style="display:grid; grid-template-columns: repeat(7, minmax(0,1fr)); gap:12px;">
+            @Kpi("EOM",          fEOM.ToString("N0"),  "#dbeafe", "#1e40af")
+            @Kpi("SOH",          fSOH.ToString("N0"),  "#dcfce7", "#166534")
+            @Kpi("Weekly Sales", fWS.ToString("N0"),   "#fef3c7", "#92400e")
+            @Kpi("InTransit",    fInT.ToString("N0"),  "#ffedd5", "#9a3412")
+            @Kpi("Ex2 DC SOH",   fEx2.ToString("N0"),  "#fce7f3", "#9d174d")
+            @Kpi("OTS",          fOTS.ToString("N0"),  fOTS < 0 ? "#fee2e2" : "#e0e7ff", fOTS < 0 ? "#991b1b" : "#3730a3")
+            @Kpi("OTS Reqd",     fReq.ToString("N0"),  "#ede9fe", "#5b21b6")
+        </div>
+        @if (fRows.Count != _rows.Count)
+        {
+            <div style="margin-top:8px; font-size:11px; color:var(--text-secondary)">
+                Filtered: @fRows.Count of @_rows.Count row(s).
+            </div>
+        }
+    </div>
+    <div class="aiwms-section" style="padding:0; overflow:hidden">
+        <div style="max-height:640px; overflow:auto">
+            <table class="aiwms-table aiwms-table-dense" style="font-size:11.5px">
+                <thead style="position:sticky; top:0; background:white; z-index:1">
+                    <tr>
+                        @SortHeader("Country",         "Country",   "160px")
+                        @SortHeader("StoreID",         "StoreID",   "120px")
+                        @SortHeader("StoreName",       "Store Name","260px")
+                        @SortHeader("DivCode",         "Divcode",   null,  true)
+                        @SortHeader("Division",        "Division",  "220px")
+                        @SortHeader("VolumeGroup",     "Volume Group")
+                        @SortHeader("PriorityRank",    "Priority Ranking", null, true)
+                        @SortHeader("EOMMonth",        "EOM Month")
+                        @SortHeader("TgtEOM",          "Tgt EOM",  null, true)
+                        @SortHeader("PrevMonthEOM",    "Prev Month EOM", null, true)
+                        @SortHeader("WkReduction",     "Wk Reduction",   null, true)
+                        @SortHeader("CurrentEOW",      "Current EOW",    null, true)
+                        @SortHeader("SOHToday",        "SOH Today", null, true)
+                        @SortHeader("WeeksToInclude",  "No. of Weeks to include Sales", null, true)
+                        @SortHeader("WeekSales",       "Week Sales", null, true)
+                        @SortHeader("InTransit",       "InTransit", null, true)
+                        @SortHeader("Ex2DcSoh",        "Ex2 DC SOH", null, true)
+                        @SortHeader("CountingWIP",     "Counting WIP", null, true)
+                        @SortHeader("OtsQtyToday",     "OTS Qty Today", null, true)
+                        @SortHeader("OtsPercentToday", "OTS % Today", null, true)
+                        @SortHeader("OtsTodayRequired","OTS Today Required", null, true)
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var r in FilteredSortedRows)
+                    {
+                        var req = Math.Max(0, r.OtsQtyToday);
+                        <tr>
+                            <td>@r.Country</td>
+                            <td style="font-family:var(--font-mono)">@r.StoreID</td>
+                            <td>@r.StoreName</td>
+                            <td>@r.DivCode</td>
+                            <td>@r.Division</td>
+                            <td>@r.VolumeGroup</td>
+                            <td style="text-align:right">@r.PriorityRank</td>
+                            <td>@r.EOMMonth</td>
+                            <td style="text-align:right">@r.TgtEOM.ToString("N0")</td>
+                            <td style="text-align:right">@r.PrevMonthEOM.ToString("N0")</td>
+                            <td style="text-align:right">@(r.WkReduction == 0m ? "" : Math.Round(r.WkReduction).ToString("N0"))</td>
+                            <td style="text-align:right">@r.CurrentEOW.ToString("N0")</td>
+                            <td style="text-align:right">@r.SOHToday.ToString("N0")</td>
+                            <td style="text-align:right">@r.WeeksToInclude</td>
+                            <td style="text-align:right">@r.WeekSales.ToString("N0")</td>
+                            <td style="text-align:right">@r.InTransit.ToString("N0")</td>
+                            <td style="text-align:right">@r.Ex2DcSoh.ToString("N0")</td>
+                            <td style="text-align:right">@r.CountingWIP.ToString("N0")</td>
+                            <td style="text-align:right"><b>@r.OtsQtyToday.ToString("N0")</b></td>
+                            <td style="text-align:right">@((int)Math.Round(r.OtsPercentToday))%</td>
+                            <td style="text-align:right"><b>@(req > 0 ? req.ToString("N0") : "")</b></td>
+                        </tr>
+                    }
+                </tbody>
+                <tfoot style="position:sticky; bottom:0; background:#f3f4f6; z-index:1; font-weight:800">
+                    @{
+                        // Totals reflect the currently-filtered rows so the footer
+                        // stays in sync with the ribbon and the visible grid.
+                        var tRows       = FilteredSortedRows.ToList();
+                        var tTgtEOM     = tRows.Sum(r => r.TgtEOM);
+                        var tPrevEOM    = tRows.Sum(r => r.PrevMonthEOM);
+                        var tCurEOW     = tRows.Sum(r => r.CurrentEOW);
+                        var tSOH        = tRows.Sum(r => r.SOHToday);
+                        var tWeekSales  = tRows.Sum(r => r.WeekSales);
+                        var tInTransit  = tRows.Sum(r => r.InTransit);
+                        var tEx2        = tRows.Sum(r => r.Ex2DcSoh);
+                        var tWIP        = tRows.Sum(r => r.CountingWIP);
+                        var tOtsQty     = tRows.Sum(r => r.OtsQtyToday);
+                        var tOtsReq     = tRows.Sum(r => Math.Max(0, r.OtsQtyToday));
+                    }
+                    <tr>
+                        <td colspan="8" style="text-align:right; padding:6px 12px; border-top:2px solid #d1d5db">Totals</td>
+                        <td style="text-align:right; padding:6px 12px; border-top:2px solid #d1d5db">@tTgtEOM.ToString("N0")</td>
+                        <td style="text-align:right; padding:6px 12px; border-top:2px solid #d1d5db">@tPrevEOM.ToString("N0")</td>
+                        <td style="padding:6px 12px; border-top:2px solid #d1d5db"></td>
+                        <td style="text-align:right; padding:6px 12px; border-top:2px solid #d1d5db">@tCurEOW.ToString("N0")</td>
+                        <td style="text-align:right; padding:6px 12px; border-top:2px solid #d1d5db">@tSOH.ToString("N0")</td>
+                        <td style="padding:6px 12px; border-top:2px solid #d1d5db"></td>
+                        <td style="text-align:right; padding:6px 12px; border-top:2px solid #d1d5db">@tWeekSales.ToString("N0")</td>
+                        <td style="text-align:right; padding:6px 12px; border-top:2px solid #d1d5db">@tInTransit.ToString("N0")</td>
+                        <td style="text-align:right; padding:6px 12px; border-top:2px solid #d1d5db">@tEx2.ToString("N0")</td>
+                        <td style="text-align:right; padding:6px 12px; border-top:2px solid #d1d5db">@tWIP.ToString("N0")</td>
+                        <td style="text-align:right; padding:6px 12px; border-top:2px solid #d1d5db">@tOtsQty.ToString("N0")</td>
+                        <td style="padding:6px 12px; border-top:2px solid #d1d5db"></td>
+                        <td style="text-align:right; padding:6px 12px; border-top:2px solid #d1d5db">@tOtsReq.ToString("N0")</td>
+                    </tr>
+                </tfoot>
+            </table>
+        </div>
+        <div style="padding:8px 12px; background:#f9fafb; border-top:1px solid var(--border-default); font-size:11px; color:var(--text-secondary)">
+            @_rows.Count row(s)
+        </div>
+    </div>
+}
+
+@code {
+    private readonly DateTime _rundate = DateTime.UtcNow.AddHours(4).Date;
+    private readonly DateTime _today   = DateTime.UtcNow.AddHours(4).Date;
+    private string _country = OtsPoAllocationService.BflGroup;
+    private string _runDateStr = DateTime.UtcNow.AddHours(4).Date.ToString("yyyy-MM-dd");
+    private List<DateTime> _availableDates = new();
+    // In-memory column filters applied to loaded rows before display.
+    private HashSet<string> _fCountries = new(StringComparer.OrdinalIgnoreCase);
+    private string? _fStoreLabel;      // "StoreID — StoreName" picked in the autocomplete; null = no filter
+    private string? _fStoreId;         // parsed StoreID for row matching
+    private HashSet<string> _fVolumeGroups = new(StringComparer.OrdinalIgnoreCase);
+    private int    _month;
+    private int    _year;
+    private bool   _busy;
+    private string _busyKind = "";   // "gen" | "load"
+    private string _message = "";
+    private bool   _isError;
+    private DateTime? _lastGenerated;
+    private List<string> _countries = new();
+    private List<string> _warnings = new();
+    private List<string> _validationIssues = new();
+    private bool _proceedAnyway;
+    private List<OtsMonthYearOption> _monthYears = new();
+    private List<int>    _years = new();
+    private List<int>    _monthsForSelectedYear = new();
+    private List<(int DivCode, string Division)> _divisions = new();
+    private HashSet<int> _selectedDivs = new();
+    private List<OtsPoAllocationRow> _rows = new();
+    private string _sortKey = "Country";
+    private bool   _sortAsc = true;
+
+    // Column totals — recomputed whenever _rows changes.
+    private int _totTgtEOM, _totSOH, _totWeekSales, _totInTransit, _totEx2, _totWIP, _totOtsQty, _totOtsRequired;
+
+    private void RecomputeTotals()
+    {
+        _totTgtEOM      = _rows.Sum(r => r.TgtEOM);
+        _totSOH         = _rows.Sum(r => r.SOHToday);
+        _totWeekSales   = _rows.Sum(r => r.WeekSales);
+        _totInTransit   = _rows.Sum(r => r.InTransit);
+        _totEx2         = _rows.Sum(r => r.Ex2DcSoh);
+        _totWIP         = _rows.Sum(r => r.CountingWIP);
+        _totOtsQty      = _rows.Sum(r => r.OtsQtyToday);
+        _totOtsRequired = _rows.Sum(r => Math.Max(0, r.OtsQtyToday));
+    }
+
+    private bool CanGenerate =>
+        !_busy && _month != 0 && _year != 0
+        && string.Equals(_country, OtsPoAllocationService.BflGroup, StringComparison.OrdinalIgnoreCase)
+        && SelectedRunDate == _today;
+
+    private DateTime SelectedRunDate =>
+        DateTime.TryParse(_runDateStr, out var d) ? d.Date : _today;
+
+    private string FormatSelectedDivs(List<string> selected)
+    {
+        if (selected.Count == 0) return "";
+        // selected values arrive as MudSelectItem's string form ("403" etc.);
+        // map back to Division names so the chip reads "Beauty (403)" instead of "403".
+        var pretty = selected.Select(s =>
+        {
+            if (int.TryParse(s, out var code))
+            {
+                var d = _divisions.FirstOrDefault(x => x.DivCode == code);
+                return d.Division is { Length: > 0 } name ? $"{name} ({code})" : code.ToString();
+            }
+            return s;
+        });
+        return string.Join(", ", pretty);
+    }
+
+    // Volume Group sort — A+ ranked ABOVE plain A ("A+ first when asc").
+    // Alpha-safe for anything else (single-letter grades map to their char).
+    private static int VolumeGroupRank(string? vg)
+    {
+        if (string.IsNullOrWhiteSpace(vg)) return 999;
+        var v = vg.Trim().ToUpperInvariant();
+        if (v == "A+") return 0;
+        return 1 + (v[0] - 'A'); // A=1, B=2, C=3, D=4, E=5, ...
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        await Me.EnsureLoadedAsync();
+        try
+        {
+            _countries = await Svc.GetCountriesAsync();
+            _countries = Me.FilterCountries(_countries).ToList();
+            // Non-admins with a restricted country set lose the BFLGroup ("see all countries")
+            // default — flip to their first allowed country instead.
+            if (!Me.HasAllCountriesAccess && string.Equals(_country, OtsPoAllocationService.BflGroup, StringComparison.OrdinalIgnoreCase))
+                _country = _countries.FirstOrDefault() ?? "";
+            _monthYears = await Svc.GetAvailableMonthYearsAsync();
+            _years = _monthYears.Select(x => x.Year).Distinct().OrderByDescending(y => y).ToList();
+            if (_years.Count > 0)
+            {
+                var today = _rundate;
+                _year  = _years.Contains(today.Year) ? today.Year : _years.First();
+                UpdateMonthsForYear();
+                _month = _monthsForSelectedYear.Contains(today.Month)
+                            ? today.Month
+                            : _monthsForSelectedYear.FirstOrDefault();
+            }
+            await RefreshDivisionsAsync();
+        }
+        catch (Exception ex) { ShowError($"Failed to load pickers: {ex.Message}"); }
+    }
+
+    private Task OnYearChangedAsync()
+    {
+        UpdateMonthsForYear();
+        if (!_monthsForSelectedYear.Contains(_month))
+            _month = _monthsForSelectedYear.FirstOrDefault();
+        return RefreshDivisionsAsync();
+    }
+
+    private Task OnCountryChangedAsync() => Task.CompletedTask;
+
+    private async Task RefreshDivisionsAsync()
+    {
+        if (_month == 0 || _year == 0) { _divisions = new(); return; }
+        try
+        {
+            _divisions = await Svc.GetDivisionsAsync(_month, _year);
+            _selectedDivs = _selectedDivs.Where(d => _divisions.Any(x => x.DivCode == d)).ToHashSet();
+            _lastGenerated = await Svc.GetLastGeneratedTsAsync(_month, _year);
+            _availableDates = await Svc.GetAvailableRunDatesAsync(_month, _year);
+        }
+        catch (Exception ex) { ShowError($"Divisions load failed: {ex.Message}"); }
+    }
+
+    private void UpdateMonthsForYear()
+    {
+        _monthsForSelectedYear = _monthYears
+            .Where(x => x.Year == _year)
+            .Select(x => x.Month)
+            .Distinct()
+            .OrderBy(m => m)
+            .ToList();
+    }
+
+    private async Task GenerateAsync()
+    {
+        if (!CanGenerate) return;
+        _busy = true; _busyKind = "gen"; _message = ""; _isError = false; _warnings = new();
+        try
+        {
+            // Coverage pre-check — countries without enough Weekly Sales data
+            // would silently underestimate WeekSales. Show the operator a list
+            // and require an explicit "Proceed anyway" second click.
+            if (!_proceedAnyway)
+            {
+                _validationIssues = await Svc.ValidateWeekCoverageAsync(_month, _year);
+                if (_validationIssues.Count > 0)
+                {
+                    _message = $"Coverage validation flagged {_validationIssues.Count} issue(s). Review below, tick \"Proceed anyway\" and click Generate again to force.";
+                    _isError = true;
+                    return;
+                }
+            }
+
+            _validationIssues = new();
+            var (n, warnings) = await Svc.GenerateAndPersistAsync(_month, _year);
+            _warnings = warnings;
+            _lastGenerated = await Svc.GetLastGeneratedTsAsync(_month, _year);
+            _availableDates = await Svc.GetAvailableRunDatesAsync(_month, _year);
+            _proceedAnyway = false;
+            _message = n == 0
+                ? "Generate returned no rows — nothing persisted."
+                : $"Generated {n:N0} row(s). Now click Load (with your Country + Divisions filters) to see the grid.";
+        }
+        catch (Exception ex) { ShowError($"Generate failed: {ex.Message}"); }
+        finally { _busy = false; _busyKind = ""; }
+    }
+
+    private async Task LoadAsync()
+    {
+        _busy = true; _busyKind = "load"; _message = ""; _isError = false;
+        try
+        {
+            // Divisions filter applied in memory (see RowMatchesFilters) so
+            // switching divisions is instant without a DB round-trip.
+            _rows = await Svc.LoadPersistedAsync(_month, _year, SelectedRunDate, _country,
+                divisions: null);
+            RecomputeTotals();
+            if (_rows.Count == 0)
+                _message = _availableDates.Count == 0
+                    ? "No data yet — click Generate first (Country = BFLGroup, today's date)."
+                    : $"Load returned no rows for the selected filters + OTSDate {SelectedRunDate:dd/MM/yyyy}.";
+        }
+        catch (Exception ex) { ShowError($"Load failed: {ex.Message}"); }
+        finally { _busy = false; _busyKind = ""; }
+    }
+
+    private async Task ExportExcelAsync()
+    {
+        if (_rows.Count == 0) return;
+        using var wb = new XLWorkbook();
+        var ws = wb.AddWorksheet("OTS");
+        string[] headers =
+        {
+            "Country","StoreID","Store Name","Divcode","Division","Volume Group","Priority Ranking",
+            "EOM Month","Tgt EOM","Prev Month EOM","Wk Reduction","Current EOW",
+            "SOH Today","No. of Weeks to include Sales","Week Sales",
+            "InTransit","Ex2 DC SOH","Counting WIP","OTS Qty Today","OTS % Today","OTS Today Required"
+        };
+        for (int i = 0; i < headers.Length; i++) ws.Cell(1, i + 1).Value = headers[i];
+        int row = 2;
+        foreach (var r in SortedRows)
+        {
+            var req = Math.Max(0, r.OtsQtyToday);
+            ws.Cell(row, 1).Value  = r.Country;
+            ws.Cell(row, 2).Value  = r.StoreID;
+            ws.Cell(row, 3).Value  = r.StoreName ?? "";
+            ws.Cell(row, 4).Value  = r.DivCode;
+            ws.Cell(row, 5).Value  = r.Division ?? "";
+            ws.Cell(row, 6).Value  = r.VolumeGroup ?? "";
+            ws.Cell(row, 7).Value  = r.PriorityRank ?? 0;
+            ws.Cell(row, 8).Value  = r.EOMMonth;
+            ws.Cell(row, 9).Value  = r.TgtEOM;
+            ws.Cell(row,10).Value  = r.PrevMonthEOM;
+            ws.Cell(row,11).Value  = (int)Math.Round(r.WkReduction);
+            ws.Cell(row,12).Value  = r.CurrentEOW;
+            ws.Cell(row,13).Value  = r.SOHToday;
+            ws.Cell(row,14).Value  = r.WeeksToInclude;
+            ws.Cell(row,15).Value  = r.WeekSales;
+            ws.Cell(row,16).Value  = r.InTransit;
+            ws.Cell(row,17).Value  = r.Ex2DcSoh;
+            ws.Cell(row,18).Value  = r.CountingWIP;
+            ws.Cell(row,19).Value  = r.OtsQtyToday;
+            ws.Cell(row,20).Value  = (int)Math.Round(r.OtsPercentToday);
+            ws.Cell(row,21).Value  = req > 0 ? req : 0;
+            row++;
+        }
+        // Totals row (column indices match the header layout above)
+        ws.Cell(row, 1).Value = "Totals";
+        ws.Cell(row, 9).Value  = _totTgtEOM;
+        ws.Cell(row,10).Value  = SortedRows.Sum(r => r.PrevMonthEOM);
+        ws.Cell(row,12).Value  = SortedRows.Sum(r => r.CurrentEOW);
+        ws.Cell(row,13).Value  = _totSOH;
+        ws.Cell(row,15).Value  = _totWeekSales;
+        ws.Cell(row,16).Value  = _totInTransit;
+        ws.Cell(row,17).Value  = _totEx2;
+        ws.Cell(row,18).Value  = _totWIP;
+        ws.Cell(row,19).Value  = _totOtsQty;
+        ws.Cell(row,21).Value  = _totOtsRequired;
+        ws.Row(row).Style.Font.Bold = true;
+        ws.Columns().AdjustToContents();
+        using var ms = new MemoryStream();
+        wb.SaveAs(ms);
+        var b64 = Convert.ToBase64String(ms.ToArray());
+        var name = $"ots-po-allocation-{_year:D4}-{_month:D2}-{_rundate:yyyyMMdd}.xlsx";
+        await JS.InvokeVoidAsync("eval",
+            $"var link=document.createElement('a');link.href='data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64}';link.download='{name}';link.click();");
+    }
+
+    private RenderFragment Kpi(string label, string value, string bg, string fg) => builder =>
+    {
+        builder.OpenElement(0, "div");
+        builder.AddAttribute(1, "style",
+            $"background:{bg}; color:{fg}; border-radius:8px; padding:12px 14px; " +
+            "display:flex; flex-direction:column; gap:4px; box-shadow:0 1px 2px rgba(0,0,0,.04)");
+        builder.OpenElement(2, "div");
+        builder.AddAttribute(3, "style", "font-size:11px; text-transform:uppercase; letter-spacing:.5px; font-weight:800; opacity:.85");
+        builder.AddContent(4, label);
+        builder.CloseElement();
+        builder.OpenElement(5, "div");
+        builder.AddAttribute(6, "style", "font-size:22px; font-weight:900; line-height:1.1");
+        builder.AddContent(7, value);
+        builder.CloseElement();
+        builder.CloseElement();
+    };
+
+    private RenderFragment SortHeader(string key, string label, string? width = null, bool numeric = false) => builder =>
+    {
+        var style = "cursor:pointer" + (width is null ? "" : $"; width:{width}");
+        if (numeric) style += "; text-align:right";
+        var arrow = _sortKey == key ? (_sortAsc ? " ▲" : " ▼") : "";
+        builder.OpenElement(0, "th");
+        builder.AddAttribute(1, "style", style);
+        builder.AddAttribute(2, "onclick", EventCallback.Factory.Create(this, () => ToggleSort(key)));
+        builder.AddContent(3, label + arrow);
+        builder.CloseElement();
+    };
+
+    private void ToggleSort(string key)
+    {
+        if (_sortKey == key) _sortAsc = !_sortAsc;
+        else { _sortKey = key; _sortAsc = true; }
+    }
+
+    private IEnumerable<OtsPoAllocationRow> FilteredSortedRows =>
+        SortedRows.Where(RowMatchesFilters);
+
+    private bool RowMatchesFilters(OtsPoAllocationRow r)
+    {
+        if (_fCountries.Count > 0 && !_fCountries.Contains(r.Country)) return false;
+        if (_selectedDivs.Count > 0 && !_selectedDivs.Contains(r.DivCode)) return false;
+        if (!string.IsNullOrWhiteSpace(_fStoreId)
+            && !string.Equals(r.StoreID, _fStoreId, StringComparison.OrdinalIgnoreCase)) return false;
+        if (_fVolumeGroups.Count > 0 && !_fVolumeGroups.Contains(r.VolumeGroup ?? "")) return false;
+        return true;
+    }
+
+    private void ClearFilters()
+    {
+        _fCountries = new(StringComparer.OrdinalIgnoreCase);
+        _selectedDivs = new();
+        _fStoreLabel = null; _fStoreId = null;
+        _fVolumeGroups = new(StringComparer.OrdinalIgnoreCase);
+    }
+
+    /// <summary>Distinct StoreID/StoreName options from the loaded rows, formatted
+    /// "StoreID — StoreName". Users can type either fragment; matches are case-
+    /// insensitive contains-anywhere. Deduped so each store shows once.</summary>
+    private Task<IEnumerable<string>> SearchStoreOptions(string? term, CancellationToken ct)
+    {
+        var q = _rows
+            .Select(r => (Id: r.StoreID, Name: r.StoreName ?? ""))
+            .GroupBy(x => x.Id, StringComparer.OrdinalIgnoreCase)
+            .Select(g => g.First())
+            .OrderBy(x => x.Id, StringComparer.OrdinalIgnoreCase)
+            .Select(x => string.IsNullOrEmpty(x.Name) ? x.Id : $"{x.Id} — {x.Name}");
+
+        if (!string.IsNullOrWhiteSpace(term))
+            q = q.Where(s => s.IndexOf(term, StringComparison.OrdinalIgnoreCase) >= 0);
+
+        return Task.FromResult<IEnumerable<string>>(q.Take(50));
+    }
+
+    private void OnStoreFilterChanged(string? label)
+    {
+        _fStoreLabel = label;
+        if (string.IsNullOrWhiteSpace(label)) { _fStoreId = null; return; }
+        var dashIdx = label.IndexOf(" — ", StringComparison.Ordinal);
+        _fStoreId = (dashIdx > 0 ? label[..dashIdx] : label).Trim();
+    }
+
+    private IEnumerable<OtsPoAllocationRow> SortedRows
+    {
+        get
+        {
+            Func<OtsPoAllocationRow, object?> k = _sortKey switch
+            {
+                "Country"         => r => r.Country,
+                "StoreID"         => r => r.StoreID,
+                "StoreName"       => r => r.StoreName,
+                "DivCode"         => r => r.DivCode,
+                "Division"        => r => r.Division,
+                "VolumeGroup"     => r => VolumeGroupRank(r.VolumeGroup),
+                "PriorityRank"    => r => r.PriorityRank ?? int.MaxValue,
+                "EOMMonth"        => r => r.EOMMonth,
+                "TgtEOM"          => r => r.TgtEOM,
+                "PrevMonthEOM"    => r => r.PrevMonthEOM,
+                "WkReduction"     => r => r.WkReduction,
+                "CurrentEOW"      => r => r.CurrentEOW,
+                "SOHToday"        => r => r.SOHToday,
+                "WeeksToInclude"  => r => r.WeeksToInclude,
+                "WeekSales"       => r => r.WeekSales,
+                "InTransit"       => r => r.InTransit,
+                "Ex2DcSoh"        => r => r.Ex2DcSoh,
+                "CountingWIP"     => r => r.CountingWIP,
+                "OtsQtyToday"     => r => r.OtsQtyToday,
+                "OtsPercentToday" => r => r.OtsPercentToday,
+                "OtsTodayRequired"=> r => Math.Max(0, r.OtsQtyToday),
+                _ => r => r.Country,
+            };
+            return _sortAsc ? _rows.OrderBy(k) : _rows.OrderByDescending(k);
+        }
+    }
+
+    private void ShowError(string m) { _message = m; _isError = true; }
+}

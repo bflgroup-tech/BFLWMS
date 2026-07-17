@@ -155,6 +155,104 @@ public class ReportsService(IOnPremConnectionResolver resolver)
         return rows.Where(s => !string.IsNullOrWhiteSpace(s)).ToList();
     }
 
+    // ===================== Counting Completion Report (Summary) =====================
+    /// <summary>
+    /// Reads BFLDATA.dbo.BuildingCompletionSumm — grain is one row per ContNo x
+    /// Division, with Country stored directly on the table. LPM Months and Brands
+    /// come from a separate detail table, BFLDATA.dbo.BuildingCompletionDet
+    /// (LPMDT / Brand columns), correlated by ContNo. Output is one row per
+    /// (Country, ContNo), with LPM Months / Divisions / Brands comma-joined as
+    /// distinct values (STUFF/FOR XML PATH instead of STRING_AGG(DISTINCT ...) —
+    /// the latter needs SQL Server 2022+/compat level 160, not guaranteed here).
+    ///
+    /// Materialized into #CCBase / #CCDet temp tables (with indexes) rather than
+    /// CTEs — a CTE referenced from multiple correlated subqueries gets
+    /// re-evaluated on every call, and the original version re-scanned all of
+    /// BuildingCompletionDet (unfiltered by date/ContNo) once per output row,
+    /// which timed out in production. Same materialize-then-index pattern as
+    /// BadBoxesPrefix below.
+    ///
+    /// Column names confirmed against the live schema (2026-07-15): Country,
+    /// ContNo, Trndate (completion date), POnumber (PO number),
+    /// CountingStartDate, TotalCheckedQty, Division on BuildingCompletionSumm;
+    /// ContNo, LPMDT (date), Brand on BuildingCompletionDet. LPMDT is rendered
+    /// as "MMM-yyyy" (e.g. "Jan-2026").
+    /// </summary>
+    public async Task<List<CountingCompletionSummaryRow>> GetCountingCompletionSummaryAsync(
+        IEnumerable<string>? countries, DateTime fromDate, DateTime toDate, CancellationToken ct = default)
+    {
+        var countryList = countries?.Where(s => !string.IsNullOrWhiteSpace(s)).ToArray() ?? Array.Empty<string>();
+        var noCountryFilter = countryList.Length == 0;
+
+        await using var c = OpenOnPremBackup();
+        var rows = await c.QueryAsync<CountingCompletionSummaryRow>(new CommandDefinition(@"
+            SET NOCOUNT ON;
+            IF OBJECT_ID('tempdb..#CCBase') IS NOT NULL DROP TABLE #CCBase;
+            IF OBJECT_ID('tempdb..#CCDet')  IS NOT NULL DROP TABLE #CCDet;
+
+            SELECT s.Country,
+                   s.ContNo,
+                   s.Trndate           AS CountingCompletionDate,
+                   s.POnumber          AS PONo,
+                   s.CountingStartDate,
+                   s.TotalCheckedQty   AS CountedQty,
+                   s.Division
+              INTO #CCBase
+              FROM BFLDATA.dbo.BuildingCompletionSumm s WITH (NOLOCK)
+             WHERE s.Trndate >= @from
+               AND s.Trndate <  @toExclusive
+               AND (@noCountryFilter = 1 OR s.Country IN @countries);
+
+            CREATE CLUSTERED INDEX IX_CCBase ON #CCBase (Country, ContNo);
+
+            SELECT det.ContNo, det.LPMDT, det.Brand
+              INTO #CCDet
+              FROM BFLDATA.dbo.BuildingCompletionDet det WITH (NOLOCK)
+             WHERE det.ContNo IN (SELECT DISTINCT ContNo FROM #CCBase);
+
+            CREATE CLUSTERED INDEX IX_CCDet ON #CCDet (ContNo);
+
+            SELECT
+                b.Country,
+                b.ContNo,
+                CountingCompletionDate = MAX(b.CountingCompletionDate),
+                PONo                   = MAX(b.PONo),
+                CountingStartDate      = MIN(b.CountingStartDate),
+                CountedQty             = SUM(ISNULL(b.CountedQty, 0)),
+                LpmMonths = STUFF((
+                    SELECT ', ' + d.v
+                      FROM (SELECT DISTINCT
+                                   FORMAT(x.LPMDT, 'MMM-yyyy') AS v,
+                                   DATEFROMPARTS(YEAR(x.LPMDT), MONTH(x.LPMDT), 1) AS n
+                              FROM #CCDet x
+                             WHERE x.ContNo = b.ContNo AND x.LPMDT IS NOT NULL) d
+                     ORDER BY d.n
+                       FOR XML PATH(''), TYPE).value('.', 'NVARCHAR(MAX)'), 1, 2, ''),
+                Divisions = STUFF((
+                    SELECT ', ' + d.v
+                      FROM (SELECT DISTINCT x.Division AS v
+                              FROM #CCBase x
+                             WHERE x.Country = b.Country AND x.ContNo = b.ContNo
+                               AND x.Division IS NOT NULL AND x.Division <> '') d
+                     ORDER BY d.v
+                       FOR XML PATH(''), TYPE).value('.', 'NVARCHAR(MAX)'), 1, 2, ''),
+                Brands = STUFF((
+                    SELECT ', ' + d.v
+                      FROM (SELECT DISTINCT x.Brand AS v
+                              FROM #CCDet x
+                             WHERE x.ContNo = b.ContNo AND x.Brand IS NOT NULL AND x.Brand <> '') d
+                     ORDER BY d.v
+                       FOR XML PATH(''), TYPE).value('.', 'NVARCHAR(MAX)'), 1, 2, '')
+              FROM #CCBase b
+             GROUP BY b.Country, b.ContNo
+             ORDER BY b.Country, CountingCompletionDate;
+
+            DROP TABLE #CCBase, #CCDet;",
+            new { countries = countryList, noCountryFilter = noCountryFilter ? 1 : 0, from = fromDate.Date, toExclusive = toDate.Date.AddDays(1) },
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        return rows.AsList();
+    }
+
     // SQL prefix that materialises #BadBoxes — must be prepended to whatever
     // query references the temp table, so the build + read happen in the
     // SAME Dapper command (= same SQL Server session). Splitting it across

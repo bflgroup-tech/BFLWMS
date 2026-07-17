@@ -1,4 +1,4 @@
-@page "/reports/warehouse-boxes"
+﻿@page "/reports/warehouse-boxes"
 @rendermode RenderMode.InteractiveServer
 @using System.Text
 @using Wms.Core
@@ -8,11 +8,11 @@
 @inject WarehouseBoxesService Svc
 @inject Microsoft.JSInterop.IJSRuntime JS
 
-<PageTitle>WMS — Warehouse Box Details</PageTitle>
+<PageTitle>WMS â€” Warehouse Box Details</PageTitle>
 
 <div class="aiwms-page-header">
     <h2>Warehouse Box Details</h2>
-    <p>Warehouse stock — UAE reads from <code>racks.dbo.whboxitems</code>; others from <code>[&lt;DataName&gt;].dbo.WHBoxItemsExport</code>. Use Group By to switch between box detail and Division / Department / Brand summaries.</p>
+    <p>Warehouse stock â€” UAE reads from <code>racks.dbo.whboxitems</code>; others from <code>[&lt;DataName&gt;].dbo.WHBoxItemsExport</code>. Use Group By to switch between box detail and Division / Department / Brand summaries.</p>
 </div>
 
 <div class="aiwms-section">
@@ -65,7 +65,7 @@
         </div>
         <div>
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">PALLET / BOX</label>
-            <input @bind="_search" placeholder="contains…" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white" />
+            <input @bind="_search" placeholder="containsâ€¦" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white" />
         </div>
         <div>
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">GROUP BY</label>
@@ -118,11 +118,11 @@
         </div>
         <div>
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">TRN DATE FROM</label>
-            <input type="date" @bind="_trnFrom" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white" />
+            <input type="date" @bind="_trnFrom" @bind:format="yyyy-MM-dd" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white" />
         </div>
         <div>
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">TRN DATE TO</label>
-            <input type="date" @bind="_trnTo" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white" />
+            <input type="date" @bind="_trnTo" @bind:format="yyyy-MM-dd" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white" />
         </div>
         <div style="display:flex; flex-direction:column; gap:4px">
             <label style="display:flex; align-items:center; gap:6px; font-size:12px; cursor:pointer; margin-top:14px">
@@ -138,7 +138,7 @@
         <MudButton Color="Color.Primary" Variant="Variant.Filled" DropShadow="false" Size="Size.Small"
                    StartIcon="@Icons.Material.Filled.PlayArrow"
                    Disabled="_loading" OnClick="LoadAsync">
-            @(_loading ? "Loading…" : "Load")
+            @(_loading ? "Loadingâ€¦" : "Load")
         </MudButton>
         <MudButton Color="Color.Success" Variant="Variant.Outlined" DropShadow="false" Size="Size.Small"
                    StartIcon="@Icons.Material.Filled.Download"
@@ -152,12 +152,12 @@
         </MudButton>
     </div>
 
-    <!-- Matches the LPMSIM info banner — nudges users to add a filter for speed. -->
+    <!-- Matches the LPMSIM info banner â€” nudges users to add a filter for speed. -->
     <div style="margin-top:14px; padding:10px 14px; background:#eef6ff; border:1px solid #b9d7ff; border-radius:var(--r-sm); font-size:13px; color:#1e40af; display:flex; align-items:center; gap:8px">
-        <span style="font-size:16px">ⓘ</span>
+        <span style="font-size:16px">â“˜</span>
         <span>
             Apply one or more filters (leave blank for All) and click <strong>Load</strong>.
-            Narrow the scope to a single Warehouse for fastest results — the underlying table has 700k+ rows.
+            Narrow the scope to a single Warehouse for fastest results â€” the underlying table has 700k+ rows.
         </span>
     </div>
 
@@ -170,10 +170,10 @@
 @if (_showCountrySummary)
 {
     <div class="aiwms-section">
-        <div class="aiwms-card-header">Country Summary — ELIGIBLE + purchased stock per Country × Season</div>
+        <div class="aiwms-card-header">Country Summary â€” ELIGIBLE + purchased stock per Country Ã— Season</div>
         @if (_loadingCountrySummary)
         {
-            <div style="padding:14px; font-style:italic; color:var(--text-secondary)">Loading…</div>
+            <div style="padding:14px; font-style:italic; color:var(--text-secondary)">Loadingâ€¦</div>
         }
         else if (_countrySummary.Count == 0)
         {
@@ -262,7 +262,7 @@
 else if (_groupBy == "Division" && _divisionRows.Count > 0)
 {
     <div class="aiwms-section">
-        <div class="aiwms-card-header">Division Summary — @_divisionRows.Count rows</div>
+        <div class="aiwms-card-header">Division Summary â€” @_divisionRows.Count rows</div>
         <table class="aiwms-table aiwms-table-dense">
             <thead><tr><th>Division</th><th style="text-align:right">LPM Current Qty</th><th style="text-align:right">LPM Future Qty</th><th style="text-align:right">Non-LPM Qty</th><th style="text-align:right">Total</th></tr></thead>
             <tbody>
@@ -290,7 +290,7 @@ else if (_groupBy == "Division" && _divisionRows.Count > 0)
 else if (_groupBy == "Department" && _deptRows.Count > 0)
 {
     <div class="aiwms-section">
-        <div class="aiwms-card-header">Department Summary — @_deptRows.Count rows</div>
+        <div class="aiwms-card-header">Department Summary â€” @_deptRows.Count rows</div>
         <table class="aiwms-table aiwms-table-dense">
             <thead><tr><th>Division</th><th>Department</th><th style="text-align:right">LPM Current Qty</th><th style="text-align:right">LPM Future Qty</th><th style="text-align:right">Non-LPM Qty</th><th style="text-align:right">Total</th></tr></thead>
             <tbody>
@@ -318,7 +318,7 @@ else if (_groupBy == "Department" && _deptRows.Count > 0)
 else if (_groupBy == "Brand" && _brandRows.Count > 0)
 {
     <div class="aiwms-section">
-        <div class="aiwms-card-header">Brand Summary — @_brandRows.Count rows</div>
+        <div class="aiwms-card-header">Brand Summary â€” @_brandRows.Count rows</div>
         <table class="aiwms-table aiwms-table-dense">
             <thead><tr><th>Division</th><th>Department</th><th>Brand</th><th style="text-align:right">LPM Current Qty</th><th style="text-align:right">LPM Future Qty</th><th style="text-align:right">Non-LPM Qty</th><th style="text-align:right">Total</th></tr></thead>
             <tbody>
@@ -387,7 +387,7 @@ else if (_groupBy == "Brand" && _brandRows.Count > 0)
     private string _message = "";
     private bool _isError;
 
-    // Counts distinct values per column in the loaded Box rows — drives the
+    // Counts distinct values per column in the loaded Box rows â€” drives the
     // small "N DISTINCT" subheader under each column.
     private Dictionary<string, int> DistinctCounts() => new()
     {
@@ -556,3 +556,4 @@ else if (_groupBy == "Brand" && _brandRows.Count > 0)
     private void ShowError(string msg) { _message = msg; _isError = true; }
     private void ShowInfo(string msg)  { _message = msg; _isError = false; }
 }
+

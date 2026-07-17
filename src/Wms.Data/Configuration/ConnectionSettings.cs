@@ -30,7 +30,7 @@ public interface IOnPremConnectionResolver
 public class OnPremConnectionResolver(IConfiguration cfg) : IOnPremConnectionResolver
 {
     private static readonly string[] _knownCountries =
-        ["UAE", "KSA", "Kuwait", "Bahrain", "Qatar", "Oman", "Egypt"];
+        ["UAE", "KSA", "Kuwait", "Bahrain", "Qatar", "Oman", "Egypt", "MALAYSIA"];
 
     public string GetWmsAzureConnectionString() =>
         cfg.GetConnectionString("WmsAzure")

@@ -124,7 +124,7 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
         var sql = $@"
             SELECT TOP ({top})
                    SyncId, ContNo, BatchNo, Destination, TotalAllocatedQty,
-                   Status, ErrorMessage, SyncedBy, SyncedTS
+                   Status, ErrorMessage, SyncedBy, SyncedTS, Origin
               FROM dbo.WMS_ContAllocationDataSync_Log WITH (NOLOCK)
              WHERE (@s IS NULL OR ContNo LIKE @s)
                {destClause}
@@ -145,6 +145,7 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
         nameof(DataSyncDestination.WMSPalletType),
         nameof(DataSyncDestination.WMSBrandMaster),
         nameof(DataSyncDestination.ToteIDMaster),
+        nameof(DataSyncDestination.WmsProdUsedTotes),
     };
 
     public static readonly string[] ContainerDestinations = new[]
@@ -183,9 +184,13 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
             }
             case DataSyncDestination.WmsProdDbToAzure:
             {
+                // Reverse pull lands rows into the SAME table as the forward push
+                // (dbo.WMS_ContAllocationData). Gate is identical to AzureWmsDb:
+                // any rows for this ContNo blocks a re-pull. Operator must clear
+                // the ContNo's rows first if they want to re-import.
                 await using var c = OpenWms();
                 var hit = await c.ExecuteScalarAsync<int?>(new CommandDefinition(
-                    @"SELECT TOP 1 1 FROM dbo.WMS_PhotoCheckingResult_Mirror WITH (NOLOCK) WHERE ContNo = @c",
+                    @"SELECT TOP 1 1 FROM dbo.WMS_ContAllocationData WITH (NOLOCK) WHERE ContNo = @c",
                     new { c = contno }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
                 return hit == 1;
             }
@@ -238,12 +243,19 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
             RowsCopied: alloc.RowsCopied + knb.RowsCopied);
     }
 
-    // ----- reverse pull: WMSPROD -> Azure mirror -----
-    /// <summary>Read online.dbo.PhotoCheckingResult (24 cols, filtered by ContNo)
-    /// from the on-prem WmsProductionDb and SqlBulkCopy the rows into the Azure
-    /// mirror table dbo.WMS_PhotoCheckingResult_Mirror. Gated on the Azure
-    /// mirror already having rows for this ContNo — clear the mirror rows to
-    /// re-pull.</summary>
+    // ----- reverse pull: WMSPROD -> Azure dbo.WMS_ContAllocationData -----
+    /// <summary>Read online.dbo.PhotoCheckingResult (filtered by ContNo) from the
+    /// on-prem WmsProductionDb, enrich Color/Gender/HsCode/Brand from
+    /// usa.dbo.usaorgfile and Class/Family/Subclass from
+    /// datareporting.dbo.vupc_subclass + SubclassMaster (both on OnPremBackup),
+    /// then SqlBulkCopy the rows into Azure dbo.WMS_ContAllocationData so LPM
+    /// Manual Building can route scans for store sorting. Gated on the target
+    /// having any rows for this ContNo — clear them to re-pull.
+    /// Country is hardcoded 'UAE'. BatchNo is left NULL (no allocation header).
+    /// AllocatedQty = POQty = source.Qty; Result = source.FinalResult.
+    /// PrevAllocatedQty / Phase2Qty / SkuMax / OTS / PriorityRank / MnwToday /
+    /// DivCode / Size are set to defaults (0 or NULL) because the source
+    /// legacy PhotoCheckingResult has no equivalent.</summary>
     private async Task<DataSyncResult> TryReversePullFromWmsProdDbAsync(string contno, CancellationToken ct)
     {
         var dest = DataSyncDestination.WmsProdDbToAzure;
@@ -253,30 +265,25 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
             var skipId = await WriteLogRowAsync(
                 contno, null, dest, 0,
                 status: "Skipped",
-                error: $"Azure dbo.WMS_PhotoCheckingResult_Mirror already has rows for {contno}.", ct);
+                error: $"Azure dbo.WMS_ContAllocationData already has rows for {contno}.", ct);
             return new DataSyncResult(false,
-                $"Reverse pull: Azure mirror already has rows for {contno} — skipped.",
+                $"Reverse pull: Azure dbo.WMS_ContAllocationData already has rows for {contno} — skipped. Clear the ContNo's rows first.",
                 skipId, 0);
         }
 
-        // Read from on-prem WMSPROD.
-        System.Data.DataTable dt;
-        int sourceRowCount;
+        // 1. Read raw source rows from WMSPROD.
+        List<ReverseSourceRow> sourceRows;
         try
         {
             await using var src = OpenWmsProductionDb();
-            using var cmd = new SqlCommand(@"
+            sourceRows = (await src.QueryAsync<ReverseSourceRow>(new CommandDefinition(@"
                 SELECT ContNo, TrnDate, Time1, UPC, Itemcode, GroupCode, Season, Department, Division,
                        FinalResult, ResultType, Qty, QtyIssue, Itemname, Barcode, SalesPrice,
                        TcmContno, BuildingCategory, LPMDt, LPMBoxNO, ORAPONo, Style, Remarks, StoreId
                   FROM online.dbo.PhotoCheckingResult WITH (NOLOCK)
                  WHERE ContNo = @c",
-                src) { CommandTimeout = CommandTimeoutSeconds };
-            cmd.Parameters.Add(new SqlParameter("@c", System.Data.SqlDbType.NVarChar, 50) { Value = contno });
-            using var reader = await cmd.ExecuteReaderAsync(ct);
-            dt = new System.Data.DataTable();
-            dt.Load(reader);
-            sourceRowCount = dt.Rows.Count;
+                new { c = contno },
+                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).ToList();
         }
         catch (Exception ex)
         {
@@ -285,27 +292,95 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
             return new DataSyncResult(false, $"Reverse pull read failed: {ex.Message}", failId, 0);
         }
 
-        if (sourceRowCount == 0)
+        if (sourceRows.Count == 0)
         {
             var emptyId = await WriteLogRowAsync(contno, null, dest, 0,
                 "Empty", $"online.dbo.PhotoCheckingResult returned no rows for ContNo = {contno}.", ct);
             return new DataSyncResult(true, $"Reverse pull: WMSPRODDB has no rows for {contno}.", emptyId, 0);
         }
 
-        // Stamp audit columns onto the DataTable so SqlBulkCopy fills SyncedBy
-        // (SyncedTS defaults to SYSDATETIME() on Azure).
-        dt.Columns.Add("SyncedBy", typeof(string));
-        var who = user.Name ?? "";
-        foreach (System.Data.DataRow row in dt.Rows)
-            row["SyncedBy"] = who;
+        // 2. Enrichment lookups on OnPremBackup — batch by distinct Itemcode.
+        //    We only look up the enrichment fields that PhotoCheckingResult doesn't
+        //    carry: Color/Gender/HsCode/Brand (usaorgfile) + Class/Family/Subclass
+        //    (vupc_subclass + SubclassMaster). Chunked to 1000 params to stay under
+        //    the 2100 sqlparameter limit.
+        var itemcodes = sourceRows
+            .Where(r => !string.IsNullOrWhiteSpace(r.Itemcode))
+            .Select(r => r.Itemcode!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
 
+        var orgLookup      = new Dictionary<string, OrgEnrichmentRow>(StringComparer.OrdinalIgnoreCase);
+        var subclassLookup = new Dictionary<string, SubclassEnrichmentRow>(StringComparer.OrdinalIgnoreCase);
+
+        if (itemcodes.Length > 0)
+        {
+            try
+            {
+                await using var opb = OpenOnPremBackup();
+                const int chunkSize = 1000;
+                for (int i = 0; i < itemcodes.Length; i += chunkSize)
+                {
+                    var chunk = itemcodes.Skip(i).Take(chunkSize).ToArray();
+
+                    // usa.dbo.usaorgfile — most-recent row per Itemcode for this ContNo.
+                    // vendor is the Brand (per usaorgfile convention used elsewhere in
+                    // ContainerAllocationService). If ContNo has no matching org row,
+                    // fall back to any TOP-1 row for the Itemcode across containers.
+                    var orgRows = await opb.QueryAsync<OrgEnrichmentRow>(new CommandDefinition(@"
+                        SELECT o.ItemCode, o.color AS Color, o.GENDER AS Gender, o.hscode AS HsCode, o.vendor AS Brand
+                          FROM (
+                              SELECT uo.ItemCode, uo.color, uo.GENDER, uo.hscode, uo.vendor,
+                                     ROW_NUMBER() OVER (
+                                         PARTITION BY uo.ItemCode
+                                         ORDER BY CASE WHEN uo.ContNo = @c THEN 0 ELSE 1 END,
+                                                  uo.TrnDate DESC
+                                     ) AS rn
+                                FROM usa.dbo.usaorgfile uo WITH (NOLOCK)
+                               WHERE uo.ItemCode IN @codes
+                          ) o
+                         WHERE o.rn = 1",
+                        new { c = contno, codes = chunk },
+                        commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+                    foreach (var r in orgRows)
+                        orgLookup[r.ItemCode ?? ""] = r;
+
+                    // datareporting.dbo.vupc_subclass -> SubclassMaster (same pattern
+                    // as forward-push OUTER APPLY).
+                    var subRows = await opb.QueryAsync<SubclassEnrichmentRow>(new CommandDefinition(@"
+                        SELECT v.itemcode AS ItemCode, sm.[Class], sm.Family, sm.Subclass
+                          FROM datareporting.dbo.vupc_subclass v WITH (NOLOCK)
+                          LEFT JOIN datareporting.dbo.SubclassMaster sm WITH (NOLOCK) ON sm.MH4ID = v.MH4ID
+                         WHERE v.itemcode IN @codes",
+                        new { codes = chunk },
+                        commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+                    foreach (var r in subRows)
+                        subclassLookup[r.ItemCode ?? ""] = r;
+                }
+            }
+            catch (Exception ex)
+            {
+                // Enrichment failure shouldn't kill the pull — log a warning and
+                // continue with the source rows carrying NULL enrichment.
+                await WriteLogRowAsync(contno, null, dest, 0,
+                    "PartialFailed",
+                    $"Enrichment lookups on OnPremBackup failed: {ex.Message}. Proceeding with NULL Color/Gender/HsCode/Brand/Class/Family/Subclass.", ct);
+                orgLookup.Clear();
+                subclassLookup.Clear();
+            }
+        }
+
+        // 3. Build the target DataTable (mirrors BuildAzureMirrorDataTable layout).
+        var dt = BuildReversePullDataTable(sourceRows, orgLookup, subclassLookup);
+
+        // 4. Bulk-copy to Azure dbo.WMS_ContAllocationData.
         string? writeError = null;
         try
         {
             await using var conn = OpenWms();
             using var bulk = new SqlBulkCopy(conn)
             {
-                DestinationTableName = "dbo.WMS_PhotoCheckingResult_Mirror",
+                DestinationTableName = "dbo.WMS_ContAllocationData",
                 BatchSize            = 1000,
                 BulkCopyTimeout      = CommandTimeoutSeconds,
             };
@@ -315,17 +390,173 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
         }
         catch (Exception ex) { writeError = ex.Message; }
 
-        var logId = await WriteLogRowAsync(contno, null, dest, sourceRowCount,
+        var totalQty = sourceRows.Sum(r => r.Qty ?? 0);
+        var logId = await WriteLogRowAsync(contno, null, dest, totalQty,
             status: writeError is null ? "Success" : "Failed",
             error: writeError, ct);
 
         return writeError is null
             ? new DataSyncResult(true,
-                $"Reverse pull: {sourceRowCount:N0} row(s) copied from WMSPRODDB to Azure mirror.",
-                logId, sourceRowCount)
+                $"Reverse pull: {sourceRows.Count:N0} row(s) copied from WMSPRODDB to Azure dbo.WMS_ContAllocationData (Country='UAE', BatchNo=NULL).",
+                logId, sourceRows.Count)
             : new DataSyncResult(false,
-                $"Reverse pull write to Azure mirror failed: {writeError}",
+                $"Reverse pull write to dbo.WMS_ContAllocationData failed: {writeError}",
                 logId, 0);
+    }
+
+    /// <summary>Build a DataTable in dbo.WMS_ContAllocationData shape (41 cols)
+    /// from raw PhotoCheckingResult rows + enrichment lookups. Defaults follow
+    /// the "sensible for legacy data" rules called out in
+    /// TryReversePullFromWmsProdDbAsync.</summary>
+    private static System.Data.DataTable BuildReversePullDataTable(
+        List<ReverseSourceRow> rows,
+        Dictionary<string, OrgEnrichmentRow> orgLookup,
+        Dictionary<string, SubclassEnrichmentRow> subLookup)
+    {
+        var dt = new System.Data.DataTable();
+        dt.Columns.Add("BatchNo",          typeof(int));
+        dt.Columns.Add("ContNo",           typeof(string));
+        dt.Columns.Add("Country",          typeof(string));
+        dt.Columns.Add("TrnDate",          typeof(DateTime));
+        dt.Columns.Add("Time1",            typeof(TimeSpan));
+        dt.Columns.Add("UPC",              typeof(string));
+        dt.Columns.Add("Itemcode",         typeof(string));
+        dt.Columns.Add("Barcode",          typeof(string));
+        dt.Columns.Add("GroupCode",        typeof(string));
+        dt.Columns.Add("POQty",            typeof(int));
+        dt.Columns.Add("SkuMax",           typeof(int));
+        dt.Columns.Add("AllocatedQty",     typeof(int));
+        dt.Columns.Add("PrevAllocatedQty", typeof(int));
+        dt.Columns.Add("QtyIssue",         typeof(int));
+        dt.Columns.Add("Phase2Qty",        typeof(int));
+        dt.Columns.Add("StoreID",          typeof(string));
+        dt.Columns.Add("TcmContno",        typeof(string));
+        dt.Columns.Add("Itemname",         typeof(string));
+        dt.Columns.Add("BuildingCategory", typeof(string));
+        dt.Columns.Add("LPMDt",            typeof(DateTime));
+        dt.Columns.Add("LPMBoxNO",         typeof(string));
+        dt.Columns.Add("ORAPONo",          typeof(string));
+        dt.Columns.Add("Division",         typeof(string));
+        dt.Columns.Add("Brand",            typeof(string));
+        dt.Columns.Add("DivCode",          typeof(int));
+        dt.Columns.Add("Department",       typeof(string));
+        dt.Columns.Add("Season",           typeof(string));
+        dt.Columns.Add("Style",            typeof(string));
+        dt.Columns.Add("Size",             typeof(string));
+        dt.Columns.Add("SalesPrice",       typeof(decimal));
+        dt.Columns.Add("ResultType",       typeof(string));
+        dt.Columns.Add("FinalResult",      typeof(string));
+        dt.Columns.Add("Result",           typeof(string));
+        dt.Columns.Add("Remarks",          typeof(string));
+        dt.Columns.Add("OTS",              typeof(double));
+        dt.Columns.Add("Color",            typeof(string));
+        dt.Columns.Add("Gender",           typeof(string));
+        dt.Columns.Add("HsCode",           typeof(string));
+        dt.Columns.Add("Class",            typeof(string));
+        dt.Columns.Add("Family",           typeof(string));
+        dt.Columns.Add("Subclass",         typeof(string));
+        dt.Columns.Add("PriorityRank",     typeof(int));
+        dt.Columns.Add("MnwToday",         typeof(int));
+
+        foreach (var r in rows)
+        {
+            var key   = r.Itemcode ?? "";
+            var org   = orgLookup.TryGetValue(key, out var o) ? o : null;
+            var sub   = subLookup.TryGetValue(key, out var s) ? s : null;
+            var qty   = r.Qty;
+            var final = r.FinalResult;
+
+            dt.Rows.Add(
+                DBNull.Value,                          // BatchNo (Q1: leave NULL)
+                (object?)r.ContNo           ?? DBNull.Value,
+                "UAE",                                 // Country (Q2: hardcoded)
+                (object?)r.TrnDate          ?? DBNull.Value,
+                (object?)r.Time1            ?? DBNull.Value,
+                (object?)r.UPC              ?? DBNull.Value,
+                (object?)r.Itemcode         ?? DBNull.Value,
+                (object?)r.Barcode          ?? DBNull.Value,
+                (object?)r.GroupCode        ?? DBNull.Value,
+                (object?)qty                ?? DBNull.Value,  // POQty  = source Qty
+                DBNull.Value,                          // SkuMax
+                (object?)qty                ?? DBNull.Value,  // AllocatedQty = source Qty
+                0,                                     // PrevAllocatedQty
+                (object?)r.QtyIssue         ?? DBNull.Value,
+                0,                                     // Phase2Qty
+                (object?)r.StoreId          ?? DBNull.Value,
+                (object?)r.TcmContno        ?? DBNull.Value,
+                (object?)r.Itemname         ?? DBNull.Value,
+                (object?)r.BuildingCategory ?? DBNull.Value,
+                (object?)r.LPMDt            ?? DBNull.Value,
+                (object?)r.LPMBoxNO         ?? DBNull.Value,
+                (object?)r.ORAPONo          ?? DBNull.Value,
+                (object?)r.Division         ?? DBNull.Value,
+                (object?)org?.Brand         ?? DBNull.Value,
+                DBNull.Value,                          // DivCode
+                (object?)r.Department       ?? DBNull.Value,
+                (object?)r.Season           ?? DBNull.Value,
+                (object?)r.Style            ?? DBNull.Value,
+                DBNull.Value,                          // Size (no equivalent on PhotoCheckingResult)
+                ParseDecimalOrDbNull(r.SalesPrice),
+                (object?)r.ResultType       ?? DBNull.Value,
+                (object?)final              ?? DBNull.Value,
+                (object?)final              ?? DBNull.Value,  // Result = FinalResult (source has no split)
+                (object?)r.Remarks          ?? DBNull.Value,
+                0.0,                                   // OTS
+                (object?)org?.Color         ?? DBNull.Value,
+                (object?)org?.Gender        ?? DBNull.Value,
+                (object?)org?.HsCode        ?? DBNull.Value,
+                (object?)sub?.Class         ?? DBNull.Value,
+                (object?)sub?.Family        ?? DBNull.Value,
+                (object?)sub?.Subclass      ?? DBNull.Value,
+                DBNull.Value,                          // PriorityRank
+                DBNull.Value);                         // MnwToday
+        }
+        return dt;
+    }
+
+    private sealed class ReverseSourceRow
+    {
+        public string?   ContNo           { get; set; }
+        public DateTime? TrnDate          { get; set; }
+        public TimeSpan? Time1            { get; set; }
+        public string?   UPC              { get; set; }
+        public string?   Itemcode         { get; set; }
+        public string?   GroupCode        { get; set; }
+        public string?   Season           { get; set; }
+        public string?   Department       { get; set; }
+        public string?   Division         { get; set; }
+        public string?   FinalResult      { get; set; }
+        public string?   ResultType       { get; set; }
+        public int?      Qty              { get; set; }
+        public int?      QtyIssue         { get; set; }
+        public string?   Itemname         { get; set; }
+        public string?   Barcode          { get; set; }
+        public string?   SalesPrice       { get; set; }
+        public string?   TcmContno        { get; set; }
+        public string?   BuildingCategory { get; set; }
+        public DateTime? LPMDt            { get; set; }
+        public string?   LPMBoxNO         { get; set; }
+        public string?   ORAPONo          { get; set; }
+        public string?   Style            { get; set; }
+        public string?   Remarks          { get; set; }
+        public string?   StoreId          { get; set; }
+    }
+
+    private sealed class OrgEnrichmentRow
+    {
+        public string? ItemCode { get; set; }
+        public string? Color    { get; set; }
+        public string? Gender   { get; set; }
+        public string? HsCode   { get; set; }
+        public string? Brand    { get; set; }
+    }
+
+    private sealed class SubclassEnrichmentRow
+    {
+        public string? ItemCode { get; set; }
+        public string? Class    { get; set; }
+        public string? Family   { get; set; }
+        public string? Subclass { get; set; }
     }
 
     // ----- pass 1: allocation copy (with Q4 gate) -----
@@ -519,18 +750,20 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
     }
 
     private async Task<int?> WriteLogRowAsync(string contno, int? batchNo, DataSyncDestination dest,
-        int? totalAllocatedQty, string status, string? error, CancellationToken ct)
+        int? totalAllocatedQty, string status, string? error, CancellationToken ct,
+        string origin = "Manual", string? actorOverride = null)
     {
         try
         {
             await using var c = OpenWms();
             return await c.ExecuteScalarAsync<int?>(new CommandDefinition(@"
                 INSERT INTO dbo.WMS_ContAllocationDataSync_Log
-                    (ContNo, BatchNo, Destination, TotalAllocatedQty, Status, ErrorMessage, SyncedBy)
+                    (ContNo, BatchNo, Destination, TotalAllocatedQty, Status, ErrorMessage, SyncedBy, Origin)
                 OUTPUT INSERTED.SyncId
-                VALUES (@c, @b, @d, @q, @s, @e, @u)",
+                VALUES (@c, @b, @d, @q, @s, @e, @u, @o)",
                 new { c = contno, b = batchNo, d = dest.ToString(),
-                      q = totalAllocatedQty, s = status, e = error, u = user.Name },
+                      q = totalAllocatedQty, s = status, e = error,
+                      u = actorOverride ?? user.Name, o = origin },
                 commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         }
         catch
@@ -938,7 +1171,8 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
     /// used-flag source = racks.dbo.whboxitems). Other countries read from
     /// {DataName}.dbo.BlueToteIDMaster and {DataName}.dbo.WHboxitemsexport
     /// via OnPremBackup using 3-part names.</summary>
-    public async Task<List<CountryToteSyncRow>> SyncToteIDMasterAsync(CancellationToken ct = default)
+    public async Task<List<CountryToteSyncRow>> SyncToteIDMasterAsync(
+        string origin = "Manual", string? actor = null, CancellationToken ct = default)
     {
         // 1. Country list from the Azure DataSettings mirror.
         List<(string SIMCountry, string Dataname)> countries;
@@ -956,7 +1190,8 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
         catch (Exception ex)
         {
             await WriteLogRowAsync("(ToteMaster)", null, DataSyncDestination.ToteIDMaster, 0,
-                "Failed", $"Reading country list from WMS_DataSettings failed: {ex.Message}", ct);
+                "Failed", $"Reading country list from WMS_DataSettings failed: {ex.Message}", ct,
+                origin: origin, actorOverride: actor);
             return new List<CountryToteSyncRow> {
                 new("(all)", "", 0, 0, "Failed",
                     $"Cannot read country list from dbo.WMS_DataSettings — run Phase 1 sync first. ({ex.Message})")
@@ -966,7 +1201,8 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
         if (countries.Count == 0)
         {
             await WriteLogRowAsync("(ToteMaster)", null, DataSyncDestination.ToteIDMaster, 0,
-                "Empty", "dbo.WMS_DataSettings has no SIMCountry/Dataname rows yet.", ct);
+                "Empty", "dbo.WMS_DataSettings has no SIMCountry/Dataname rows yet.", ct,
+                origin: origin, actorOverride: actor);
             return new List<CountryToteSyncRow> {
                 new("(all)", "", 0, 0, "Empty",
                     "dbo.WMS_DataSettings has no SIMCountry rows. Run the Data Settings Sync first.")
@@ -985,6 +1221,8 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
                 toteSrcTable:   "bfldata.dbo.BlueToteIDMaster",
                 usedSrcTable:   "racks.dbo.whboxitems",
                 openSourceConn: () => OpenOnPremBackup(),
+                origin:         origin,
+                actor:          actor,
                 ct: ct));
         }
 
@@ -997,7 +1235,8 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
             if (!SafeDbName.IsMatch(dataName))
             {
                 await WriteLogRowAsync(country, null, DataSyncDestination.ToteIDMaster, 0,
-                    "Failed", $"DataName '{dataName}' contains characters outside [A-Za-z0-9_].", ct);
+                    "Failed", $"DataName '{dataName}' contains characters outside [A-Za-z0-9_].", ct,
+                    origin: origin, actorOverride: actor);
                 results.Add(new(country, dataName, 0, 0, "Failed", "DataName format invalid."));
                 continue;
             }
@@ -1009,7 +1248,7 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
             {
                 var msg = $"Skipped: no {country}_DB_ConnectionString configured in App Service.";
                 await WriteLogRowAsync(country, null, DataSyncDestination.ToteIDMaster, 0,
-                    "Skipped", msg, ct);
+                    "Skipped", msg, ct, origin: origin, actorOverride: actor);
                 results.Add(new(country, dataName, 0, 0, "Skipped", msg));
                 continue;
             }
@@ -1020,6 +1259,8 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
                 toteSrcTable:   $"{dataName}.dbo.BlueToteIDMaster",
                 usedSrcTable:   $"{dataName}.dbo.WHboxitemsexport",
                 openSourceConn: () => OpenCountry(country),
+                origin:         origin,
+                actor:          actor,
                 ct: ct));
         }
 
@@ -1034,6 +1275,7 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
         string country, string sourceLabel,
         string toteSrcTable, string usedSrcTable,
         Func<SqlConnection> openSourceConn,
+        string origin, string? actor,
         CancellationToken ct)
     {
         // 1. Read yesterday's totes from source.
@@ -1052,7 +1294,8 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
         catch (Exception ex)
         {
             await WriteLogRowAsync(country, null, DataSyncDestination.ToteIDMaster, 0,
-                "Failed", $"Reading {toteSrcTable} failed: {ex.Message}", ct);
+                "Failed", $"Reading {toteSrcTable} failed: {ex.Message}", ct,
+                origin: origin, actorOverride: actor);
             return new(country, sourceLabel, 0, 0, "Failed", $"Source read ({toteSrcTable}): {ex.Message}");
         }
 
@@ -1069,7 +1312,8 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
         catch (Exception ex)
         {
             await WriteLogRowAsync(country, null, DataSyncDestination.ToteIDMaster, 0,
-                "Failed", $"Reading existing Azure ToteIDs failed: {ex.Message}", ct);
+                "Failed", $"Reading existing Azure ToteIDs failed: {ex.Message}", ct,
+                origin: origin, actorOverride: actor);
             return new(country, sourceLabel, 0, 0, "Failed", $"Azure dedup read: {ex.Message}");
         }
 
@@ -1106,7 +1350,8 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
             catch (Exception ex)
             {
                 await WriteLogRowAsync(country, null, DataSyncDestination.ToteIDMaster, 0,
-                    "Failed", $"Insert into WmsBlueToteIDMaster failed: {ex.Message}", ct);
+                    "Failed", $"Insert into WmsBlueToteIDMaster failed: {ex.Message}", ct,
+                    origin: origin, actorOverride: actor);
                 return new(country, sourceLabel, 0, 0, "Failed", $"Bulk insert: {ex.Message}");
             }
         }
@@ -1149,7 +1394,8 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
             // The insert may have succeeded — log a "partial" outcome.
             await WriteLogRowAsync(country, null, DataSyncDestination.ToteIDMaster, inserted,
                 "PartialFailed",
-                $"Inserted {inserted}; Used='Y' update failed reading {usedSrcTable}: {ex.Message}", ct);
+                $"Inserted {inserted}; Used='Y' update failed reading {usedSrcTable}: {ex.Message}", ct,
+                origin: origin, actorOverride: actor);
             return new(country, sourceLabel, inserted, 0, "PartialFailed",
                 $"Inserted {inserted}; Used update failed ({usedSrcTable}): {ex.Message}");
         }
@@ -1159,8 +1405,269 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
             ? $"Source has no yesterday rows in {toteSrcTable}."
             : $"Source returned {sourceTotes.Count} tote(s); {inserted} inserted, {markedUsed} marked Used='Y'.";
         await WriteLogRowAsync(country, null, DataSyncDestination.ToteIDMaster, inserted,
-            status, note, ct);
+            status, note, ct, origin: origin, actorOverride: actor);
         return new(country, sourceLabel, inserted, markedUsed, status, note);
+    }
+
+    // ===================== WMSPROD used-totes flip =====================
+
+    /// <summary>Pulls DISTINCT ToteID from on-prem `usa.dbo.upcboxhead`
+    /// (via OnPremBackup) where `Closed = 'N'` (still-open boxes) and flips
+    /// dbo.WmsBlueToteIDMaster.Used = 'Y' for any matching ToteIDs on Azure
+    /// (any country). Logs one row with Destination='WmsProdUsedTotes'.
+    /// Chunked to 1000-tote batches to stay under SQL Server's 2100 sqlparameter cap.
+    /// </summary>
+    public async Task<DataSyncResult> SyncWmsProdUsedTotesAsync(
+        string origin = "Manual", string? actor = null, CancellationToken ct = default)
+    {
+        var dest = DataSyncDestination.WmsProdUsedTotes;
+
+        // 1. Read distinct in-use ToteIDs from usa.dbo.upcboxhead (OnPremBackup).
+        List<string> inUseTotes;
+        try
+        {
+            await using var src = OpenOnPremBackup();
+            inUseTotes = (await src.QueryAsync<string>(new CommandDefinition(
+                @"SELECT DISTINCT ToteID
+                    FROM usa.dbo.upcboxhead WITH (NOLOCK)
+                   WHERE ISNULL(Closed, 'N') = 'N'
+                     AND ToteID IS NOT NULL
+                     AND LTRIM(RTRIM(ToteID)) <> ''",
+                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).ToList();
+        }
+        catch (Exception ex)
+        {
+            var failId = await WriteLogRowAsync("(WmsProdUsedTotes)", null, dest, 0,
+                "Failed", $"Reading usa.dbo.upcboxhead on OnPremBackup failed: {ex.Message}", ct,
+                origin: origin, actorOverride: actor);
+            return new DataSyncResult(false, $"WMSPROD used-totes read failed: {ex.Message}", failId, 0);
+        }
+
+        if (inUseTotes.Count == 0)
+        {
+            var emptyId = await WriteLogRowAsync("(WmsProdUsedTotes)", null, dest, 0,
+                "Empty", "usa.dbo.upcboxhead returned no open (Closed='N') rows with ToteID.", ct,
+                origin: origin, actorOverride: actor);
+            return new DataSyncResult(true, "usa.dbo.upcboxhead has no open rows with ToteID.", emptyId, 0);
+        }
+
+        // 2. Flip Used='Y' on Azure. Country-wide match (any country).
+        int marked = 0;
+        string? writeError = null;
+        try
+        {
+            await using var w = OpenWms();
+            const int chunkSize = 1000;
+            for (int i = 0; i < inUseTotes.Count; i += chunkSize)
+            {
+                var chunk = inUseTotes.Skip(i).Take(chunkSize).ToArray();
+                var n = await w.ExecuteAsync(new CommandDefinition(@"
+                    UPDATE dbo.WmsBlueToteIDMaster
+                       SET Used = 'Y'
+                     WHERE ToteID IN @list
+                       AND (Used IS NULL OR Used = 'N')",
+                    new { list = chunk }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+                marked += n;
+            }
+        }
+        catch (Exception ex) { writeError = ex.Message; }
+
+        var logId = await WriteLogRowAsync("(WmsProdUsedTotes)", null, dest, marked,
+            status: writeError is null ? "Success" : "Failed",
+            error: writeError, ct, origin: origin, actorOverride: actor);
+
+        return writeError is null
+            ? new DataSyncResult(true,
+                $"WMSPROD used-totes: {inUseTotes.Count:N0} distinct ToteID(s) read; {marked:N0} row(s) flipped to Used='Y' on Azure.",
+                logId, marked)
+            : new DataSyncResult(false,
+                $"WMSPROD used-totes update failed: {writeError}",
+                logId, 0);
+    }
+
+    // ===================== Boxes push to WMSPROD =====================
+
+    /// <summary>
+    /// Pushes Azure dbo.WmsUPCBoxHead + WmsUPCBoxDet rows to on-prem
+    /// usa.dbo.upcboxhead + usa.dbo.upcboxdet incrementally, filtering on
+    /// WmsUPCBoxHead.PublishedTS IS NULL (i.e. never published). Dedups by
+    /// BoxNo — if the row already exists on the target, it's skipped but
+    /// PublishedTS is still stamped so we don't reprocess it next run.
+    ///
+    /// Head + Det rows for each box are written in a single on-prem
+    /// transaction. If Det rows fail after Head succeeded, the transaction
+    /// rolls back and the Azure PublishedTS is left NULL for retry.
+    ///
+    /// Logs one summary row per run with Destination='BoxesToWmsProd'.
+    /// </summary>
+    public async Task<DataSyncResult> SyncBoxesToWmsProdAsync(
+        string origin = "Manual", string? actor = null, CancellationToken ct = default)
+    {
+        var dest = DataSyncDestination.BoxesToWmsProd;
+
+        // 1. Pull all unpublished Head rows + their Det rows from Azure.
+        List<PushHeadRow> heads;
+        Dictionary<string, List<PushDetRow>> detsByBox;
+        try
+        {
+            await using var w = OpenWms();
+            heads = (await w.QueryAsync<PushHeadRow>(new CommandDefinition(@"
+                SELECT Country, BoxNo, TrnDate, Time1, PreparedBy, PalletType, ToteID, LPMDT, PONo,
+                       WHouse, Userid, Closed, Remarks
+                  FROM dbo.WmsUPCBoxHead WITH (NOLOCK)
+                 WHERE PublishedTS IS NULL
+                 ORDER BY TrnDate, BoxNo",
+                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).ToList();
+
+            if (heads.Count == 0)
+            {
+                var emptyId = await WriteLogRowAsync("(BoxesToWmsProd)", null, dest, 0,
+                    "Empty", "No unpublished WmsUPCBoxHead rows to push.", ct,
+                    origin: origin, actorOverride: actor);
+                return new DataSyncResult(true, "No unpublished boxes to push.", emptyId, 0);
+            }
+
+            var boxNos = heads.Select(h => h.BoxNo).ToArray();
+            var detRows = (await w.QueryAsync<PushDetRow>(new CommandDefinition(@"
+                SELECT Country, BoxNo, Itemcode, SrNo, Qty, UPC, StoreId, Status, ToteID
+                  FROM dbo.WmsUPCBoxDet WITH (NOLOCK)
+                 WHERE BoxNo IN @b",
+                new { b = boxNos },
+                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).ToList();
+
+            detsByBox = detRows.GroupBy(d => d.BoxNo, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.OrdinalIgnoreCase);
+        }
+        catch (Exception ex)
+        {
+            var failId = await WriteLogRowAsync("(BoxesToWmsProd)", null, dest, 0,
+                "Failed", $"Reading unpublished rows from Azure failed: {ex.Message}", ct,
+                origin: origin, actorOverride: actor);
+            return new DataSyncResult(false, $"Boxes push read failed: {ex.Message}", failId, 0);
+        }
+
+        // 2. For each Head, check existence on target and insert if new.
+        int pushed = 0, skipped = 0, failed = 0;
+        var errors = new List<string>();
+
+        foreach (var h in heads)
+        {
+            if (ct.IsCancellationRequested) break;
+
+            try
+            {
+                await using var opb = OpenOnPremBackup();
+                await using var tx = (SqlTransaction)await opb.BeginTransactionAsync(ct);
+
+                var exists = await opb.ExecuteScalarAsync<int?>(new CommandDefinition(
+                    @"SELECT TOP 1 1 FROM usa.dbo.upcboxhead WITH (NOLOCK) WHERE BoxNo = @b",
+                    new { b = h.BoxNo }, transaction: tx, cancellationToken: ct));
+
+                if (exists == 1)
+                {
+                    // Already on target — no insert, but stamp Azure PublishedTS
+                    // so we don't reprocess. Skip status counts as success.
+                    await tx.RollbackAsync(ct);
+                    await StampPublishedAsync(h.Country, h.BoxNo, ct);
+                    skipped++;
+                    continue;
+                }
+
+                // INSERT Head. Only column set the target is known to accept.
+                await opb.ExecuteAsync(new CommandDefinition(@"
+                    INSERT INTO usa.dbo.upcboxhead
+                        (BoxNo, TrnDate, Time1, PreparedBy, PalletType, ToteID, LPMDT, PONo,
+                         WHouse, Userid, Closed, Remarks)
+                    VALUES
+                        (@BoxNo, @TrnDate, @Time1, @PreparedBy, @PalletType, @ToteID, @LPMDT, @PONo,
+                         @WHouse, @Userid, @Closed, @Remarks)",
+                    new
+                    {
+                        h.BoxNo, h.TrnDate, h.Time1, h.PreparedBy, h.PalletType, h.ToteID, h.LPMDT,
+                        h.PONo, h.WHouse, h.Userid, h.Closed, h.Remarks
+                    },
+                    transaction: tx, cancellationToken: ct));
+
+                // INSERT Det rows (if any).
+                if (detsByBox.TryGetValue(h.BoxNo, out var dets) && dets.Count > 0)
+                {
+                    foreach (var d in dets)
+                    {
+                        await opb.ExecuteAsync(new CommandDefinition(@"
+                            INSERT INTO usa.dbo.upcboxdet
+                                (BoxNo, Itemcode, SrNo, Qty, UPC, StoreId, Status, ToteID)
+                            VALUES
+                                (@BoxNo, @Itemcode, @SrNo, @Qty, @UPC, @StoreId, @Status, @ToteID)",
+                            new { d.BoxNo, d.Itemcode, d.SrNo, d.Qty, d.UPC, d.StoreId, d.Status, d.ToteID },
+                            transaction: tx, cancellationToken: ct));
+                    }
+                }
+
+                await tx.CommitAsync(ct);
+                await StampPublishedAsync(h.Country, h.BoxNo, ct);
+                pushed++;
+            }
+            catch (Exception ex)
+            {
+                failed++;
+                if (errors.Count < 5) errors.Add($"{h.BoxNo}: {ex.Message}");
+            }
+        }
+
+        var status  = failed == 0 ? "Success" : (pushed + skipped > 0 ? "PartialFailed" : "Failed");
+        var msg     = $"Boxes push: {pushed} inserted, {skipped} skipped (already on target), {failed} failed.";
+        var errText = errors.Count > 0 ? "First errors: " + string.Join(" | ", errors) : null;
+        var logId   = await WriteLogRowAsync("(BoxesToWmsProd)", null, dest,
+                        totalAllocatedQty: pushed + skipped,
+                        status: status, error: errText, ct: ct,
+                        origin: origin, actorOverride: actor);
+
+        return new DataSyncResult(
+            Ok: failed == 0,
+            Message: msg + (errText is null ? "" : " " + errText),
+            SyncId: logId,
+            RowsCopied: pushed + skipped);
+    }
+
+    private async Task StampPublishedAsync(string country, string boxNo, CancellationToken ct)
+    {
+        await using var w = OpenWms();
+        await w.ExecuteAsync(new CommandDefinition(
+            @"UPDATE dbo.WmsUPCBoxHead
+                 SET PublishedTS = SYSDATETIME()
+               WHERE Country = @c AND BoxNo = @b",
+            new { c = country, b = boxNo },
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+    }
+
+    private sealed class PushHeadRow
+    {
+        public string   Country     { get; set; } = "";
+        public string   BoxNo       { get; set; } = "";
+        public DateTime? TrnDate    { get; set; }
+        public TimeSpan? Time1      { get; set; }
+        public string?  PreparedBy  { get; set; }
+        public string?  PalletType  { get; set; }
+        public string?  ToteID      { get; set; }
+        public DateTime? LPMDT      { get; set; }
+        public string?  PONo        { get; set; }
+        public string?  WHouse      { get; set; }
+        public string?  Userid      { get; set; }
+        public string?  Closed      { get; set; }
+        public string?  Remarks     { get; set; }
+    }
+
+    private sealed class PushDetRow
+    {
+        public string   Country  { get; set; } = "";
+        public string   BoxNo    { get; set; } = "";
+        public string?  Itemcode { get; set; }
+        public int      SrNo     { get; set; }
+        public int      Qty      { get; set; }
+        public string?  UPC      { get; set; }
+        public string?  StoreId  { get; set; }
+        public string?  Status   { get; set; }
+        public string?  ToteID   { get; set; }
     }
 
     // ===================== PalletType master sync =====================
