@@ -1,0 +1,611 @@
+@page "/robotic/chute-mapping-techno"
+@rendermode RenderMode.InteractiveServer
+@using Wms.Core
+@using Wms.Data.Robotic
+@attribute [Authorize(Policy = MenuKeys.ROBOTIC_CHUTE_MAPPING_TECHNO)]
+@inject ChuteMappingService Chute
+@inject IJSRuntime JS
+@inject ISnackbar Snack
+@inject ICurrentUser Me
+@inject IDialogService Dialog
+
+<PageTitle>WMS — Chute Mapping (Techno)</PageTitle>
+
+<style>
+    /* dark theme (default) */
+    .chute-page {
+        --card-bg:      #1e2130;
+        --card-text:    #e2e8f0;
+        --card-pending: #f87171;
+        --card-label:   #64748b;
+        --card-iborder: rgba(255,255,255,.07);
+    }
+    /* light theme overrides */
+    html:not([data-theme="dark"]) .chute-page {
+        --card-bg:      #ffffff;
+        --card-text:    #1e293b;
+        --card-pending: #dc2626;
+        --card-label:   #64748b;
+        --card-iborder: rgba(0,0,0,.1);
+    }
+    html:not([data-theme="dark"]) .chute-grid-wrap {
+        --border: #94a3b8;
+    }
+    html:not([data-theme="dark"]) .chute-grid-wrap td,
+    html:not([data-theme="dark"]) .chute-grid-wrap th {
+        border-color: #94a3b8 !important;
+    }
+</style>
+
+<div class="chute-page" style="display:flex;flex-direction:column;height:calc(100vh - 100px);overflow:hidden">
+
+    <div class="aiwms-page-header" style="flex-shrink:0">
+        <h2>Chute Mapping</h2>
+        <p>
+            Visual layout of all chute positions by section and direction.
+            <span style="color:#dc2626"> — Warehouse: <strong>TECHNO</strong></span>
+        </p>
+    </div>
+
+    <div style="flex:1;min-height:0;display:flex;gap:8px;overflow:hidden">
+
+        <div style="display:flex;flex-direction:column;width:380px;flex-shrink:0">
+            <div style="display:flex;gap:6px;padding:8px 0 0;flex-shrink:0">
+                <select @bind="_listMode" @bind:after="OnListModeChangedAsync" class="aiwms-input" style="flex:1;min-width:0">
+                    <option value="Shop">Shop</option>
+                    <option value="Building">Building - Division</option>
+                </select>
+                <button class="aiwms-btn" style="flex-shrink:0;white-space:nowrap;background:#f59e0b;color:#000"
+                        @onclick="AutoAllocateChuteAsync">
+                    Auto Config
+                </button>
+            </div>
+            <div style="display:flex;gap:6px;padding:8px 0 6px;flex-shrink:0">
+                <input @oninput="OnSearchInputChanged" value="@_searchTerm" placeholder="Search ID or Shop Name..." class="aiwms-input"
+                       style="flex:1;min-width:0" />
+                <button class="aiwms-btn aiwms-btn-secondary" style="flex-shrink:0;white-space:nowrap"
+                        @onclick="RefreshAllAsync">
+                    Refresh
+                </button>
+            </div>
+            <div style="flex:1;min-height:0;overflow:auto;border:1px solid var(--border);border-radius:4px">
+                @{
+                    var displayNames = _shopNamesLoading
+                        ? []
+                        : string.IsNullOrWhiteSpace(_searchTerm)
+                            ? _shopNames
+                            : _shopNames.Where(s =>
+                                (s.RoboShopId?.ToString().Contains(_searchTerm, StringComparison.OrdinalIgnoreCase) ?? false) ||
+                                (s.ShopName?.Contains(_searchTerm, StringComparison.OrdinalIgnoreCase) ?? false)).ToList();
+                }
+                <table class="aiwms-table aiwms-table-dense">
+                    <thead style="position:sticky;top:0;z-index:1">
+                        <tr>
+                            <th style="width:55px">ID</th>
+                            <th>Shop Name</th>
+                            <th style="text-align:center;width:38px">Existing Chutes</th>
+                            <th style="text-align:center;width:42px">New Chutes</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @if (_shopNamesLoading)
+                        {
+                            <tr><td colspan="4" style="color:var(--text-muted)">Loading…</td></tr>
+                        }
+                        else if (!displayNames.Any())
+                        {
+                            <tr><td colspan="4" style="color:var(--text-muted)">No results</td></tr>
+                        }
+                        @foreach (var s in displayNames)
+                        {
+                            var isRowSelected = _highlightShopId == s.RoboShopId?.ToString();
+                            <tr draggable="true"
+                                @ondragstart="@(() => { _dragShopId = s.RoboShopId?.ToString(); _dragShopName = s.ShopName ?? ""; })"
+                                @onclick="@(() => ToggleHighlight(isRowSelected ? null : s.RoboShopId?.ToString()))"
+                                style="cursor:grab;background:@(isRowSelected ? "#FFA500" : "")">
+                                <td style="font-weight:600;white-space:nowrap;color:@(isRowSelected ? "#000" : "var(--text-muted)")">@s.RoboShopId</td>
+                                <td style="font-weight:600;word-break:break-word;white-space:normal;color:@(isRowSelected ? "#000" : "var(--text)")">@s.ShopName</td>
+                                <td style="font-weight:600;text-align:center;color:@(isRowSelected ? "#000" : "var(--text-muted)")">@GetAllocatedChutes(s.RoboShopId?.ToString())</td>
+                                <td style="padding:2px 4px" @onclick:stopPropagation>
+                                    <input type="text" value="@GetNewChuteInput(s.RoboShopId?.ToString())"
+                                           @onchange="@(e => SetNewChuteInput(s.RoboShopId?.ToString(), e.Value?.ToString()))"
+                                           class="aiwms-input" style="text-align:center;padding:3px 4px" />
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <div style="display:flex;flex-direction:column;flex:1;min-width:0;overflow:hidden">
+
+            <div style="flex-shrink:0;display:flex;align-items:center;gap:6px;padding:8px 0">
+                <button class="aiwms-btn aiwms-btn-primary" disabled style="opacity:1">
+                    Double
+                </button>
+                <span style="width:1px;height:22px;background:var(--border);margin:0 2px"></span>
+                @foreach (var dir in new[] { "UP", "DOWN" })
+                {
+                    var isDirActive = _direction == dir;
+                    <button class="aiwms-btn aiwms-btn-secondary" style="background:@(isDirActive ? "#FFA500" : ""); color:@(isDirActive ? "#000" : "")"
+                            @onclick="@(() => _direction = dir)">
+                        @dir
+                    </button>
+                }
+                <label style="display:flex;align-items:center;gap:5px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;margin-left:6px">
+                    <input type="checkbox" @bind="_showDisabledOnly" style="cursor:pointer;width:14px;height:14px" />
+                    Show disabled chutes (allow mapping changes)
+                </label>
+                <span style="flex:1"></span>
+                <button class="aiwms-btn aiwms-btn-danger" style="white-space:nowrap"
+                        @onclick="ClearAllOverrides">
+                    Clear All@(_cellOverrides.Count > 0 ? $" ({_cellOverrides.Count})" : "")
+                </button>
+                <button class="aiwms-btn aiwms-btn-success" style="white-space:nowrap"
+                        disabled="@_savingAll"
+                        @onclick="SaveAllAsync">
+                    @(_savingAll ? "Saving…" : $"Save All{(_cellOverrides.Count > 0 ? $" ({_cellOverrides.Count})" : "")}")
+                </button>
+            </div>
+
+            @{
+                const int colWPx = 200;
+                var colW    = $"{colWPx}px";
+                var dirColor = _direction == "UP" ? "#0d9488" : "#7c3aed";
+                // Each section only lists the rows it actually has (6 for A-H, 10 for I-P).
+                var sectionCells = Sections.ToDictionary(s => s, s =>
+                {
+                    var cells = RowNums.Select(r => GetCell(s, r, _direction)).Where(c => c.Id != null);
+                    if (_showDisabledOnly) cells = cells.Where(c => c.Status != 0);
+                    return cells.ToList();
+                });
+                var visibleSections = Sections.Where(s => sectionCells[s].Count > 0).ToList();
+                // Single shared table across all sections (matches Jafza's one-grid look). Sections
+                // with fewer rows (A-H: 6) than others (I-P: 10) get borderless blank cells past
+                // their own last row instead of a second table.
+                var groups = new List<(int Count, List<char> Secs)>();
+                if (visibleSections.Count > 0)
+                    groups.Add((visibleSections.Max(s => sectionCells[s].Count), visibleSections));
+            }
+
+            <div class="chute-grid-wrap" style="flex:1;min-height:0;overflow:auto;scrollbar-gutter:stable">
+                @if (_loading)
+                {
+                    <div style="padding:16px;color:var(--text-muted)">Loading…</div>
+                }
+                else if (visibleSections.Count == 0)
+                {
+                    <div style="padding:16px;color:var(--text-muted)">No disabled chutes found.</div>
+                }
+                @foreach (var group in groups)
+                {
+                    <table style="border-collapse:collapse;font-size:12px;table-layout:fixed;margin-bottom:6px;width:@(group.Secs.Count * colWPx)px">
+                        <colgroup>
+                            @for (int i = 0; i < group.Secs.Count; i++) { <col style="width:@colW" /> }
+                        </colgroup>
+                        <thead style="position:sticky;top:0;z-index:2">
+                            <tr>
+                                @foreach (var sec in group.Secs)
+                                {
+                                    <th style="text-align:center;height:32px;border:1px solid var(--border);
+                                               background:#000;color:#fff;
+                                               font-size:13px;font-weight:700;letter-spacing:1px;border-right:5px solid #555">
+                                        @sec
+                                    </th>
+                                }
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @for (int _ri = 0; _ri < group.Count; _ri++)
+                            {
+                                <tr>
+                                    @foreach (var sec in group.Secs)
+                                    {
+                                        var secList = sectionCells[sec];
+                                        var cell = _ri < secList.Count ? secList[_ri] : (null, null, null, null, null);
+                                        {
+                                            var ovr    = cell.Id != null && _cellOverrides.ContainsKey(cell.Id) ? _cellOverrides[cell.Id] : default;
+                                            var pend   = ovr.ShopId != null;
+                                            var txt    = pend ? "var(--card-pending,#f87171)" : "var(--card-text,#e2e8f0)";
+                                            var accent = cell.Status == 0 ? "#22c55e" : "#ef4444";
+                                            var hl     = _highlightShopId != null && (ovr.ShopId ?? cell.ShopId) == _highlightShopId;
+                                            <td @ondrop="@(async () => await OnDropOnCell(cell.Id, cell.Status))"
+                                                style="border:1px solid var(--border);border-right:5px solid #555;background:var(--bg);
+                                                       padding:5px;height:110px;cursor:default">
+                                                @if (cell.Id != null)
+                                                {
+                                                <div style="height:100%;background:@(hl ? "#FFA500" : "var(--card-bg,#1e2130)");border-radius:6px;
+                                                            border:1px solid var(--card-iborder,rgba(255,255,255,.07));border-left:4px solid @accent;
+                                                            padding:8px 10px;display:flex;flex-direction:column;box-sizing:border-box">
+                                                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px">
+                                                        <span style="font-size:12px;font-weight:800;color:@txt;font-family:Consolas,monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">@cell.Id</span>
+                                                        <div style="display:flex;gap:3px;flex-shrink:0;margin-left:4px">
+                                                            <span style="font-size:9px;font-weight:700;padding:2px 6px;border-radius:3px;background:@dirColor;color:#fff;white-space:nowrap">@_direction</span>
+                                                            <button class="aiwms-btn @(cell.Status == 0 ? "aiwms-btn-danger" : "aiwms-btn-success")"
+                                                                    style="font-size:9px;padding:2px 6px;border-radius:3px"
+                                                                    @onclick="@(async () => await ToggleStatusAsync(cell.Id, cell.Status, cell.ShopId, cell.TotId))" @onclick:stopPropagation>
+                                                                @(cell.Status == 0 ? "Disable" : "Enable")
+                                                            </button>
+                                                        </div>
+                                                    </div>
+                                                    <div style="font-size:10px;font-weight:700;color:var(--card-label,#64748b);margin-bottom:8px">@cell.TotId</div>
+                                                    <div style="display:flex;gap:10px;margin-bottom:3px">
+                                                        <div style="font-size:9px;color:var(--card-label,#64748b);text-transform:uppercase;letter-spacing:.4px;white-space:nowrap">Shop ID</div>
+                                                        <div style="font-size:9px;color:var(--card-label,#64748b);text-transform:uppercase;letter-spacing:.4px">Shop Name</div>
+                                                    </div>
+                                                    <div style="display:flex;gap:10px;flex:1;align-items:flex-start">
+                                                        <div style="font-size:13px;font-weight:700;color:@txt;white-space:nowrap;min-width:36px">@(ovr.ShopId ?? cell.ShopId)</div>
+                                                        <div style="font-size:12px;font-weight:700;color:@txt;word-break:break-word;white-space:normal;flex:1;line-height:1.3">@(ovr.ShopName ?? cell.ShopName)</div>
+                                                    </div>
+                                                    @if (cell.Id != null && _cellSuccess.TryGetValue(cell.Id, out var ok))
+                                                    {
+                                                        <div style="font-size:9px;color:#4ade80;margin-top:4px;line-height:1.3">✓ @ok</div>
+                                                    }
+                                                    @if (pend)
+                                                    {
+                                                        @if (cell.Id != null && _cellErrors.TryGetValue(cell.Id, out var err))
+                                                        {
+                                                            <div style="font-size:9px;color:#f87171;margin-top:4px;line-height:1.3;word-break:break-word">⚠ @err</div>
+                                                        }
+                                                        <div style="display:flex;justify-content:flex-end;align-items:center;gap:6px;
+                                                                    margin-top:4px;border-top:1px solid var(--card-iborder,rgba(255,255,255,.07));padding-top:5px">
+                                                            <a @onclick="@(() => ClearOverride(cell.Id))" @onclick:stopPropagation
+                                                               style="font-size:10px;font-weight:700;color:#60a5fa;text-decoration:underline;cursor:pointer;margin-right:auto">Clear</a>
+                                                            <button class="aiwms-btn aiwms-btn-success" style="font-size:10px;padding:3px 12px;border-radius:5px"
+                                                                    disabled="@(_savingChuteId == cell.Id)"
+                                                                    @onclick="@(() => SaveCellAsync(cell.Id))" @onclick:stopPropagation>
+                                                                @(_savingChuteId == cell.Id ? "Saving…" : "Save")
+                                                            </button>
+                                                        </div>
+                                                    }
+                                                </div>
+                                                }
+                                            </td>
+                                        }
+                                    }
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                }
+            </div>
+
+        </div>
+    </div>
+
+</div>
+
+<script>
+    document.addEventListener('dragover', function (e) { e.preventDefault(); }, false);
+    document.addEventListener('dragenter', function (e) { e.preventDefault(); }, false);
+</script>
+
+@code {
+    private static readonly char[]   Sections = "ABCDEFGHIJKLMNOP".ToCharArray();
+    private static readonly string[] RowNums  =
+    [
+        "01","02","03","04","05","06","07","08","09","10"
+    ];
+
+    private const string _warehouse = "TECHNO";
+
+    private string _direction = "UP";
+    private bool   _loading;
+    private List<ChuteConfigRow> _rows = [];
+
+    private Dictionary<char, Dictionary<string, Dictionary<string, (string Id, int? Status, string? ShopId, string? ShopName, string? TotId)>>> _grid = new();
+
+    // Matches "UP-A-01" / "DN-A-01" — direction comes from ChuteConfigRow.Direction, computed server-side.
+    private static readonly System.Text.RegularExpressions.Regex _rx =
+        new(@"^(?:UP|DN)-([A-Pa-p])-(\d{2})$", System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    private string  _searchTerm = "";
+    private string  _listMode = "Shop"; // "Shop" or "Building" — filtering behavior not yet wired up
+    private bool    _shopNamesLoading;
+    private string? _dragShopId;
+    private string  _dragShopName = "";
+    private Dictionary<string, (string ShopId, string ShopName)> _cellOverrides = new();
+    private Dictionary<string, int> _allocatedCounts = new();
+    private List<ShopNameRow> _shopNames = [];
+    private string? _highlightShopId;
+    private bool    _showDisabledOnly;
+    private Dictionary<string, string> _cellErrors   = new();
+    private Dictionary<string, string> _cellSuccess  = new();
+    private string? _savingChuteId;
+    private bool    _savingAll;
+    private Dictionary<string, string> _newChuteInputs = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await Me.EnsureLoadedAsync();
+        await Task.WhenAll(LoadAsync(), LoadShopNamesAsync());
+    }
+
+    private async Task LoadShopNamesAsync()
+    {
+        try { _shopNames = await Chute.GetShopsByBuildingFlagAsync(_warehouse, _listMode == "Building" ? "Y" : "N"); }
+        catch { _shopNames = []; }
+    }
+
+    // Reloads the shop list whenever the Shop / Building - Division dropdown changes.
+    private async Task OnListModeChangedAsync()
+    {
+        _shopNamesLoading = true;
+        StateHasChanged();
+        await LoadShopNamesAsync();
+        _shopNamesLoading = false;
+    }
+
+    private async Task RefreshAllAsync()
+    {
+        _searchTerm = "";
+        await LoadShopNamesAsync();
+        await LoadAsync();
+    }
+
+    private void OnSearchInputChanged(ChangeEventArgs e)
+    {
+        _searchTerm = e.Value?.ToString() ?? "";
+    }
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        _rows    = [];
+        _grid    = new();
+        StateHasChanged();
+        try
+        {
+            var gridTask   = Chute.GetChuteConfigTechnoAsync(_warehouse);
+            var countTask  = Chute.GetAllocatedChuteCountsAsync(_warehouse);
+            await Task.WhenAll(gridTask, countTask);
+            _rows            = gridTask.Result;
+            _allocatedCounts = countTask.Result;
+            BuildGrid();
+        }
+        catch (Exception ex)
+        {
+            Snack.Add(ex.Message, Severity.Error);
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private void BuildGrid()
+    {
+        foreach (var row in _rows)
+        {
+            if (row.ChuteId is null) continue;
+            var m = _rx.Match(row.ChuteId);
+            if (!m.Success) continue;
+            char   sec    = char.ToUpper(m.Groups[1].Value[0]);
+            string rowNum = m.Groups[2].Value;
+            string dir    = string.Equals(row.Direction, "DOWN", StringComparison.OrdinalIgnoreCase) ? "DOWN" : "UP";
+            if (!_grid.ContainsKey(sec))         _grid[sec]         = new();
+            if (!_grid[sec].ContainsKey(rowNum)) _grid[sec][rowNum] = new();
+            _grid[sec][rowNum][dir] = (row.ChuteId, row.Status, row.ShopId, row.ShopName, row.TotId);
+        }
+    }
+
+    private (string? Id, int? Status, string? ShopId, string? ShopName, string? TotId) GetCell(char section, string row, string direction)
+    {
+        if (_grid.TryGetValue(section, out var s) &&
+            s.TryGetValue(row, out var r) &&
+            r.TryGetValue(direction, out var cell))
+            return cell;
+        return (null, null, null, null, null);
+    }
+
+    private async Task SaveCellAsync(string? chuteId)
+    {
+        if (chuteId == null || !_cellOverrides.TryGetValue(chuteId, out var ovr)) return;
+        var confirmed = await Dialog.ShowMessageBox("Confirm", $"Save mapping for chute {chuteId}?", yesText: "OK", cancelText: "Cancel");
+        if (confirmed != true) return;
+        _savingChuteId = chuteId;
+        _cellErrors.Remove(chuteId);
+        _cellSuccess.Remove(chuteId);
+        StateHasChanged();
+        try
+        {
+            var msg = await Chute.SaveChuteMappingAsync(_warehouse, chuteId, ovr.ShopId, ovr.ShopName);
+            _cellOverrides.Remove(chuteId);
+            _cellErrors.Remove(chuteId);
+            _cellSuccess[chuteId] = msg;
+            _savingChuteId = null;
+            await LoadAsync();
+        }
+        catch (Exception ex)
+        {
+            _cellErrors[chuteId] = ex.Message;
+            Snack.Add($"Save failed [{chuteId}]: {ex.Message}", Severity.Error);
+            _savingChuteId = null;
+            StateHasChanged();
+        }
+    }
+
+    private string GetAllocatedChutes(string? shopId)
+    {
+        if (string.IsNullOrEmpty(shopId)) return "";
+        int db = _allocatedCounts.TryGetValue(shopId, out var c) ? c : 0;
+
+        int delta = 0;
+        foreach (var kv in _cellOverrides)
+        {
+            if (kv.Value.ShopId == shopId) delta++;
+
+            var orig = _rows.FirstOrDefault(r => r.ChuteId == kv.Key);
+            if (orig?.ShopId == shopId && kv.Value.ShopId != shopId) delta--;
+        }
+
+        int total = db + delta;
+        return total > 0 ? total.ToString() : "";
+    }
+
+    private void ClearOverride(string? chuteId)
+    {
+        if (chuteId != null) _cellOverrides.Remove(chuteId);
+    }
+
+    private async Task OnDropOnCell(string? chuteId, int? status)
+    {
+        if (chuteId == null || _dragShopId == null) return;
+        if (status == 0)
+        {
+            Snack.Add("This chute is currently enabled. Please disable it before reassigning.", Severity.Warning);
+            _dragShopId = null;
+            StateHasChanged();
+            return;
+        }
+        _cellOverrides[chuteId] = (_dragShopId, _dragShopName);
+        _dragShopId = null;
+        _highlightShopId = null;
+        StateHasChanged();
+    }
+
+    private async Task ToggleStatusAsync(string? chuteId, int? currentStatus, string? shopId, string? totId)
+    {
+        if (chuteId == null) return;
+        var enabling = currentStatus != 0;
+        if (enabling && string.IsNullOrEmpty(shopId))
+        {
+            Snack.Add($"Cannot enable {chuteId}: Shop ID is not assigned.", Severity.Error);
+            return;
+        }
+        if (enabling && string.IsNullOrEmpty(totId))
+        {
+            Snack.Add($"Cannot enable {chuteId}: Tote ID is not assigned.", Severity.Error);
+            return;
+        }
+        var action = currentStatus == 0 ? "disable" : "enable";
+        var confirmed = await Dialog.ShowMessageBox("Confirm", $"Are you sure you want to {action} chute {chuteId}?", yesText: "OK", cancelText: "Cancel");
+        if (confirmed != true) return;
+        try
+        {
+            await Chute.ToggleChuteStatusAsync(_warehouse, chuteId, currentStatus ?? 0);
+            await LoadAsync();
+        }
+        catch (Exception ex) { Snack.Add(ex.Message, Severity.Error); }
+    }
+
+    private void ToggleHighlight(string? shopId)
+    {
+        _highlightShopId = _highlightShopId == shopId ? null : shopId;
+    }
+
+    private string GetNewChuteInput(string? shopId) =>
+        shopId != null && _newChuteInputs.TryGetValue(shopId, out var v) ? v : "0";
+
+    private void SetNewChuteInput(string? shopId, string? value)
+    {
+        if (shopId == null) return;
+        if (string.IsNullOrWhiteSpace(value)) _newChuteInputs.Remove(shopId);
+        else _newChuteInputs[shopId] = value;
+    }
+
+    // No per-container demand quantity exists for Techno, so Auto Config assigns purely from
+    // the "New Chutes" counts typed per shop — same as Jafza's flow minus the pending-qty check
+    // (Techno's DB has no SortingConformationDetail table to verify against).
+    private async Task AutoAllocateChuteAsync()
+    {
+        if (!_showDisabledOnly)
+        {
+            Snack.Add("Please tick \"Show disabled chutes (allow mapping changes)\" before running Auto Config.", Severity.Warning);
+            return;
+        }
+
+        var shops = _shopNames.Where(s => s.RoboShopId != null).ToList();
+        if (shops.Count == 0)
+        {
+            Snack.Add("No shops found.", Severity.Warning);
+            return;
+        }
+
+        // Disabled, unassigned chutes for the current direction, in on-screen order — the drop targets.
+        var freeCells = new List<string>();
+        foreach (var sec in Sections)
+        foreach (var row in RowNums)
+        {
+            var cell = GetCell(sec, row, _direction);
+            if (cell.Id != null && cell.Status != 0 && !_cellOverrides.ContainsKey(cell.Id))
+                freeCells.Add(cell.Id);
+        }
+
+        // Randomize so multiple chutes for the same shop land in different sections/rows,
+        // instead of always the next consecutive cells in grid order.
+        for (int i = freeCells.Count - 1; i > 0; i--)
+        {
+            int j = Random.Shared.Next(i + 1);
+            (freeCells[i], freeCells[j]) = (freeCells[j], freeCells[i]);
+        }
+
+        int cellIdx = 0;
+        int totalAssigned = 0;
+        int totalRequested = 0;
+        foreach (var shop in shops)
+        {
+            var shopId = shop.RoboShopId!.ToString()!;
+            int want = int.TryParse(GetNewChuteInput(shopId), out var n) ? n : 0;
+            if (want <= 0) continue;
+            totalRequested += want;
+
+            int given = 0;
+            while (given < want && cellIdx < freeCells.Count)
+            {
+                var chuteId = freeCells[cellIdx++];
+                _cellOverrides[chuteId] = (shopId, shop.ShopName ?? "");
+                given++;
+                totalAssigned++;
+                StateHasChanged();
+            }
+        }
+
+        Snack.Add($"Auto Config: {totalAssigned} of {totalRequested} requested chutes assigned.",
+            totalAssigned == totalRequested ? Severity.Success : Severity.Warning);
+    }
+
+    private void ClearAllOverrides()
+    {
+        _cellOverrides.Clear();
+        _cellErrors.Clear();
+    }
+
+    private async Task SaveAllAsync()
+    {
+        if (_cellOverrides.Count == 0) return;
+        var confirmed = await Dialog.ShowMessageBox("Confirm", $"Save all {_cellOverrides.Count} pending change(s)?", yesText: "OK", cancelText: "Cancel");
+        if (confirmed != true) return;
+        _savingAll = true;
+        StateHasChanged();
+        var ids = _cellOverrides.Keys.ToList();
+        int totalToSave = ids.Count;
+        int savedCount  = 0;
+        foreach (var chuteId in ids)
+        {
+            if (!_cellOverrides.TryGetValue(chuteId, out var ovr)) continue;
+            _savingChuteId = chuteId;
+            _cellErrors.Remove(chuteId);
+            _cellSuccess.Remove(chuteId);
+            StateHasChanged();
+            try
+            {
+                var msg = await Chute.SaveChuteMappingAsync(_warehouse, chuteId, ovr.ShopId, ovr.ShopName);
+                _cellOverrides.Remove(chuteId);
+                _cellSuccess[chuteId] = msg;
+                savedCount++;
+            }
+            catch (Exception ex)
+            {
+                _cellErrors[chuteId] = ex.Message;
+                Snack.Add($"Save failed [{chuteId}]: {ex.Message}", Severity.Error);
+            }
+        }
+        _savingChuteId = null;
+        _savingAll = false;
+        Snack.Add($"Save All: {savedCount} of {totalToSave} chutes saved.",
+            savedCount == totalToSave ? Severity.Success : Severity.Warning);
+        await LoadAsync();
+    }
+}

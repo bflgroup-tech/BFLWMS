@@ -12,6 +12,7 @@ using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Identity.Web;
 using Microsoft.Identity.Web.UI;
+using MudBlazor;
 using MudBlazor.Services;
 
 namespace Wms.Web;
@@ -39,7 +40,13 @@ public class Program
             o.DetailedErrors = true;
         });
         builder.Logging.AddFilter("Microsoft.AspNetCore.Components", LogLevel.Information);
-        builder.Services.AddMudServices();
+        builder.Services.AddMudServices(config =>
+        {
+            config.SnackbarConfiguration.PositionClass = Defaults.Classes.Position.TopRight;
+            config.SnackbarConfiguration.NewestOnTop = true;
+            config.SnackbarConfiguration.ShowCloseIcon = true;
+            config.SnackbarConfiguration.VisibleStateDuration = 5000;
+        });
         builder.Services.AddMemoryCache();
         builder.Services.AddHttpContextAccessor();
 
@@ -79,8 +86,14 @@ public class Program
         builder.Services.AddScoped<TransferGinGrnService>();
         builder.Services.AddScoped<SyncDataCountService>();
         builder.Services.AddScoped<MissingExcessSnapshotService>();
+        builder.Services.AddScoped<RacksService>();
         builder.Services.AddScoped<CountingReportsService>();
         builder.Services.AddScoped<OtsPoAllocationService>();
+
+        // Robotics chute-mapping/status APIs used by the Chute Mapping page.
+        builder.Services.Configure<Wms.Data.Robotic.RoboticApiOptions>(
+            builder.Configuration.GetSection(Wms.Data.Robotic.RoboticApiOptions.SectionName));
+        builder.Services.AddHttpClient<Wms.Data.Robotic.ChuteMappingService>();
         builder.Services.AddHostedService<Wms.Web.Hosting.NightlyBatchService>();
         builder.Services.AddHostedService<Wms.Web.Hosting.ToteMasterScheduledService>();
         builder.Services.AddHostedService<Wms.Web.Hosting.BoxesToWmsProdScheduledService>();
@@ -99,6 +112,30 @@ public class Program
         builder.Services
             .AddAuthentication(OpenIdConnectDefaults.AuthenticationScheme)
             .AddMicrosoftIdentityWebApp(builder.Configuration.GetSection("AzureAd"));
+
+        if (builder.Environment.IsDevelopment())
+        {
+            // OIDC's correlation/nonce cookies default to SameSite=None, which browsers
+            // only honor when the Secure flag is set — but local dev runs over plain
+            // http://localhost, so the cookie never survives the round trip back from
+            // Entra and sign-in fails ("message.State is null or empty" / "Correlation
+            // failed"). Production is HTTPS-only so it keeps the default (stricter) policy.
+            //
+            // PostConfigure (not Configure) so this runs AFTER Microsoft.Identity.Web's
+            // own option setup, which otherwise clobbers these values. Forcing
+            // response_type=code + response_mode=query makes the callback a plain GET
+            // redirect — required for SameSite=Lax cookies to actually be sent, since
+            // Lax excludes cross-site POSTs (the default form_post response mode).
+            builder.Services.PostConfigure<OpenIdConnectOptions>(OpenIdConnectDefaults.AuthenticationScheme, options =>
+            {
+                options.ResponseType = Microsoft.IdentityModel.Protocols.OpenIdConnect.OpenIdConnectResponseType.Code;
+                options.ResponseMode = Microsoft.IdentityModel.Protocols.OpenIdConnect.OpenIdConnectResponseMode.Query;
+                options.CorrelationCookie.SameSite = SameSiteMode.Lax;
+                options.CorrelationCookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
+                options.NonceCookie.SameSite = SameSiteMode.Lax;
+                options.NonceCookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
+            });
+        }
 
         // Auth cookie has a hard 24-hour lifetime from sign-in. SlidingExpiration is OFF
         // so the cookie does NOT roll on activity — users are signed in once per day
