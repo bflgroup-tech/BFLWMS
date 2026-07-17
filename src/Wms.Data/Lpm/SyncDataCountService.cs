@@ -12,10 +12,10 @@ public class SyncDataCountService(IOnPremConnectionResolver resolver)
     private static readonly Dictionary<string, string> DataNameToPrefix = new(StringComparer.OrdinalIgnoreCase)
     {
         ["bflksa"]     = "SA",
-        ["bflkuwait"]  = "KA",
-        ["bflqatar"]   = "QR",
-        ["bflmys"]     = "MY",
-        ["bflbahrain"] = "BH",
+        ["bflkuwait"]  = "KN",
+        ["bflqatar"]   = "QN",
+        ["bflmys"]     = "MN",
+        ["bflbahrain"] = "BN",
         ["bfloman"]    = "OM",
     };
 

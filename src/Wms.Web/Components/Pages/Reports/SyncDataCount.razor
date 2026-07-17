@@ -8,19 +8,18 @@
 <PageTitle>Sync Data Count</PageTitle>
 
 <div class="aiwms-page-header">
-    <h1 class="aiwms-page-title">Sync Data Count</h1>
-    <p class="aiwms-page-subtitle">HO vs Regional record counts per country</p>
-</div>
-
-<div class="aiwms-filter-bar" style="display:flex; flex-wrap:wrap; gap:16px; align-items:flex-end; margin-bottom:20px;">
-    <div>
-        <label class="aiwms-filter-label">DATE</label>
-        <input type="date" @bind="_date" @bind:format="yyyy-MM-dd"
-               style="width:160px; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
+    <div style="display:flex; flex-wrap:wrap; align-items:baseline; gap:16px;">
+        <h1 class="aiwms-page-title" style="margin:0;">Sync Data Count</h1>
+        <div style="display:flex; align-items:center; gap:8px;">
+            <label class="aiwms-filter-label" style="margin:0;">DATE</label>
+            <input type="date" @bind="_date" @bind:format="yyyy-MM-dd"
+                   style="width:150px; padding:6px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
+            <button class="aiwms-btn aiwms-btn-primary" @onclick="LoadAsync" disabled="@_loading">
+                @(_loading ? "Loading…" : "Load")
+            </button>
+        </div>
     </div>
-    <button class="aiwms-btn aiwms-btn-primary" @onclick="LoadAsync" disabled="@_loading">
-        @(_loading ? "Loading…" : "Load")
-    </button>
+    <p class="aiwms-page-subtitle">HO vs Regional record counts per country</p>
 </div>
 
 @if (_error is not null)
@@ -30,21 +29,21 @@
 
 @if (_rows is not null)
 {
-    <div style="overflow-x:auto;">
-        <table class="aiwms-table" style="min-width:700px; font-size:12px;">
+    <div style="overflow-x:auto; margin-top:12px;">
+        <table class="aiwms-table" style="min-width:700px; font-size:13px;">
             <thead>
                 <tr>
-                    <th rowspan="2" style="width:160px; vertical-align:bottom;">Description</th>
+                    <th rowspan="2" style="width:160px; vertical-align:bottom;">Tables</th>
                     @foreach (var country in SyncDataCountService.AllCountries)
                     {
-                        <th colspan="2" style="text-align:center; border-left:2px solid var(--border-default);">@country</th>
+                        <th colspan="2" style="text-align:center; border-left:2px solid var(--border-default); font-size:14px; padding:10px 8px;">@country</th>
                     }
                 </tr>
                 <tr>
                     @foreach (var country in SyncDataCountService.AllCountries)
                     {
-                        <th style="text-align:right; border-left:2px solid var(--border-default); font-weight:normal;">Regional</th>
-                        <th style="text-align:right; font-weight:normal;">HO</th>
+                        <th style="text-align:right; border-left:2px solid var(--border-default); font-weight:normal; font-size:12px;">Regional</th>
+                        <th style="text-align:right; font-weight:normal; font-size:12px;">HO</th>
                     }
                 </tr>
             </thead>
@@ -52,17 +51,17 @@
                 @foreach (var row in _rows)
                 {
                     <tr>
-                        <td style="font-size:11px;">@row.Description</td>
+                        <td style="font-size:12px;">@row.Description</td>
                         @foreach (var country in SyncDataCountService.AllCountries)
                         {
                             var c = row.Countries.GetValueOrDefault(country);
                             var mismatch = c?.Regional.HasValue == true && c?.HO.HasValue == true && c.Regional != c.HO;
-                            <td style="text-align:right; font-variant-numeric:tabular-nums; border-left:2px solid var(--border-default); @(c?.RegionalError is not null ? "color:orange;" : mismatch ? "color:var(--color-error,#c00); background:#fff0f0; font-weight:600;" : "")">
+                            <td style="text-align:right; font-variant-numeric:tabular-nums; border-left:2px solid var(--border-default); @(c?.RegionalError is not null ? "color:orange;" : mismatch ? "color:#b00; background:#ffd5d5; font-weight:600;" : "")">
                                 @if (c?.RegionalError is not null) { <span title="@c.RegionalError">⚠</span> }
                                 else if (c?.Regional is not null) { @c.Regional.Value.ToString("N0") }
                                 else { <span style="color:gray;">–</span> }
                             </td>
-                            <td style="text-align:right; font-variant-numeric:tabular-nums; @(c?.HoError is not null ? "color:orange;" : mismatch ? "color:var(--color-error,#c00); background:#fff0f0; font-weight:600;" : "")">
+                            <td style="text-align:right; font-variant-numeric:tabular-nums; @(c?.HoError is not null ? "color:orange;" : mismatch ? "color:#b00; background:#ffd5d5; font-weight:600;" : "")">
                                 @if (c?.HoError is not null) { <span title="@c.HoError">⚠</span> }
                                 else if (c?.HO is not null) { @c.HO.Value.ToString("N0") }
                                 else { <span style="color:gray;">–</span> }
