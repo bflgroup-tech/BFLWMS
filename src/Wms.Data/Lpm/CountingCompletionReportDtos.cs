@@ -9,6 +9,7 @@ public record CountingCompletionSummaryRow(
     string    Country,
     string    ContNo,
     DateTime? CountingCompletionDate,
+    DateTime? PurchaseDate,
     string?   PONo,
     DateTime? CountingStartDate,
     int       CountedQty,
