@@ -631,4 +631,197 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         public decimal  WkReduction     { get; set; }
         public int      CurrentEOW      { get; set; }
     }
+
+    // ==============================================================
+    // "Generate Volume Group" — populate dbo.StoreDivGrade per (Month, Year)
+    //
+    // Rule (per operator spec):
+    //   * SalesAmt   = LPM_EOM_Output.targetsales for the month/year row.
+    //   * AvgSalesAmt = AVG(SalesAmt) per DivCode across all non-ECOM stores.
+    //   * AvgSalesPct = SalesAmt / AvgSalesAmt * 100  (null for ECOM rows).
+    //   * Grade:
+    //       Country = 'ECOM'                    -> 'Z' (fixed)
+    //       Non-ECOM, top-K by AvgSalesPct DESC -> 'A' where K = max(2, count(pct > 300))
+    //       Rest                                -> LPM_VolumeGroupRange band lookup
+    //                                              (IsSpecial = 0 rows only)
+    // Idempotent: DELETE existing rows for (Month, Year) then bulk insert.
+    // ==============================================================
+    public async Task<int> GenerateStoreDivGradesAsync(int month, int year, CancellationToken ct = default)
+    {
+        await using var c = OpenOnPremBackup();
+
+        // 1) Load all base rows for the picked month/year.
+        var baseRows = (await c.QueryAsync<(string Country, string StoreID, int DivCode, decimal? SalesAmt)>(new CommandDefinition(@"
+            SELECT Country, StoreID, DivCode, CAST(ISNULL(targetsales, 0) AS DECIMAL(18,2)) AS SalesAmt
+              FROM dbo.LPM_EOM_Output WITH (NOLOCK)
+             WHERE Month1 = @m AND Year1 = @y
+               AND Country IS NOT NULL AND LTRIM(RTRIM(Country)) <> ''
+               AND Country <> 'Ex2Locations'",
+            new { m = month, y = year },
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).ToList();
+
+        if (baseRows.Count == 0) return 0;
+
+        // 2) Non-special (B..I) grade bands, ordered widest first for stable matching.
+        var bands = (await c.QueryAsync<(string VolumeGroup, decimal? FromPct, decimal? ToPct)>(new CommandDefinition(@"
+            SELECT VolumeGroup, AvgSalesPctFrom, AvgSalesPctTo
+              FROM dbo.LPM_VolumeGroupRange WITH (NOLOCK)
+             WHERE IsSpecial = 0
+             ORDER BY SortOrder",
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).ToList();
+
+        // 3) Compute avg per DivCode across all non-ECOM rows with SalesAmt > 0.
+        var avgByDiv = baseRows
+            .Where(r => !string.Equals(r.Country, "ECOM", StringComparison.OrdinalIgnoreCase)
+                        && (r.SalesAmt ?? 0) > 0)
+            .GroupBy(r => r.DivCode)
+            .ToDictionary(g => g.Key, g => g.Average(x => x.SalesAmt ?? 0));
+
+        // 4) Assign grade per row.
+        //    Grade A logic scoped per DivCode across all non-ECOM stores.
+        var results = new List<StoreDivGradeRow>(baseRows.Count);
+
+        foreach (var divGroup in baseRows.GroupBy(r => r.DivCode))
+        {
+            var avg = avgByDiv.TryGetValue(divGroup.Key, out var a) ? a : 0m;
+            var nonEcom = divGroup
+                .Where(r => !string.Equals(r.Country, "ECOM", StringComparison.OrdinalIgnoreCase))
+                .Select(r => new
+                {
+                    r.Country, r.StoreID, r.DivCode, r.SalesAmt,
+                    Pct = avg > 0 ? Math.Round((r.SalesAmt ?? 0) / avg * 100m, 2) : (decimal?)null
+                })
+                .OrderByDescending(x => x.Pct ?? 0)
+                .ToList();
+
+            var above300 = nonEcom.Count(x => (x.Pct ?? 0) > 300m);
+            var aCount   = Math.Max(2, above300);
+            var aStoreIds = new HashSet<string>(
+                nonEcom.Take(aCount).Select(x => x.StoreID),
+                StringComparer.OrdinalIgnoreCase);
+
+            foreach (var r in divGroup)
+            {
+                string grade;
+                decimal? pct = null;
+
+                if (string.Equals(r.Country, "ECOM", StringComparison.OrdinalIgnoreCase))
+                {
+                    grade = "Z";
+                }
+                else
+                {
+                    pct = avg > 0 ? Math.Round((r.SalesAmt ?? 0) / avg * 100m, 2) : (decimal?)null;
+                    if (aStoreIds.Contains(r.StoreID))
+                    {
+                        grade = "A";
+                    }
+                    else if (pct.HasValue)
+                    {
+                        var band = bands.FirstOrDefault(b =>
+                            (!b.FromPct.HasValue || pct.Value >= b.FromPct.Value) &&
+                            (!b.ToPct.HasValue   || pct.Value <= b.ToPct.Value));
+                        grade = band.VolumeGroup ?? "";
+                    }
+                    else
+                    {
+                        grade = "";
+                    }
+                }
+
+                results.Add(new StoreDivGradeRow(
+                    Month1:      month,
+                    Year1:       year,
+                    Country:     r.Country,
+                    StoreID:     r.StoreID,
+                    StoreName:   null,
+                    DivCode:     r.DivCode,
+                    Division:    null,
+                    SalesAmt:    r.SalesAmt,
+                    AvgSalesAmt: avg > 0 ? avg : (decimal?)null,
+                    AvgSalesPct: pct,
+                    Grade:       grade));
+            }
+        }
+
+        // 5) DELETE + bulk insert.
+        await using var tx = (SqlTransaction)await c.BeginTransactionAsync(ct);
+        try
+        {
+            await c.ExecuteAsync(new CommandDefinition(
+                "DELETE FROM dbo.StoreDivGrade WHERE Month1 = @m AND Year1 = @y",
+                new { m = month, y = year }, transaction: tx,
+                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+
+            var dt = new System.Data.DataTable();
+            dt.Columns.Add("Month1",      typeof(int));
+            dt.Columns.Add("Year1",       typeof(int));
+            dt.Columns.Add("Country",     typeof(string));
+            dt.Columns.Add("StoreID",     typeof(string));
+            dt.Columns.Add("DivCode",     typeof(int));
+            dt.Columns.Add("SalesAmt",    typeof(decimal));
+            dt.Columns.Add("AvgSalesAmt", typeof(decimal));
+            dt.Columns.Add("AvgSalesPct", typeof(decimal));
+            dt.Columns.Add("Grade",       typeof(string));
+            dt.Columns.Add("GeneratedBy", typeof(string));
+
+            var who = user.Name ?? "";
+            foreach (var r in results)
+            {
+                dt.Rows.Add(
+                    r.Month1, r.Year1, r.Country, r.StoreID, r.DivCode,
+                    (object?)r.SalesAmt    ?? DBNull.Value,
+                    (object?)r.AvgSalesAmt ?? DBNull.Value,
+                    (object?)r.AvgSalesPct ?? DBNull.Value,
+                    (object?)r.Grade       ?? DBNull.Value,
+                    who);
+            }
+
+            using var bulk = new SqlBulkCopy(c, SqlBulkCopyOptions.Default, tx)
+            {
+                DestinationTableName = "dbo.StoreDivGrade",
+                BatchSize            = 1000,
+                BulkCopyTimeout      = CommandTimeoutSeconds,
+            };
+            foreach (System.Data.DataColumn col in dt.Columns)
+                bulk.ColumnMappings.Add(col.ColumnName, col.ColumnName);
+            await bulk.WriteToServerAsync(dt, ct);
+
+            await tx.CommitAsync(ct);
+        }
+        catch
+        {
+            try { await tx.RollbackAsync(ct); } catch { }
+            throw;
+        }
+
+        return results.Count;
+    }
+
+    /// <summary>Read persisted StoreDivGrade rows for a picked (Month, Year),
+    /// joined to Division master + DataSettings for names. Used by the
+    /// "View Volume Groups" dialog on the OTS PO Allocation page.</summary>
+    public async Task<List<StoreDivGradeRow>> GetStoreDivGradesAsync(int month, int year, CancellationToken ct = default)
+    {
+        await using var c = OpenOnPremBackup();
+        var rows = await c.QueryAsync<StoreDivGradeRow>(new CommandDefinition(@"
+            ;WITH storeNames AS (
+                SELECT StoreID, PBFullname,
+                       rn = ROW_NUMBER() OVER (PARTITION BY StoreID ORDER BY PBFullname)
+                  FROM bfldata.dbo.DataSettings WITH (NOLOCK)
+                 WHERE PBFullname IS NOT NULL AND LTRIM(RTRIM(PBFullname)) <> ''
+            )
+            SELECT g.Month1, g.Year1, g.Country, g.StoreID,
+                   sn.PBFullname AS StoreName,
+                   g.DivCode, dv.Division AS Division,
+                   g.SalesAmt, g.AvgSalesAmt, g.AvgSalesPct, g.Grade
+              FROM dbo.StoreDivGrade g WITH (NOLOCK)
+              LEFT JOIN LPMSIM.dbo.Division dv WITH (NOLOCK) ON dv.DivCode = g.DivCode
+              LEFT JOIN storeNames sn ON sn.StoreID = g.StoreID AND sn.rn = 1
+             WHERE g.Month1 = @m AND g.Year1 = @y
+             ORDER BY g.Country, g.StoreID, g.DivCode",
+            new { m = month, y = year },
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        return rows.AsList();
+    }
 }
