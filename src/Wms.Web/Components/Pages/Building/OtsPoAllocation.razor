@@ -283,10 +283,69 @@
 @* Volume Groups panel — populated by "View Volume Groups" button; reads dbo.StoreDivGrade. *@
 @if (_vgShow)
 {
+    var vgRows = FilteredVgRows.ToList();
     <div class="aiwms-section" style="margin-top:16px">
         <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 12px; border-bottom:1px solid var(--border-default)">
-            <b>Volume Groups — @(_vgRows.Count) row(s) for @_month/@_year</b>
-            <button class="aiwms-btn aiwms-btn-secondary" style="padding:4px 10px; font-size:11px" @onclick="() => _vgShow = false">Close</button>
+            <b>Volume Groups — @vgRows.Count of @_vgRows.Count row(s) for @_month/@_year</b>
+            <div style="display:flex; gap:8px">
+                <button class="aiwms-btn aiwms-btn-secondary" style="padding:4px 10px; font-size:11px" @onclick="ExportVolumeGroupsExcelAsync" disabled="@(vgRows.Count == 0)">Download Excel</button>
+                <button class="aiwms-btn aiwms-btn-secondary" style="padding:4px 10px; font-size:11px" @onclick="() => _vgShow = false">Close</button>
+            </div>
+        </div>
+        <div style="padding:10px 12px; border-bottom:1px solid var(--border-default)">
+            <div style="display:grid; grid-template-columns: 1.2fr 1.8fr 2fr 1fr auto; gap:12px; align-items:end">
+                <div>
+                    <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COUNTRY</label>
+                    <MudSelect T="string" Dense="true" MultiSelection="true" SelectAll="true"
+                               SelectedValues="_fVgCountries"
+                               SelectedValuesChanged="@(v => _fVgCountries = v.ToHashSet(StringComparer.OrdinalIgnoreCase))"
+                               MultiSelectionTextFunc="@(v => string.Join(", ", v))"
+                               Placeholder="all"
+                               Variant="Variant.Outlined" Margin="Margin.Dense">
+                        @foreach (var c in _vgRows.Select(r => r.Country).Distinct().OrderBy(x => x))
+                        { <MudSelectItem T="string" Value="@c">@c</MudSelectItem> }
+                    </MudSelect>
+                </div>
+                <div>
+                    <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">DIVISION</label>
+                    <MudSelect T="int" Dense="true" MultiSelection="true" SelectAll="true"
+                               SelectedValues="_fVgDivs"
+                               SelectedValuesChanged="@(v => _fVgDivs = v.ToHashSet())"
+                               MultiSelectionTextFunc="@FormatSelectedVgDivs"
+                               Placeholder="all"
+                               Variant="Variant.Outlined" Margin="Margin.Dense">
+                        @foreach (var d in _vgRows.Select(r => (r.DivCode, r.Division))
+                                                  .Distinct()
+                                                  .OrderBy(x => x.DivCode))
+                        { <MudSelectItem T="int" Value="@d.DivCode">@d.DivCode — @(d.Division ?? "")</MudSelectItem> }
+                    </MudSelect>
+                </div>
+                <div>
+                    <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">STORE (search by ID or name)</label>
+                    <MudAutocomplete T="string" Dense="true" Clearable="true"
+                                     Value="_fVgStoreLabel"
+                                     ValueChanged="OnVgStoreFilterChanged"
+                                     SearchFunc="@SearchVgStoreOptions"
+                                     Placeholder="type to search…"
+                                     CoerceText="false"
+                                     CoerceValue="false"
+                                     ResetValueOnEmptyText="true"
+                                     Variant="Variant.Outlined" Margin="Margin.Dense" />
+                </div>
+                <div>
+                    <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">GRADE</label>
+                    <MudSelect T="string" Dense="true" MultiSelection="true" SelectAll="true"
+                               SelectedValues="_fVgGrades"
+                               SelectedValuesChanged="@(v => _fVgGrades = v.ToHashSet(StringComparer.OrdinalIgnoreCase))"
+                               MultiSelectionTextFunc="@(v => string.Join(", ", v))"
+                               Placeholder="all"
+                               Variant="Variant.Outlined" Margin="Margin.Dense">
+                        @foreach (var g in _vgRows.Select(r => r.Grade ?? "").Where(x => x.Length > 0).Distinct().OrderBy(x => x))
+                        { <MudSelectItem T="string" Value="@g">@g</MudSelectItem> }
+                    </MudSelect>
+                </div>
+                <button class="aiwms-btn aiwms-btn-secondary" @onclick="ClearVgFilters" style="height:36px">Clear</button>
+            </div>
         </div>
         <div style="overflow:auto; max-height:60vh">
             <table class="aiwms-table aiwms-table-dense">
@@ -304,7 +363,7 @@
                     </tr>
                 </thead>
                 <tbody>
-                    @foreach (var g in _vgRows)
+                    @foreach (var g in vgRows)
                     {
                         <tr>
                             <td>@g.Country</td>
@@ -350,6 +409,55 @@
     // Volume Group panel state (populated by View Volume Groups button)
     private bool _vgShow;
     private List<StoreDivGradeRow> _vgRows = new();
+    // Volume Group panel in-memory filters (all optional; empty = no filter)
+    private HashSet<string> _fVgCountries = new(StringComparer.OrdinalIgnoreCase);
+    private HashSet<int>    _fVgDivs      = new();
+    private HashSet<string> _fVgGrades    = new(StringComparer.OrdinalIgnoreCase);
+    private string? _fVgStoreLabel;
+    private string? _fVgStoreId;
+
+    private IEnumerable<StoreDivGradeRow> FilteredVgRows =>
+        _vgRows.Where(r =>
+            (_fVgCountries.Count == 0 || _fVgCountries.Contains(r.Country)) &&
+            (_fVgDivs.Count == 0      || _fVgDivs.Contains(r.DivCode)) &&
+            (_fVgStoreId is null      || string.Equals(r.StoreID, _fVgStoreId, StringComparison.OrdinalIgnoreCase)) &&
+            (_fVgGrades.Count == 0    || (!string.IsNullOrEmpty(r.Grade) && _fVgGrades.Contains(r.Grade))));
+
+    private string FormatSelectedVgDivs(List<string> vals)
+    {
+        if (vals is null || vals.Count == 0) return "all";
+        return string.Join(", ", vals);
+    }
+
+    private Task<IEnumerable<string>> SearchVgStoreOptions(string? term, CancellationToken _)
+    {
+        var opts = _vgRows
+            .Select(r => (r.StoreID, r.StoreName))
+            .Distinct()
+            .Select(t => string.IsNullOrEmpty(t.StoreName) ? t.StoreID : $"{t.StoreID} — {t.StoreName}")
+            .OrderBy(x => x, StringComparer.OrdinalIgnoreCase);
+        var filtered = string.IsNullOrWhiteSpace(term)
+            ? opts.Take(50)
+            : opts.Where(x => x.Contains(term, StringComparison.OrdinalIgnoreCase)).Take(50);
+        return Task.FromResult<IEnumerable<string>>(filtered);
+    }
+
+    private void OnVgStoreFilterChanged(string? label)
+    {
+        _fVgStoreLabel = label;
+        if (string.IsNullOrEmpty(label)) { _fVgStoreId = null; return; }
+        var idx = label.IndexOf(" —", StringComparison.Ordinal);
+        _fVgStoreId = idx > 0 ? label[..idx].Trim() : label.Trim();
+    }
+
+    private void ClearVgFilters()
+    {
+        _fVgCountries.Clear();
+        _fVgDivs.Clear();
+        _fVgGrades.Clear();
+        _fVgStoreLabel = null;
+        _fVgStoreId = null;
+    }
     private List<OtsMonthYearOption> _monthYears = new();
     private List<int>    _years = new();
     private List<int>    _monthsForSelectedYear = new();
@@ -547,6 +655,39 @@
         }
         catch (Exception ex) { ShowError($"View Volume Groups failed: {ex.Message}"); }
         finally { _busy = false; _busyKind = ""; }
+    }
+
+    private async Task ExportVolumeGroupsExcelAsync()
+    {
+        var rows = FilteredVgRows.ToList();
+        if (rows.Count == 0) return;
+        using var wb = new XLWorkbook();
+        var ws = wb.AddWorksheet("Volume Groups");
+        string[] headers = { "Country", "StoreID", "Store Name", "DivCode", "Division",
+                              "Sales Amt", "Avg Sales Amt", "Avg Sales %", "Grade" };
+        for (int i = 0; i < headers.Length; i++) ws.Cell(1, i + 1).Value = headers[i];
+        int row = 2;
+        foreach (var r in rows)
+        {
+            ws.Cell(row, 1).Value = r.Country;
+            ws.Cell(row, 2).Value = r.StoreID;
+            ws.Cell(row, 3).Value = r.StoreName ?? "";
+            ws.Cell(row, 4).Value = r.DivCode;
+            ws.Cell(row, 5).Value = r.Division ?? "";
+            ws.Cell(row, 6).Value = r.SalesAmt;
+            ws.Cell(row, 7).Value = r.AvgSalesAmt;
+            ws.Cell(row, 8).Value = r.AvgSalesPct;
+            ws.Cell(row, 9).Value = r.Grade ?? "";
+            row++;
+        }
+        ws.Row(1).Style.Font.Bold = true;
+        ws.Columns().AdjustToContents();
+        using var ms = new MemoryStream();
+        wb.SaveAs(ms);
+        var b64 = Convert.ToBase64String(ms.ToArray());
+        var name = $"volume-groups-{_year:D4}-{_month:D2}.xlsx";
+        await JS.InvokeVoidAsync("eval",
+            $"var link=document.createElement('a');link.href='data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64}';link.download='{name}';link.click();");
     }
 
     private async Task ExportExcelAsync()
