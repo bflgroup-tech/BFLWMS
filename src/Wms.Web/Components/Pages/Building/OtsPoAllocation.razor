@@ -60,6 +60,15 @@
             @(_busy && _busyKind == "load" ? "Loading…" : "Load")
         </button>
         <button class="aiwms-btn aiwms-btn-secondary" @onclick="ExportExcelAsync" disabled="@(_rows.Count == 0 || _busy)">Export Excel</button>
+        <button class="aiwms-btn aiwms-btn-primary" @onclick="GenerateVolumeGroupAsync"
+                disabled="@(!CanGenerate)"
+                title="@(CanGenerate ? "Populate dbo.StoreDivGrade for the picked Month/Year (grade per store × division)" : "Generate is only enabled when Country = BFLGroup and RunDate = today")">
+            @(_busy && _busyKind == "vg-gen" ? "Generating…" : "Generate Volume Group")
+        </button>
+        <button class="aiwms-btn aiwms-btn-secondary" @onclick="ViewVolumeGroupsAsync"
+                disabled="@(_busy || _month == 0 || _year == 0)">
+            @(_busy && _busyKind == "vg-view" ? "Loading…" : "View Volume Groups")
+        </button>
     </div>
     @if (!string.IsNullOrEmpty(_message))
     {
@@ -271,6 +280,50 @@
     </div>
 }
 
+@* Volume Groups panel — populated by "View Volume Groups" button; reads dbo.StoreDivGrade. *@
+@if (_vgShow)
+{
+    <div class="aiwms-section" style="margin-top:16px">
+        <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 12px; border-bottom:1px solid var(--border-default)">
+            <b>Volume Groups — @(_vgRows.Count) row(s) for @_month/@_year</b>
+            <button class="aiwms-btn aiwms-btn-secondary" style="padding:4px 10px; font-size:11px" @onclick="() => _vgShow = false">Close</button>
+        </div>
+        <div style="overflow:auto; max-height:60vh">
+            <table class="aiwms-table aiwms-table-dense">
+                <thead style="position:sticky; top:0; background:#111827; color:white; z-index:1">
+                    <tr>
+                        <th>Country</th>
+                        <th>StoreID</th>
+                        <th>Store Name</th>
+                        <th style="text-align:right">DivCode</th>
+                        <th>Division</th>
+                        <th style="text-align:right">Sales Amt</th>
+                        <th style="text-align:right">Avg Sales Amt</th>
+                        <th style="text-align:right">Avg Sales %</th>
+                        <th>Grade</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var g in _vgRows)
+                    {
+                        <tr>
+                            <td>@g.Country</td>
+                            <td style="font-family:var(--font-mono)">@g.StoreID</td>
+                            <td>@g.StoreName</td>
+                            <td style="text-align:right">@g.DivCode</td>
+                            <td>@g.Division</td>
+                            <td style="text-align:right">@g.SalesAmt?.ToString("N0")</td>
+                            <td style="text-align:right">@g.AvgSalesAmt?.ToString("N0")</td>
+                            <td style="text-align:right">@(g.AvgSalesPct.HasValue ? g.AvgSalesPct.Value.ToString("F1") + "%" : "")</td>
+                            <td><b>@g.Grade</b></td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    </div>
+}
+
 @code {
     private readonly DateTime _rundate = DateTime.UtcNow.AddHours(4).Date;
     private readonly DateTime _today   = DateTime.UtcNow.AddHours(4).Date;
@@ -293,6 +346,10 @@
     private List<string> _warnings = new();
     private List<string> _validationIssues = new();
     private bool _proceedAnyway;
+
+    // Volume Group panel state (populated by View Volume Groups button)
+    private bool _vgShow;
+    private List<StoreDivGradeRow> _vgRows = new();
     private List<OtsMonthYearOption> _monthYears = new();
     private List<int>    _years = new();
     private List<int>    _monthsForSelectedYear = new();
@@ -462,6 +519,33 @@
                     : $"Load returned no rows for the selected filters + OTSDate {SelectedRunDate:dd/MM/yyyy}.";
         }
         catch (Exception ex) { ShowError($"Load failed: {ex.Message}"); }
+        finally { _busy = false; _busyKind = ""; }
+    }
+
+    private async Task GenerateVolumeGroupAsync()
+    {
+        if (!CanGenerate) return;
+        _busy = true; _busyKind = "vg-gen"; _message = ""; _isError = false;
+        try
+        {
+            var n = await Svc.GenerateStoreDivGradesAsync(_month, _year);
+            _message = $"Generated {n:N0} StoreDivGrade row(s) for {_month}/{_year}. Click 'View Volume Groups' to see them.";
+        }
+        catch (Exception ex) { ShowError($"Generate Volume Group failed: {ex.Message}"); }
+        finally { _busy = false; _busyKind = ""; }
+    }
+
+    private async Task ViewVolumeGroupsAsync()
+    {
+        _busy = true; _busyKind = "vg-view"; _message = ""; _isError = false;
+        try
+        {
+            _vgRows = await Svc.GetStoreDivGradesAsync(_month, _year);
+            _vgShow = true;
+            if (_vgRows.Count == 0)
+                _message = $"No StoreDivGrade rows for {_month}/{_year}. Click 'Generate Volume Group' first.";
+        }
+        catch (Exception ex) { ShowError($"View Volume Groups failed: {ex.Message}"); }
         finally { _busy = false; _busyKind = ""; }
     }
 
