@@ -321,16 +321,20 @@
                     </MudSelect>
                 </div>
                 <div>
-                    <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">STORE (search by ID or name)</label>
-                    <MudAutocomplete T="string" Dense="true" Clearable="true"
-                                     Value="_fVgStoreLabel"
-                                     ValueChanged="OnVgStoreFilterChanged"
-                                     SearchFunc="@SearchVgStoreOptions"
-                                     Placeholder="type to search…"
-                                     CoerceText="false"
-                                     CoerceValue="false"
-                                     ResetValueOnEmptyText="true"
-                                     Variant="Variant.Outlined" Margin="Margin.Dense" />
+                    <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">STORE</label>
+                    <MudSelect T="string" Dense="true" MultiSelection="true" SelectAll="true"
+                               SelectedValues="_fVgStores"
+                               SelectedValuesChanged="@(v => _fVgStores = v.ToHashSet(StringComparer.OrdinalIgnoreCase))"
+                               MultiSelectionTextFunc="@FormatSelectedVgStores"
+                               Placeholder="all"
+                               Variant="Variant.Outlined" Margin="Margin.Dense">
+                        @foreach (var s in _vgRows.Select(r => (r.StoreID, r.StoreName))
+                                                  .Distinct()
+                                                  .OrderBy(x => x.StoreID, StringComparer.OrdinalIgnoreCase))
+                        {
+                            <MudSelectItem T="string" Value="@s.StoreID">@s.StoreID@(string.IsNullOrEmpty(s.StoreName) ? "" : $" — {s.StoreName}")</MudSelectItem>
+                        }
+                    </MudSelect>
                 </div>
                 <div>
                     <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">GRADE</label>
@@ -351,15 +355,15 @@
             <table class="aiwms-table aiwms-table-dense">
                 <thead style="position:sticky; top:0; background:#111827; color:white; z-index:1">
                     <tr>
-                        <th>Country</th>
-                        <th>StoreID</th>
-                        <th>Store Name</th>
-                        <th style="text-align:right">DivCode</th>
-                        <th>Division</th>
-                        <th style="text-align:right">Sales Amt</th>
-                        <th style="text-align:right">Avg Sales Amt</th>
-                        <th style="text-align:right">Avg Sales %</th>
-                        <th>Grade</th>
+                        @VgSortHeader("Country",     "Country")
+                        @VgSortHeader("StoreID",     "StoreID")
+                        @VgSortHeader("StoreName",   "Store Name")
+                        @VgSortHeader("DivCode",     "DivCode",       true)
+                        @VgSortHeader("Division",    "Division")
+                        @VgSortHeader("SalesAmt",    "Sales Amt",     true)
+                        @VgSortHeader("AvgSalesAmt", "Avg Sales Amt", true)
+                        @VgSortHeader("AvgSalesPct", "Avg Sales %",   true)
+                        @VgSortHeader("Grade",       "Grade")
                     </tr>
                 </thead>
                 <tbody>
@@ -412,16 +416,36 @@
     // Volume Group panel in-memory filters (all optional; empty = no filter)
     private HashSet<string> _fVgCountries = new(StringComparer.OrdinalIgnoreCase);
     private HashSet<int>    _fVgDivs      = new();
+    private HashSet<string> _fVgStores    = new(StringComparer.OrdinalIgnoreCase);
     private HashSet<string> _fVgGrades    = new(StringComparer.OrdinalIgnoreCase);
-    private string? _fVgStoreLabel;
-    private string? _fVgStoreId;
+    private string _vgSortKey = "Country";
+    private bool   _vgSortAsc = true;
 
-    private IEnumerable<StoreDivGradeRow> FilteredVgRows =>
-        _vgRows.Where(r =>
-            (_fVgCountries.Count == 0 || _fVgCountries.Contains(r.Country)) &&
-            (_fVgDivs.Count == 0      || _fVgDivs.Contains(r.DivCode)) &&
-            (_fVgStoreId is null      || string.Equals(r.StoreID, _fVgStoreId, StringComparison.OrdinalIgnoreCase)) &&
-            (_fVgGrades.Count == 0    || (!string.IsNullOrEmpty(r.Grade) && _fVgGrades.Contains(r.Grade))));
+    private IEnumerable<StoreDivGradeRow> FilteredVgRows
+    {
+        get
+        {
+            var filtered = _vgRows.Where(r =>
+                (_fVgCountries.Count == 0 || _fVgCountries.Contains(r.Country)) &&
+                (_fVgDivs.Count == 0      || _fVgDivs.Contains(r.DivCode)) &&
+                (_fVgStores.Count == 0    || _fVgStores.Contains(r.StoreID)) &&
+                (_fVgGrades.Count == 0    || (!string.IsNullOrEmpty(r.Grade) && _fVgGrades.Contains(r.Grade))));
+
+            Func<StoreDivGradeRow, object?> k = _vgSortKey switch
+            {
+                "StoreID"     => r => r.StoreID,
+                "StoreName"   => r => r.StoreName ?? "",
+                "DivCode"     => r => r.DivCode,
+                "Division"    => r => r.Division ?? "",
+                "SalesAmt"    => r => r.SalesAmt ?? 0m,
+                "AvgSalesAmt" => r => r.AvgSalesAmt ?? 0m,
+                "AvgSalesPct" => r => r.AvgSalesPct ?? 0m,
+                "Grade"       => r => r.Grade ?? "",
+                _             => r => r.Country,
+            };
+            return _vgSortAsc ? filtered.OrderBy(k) : filtered.OrderByDescending(k);
+        }
+    }
 
     private string FormatSelectedVgDivs(List<string> vals)
     {
@@ -429,34 +453,37 @@
         return string.Join(", ", vals);
     }
 
-    private Task<IEnumerable<string>> SearchVgStoreOptions(string? term, CancellationToken _)
+    private string FormatSelectedVgStores(List<string> vals)
     {
-        var opts = _vgRows
-            .Select(r => (r.StoreID, r.StoreName))
-            .Distinct()
-            .Select(t => string.IsNullOrEmpty(t.StoreName) ? t.StoreID : $"{t.StoreID} — {t.StoreName}")
-            .OrderBy(x => x, StringComparer.OrdinalIgnoreCase);
-        var filtered = string.IsNullOrWhiteSpace(term)
-            ? opts.Take(50)
-            : opts.Where(x => x.Contains(term, StringComparison.OrdinalIgnoreCase)).Take(50);
-        return Task.FromResult<IEnumerable<string>>(filtered);
+        if (vals is null || vals.Count == 0) return "all";
+        if (vals.Count <= 3) return string.Join(", ", vals);
+        return $"{vals.Count} selected";
     }
 
-    private void OnVgStoreFilterChanged(string? label)
+    private RenderFragment VgSortHeader(string key, string label, bool numeric = false) => builder =>
     {
-        _fVgStoreLabel = label;
-        if (string.IsNullOrEmpty(label)) { _fVgStoreId = null; return; }
-        var idx = label.IndexOf(" —", StringComparison.Ordinal);
-        _fVgStoreId = idx > 0 ? label[..idx].Trim() : label.Trim();
+        var style = "cursor:pointer";
+        if (numeric) style += "; text-align:right";
+        var arrow = _vgSortKey == key ? (_vgSortAsc ? " ▲" : " ▼") : "";
+        builder.OpenElement(0, "th");
+        builder.AddAttribute(1, "style", style);
+        builder.AddAttribute(2, "onclick", EventCallback.Factory.Create(this, () => ToggleVgSort(key)));
+        builder.AddContent(3, label + arrow);
+        builder.CloseElement();
+    };
+
+    private void ToggleVgSort(string key)
+    {
+        if (_vgSortKey == key) _vgSortAsc = !_vgSortAsc;
+        else { _vgSortKey = key; _vgSortAsc = true; }
     }
 
     private void ClearVgFilters()
     {
         _fVgCountries.Clear();
         _fVgDivs.Clear();
+        _fVgStores.Clear();
         _fVgGrades.Clear();
-        _fVgStoreLabel = null;
-        _fVgStoreId = null;
     }
     private List<OtsMonthYearOption> _monthYears = new();
     private List<int>    _years = new();
