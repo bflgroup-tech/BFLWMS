@@ -170,20 +170,20 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
         var simFilter = simCountry is null ? "" : $"\n   AND e.SIMCountry = '{simCountry}'";
 
         var sb = new StringBuilder($@"
-SELECT ROW_NUMBER() OVER (ORDER BY a.TrfDate, a.TrfNo, g.SrNo) SrNo,
+SELECT ROW_NUMBER() OVER (ORDER BY a.TrfDate, a.TrfNo, c.SrNo) SrNo,
        e.ShopName,
        a.TrfNo,
        a.TrfDate,
-       gi.PalletNo,
-       g.BuildDate,
-       CAST(g.SrNo AS nvarchar(50)) GINNo,
-       gi.EntryDate GINDate,
+       PalletNo  = (SELECT TOP 1 PalletNo FROM BFLDATA.dbo.vGoodsIssue WHERE TrfNo = a.TrfNo ORDER BY PalletNo DESC),
+       b.EntryDate BuildDate,
+       CAST(c.SrNo AS nvarchar(50)) GINNo,
+       c.EntryDate GINDate,
        CAST(d.EntryNo AS nvarchar(50)) GRNNo,
        d.EntryDate  GRNDate,
        ISNULL(f.Remarks, '') Remarks
   FROM [{dataName}]..transferheader           a
-  LEFT JOIN BFLDATA.dbo.vGoodsIssueplt        g  ON g.TrfNo = a.TrfNo
-  LEFT JOIN BFLDATA.dbo.vGoodsIssue           gi ON gi.TrfNo = a.TrfNo AND gi.SrNo = g.SrNo
+  LEFT JOIN BFLDATA.dbo.vGoodsIssue           b  ON b.TrfNo = a.TrfNo
+  LEFT JOIN BFLDATA.dbo.vGoodsIssueplt        c  ON c.TrfNo = a.TrfNo
   LEFT JOIN [{dataName}]..GRNHeaderRF          d  ON d.TrfNo = a.TrfNo
   JOIN  BFLDATA.dbo.DataSettings              e  ON a.CostCodeTo = e.CostCodeTo
   LEFT JOIN [{dataName}]..TransferReverse      f  ON f.TrfNo = a.TrfNo
@@ -206,20 +206,20 @@ SELECT ROW_NUMBER() OVER (ORDER BY a.TrfDate, a.TrfNo, g.SrNo) SrNo,
         p.Add("@to",   f.DateTo.Date.AddDays(1).AddSeconds(-1));
 
         var sb = new StringBuilder(@"
-SELECT ROW_NUMBER() OVER (ORDER BY a.TrfNo, g.SrNo) SrNo,
+SELECT ROW_NUMBER() OVER (ORDER BY a.TrfNo, c.SrNo) SrNo,
        e.ShopName,
        a.TrfNo,
        a.TrfDate,
-       gi.PalletNo,
-       g.BuildDate,
-       CAST(g.SrNo AS nvarchar(50)) GINNo,
-       gi.EntryDate GINDate,
+       PalletNo  = (SELECT TOP 1 PalletNo FROM BFLDATA..vGoodsIssue WHERE TrfNo = a.TrfNo ORDER BY PalletNo DESC),
+       b.EntryDate BuildDate,
+       CAST(c.SrNo AS nvarchar(50)) GINNo,
+       c.EntryDate GINDate,
        CAST(d.EntryNo AS nvarchar(50)) GRNNo,
        d.EntryDate  GRNDate,
        ISNULL(f.Remarks, '') Remarks
   FROM transferheader              a
-  LEFT JOIN BFLDATA..vGoodsIssueplt g  ON g.TrfNo = a.TrfNo
-  LEFT JOIN BFLDATA..vGoodsIssue   gi  ON gi.TrfNo = a.TrfNo AND gi.SrNo = g.SrNo
+  LEFT JOIN BFLDATA..vGoodsIssue   b  ON b.TrfNo = a.TrfNo
+  LEFT JOIN BFLDATA..vGoodsIssueplt c  ON c.TrfNo = a.TrfNo
   LEFT JOIN GRNHeaderRF             d  ON d.TrfNo = a.TrfNo
   JOIN  BFLDATA..DataSettings       e  ON a.CostCodeTo = e.CostCodeTo
   LEFT JOIN TransferReverse         f  ON f.TrfNo = a.TrfNo
@@ -243,10 +243,10 @@ SELECT ROW_NUMBER() OVER (ORDER BY a.TrfNo, g.SrNo) SrNo,
         }
 
         if (f.WithoutPallet)
-            sb.Append("\n   AND gi.PalletNo IS NULL");
+            sb.Append("\n   AND NOT EXISTS (SELECT 1 FROM BFLDATA..vGoodsIssue WHERE TrfNo = a.TrfNo)");
 
         if (f.WithoutGin)
-            sb.Append("\n   AND g.SrNo IS NULL");
+            sb.Append("\n   AND c.SrNo IS NULL");
 
         if (f.WithoutGrn)
             sb.Append("\n   AND d.EntryNo IS NULL");
@@ -256,8 +256,8 @@ SELECT ROW_NUMBER() OVER (ORDER BY a.TrfNo, g.SrNo) SrNo,
             p.Add("@search", $"%{f.SearchValue.Trim()}%");
             sb.Append(f.SearchBy switch
             {
-                "PalletNo" => "\n   AND gi.PalletNo LIKE @search",
-                "GIN"      => "\n   AND CAST(g.SrNo AS nvarchar(50)) LIKE @search",
+                "PalletNo" => "\n   AND b.PalletNo LIKE @search",
+                "GIN"      => "\n   AND CAST(c.SrNo AS nvarchar(50)) LIKE @search",
                 "GRN"      => "\n   AND CAST(d.EntryNo AS nvarchar(50)) LIKE @search",
                 _          => "\n   AND a.TrfNo LIKE @search",
             });
