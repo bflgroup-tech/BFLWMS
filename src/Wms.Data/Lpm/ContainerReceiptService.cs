@@ -132,7 +132,7 @@ UNION ALL
 
 SELECT
     @warehouse AS Warehouse, A.TCMNo AS ContNo, '' AS GinNo, A.ReceiptDt,
-    A.InvoiceNo, A.ReceivedBy, B.suppcode,
+    B.InvoiceNo, A.ReceivedBy, B.suppcode,
     ISNULL(uo.ShipmentQty,0) AS ShipmentQty, 0 AS BoxCount, 0 AS GRNDone
 FROM BFLDATA.dbo.ContReceipt A WITH (NOLOCK)
 INNER JOIN HODATA.dbo.vUSAOrder B WITH (NOLOCK) ON B.refno = A.TCMNo
@@ -149,7 +149,7 @@ ORDER BY ReceiptDt;";
 )
 SELECT
     @warehouse AS Warehouse, A.TCMNo AS ContNo, '' AS GinNo, A.ReceiptDt,
-    A.InvoiceNo, A.ReceivedBy, B.suppcode,
+    B.InvoiceNo, A.ReceivedBy, B.suppcode,
     ISNULL(uo.ShipmentQty,0) AS ShipmentQty, 0 AS BoxCount, 0 AS GRNDone
 FROM BFLDATA.dbo.ContReceipt A WITH (NOLOCK)
 INNER JOIN HODATA.dbo.vUSAOrder B WITH (NOLOCK) ON B.refno = A.TCMNo
