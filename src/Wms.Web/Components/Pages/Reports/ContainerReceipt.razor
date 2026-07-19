@@ -1,13 +1,165 @@
 @page "/reports/container-receipt"
-@attribute [Authorize(Policy = Wms.Core.MenuKeys.RPT_CONTAINER_RECEIPT)]
+@rendermode RenderMode.InteractiveServer
+@using System.Text
+@using Wms.Core
+@using Wms.Data.Lpm
+@attribute [Authorize(Policy = MenuKeys.RPT_CONTAINER_RECEIPT)]
+@inject ContainerReceiptService Svc
+@inject ICurrentUser CurrentUser
+@inject Microsoft.JSInterop.IJSRuntime JS
 
 <PageTitle>WMS — Container Receipt Report</PageTitle>
 
 <div class="aiwms-page-header">
     <h2>Container Receipt Report</h2>
-    <p>Inbound container receipt history. Scope to be defined in next iteration.</p>
+    <p>Inbound container receipt history with GIN/GRN completion, per warehouse and date range.</p>
 </div>
 
-<div class="aiwms-section">
-    <div class="aiwms-alert info">This page is a stub — workflow will be added when scope is shared.</div>
+<div class="aiwms-section" style="padding:10px 16px;">
+    <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:flex-end;">
+        <div style="flex:0 0 140px;">
+            <label class="aiwms-filter-label">WAREHOUSE</label>
+            <select @bind="_warehouse" style="width:100%; padding:5px 7px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:12px; background:white">
+                <option value="">BFL Group</option>
+                @foreach (var w in ContainerReceiptService.Warehouses) { <option value="@w">@w</option> }
+            </select>
+        </div>
+        <div style="flex:0 0 130px;">
+            <label class="aiwms-filter-label">DATE FROM</label>
+            <input type="date" @bind="_dateFrom" @bind:format="yyyy-MM-dd" style="width:100%; padding:5px 7px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:12px; background:white" />
+        </div>
+        <div style="flex:0 0 130px;">
+            <label class="aiwms-filter-label">DATE TO</label>
+            <input type="date" @bind="_dateTo" @bind:format="yyyy-MM-dd" style="width:100%; padding:5px 7px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:12px; background:white" />
+        </div>
+    </div>
+
+    <div style="display:flex; gap:10px; margin-top:10px">
+        <button class="aiwms-btn aiwms-btn-primary" @onclick="LoadAsync" disabled="@_loading">
+            @(_loading ? "Loading…" : "Load")
+        </button>
+        <button class="aiwms-btn aiwms-btn-secondary" @onclick="ExportCsvAsync" disabled="@(_loading || _rows.Count == 0)">
+            Export to Excel
+        </button>
+        @if (_rows.Count > 0)
+        {
+            <span style="font-size:12px; color:var(--text-secondary); align-self:center">@_rows.Count rows</span>
+        }
+    </div>
+
+    @if (!string.IsNullOrEmpty(_message))
+    {
+        <div class="aiwms-alert @(_isError ? "error" : "info")" style="margin-top:12px">@_message</div>
+    }
 </div>
+
+@if (_rows.Count > 0)
+{
+    <div class="aiwms-section">
+        <table class="aiwms-table aiwms-table-dense">
+            <thead>
+                <tr>
+                    <th>Warehouse</th>
+                    <th>Cont No</th>
+                    <th>GIN No</th>
+                    <th>Receipt Date</th>
+                    <th>Invoice No</th>
+                    <th>Received By</th>
+                    <th>Supplier Code</th>
+                    <th>Shipment Qty</th>
+                    <th>Box Count</th>
+                    <th>GRN Done</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var r in _rows)
+                {
+                    <tr>
+                        <td>@r.Warehouse</td>
+                        <td>@r.ContNo</td>
+                        <td>@r.GinNo</td>
+                        <td>@r.ReceiptDt.ToString("dd/MM/yyyy")</td>
+                        <td>@r.InvoiceNo</td>
+                        <td>@r.ReceivedBy</td>
+                        <td>@r.SuppCode</td>
+                        <td>@r.ShipmentQty</td>
+                        <td>@r.BoxCount</td>
+                        <td>@r.GRNDone</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+@code {
+    private List<ContainerReceiptRow> _rows = new();
+
+    private string   _warehouse = "";
+    private DateTime _dateFrom  = DateTime.Today;
+    private DateTime _dateTo    = DateTime.Today;
+
+    private bool   _loading;
+    private string _message = "";
+    private bool   _isError;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await CurrentUser.EnsureLoadedAsync();
+        if (!string.IsNullOrWhiteSpace(CurrentUser.Country) &&
+            ContainerReceiptService.Warehouses.Contains(CurrentUser.Country, StringComparer.OrdinalIgnoreCase))
+        {
+            _warehouse = CurrentUser.Country!;
+        }
+    }
+
+    private async Task LoadAsync()
+    {
+        _loading = true; _message = ""; _rows.Clear();
+        await InvokeAsync(StateHasChanged);
+        try
+        {
+            var filter = new ContainerReceiptFilter(
+                Warehouse: string.IsNullOrWhiteSpace(_warehouse) ? null : _warehouse,
+                DateFrom:  _dateFrom,
+                DateTo:    _dateTo);
+
+            var result = await Svc.GetContainerReceiptsAsync(filter);
+            _rows = result.Rows;
+
+            if (result.Warnings.Count > 0)
+                ShowError($"Loaded {_rows.Count} rows. Some warehouses failed: {string.Join("; ", result.Warnings)}");
+            else
+                ShowInfo($"Loaded {_rows.Count} rows.");
+        }
+        catch (Exception ex) { ShowError($"Load failed: {ex.Message}"); }
+        finally { _loading = false; }
+    }
+
+    private async Task ExportCsvAsync()
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("Warehouse,ContNo,GinNo,ReceiptDt,InvoiceNo,ReceivedBy,SuppCode,ShipmentQty,BoxCount,GRNDone");
+        foreach (var r in _rows)
+            sb.AppendLine($"{Csv(r.Warehouse)},{Csv(r.ContNo)},{Csv(r.GinNo)},{r.ReceiptDt:yyyy-MM-dd}," +
+                          $"{Csv(r.InvoiceNo)},{Csv(r.ReceivedBy)},{Csv(r.SuppCode)},{r.ShipmentQty},{r.BoxCount},{r.GRNDone}");
+
+        var b64      = Convert.ToBase64String(Encoding.UTF8.GetBytes(sb.ToString()));
+        var wh       = string.IsNullOrWhiteSpace(_warehouse) ? "BFLGroup" : _warehouse;
+        var filename = $"ContainerReceipt_{wh}_{_dateFrom:yyyyMMdd}_{_dateTo:yyyyMMdd}.csv";
+        await JS.InvokeVoidAsync("eval",
+            $"(function(){{var a=document.createElement('a');a.href='data:text/csv;base64,{b64}';" +
+            $"a.download='{filename}';document.body.appendChild(a);a.click();document.body.removeChild(a);}})();");
+    }
+
+    private static string Csv(string? s)
+    {
+        if (s is null) return "";
+        return (s.Contains(',') || s.Contains('"') || s.Contains('\n'))
+            ? "\"" + s.Replace("\"", "\"\"") + "\""
+            : s;
+    }
+
+    private void ShowError(string msg) { _message = msg; _isError = true; }
+    private void ShowInfo(string msg)  { _message = msg; _isError = false; }
+}
