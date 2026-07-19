@@ -33,6 +33,7 @@ public static class MenuKeys
     public const string RPT_TRANSFER_GIN_GRN      = "RPT_TRANSFER_GIN_GRN";
     public const string RPT_COUNTING_COMPLETION   = "RPT_COUNTING_COMPLETION";
     public const string RPT_SYNC_DATA_COUNT       = "RPT_SYNC_DATA_COUNT";
+    public const string RPT_CONTAINER_RECEIPT     = "RPT_CONTAINER_RECEIPT";
 
     public const string ADMIN_USERS               = "ADMIN_USERS";
     public const string ADMIN_WH_MASTER           = "ADMIN_WH_MASTER";
@@ -40,12 +41,17 @@ public static class MenuKeys
     public const string ADMIN_NIGHTLY_BATCHES     = "ADMIN_NIGHTLY_BATCHES";
 
     /// <summary>One catalogue entry per menu item.</summary>
+    /// <param name="Category">
+    /// Optional sub-heading within Group (e.g. "Inbound" under "Reports").
+    /// Null renders the item directly under its Group with no sub-heading.
+    /// </param>
     public sealed record MenuEntry(
         string Key,
         string Group,
         string Label,
         string Url,
-        IReadOnlyList<string> DefaultRoles);
+        IReadOnlyList<string> DefaultRoles,
+        string? Category = null);
 
     /// <summary>
     /// Source of truth for the menu inventory. Each entry's DefaultRoles
@@ -82,6 +88,7 @@ public static class MenuKeys
         new MenuEntry(RPT_RACKS,             "Reports",             "Test Racks",                "reports/racks",             new[] { Roles.Admin, Roles.Reports }),
         new MenuEntry(RPT_TRANSFER_GIN_GRN,  "Reports",             "Transfer/GIN/GRN History",  "reports/transfer-gin-grn",  new[] { Roles.Admin, Roles.Reports }),
         new MenuEntry(RPT_COUNTING_COMPLETION,"Reports",            "Counting Completion Report","reports/counting-completion",new[] { Roles.Admin, Roles.Reports }),
+        new MenuEntry(RPT_CONTAINER_RECEIPT, "Reports",             "Container Receipt Report",  "reports/container-receipt", new[] { Roles.Admin, Roles.Reports }, "Inbound"),
         new MenuEntry(RPT_SYNC_DATA_COUNT,   "IT",                 "Sync Data Count",           "reports/sync-data-count",   new[] { Roles.Admin, Roles.Reports }),
 
         new MenuEntry(ADMIN_USERS,           "Admin",               "Users & Roles",             "admin/users",               new[] { Roles.Admin }),

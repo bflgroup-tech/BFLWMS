@@ -150,7 +150,7 @@
                         var key = menu.Key;
                         <label style="display:flex; align-items:center; gap:6px; font-size:13px; cursor:pointer">
                             <input type="checkbox" checked="@_menuGrants.Contains(key)" @onchange="@(e => ToggleMenu(key, (bool)e.Value!))" />
-                            <span>@menu.Label</span>
+                            <span>@(menu.Category is not null ? $"{menu.Category} / " : "")@menu.Label</span>
                             <span style="font-size:10px; color:var(--text-secondary)">(@string.Join("/", menu.DefaultRoles))</span>
                         </label>
                     }
