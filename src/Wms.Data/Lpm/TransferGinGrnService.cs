@@ -164,10 +164,10 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
         string? simCountry = null)
     {
         p = new DynamicParameters();
-        p.Add("@from", f.DateFrom.Date);
-        p.Add("@to",   f.DateTo.Date.AddDays(1).AddSeconds(-1));
-
-        var simFilter = simCountry is null ? "" : $"\n   AND e.SIMCountry = '{simCountry}'";
+        var hasSearch    = !string.IsNullOrWhiteSpace(f.SearchValue);
+        var simFilter    = simCountry is null ? "" : $"\n   AND e.SIMCountry = '{simCountry}'";
+        var dateFilter   = hasSearch ? "" : "\n   AND a.TrfDate >= @from AND a.TrfDate <= @to";
+        if (!hasSearch) { p.Add("@from", f.DateFrom.Date); p.Add("@to", f.DateTo.Date.AddDays(1).AddSeconds(-1)); }
 
         var sb = new StringBuilder($@"
 SELECT ROW_NUMBER() OVER (ORDER BY a.TrfDate, a.TrfNo, c.SrNo) SrNo,
@@ -187,8 +187,7 @@ SELECT ROW_NUMBER() OVER (ORDER BY a.TrfDate, a.TrfNo, c.SrNo) SrNo,
   LEFT JOIN [{dataName}]..GRNHeaderRF          d  ON d.TrfNo = a.TrfNo
   JOIN  BFLDATA.dbo.DataSettings              e  ON a.CostCodeTo = e.CostCodeTo
   LEFT JOIN [{dataName}]..TransferReverse      f  ON f.TrfNo = a.TrfNo
- WHERE a.TrfNo NOT LIKE 'FN%'
-   AND a.TrfDate >= @from AND a.TrfDate <= @to{simFilter}
+ WHERE a.TrfNo NOT LIKE 'FN%'{dateFilter}{simFilter}
    AND e.ShopName NOT IN (
        SELECT ShopName FROM BFLDATA.dbo.DataSettings WHERE Concept = 'Warehouse'
    )");
@@ -202,10 +201,11 @@ SELECT ROW_NUMBER() OVER (ORDER BY a.TrfDate, a.TrfNo, c.SrNo) SrNo,
     private static string BuildSqlCountry(TransferHistoryFilter f, out DynamicParameters p)
     {
         p = new DynamicParameters();
-        p.Add("@from", f.DateFrom.Date);
-        p.Add("@to",   f.DateTo.Date.AddDays(1).AddSeconds(-1));
+        var hasSearch  = !string.IsNullOrWhiteSpace(f.SearchValue);
+        var dateFilter = hasSearch ? "" : "\n   AND a.TrfDate >= @from AND a.TrfDate <= @to";
+        if (!hasSearch) { p.Add("@from", f.DateFrom.Date); p.Add("@to", f.DateTo.Date.AddDays(1).AddSeconds(-1)); }
 
-        var sb = new StringBuilder(@"
+        var sb = new StringBuilder($@"
 SELECT ROW_NUMBER() OVER (ORDER BY a.TrfNo, c.SrNo) SrNo,
        e.ShopName,
        a.TrfNo,
@@ -223,8 +223,7 @@ SELECT ROW_NUMBER() OVER (ORDER BY a.TrfNo, c.SrNo) SrNo,
   LEFT JOIN GRNHeaderRF             d  ON d.TrfNo = a.TrfNo
   JOIN  BFLDATA..DataSettings       e  ON a.CostCodeTo = e.CostCodeTo
   LEFT JOIN TransferReverse         f  ON f.TrfNo = a.TrfNo
- WHERE a.TrfNo NOT LIKE 'FN%'
-   AND a.TrfDate >= @from AND a.TrfDate <= @to
+ WHERE a.TrfNo NOT LIKE 'FN%'{dateFilter}
    AND e.ShopName NOT IN (
        SELECT ShopName FROM BFLDATA..DataSettings WHERE Concept = 'Warehouse'
    )");
