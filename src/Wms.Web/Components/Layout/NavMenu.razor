@@ -20,12 +20,19 @@
     @foreach (var grp in grouped)
     {
         <div class="aiwms-nav-section">@grp.Key</div>
-        @foreach (var menu in grp)
+        @foreach (var cat in grp.GroupBy(m => m.Category))
         {
-            <NavLink class="aiwms-nav-link" ActiveClass="active" href="@menu.Url">
-                <span class="aiwms-nav-icon">@IconFor(menu.Key)</span>
-                <span>@menu.Label</span>
-            </NavLink>
+            @if (cat.Key is not null)
+            {
+                <div class="aiwms-nav-subsection">@cat.Key</div>
+            }
+            @foreach (var menu in cat)
+            {
+                <NavLink class="@(cat.Key is not null ? "aiwms-nav-link aiwms-nav-link-indent" : "aiwms-nav-link")" ActiveClass="active" href="@menu.Url">
+                    <span class="aiwms-nav-icon">@IconFor(menu.Key)</span>
+                    <span>@menu.Label</span>
+                </NavLink>
+            }
         }
     }
 </nav>
