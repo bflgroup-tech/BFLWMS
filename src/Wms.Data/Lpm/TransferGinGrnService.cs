@@ -164,29 +164,30 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
         string? simCountry = null)
     {
         p = new DynamicParameters();
-        p.Add("@from", f.DateFrom.Date);
-        p.Add("@to",   f.DateTo.Date.AddDays(1).AddSeconds(-1));
-
-        var simFilter = simCountry is null ? "" : $"\n   AND e.SIMCountry = '{simCountry}'";
+        var hasSearch    = !string.IsNullOrWhiteSpace(f.SearchValue);
+        var simFilter    = simCountry is null ? "" : $"\n   AND e.SIMCountry = '{simCountry}'";
+        var dateFilter   = hasSearch ? "" : "\n   AND a.TrfDate >= @from AND a.TrfDate <= @to";
+        if (!hasSearch) { p.Add("@from", f.DateFrom.Date); p.Add("@to", f.DateTo.Date.AddDays(1).AddSeconds(-1)); }
 
         var sb = new StringBuilder($@"
-SELECT ROW_NUMBER() OVER (ORDER BY a.TrfDate, a.TrfNo) SrNo,
+SELECT ROW_NUMBER() OVER (ORDER BY a.TrfDate, a.TrfNo, c.SrNo) SrNo,
        e.ShopName,
        a.TrfNo,
        a.TrfDate,
-       PalletNo  = (SELECT TOP 1 PalletNo   FROM BFLDATA.dbo.vGoodsIssue    WHERE TrfNo = a.TrfNo ORDER BY PalletNo DESC),
-       BuildDate = (SELECT TOP 1 BuildDate   FROM BFLDATA.dbo.vGoodsIssueplt WHERE TrfNo = a.TrfNo ORDER BY SrNo DESC),
-       GINNo     = (SELECT TOP 1 CAST(SrNo AS nvarchar(50)) FROM BFLDATA.dbo.vGoodsIssueplt WHERE TrfNo = a.TrfNo ORDER BY SrNo DESC),
-       GINDate   = (SELECT TOP 1 EntryDate   FROM BFLDATA.dbo.vGoodsIssue    WHERE TrfNo = a.TrfNo ORDER BY Sn   DESC),
+       PalletNo  = (SELECT TOP 1 PalletNo FROM BFLDATA.dbo.vGoodsIssue WHERE TrfNo = a.TrfNo ORDER BY PalletNo DESC),
+       b.EntryDate BuildDate,
+       CAST(c.SrNo AS nvarchar(50)) GINNo,
+       c.EntryDate GINDate,
        CAST(d.EntryNo AS nvarchar(50)) GRNNo,
        d.EntryDate  GRNDate,
        ISNULL(f.Remarks, '') Remarks
-  FROM [{dataName}]..transferheader      a
-  LEFT JOIN [{dataName}]..GRNHeaderRF    d ON a.TrfNo = d.TrfNo
-  JOIN  BFLDATA.dbo.DataSettings         e ON a.CostCodeTo = e.CostCodeTo
-  LEFT JOIN [{dataName}]..TransferReverse f ON a.TrfNo = f.TrfNo
- WHERE a.TrfNo NOT LIKE 'FN%'
-   AND a.TrfDate >= @from AND a.TrfDate <= @to{simFilter}
+  FROM [{dataName}]..transferheader           a
+  LEFT JOIN BFLDATA.dbo.vGoodsIssue           b  ON b.TrfNo = a.TrfNo
+  LEFT JOIN BFLDATA.dbo.vGoodsIssueplt        c  ON c.TrfNo = a.TrfNo
+  LEFT JOIN [{dataName}]..GRNHeaderRF          d  ON d.TrfNo = a.TrfNo
+  JOIN  BFLDATA.dbo.DataSettings              e  ON a.CostCodeTo = e.CostCodeTo
+  LEFT JOIN [{dataName}]..TransferReverse      f  ON f.TrfNo = a.TrfNo
+ WHERE a.TrfNo NOT LIKE 'FN%'{dateFilter}{simFilter}
    AND e.ShopName NOT IN (
        SELECT ShopName FROM BFLDATA.dbo.DataSettings WHERE Concept = 'Warehouse'
    )");
@@ -200,27 +201,29 @@ SELECT ROW_NUMBER() OVER (ORDER BY a.TrfDate, a.TrfNo) SrNo,
     private static string BuildSqlCountry(TransferHistoryFilter f, out DynamicParameters p)
     {
         p = new DynamicParameters();
-        p.Add("@from", f.DateFrom.Date);
-        p.Add("@to",   f.DateTo.Date.AddDays(1).AddSeconds(-1));
+        var hasSearch  = !string.IsNullOrWhiteSpace(f.SearchValue);
+        var dateFilter = hasSearch ? "" : "\n   AND a.TrfDate >= @from AND a.TrfDate <= @to";
+        if (!hasSearch) { p.Add("@from", f.DateFrom.Date); p.Add("@to", f.DateTo.Date.AddDays(1).AddSeconds(-1)); }
 
-        var sb = new StringBuilder(@"
-SELECT ROW_NUMBER() OVER (ORDER BY a.TrfNo) SrNo,
+        var sb = new StringBuilder($@"
+SELECT ROW_NUMBER() OVER (ORDER BY a.TrfNo, c.SrNo) SrNo,
        e.ShopName,
        a.TrfNo,
        a.TrfDate,
-       PalletNo  = (SELECT TOP 1 PalletNo   FROM BFLDATA..vGoodsIssue    WHERE TrfNo = a.TrfNo ORDER BY PalletNo DESC),
-       BuildDate = (SELECT TOP 1 BuildDate   FROM BFLDATA..vGoodsIssueplt WHERE TrfNo = a.TrfNo ORDER BY SrNo DESC),
-       GINNo     = (SELECT TOP 1 CAST(SrNo AS nvarchar(50)) FROM BFLDATA..vGoodsIssueplt WHERE TrfNo = a.TrfNo ORDER BY SrNo DESC),
-       GINDate   = (SELECT TOP 1 EntryDate   FROM BFLDATA..vGoodsIssue    WHERE TrfNo = a.TrfNo ORDER BY Sn   DESC),
+       PalletNo  = (SELECT TOP 1 PalletNo FROM BFLDATA..vGoodsIssue WHERE TrfNo = a.TrfNo ORDER BY PalletNo DESC),
+       b.EntryDate BuildDate,
+       CAST(c.SrNo AS nvarchar(50)) GINNo,
+       c.EntryDate GINDate,
        CAST(d.EntryNo AS nvarchar(50)) GRNNo,
        d.EntryDate  GRNDate,
        ISNULL(f.Remarks, '') Remarks
   FROM transferheader              a
-  LEFT JOIN GRNHeaderRF            d ON a.TrfNo = d.TrfNo
-  JOIN  BFLDATA..DataSettings      e ON a.CostCodeTo = e.CostCodeTo
-  LEFT JOIN TransferReverse        f ON a.TrfNo = f.TrfNo
- WHERE a.TrfNo NOT LIKE 'FN%'
-   AND a.TrfDate >= @from AND a.TrfDate <= @to
+  LEFT JOIN BFLDATA..vGoodsIssue   b  ON b.TrfNo = a.TrfNo
+  LEFT JOIN BFLDATA..vGoodsIssueplt c  ON c.TrfNo = a.TrfNo
+  LEFT JOIN GRNHeaderRF             d  ON d.TrfNo = a.TrfNo
+  JOIN  BFLDATA..DataSettings       e  ON a.CostCodeTo = e.CostCodeTo
+  LEFT JOIN TransferReverse         f  ON f.TrfNo = a.TrfNo
+ WHERE a.TrfNo NOT LIKE 'FN%'{dateFilter}
    AND e.ShopName NOT IN (
        SELECT ShopName FROM BFLDATA..DataSettings WHERE Concept = 'Warehouse'
    )");
@@ -239,12 +242,10 @@ SELECT ROW_NUMBER() OVER (ORDER BY a.TrfNo) SrNo,
         }
 
         if (f.WithoutPallet)
-            sb.Append("\n   AND NOT EXISTS (" +
-                      "SELECT 1 FROM BFLDATA..vGoodsIssue WHERE TrfNo = a.TrfNo)");
+            sb.Append("\n   AND NOT EXISTS (SELECT 1 FROM BFLDATA..vGoodsIssue WHERE TrfNo = a.TrfNo)");
 
         if (f.WithoutGin)
-            sb.Append("\n   AND NOT EXISTS (" +
-                      "SELECT 1 FROM BFLDATA..vGoodsIssueplt WHERE TrfNo = a.TrfNo)");
+            sb.Append("\n   AND c.SrNo IS NULL");
 
         if (f.WithoutGrn)
             sb.Append("\n   AND d.EntryNo IS NULL");
@@ -254,10 +255,8 @@ SELECT ROW_NUMBER() OVER (ORDER BY a.TrfNo) SrNo,
             p.Add("@search", $"%{f.SearchValue.Trim()}%");
             sb.Append(f.SearchBy switch
             {
-                "PalletNo" => "\n   AND EXISTS (SELECT 1 FROM BFLDATA..vGoodsIssue " +
-                              "WHERE TrfNo = a.TrfNo AND PalletNo LIKE @search)",
-                "GIN"      => "\n   AND EXISTS (SELECT 1 FROM BFLDATA..vGoodsIssueplt " +
-                              "WHERE TrfNo = a.TrfNo AND CAST(SrNo AS nvarchar(50)) LIKE @search)",
+                "PalletNo" => "\n   AND b.PalletNo LIKE @search",
+                "GIN"      => "\n   AND CAST(c.SrNo AS nvarchar(50)) LIKE @search",
                 "GRN"      => "\n   AND CAST(d.EntryNo AS nvarchar(50)) LIKE @search",
                 _          => "\n   AND a.TrfNo LIKE @search",
             });

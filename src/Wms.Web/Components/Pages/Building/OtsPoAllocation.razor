@@ -60,6 +60,15 @@
             @(_busy && _busyKind == "load" ? "Loading…" : "Load")
         </button>
         <button class="aiwms-btn aiwms-btn-secondary" @onclick="ExportExcelAsync" disabled="@(_rows.Count == 0 || _busy)">Export Excel</button>
+        <button class="aiwms-btn aiwms-btn-primary" @onclick="GenerateVolumeGroupAsync"
+                disabled="@(!CanGenerate)"
+                title="@(CanGenerate ? "Populate dbo.StoreDivGrade for the picked Month/Year (grade per store × division)" : "Generate is only enabled when Country = BFLGroup and RunDate = today")">
+            @(_busy && _busyKind == "vg-gen" ? "Generating…" : "Generate Volume Group")
+        </button>
+        <button class="aiwms-btn aiwms-btn-secondary" @onclick="ViewVolumeGroupsAsync"
+                disabled="@(_busy || _month == 0 || _year == 0)">
+            @(_busy && _busyKind == "vg-view" ? "Loading…" : "View Volume Groups")
+        </button>
     </div>
     @if (!string.IsNullOrEmpty(_message))
     {
@@ -271,6 +280,113 @@
     </div>
 }
 
+@* Volume Groups panel — populated by "View Volume Groups" button; reads dbo.StoreDivGrade. *@
+@if (_vgShow)
+{
+    var vgRows = FilteredVgRows.ToList();
+    <div class="aiwms-section" style="margin-top:16px">
+        <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 12px; border-bottom:1px solid var(--border-default)">
+            <b>Volume Groups — @vgRows.Count of @_vgRows.Count row(s) for @_month/@_year</b>
+            <div style="display:flex; gap:8px">
+                <button class="aiwms-btn aiwms-btn-secondary" style="padding:4px 10px; font-size:11px" @onclick="ExportVolumeGroupsExcelAsync" disabled="@(vgRows.Count == 0)">Download Excel</button>
+                <button class="aiwms-btn aiwms-btn-secondary" style="padding:4px 10px; font-size:11px" @onclick="() => _vgShow = false">Close</button>
+            </div>
+        </div>
+        <div style="padding:10px 12px; border-bottom:1px solid var(--border-default)">
+            <div style="display:grid; grid-template-columns: 1.2fr 1.8fr 2fr 1fr auto; gap:12px; align-items:end">
+                <div>
+                    <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COUNTRY</label>
+                    <MudSelect T="string" Dense="true" MultiSelection="true" SelectAll="true"
+                               SelectedValues="_fVgCountries"
+                               SelectedValuesChanged="@(v => _fVgCountries = v.ToHashSet(StringComparer.OrdinalIgnoreCase))"
+                               MultiSelectionTextFunc="@(v => string.Join(", ", v))"
+                               Placeholder="all"
+                               Variant="Variant.Outlined" Margin="Margin.Dense">
+                        @foreach (var c in _vgRows.Select(r => r.Country).Distinct().OrderBy(x => x))
+                        { <MudSelectItem T="string" Value="@c">@c</MudSelectItem> }
+                    </MudSelect>
+                </div>
+                <div>
+                    <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">DIVISION</label>
+                    <MudSelect T="int" Dense="true" MultiSelection="true" SelectAll="true"
+                               SelectedValues="_fVgDivs"
+                               SelectedValuesChanged="@(v => _fVgDivs = v.ToHashSet())"
+                               MultiSelectionTextFunc="@FormatSelectedVgDivs"
+                               Placeholder="all"
+                               Variant="Variant.Outlined" Margin="Margin.Dense">
+                        @foreach (var d in _vgRows.Select(r => (r.DivCode, r.Division))
+                                                  .Distinct()
+                                                  .OrderBy(x => x.DivCode))
+                        { <MudSelectItem T="int" Value="@d.DivCode">@d.DivCode — @(d.Division ?? "")</MudSelectItem> }
+                    </MudSelect>
+                </div>
+                <div>
+                    <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">STORE</label>
+                    <MudSelect T="string" Dense="true" MultiSelection="true" SelectAll="true"
+                               SelectedValues="_fVgStores"
+                               SelectedValuesChanged="@(v => _fVgStores = v.ToHashSet(StringComparer.OrdinalIgnoreCase))"
+                               MultiSelectionTextFunc="@FormatSelectedVgStores"
+                               Placeholder="all"
+                               Variant="Variant.Outlined" Margin="Margin.Dense">
+                        @foreach (var s in _vgRows.Select(r => (r.StoreID, r.StoreName))
+                                                  .Distinct()
+                                                  .OrderBy(x => x.StoreID, StringComparer.OrdinalIgnoreCase))
+                        {
+                            <MudSelectItem T="string" Value="@s.StoreID">@s.StoreID@(string.IsNullOrEmpty(s.StoreName) ? "" : $" — {s.StoreName}")</MudSelectItem>
+                        }
+                    </MudSelect>
+                </div>
+                <div>
+                    <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">GRADE</label>
+                    <MudSelect T="string" Dense="true" MultiSelection="true" SelectAll="true"
+                               SelectedValues="_fVgGrades"
+                               SelectedValuesChanged="@(v => _fVgGrades = v.ToHashSet(StringComparer.OrdinalIgnoreCase))"
+                               MultiSelectionTextFunc="@(v => string.Join(", ", v))"
+                               Placeholder="all"
+                               Variant="Variant.Outlined" Margin="Margin.Dense">
+                        @foreach (var g in _vgRows.Select(r => r.Grade ?? "").Where(x => x.Length > 0).Distinct().OrderBy(x => x))
+                        { <MudSelectItem T="string" Value="@g">@g</MudSelectItem> }
+                    </MudSelect>
+                </div>
+                <button class="aiwms-btn aiwms-btn-secondary" @onclick="ClearVgFilters" style="height:36px">Clear</button>
+            </div>
+        </div>
+        <div style="overflow:auto; max-height:60vh">
+            <table class="aiwms-table aiwms-table-dense">
+                <thead style="position:sticky; top:0; background:#111827; color:white; z-index:1">
+                    <tr>
+                        @VgSortHeader("Country",     "Country")
+                        @VgSortHeader("StoreID",     "StoreID")
+                        @VgSortHeader("StoreName",   "Store Name")
+                        @VgSortHeader("DivCode",     "DivCode",       true)
+                        @VgSortHeader("Division",    "Division")
+                        @VgSortHeader("SalesAmt",    "Sales Amt",     true)
+                        @VgSortHeader("AvgSalesAmt", "Avg Sales Amt", true)
+                        @VgSortHeader("AvgSalesPct", "Avg Sales %",   true)
+                        @VgSortHeader("Grade",       "Grade")
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var g in vgRows)
+                    {
+                        <tr>
+                            <td>@g.Country</td>
+                            <td style="font-family:var(--font-mono)">@g.StoreID</td>
+                            <td>@g.StoreName</td>
+                            <td style="text-align:right">@g.DivCode</td>
+                            <td>@g.Division</td>
+                            <td style="text-align:right">@g.SalesAmt?.ToString("N0")</td>
+                            <td style="text-align:right">@g.AvgSalesAmt?.ToString("N0")</td>
+                            <td style="text-align:right">@(g.AvgSalesPct.HasValue ? g.AvgSalesPct.Value.ToString("F1") + "%" : "")</td>
+                            <td><b>@g.Grade</b></td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    </div>
+}
+
 @code {
     private readonly DateTime _rundate = DateTime.UtcNow.AddHours(4).Date;
     private readonly DateTime _today   = DateTime.UtcNow.AddHours(4).Date;
@@ -293,6 +409,82 @@
     private List<string> _warnings = new();
     private List<string> _validationIssues = new();
     private bool _proceedAnyway;
+
+    // Volume Group panel state (populated by View Volume Groups button)
+    private bool _vgShow;
+    private List<StoreDivGradeRow> _vgRows = new();
+    // Volume Group panel in-memory filters (all optional; empty = no filter)
+    private HashSet<string> _fVgCountries = new(StringComparer.OrdinalIgnoreCase);
+    private HashSet<int>    _fVgDivs      = new();
+    private HashSet<string> _fVgStores    = new(StringComparer.OrdinalIgnoreCase);
+    private HashSet<string> _fVgGrades    = new(StringComparer.OrdinalIgnoreCase);
+    private string _vgSortKey = "Country";
+    private bool   _vgSortAsc = true;
+
+    private IEnumerable<StoreDivGradeRow> FilteredVgRows
+    {
+        get
+        {
+            var filtered = _vgRows.Where(r =>
+                (_fVgCountries.Count == 0 || _fVgCountries.Contains(r.Country)) &&
+                (_fVgDivs.Count == 0      || _fVgDivs.Contains(r.DivCode)) &&
+                (_fVgStores.Count == 0    || _fVgStores.Contains(r.StoreID)) &&
+                (_fVgGrades.Count == 0    || (!string.IsNullOrEmpty(r.Grade) && _fVgGrades.Contains(r.Grade))));
+
+            Func<StoreDivGradeRow, object?> k = _vgSortKey switch
+            {
+                "StoreID"     => r => r.StoreID,
+                "StoreName"   => r => r.StoreName ?? "",
+                "DivCode"     => r => r.DivCode,
+                "Division"    => r => r.Division ?? "",
+                "SalesAmt"    => r => r.SalesAmt ?? 0m,
+                "AvgSalesAmt" => r => r.AvgSalesAmt ?? 0m,
+                "AvgSalesPct" => r => r.AvgSalesPct ?? 0m,
+                "Grade"       => r => r.Grade ?? "",
+                _             => r => r.Country,
+            };
+            return _vgSortAsc ? filtered.OrderBy(k) : filtered.OrderByDescending(k);
+        }
+    }
+
+    private string FormatSelectedVgDivs(List<string> vals)
+    {
+        if (vals is null || vals.Count == 0) return "all";
+        return string.Join(", ", vals);
+    }
+
+    private string FormatSelectedVgStores(List<string> vals)
+    {
+        if (vals is null || vals.Count == 0) return "all";
+        if (vals.Count <= 3) return string.Join(", ", vals);
+        return $"{vals.Count} selected";
+    }
+
+    private RenderFragment VgSortHeader(string key, string label, bool numeric = false) => builder =>
+    {
+        var style = "cursor:pointer";
+        if (numeric) style += "; text-align:right";
+        var arrow = _vgSortKey == key ? (_vgSortAsc ? " ▲" : " ▼") : "";
+        builder.OpenElement(0, "th");
+        builder.AddAttribute(1, "style", style);
+        builder.AddAttribute(2, "onclick", EventCallback.Factory.Create(this, () => ToggleVgSort(key)));
+        builder.AddContent(3, label + arrow);
+        builder.CloseElement();
+    };
+
+    private void ToggleVgSort(string key)
+    {
+        if (_vgSortKey == key) _vgSortAsc = !_vgSortAsc;
+        else { _vgSortKey = key; _vgSortAsc = true; }
+    }
+
+    private void ClearVgFilters()
+    {
+        _fVgCountries.Clear();
+        _fVgDivs.Clear();
+        _fVgStores.Clear();
+        _fVgGrades.Clear();
+    }
     private List<OtsMonthYearOption> _monthYears = new();
     private List<int>    _years = new();
     private List<int>    _monthsForSelectedYear = new();
@@ -463,6 +655,66 @@
         }
         catch (Exception ex) { ShowError($"Load failed: {ex.Message}"); }
         finally { _busy = false; _busyKind = ""; }
+    }
+
+    private async Task GenerateVolumeGroupAsync()
+    {
+        if (!CanGenerate) return;
+        _busy = true; _busyKind = "vg-gen"; _message = ""; _isError = false;
+        try
+        {
+            var n = await Svc.GenerateStoreDivGradesAsync(_month, _year);
+            _message = $"Generated {n:N0} StoreDivGrade row(s) for {_month}/{_year}. Click 'View Volume Groups' to see them.";
+        }
+        catch (Exception ex) { ShowError($"Generate Volume Group failed: {ex.Message}"); }
+        finally { _busy = false; _busyKind = ""; }
+    }
+
+    private async Task ViewVolumeGroupsAsync()
+    {
+        _busy = true; _busyKind = "vg-view"; _message = ""; _isError = false;
+        try
+        {
+            _vgRows = await Svc.GetStoreDivGradesAsync(_month, _year);
+            _vgShow = true;
+            if (_vgRows.Count == 0)
+                _message = $"No StoreDivGrade rows for {_month}/{_year}. Click 'Generate Volume Group' first.";
+        }
+        catch (Exception ex) { ShowError($"View Volume Groups failed: {ex.Message}"); }
+        finally { _busy = false; _busyKind = ""; }
+    }
+
+    private async Task ExportVolumeGroupsExcelAsync()
+    {
+        var rows = FilteredVgRows.ToList();
+        if (rows.Count == 0) return;
+        using var wb = new XLWorkbook();
+        var ws = wb.AddWorksheet("Volume Groups");
+        string[] headers = { "Country", "StoreID", "Store Name", "DivCode", "Division",
+                              "Sales Amt", "Avg Sales Amt", "Avg Sales %", "Grade" };
+        for (int i = 0; i < headers.Length; i++) ws.Cell(1, i + 1).Value = headers[i];
+        int row = 2;
+        foreach (var r in rows)
+        {
+            ws.Cell(row, 1).Value = r.Country;
+            ws.Cell(row, 2).Value = r.StoreID;
+            ws.Cell(row, 3).Value = r.StoreName ?? "";
+            ws.Cell(row, 4).Value = r.DivCode;
+            ws.Cell(row, 5).Value = r.Division ?? "";
+            ws.Cell(row, 6).Value = r.SalesAmt;
+            ws.Cell(row, 7).Value = r.AvgSalesAmt;
+            ws.Cell(row, 8).Value = r.AvgSalesPct;
+            ws.Cell(row, 9).Value = r.Grade ?? "";
+            row++;
+        }
+        ws.Row(1).Style.Font.Bold = true;
+        ws.Columns().AdjustToContents();
+        using var ms = new MemoryStream();
+        wb.SaveAs(ms);
+        var b64 = Convert.ToBase64String(ms.ToArray());
+        var name = $"volume-groups-{_year:D4}-{_month:D2}.xlsx";
+        await JS.InvokeVoidAsync("eval",
+            $"var link=document.createElement('a');link.href='data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64}';link.download='{name}';link.click();");
     }
 
     private async Task ExportExcelAsync()

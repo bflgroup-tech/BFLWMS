@@ -2,8 +2,10 @@
 @rendermode RenderMode.InteractiveServer
 @using Wms.Core
 @using Wms.Data.Lpm
+@using ClosedXML.Excel
 @attribute [Authorize(Policy = MenuKeys.RPT_COUNTING_COMPLETION)]
 @inject ReportsService Svc
+@inject IJSRuntime JS
 
 <PageTitle>WMS - Counting Completion Report</PageTitle>
 
@@ -44,7 +46,10 @@
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COMPLETION TO *</label>
             <input type="date" @bind="_to" @bind:format="yyyy-MM-dd" max="@DateTime.Today.ToString("yyyy-MM-dd")" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
         </div>
-        <button class="aiwms-btn aiwms-btn-primary" @onclick="LoadAsync" disabled="@(_loading || _from > _to)">@(_loading ? "Loading..." : "Load")</button>
+        <div style="display:flex; gap:8px">
+            <button class="aiwms-btn aiwms-btn-primary" @onclick="LoadAsync" disabled="@(_loading || _from > _to)">@(_loading ? "Loading..." : "Load")</button>
+            <button class="aiwms-btn aiwms-btn-secondary" @onclick="ExportExcelAsync" disabled="@(_exporting || _rows.Count == 0)">@(_exporting ? "Exporting..." : "Export Excel")</button>
+        </div>
     </div>
 
     @if (!string.IsNullOrEmpty(_message))
@@ -89,6 +94,7 @@
                 <col style="width:160px" />
                 <col style="width:130px" />
                 <col style="width:130px" />
+                <col style="width:130px" />
                 <col style="width:100px" />
                 <col style="width:140px" />
                 <col style="width:200px" />
@@ -101,6 +107,7 @@
                     <th>PO No</th>
                     <th>Counting Start Date</th>
                     <th>Counting Completion Date</th>
+                    <th>Cont-Purchase Date</th>
                     <th style="text-align:center">Counted Qty</th>
                     <th>LPM Months</th>
                     <th>Divisions</th>
@@ -116,6 +123,7 @@
                         <td style="word-break:break-word">@r.PONo</td>
                         <td>@FmtDate(r.CountingStartDate)</td>
                         <td>@FmtDate(r.CountingCompletionDate)</td>
+                        <td>@FmtDate(r.PurchaseDate)</td>
                         <td style="text-align:center">@r.CountedQty.ToString("N0")</td>
                         <td style="word-break:break-word">@r.LpmMonths</td>
                         <td style="word-break:break-word">@r.Divisions</td>
@@ -135,6 +143,7 @@
     private DateTime _from = DateTime.Today.AddDays(-7);
     private DateTime _to   = DateTime.Today;
     private bool _loading;
+    private bool _exporting;
     private string _message = "";
     private bool _isError;
     private string _search = "";
@@ -151,11 +160,10 @@
         catch { /* fall back to empty list if the lookup fails */ }
     }
 
-    private async Task ToggleCountry(string country, bool isChecked)
+    private void ToggleCountry(string country, bool isChecked)
     {
         if (isChecked) _selectedCountries.Add(country);
         else _selectedCountries.Remove(country);
-        await LoadAsync();
     }
 
     private async Task LoadAsync()
@@ -168,6 +176,49 @@
         }
         catch (Exception ex) { _message = ex.Message; _isError = true; }
         finally { _loading = false; }
+    }
+
+    private async Task ExportExcelAsync()
+    {
+        if (_rows.Count == 0) return;
+        _exporting = true;
+        try
+        {
+            using var wb = new XLWorkbook();
+            var ws = wb.AddWorksheet("Counting Completion");
+            string[] headers =
+            {
+                "Country", "Cont No", "PO No", "Counting Start Date", "Counting Completion Date",
+                "Cont-Purchase Date", "Counted Qty", "LPM Months", "Divisions", "Brands"
+            };
+            for (int i = 0; i < headers.Length; i++) ws.Cell(1, i + 1).Value = headers[i];
+            ws.Row(1).Style.Font.Bold = true;
+
+            int row = 2;
+            foreach (var r in FilteredRows())
+            {
+                ws.Cell(row, 1).Value = DisplayCountry(r.Country);
+                ws.Cell(row, 2).Value = r.ContNo;
+                ws.Cell(row, 3).Value = r.PONo;
+                ws.Cell(row, 4).Value = FmtDate(r.CountingStartDate);
+                ws.Cell(row, 5).Value = FmtDate(r.CountingCompletionDate);
+                ws.Cell(row, 6).Value = FmtDate(r.PurchaseDate);
+                ws.Cell(row, 7).Value = r.CountedQty;
+                ws.Cell(row, 8).Value = r.LpmMonths;
+                ws.Cell(row, 9).Value = r.Divisions;
+                ws.Cell(row, 10).Value = r.Brands;
+                row++;
+            }
+            ws.Columns().AdjustToContents();
+
+            using var ms = new MemoryStream();
+            wb.SaveAs(ms);
+            var b64 = Convert.ToBase64String(ms.ToArray());
+            var name = $"counting-completion-report-{_from:yyyyMMdd}-{_to:yyyyMMdd}.xlsx";
+            await JS.InvokeVoidAsync("downloadFileWithPicker", name, b64,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        }
+        finally { _exporting = false; }
     }
 
     private List<CountingCompletionSummaryRow> FilteredRows()

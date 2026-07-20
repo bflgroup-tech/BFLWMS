@@ -26,3 +26,17 @@ public record OtsPoAllocationRow(
 
 /// <summary>One row per available (Month, Year) picker option.</summary>
 public record OtsMonthYearOption(int Month, int Year);
+
+/// <summary>One row from dbo.StoreDivGrade — the "Generate Volume Group" output.</summary>
+public record StoreDivGradeRow(
+    int      Month1,
+    int      Year1,
+    string   Country,
+    string   StoreID,
+    string?  StoreName,
+    int      DivCode,
+    string?  Division,
+    decimal? SalesAmt,
+    decimal? AvgSalesAmt,
+    decimal? AvgSalesPct,
+    string?  Grade);

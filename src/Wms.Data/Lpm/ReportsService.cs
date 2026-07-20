@@ -177,6 +177,11 @@ public class ReportsService(IOnPremConnectionResolver resolver)
     /// CountingStartDate, TotalCheckedQty, Division on BuildingCompletionSumm;
     /// ContNo, LPMDT (date), Brand on BuildingCompletionDet. LPMDT is rendered
     /// as "MMM-yyyy" (e.g. "Jan-2026").
+    ///
+    /// PurchaseDate (displayed as "Cont-Purchase Date") is the earliest
+    /// Trndate on USA.dbo.UsaPurchase for the container (MIN(Trndate) per
+    /// ContNo == "TOP 1 ... ORDER BY Trndate ASC"), materialized into
+    /// #CCPurchase the same way as #CCDet.
     /// </summary>
     public async Task<List<CountingCompletionSummaryRow>> GetCountingCompletionSummaryAsync(
         IEnumerable<string>? countries, DateTime fromDate, DateTime toDate, CancellationToken ct = default)
@@ -187,8 +192,9 @@ public class ReportsService(IOnPremConnectionResolver resolver)
         await using var c = OpenOnPremBackup();
         var rows = await c.QueryAsync<CountingCompletionSummaryRow>(new CommandDefinition(@"
             SET NOCOUNT ON;
-            IF OBJECT_ID('tempdb..#CCBase') IS NOT NULL DROP TABLE #CCBase;
-            IF OBJECT_ID('tempdb..#CCDet')  IS NOT NULL DROP TABLE #CCDet;
+            IF OBJECT_ID('tempdb..#CCBase')     IS NOT NULL DROP TABLE #CCBase;
+            IF OBJECT_ID('tempdb..#CCDet')      IS NOT NULL DROP TABLE #CCDet;
+            IF OBJECT_ID('tempdb..#CCPurchase') IS NOT NULL DROP TABLE #CCPurchase;
 
             SELECT s.Country,
                    s.ContNo,
@@ -212,10 +218,19 @@ public class ReportsService(IOnPremConnectionResolver resolver)
 
             CREATE CLUSTERED INDEX IX_CCDet ON #CCDet (ContNo);
 
+            SELECT up.ContNo, PurchaseDate = MIN(up.Trndate)
+              INTO #CCPurchase
+              FROM USA.dbo.UsaPurchase up WITH (NOLOCK)
+             WHERE up.ContNo IN (SELECT DISTINCT ContNo FROM #CCBase)
+             GROUP BY up.ContNo;
+
+            CREATE CLUSTERED INDEX IX_CCPurchase ON #CCPurchase (ContNo);
+
             SELECT
                 b.Country,
                 b.ContNo,
                 CountingCompletionDate = MAX(b.CountingCompletionDate),
+                PurchaseDate           = MAX(p.PurchaseDate),
                 PONo                   = MAX(b.PONo),
                 CountingStartDate      = MIN(b.CountingStartDate),
                 CountedQty             = SUM(ISNULL(b.CountedQty, 0)),
@@ -244,10 +259,11 @@ public class ReportsService(IOnPremConnectionResolver resolver)
                      ORDER BY d.v
                        FOR XML PATH(''), TYPE).value('.', 'NVARCHAR(MAX)'), 1, 2, '')
               FROM #CCBase b
+              LEFT JOIN #CCPurchase p ON p.ContNo = b.ContNo
              GROUP BY b.Country, b.ContNo
              ORDER BY b.Country, CountingCompletionDate;
 
-            DROP TABLE #CCBase, #CCDet;",
+            DROP TABLE #CCBase, #CCDet, #CCPurchase;",
             new { countries = countryList, noCountryFilter = noCountryFilter ? 1 : 0, from = fromDate.Date, toExclusive = toDate.Date.AddDays(1) },
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         return rows.AsList();

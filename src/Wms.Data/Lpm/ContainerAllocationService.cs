@@ -569,6 +569,35 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                 commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).ToList();
         }
 
+        async Task<double> LoadOtsBandPct()
+        {
+            // AvgOts +/- band width (percentage points) used to pick the SKUMax tier
+            // in Fill SKUMAX + RR. Default 10pp; runtime knob on WmsAppConfig.
+            if (runOption != RunOption.FillSKUMaxRoundRobin) return 10.0;
+            await using var wms = new SqlConnection(resolver.GetWmsAzureConnectionString());
+            await wms.OpenAsync(ct);
+            var cfg = await wms.ExecuteScalarAsync<string?>(new CommandDefinition(
+                @"SELECT TOP 1 ConfigValue FROM dbo.WmsAppConfig WITH (NOLOCK)
+                   WHERE ConfigKey = 'OTSBandPct'",
+                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            return double.TryParse(cfg, out var v) && v > 0 ? v : 10.0;
+        }
+
+        async Task<Dictionary<string, int>> LoadVolumeGroupOrder()
+        {
+            // VolumeGroup priority order for Fill SKUMAX + RR. SortOrder on
+            // LPM_VolumeGroupRange is authoritative; missing groups fall to 999.
+            var d = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            if (runOption != RunOption.FillSKUMaxRoundRobin) return d;
+            await using var c1 = OpenOnPremBackup();
+            var rows = await c1.QueryAsync<(string VolumeGroup, int SortOrder)>(new CommandDefinition(
+                @"SELECT VolumeGroup, SortOrder
+                    FROM LPMSIM.dbo.LPM_VolumeGroupRange WITH (NOLOCK)",
+                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            foreach (var r in rows) d[r.VolumeGroup] = r.SortOrder;
+            return d;
+        }
+
         // Fan out wave 1.
         var w1_itemMeta       = LoadItemMeta();
         var w1_deptBlocks     = LoadDeptBlocks();
@@ -585,12 +614,14 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         var w1_otsRunRows     = LoadOtsRunRows();
         var w1_simSkuMaxBlocked = LoadSimSkuMaxBlocked();
         var w1_itemSohByStore = LoadItemSohByStore();
+        var w1_otsBandPct     = LoadOtsBandPct();
+        var w1_vgOrder        = LoadVolumeGroupOrder();
 
         await Task.WhenAll(
             w1_itemMeta, w1_deptBlocks, w1_divBlocks, w1_orgByItem,
             w1_storeNameById, w1_palletByStore, w1_priority, w1_mnw,
             w1_prices, w1_completed, w1_receiptDt, w1_initialAlloc, w1_otsRunRows,
-            w1_simSkuMaxBlocked, w1_itemSohByStore);
+            w1_simSkuMaxBlocked, w1_itemSohByStore, w1_otsBandPct, w1_vgOrder);
 
         var itemMeta          = await w1_itemMeta;
         var deptBlocks        = await w1_deptBlocks;
@@ -607,6 +638,8 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         var otsRunRowsList    = await w1_otsRunRows;
         var simSkuMaxBlocked  = await w1_simSkuMaxBlocked;
         var itemSohByStore    = await w1_itemSohByStore;
+        var otsBandPct        = await w1_otsBandPct;
+        var vgSortOrder       = await w1_vgOrder;
 
         var divByItem = itemMeta.ToDictionary(kv => kv.Key, kv => kv.Value.DivID ?? 0, StringComparer.OrdinalIgnoreCase);
 
@@ -691,6 +724,51 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                     new { divs = distinctDivs }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).AsList();
         }
 
+        // Fill SKUMAX + RR only: per-(StoreID, DivCode) VolumeGroup lookup from
+        // StoreDivGrade (the "Generate Volume Group" output). Stores/divs missing
+        // here become Blocked "No VolumeGroup" during the allocation loop.
+        async Task<Dictionary<(string StoreID, int DivCode), string>> LoadStoreDivGrade()
+        {
+            var d = new Dictionary<(string, int), string>();
+            if (runOption != RunOption.FillSKUMaxRoundRobin) return d;
+            await using var c1 = OpenOnPremBackup();
+            var rows = await c1.QueryAsync<(string StoreID, int DivCode, string Grade)>(new CommandDefinition(@"
+                SELECT StoreID, DivCode, Grade
+                  FROM LPMSIM.dbo.StoreDivGrade WITH (NOLOCK)
+                 WHERE Month1 = @m AND Year1 = @y
+                   AND Grade IS NOT NULL AND Grade <> ''",
+                new { m = nowGst.Month, y = nowGst.Year },
+                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            foreach (var r in rows) d[(r.StoreID, r.DivCode)] = r.Grade;
+            return d;
+        }
+
+        // Fill SKUMAX + RR only: per-(DivCode, VolumeGroup) SKUMax tier bands.
+        // The band whose PoQtyFrom..PoQtyTo contains the item's PoQty is picked
+        // per-item; the tier (MinMin/MinMax/IdealMax/MaxMax) then picked per-store
+        // based on that store's OTS% vs AvgOTS +/- band. Missing (Div, VG) or
+        // PoQty out of any band -> Blocked "No SkuMax band" at pick time.
+        async Task<Dictionary<(int DivCode, string VG), List<(int From, int To, int? MinMin, int? MinMax, int? IdealMax, int? MaxMax)>>> LoadSkuMaxBands()
+        {
+            var d = new Dictionary<(int, string), List<(int, int, int?, int?, int?, int?)>>();
+            if (runOption != RunOption.FillSKUMaxRoundRobin || distinctDivs.Length == 0) return d;
+            await using var c1 = OpenOnPremBackup();
+            var rows = await c1.QueryAsync<(int DivCode, string VolumeGroup, int PoQtyFrom, int PoQtyTo, int? MinMin, int? MinMax, int? IdealMax, int? MaxMax)>(
+                new CommandDefinition(@"
+                    SELECT DivCode, VolumeGroup, PoQtyFrom, PoQtyTo, MinMin, MinMax, IdealMax, MaxMax
+                      FROM LPMSIM.dbo.LPM_SkuMaxBands WITH (NOLOCK)
+                     WHERE DivCode IN @divs AND IsActive = 1",
+                    new { divs = distinctDivs },
+                    commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            foreach (var r in rows)
+            {
+                var key = (r.DivCode, r.VolumeGroup ?? "");
+                if (!d.TryGetValue(key, out var list)) { list = new(); d[key] = list; }
+                list.Add((r.PoQtyFrom, r.PoQtyTo, r.MinMin, r.MinMax, r.IdealMax, r.MaxMax));
+            }
+            return d;
+        }
+
         async Task<List<(string ContNo, string Country, string StoreID, string Itemcode, int? Qty)>> LoadApprovedRows()
         {
             await using var c1 = OpenOnPremBackup();
@@ -709,17 +787,35 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                 commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).AsList();
         }
 
-        var w2_eomStores  = LoadEomStores();
-        var w2_rulesRaw   = LoadRulesRaw();
-        var w2_otsRaw     = LoadOtsRaw();
-        var w2_approved   = LoadApprovedRows();
+        var w2_eomStores       = LoadEomStores();
+        var w2_rulesRaw        = LoadRulesRaw();
+        var w2_otsRaw          = LoadOtsRaw();
+        var w2_approved        = LoadApprovedRows();
+        var w2_storeDivGrade   = LoadStoreDivGrade();
+        var w2_skuMaxBands     = LoadSkuMaxBands();
 
-        await Task.WhenAll(w2_eomStores, w2_rulesRaw, w2_otsRaw, w2_approved);
+        await Task.WhenAll(w2_eomStores, w2_rulesRaw, w2_otsRaw, w2_approved,
+                           w2_storeDivGrade, w2_skuMaxBands);
 
-        var eomStores    = await w2_eomStores;
-        var rulesRaw     = await w2_rulesRaw;
-        var otsRaw       = await w2_otsRaw;
-        var approvedRows = await w2_approved;
+        var eomStores        = await w2_eomStores;
+        var rulesRaw         = await w2_rulesRaw;
+        var otsRaw           = await w2_otsRaw;
+        var approvedRows     = await w2_approved;
+        var storeDivGrade    = await w2_storeDivGrade;
+        var skuMaxBandsByKey = await w2_skuMaxBands;
+
+        // Overlay VolumeGroup on the OTS run rows from StoreDivGrade so all
+        // downstream Fill SKUMAX + RR logic (priority sort, band lookup) uses
+        // the current-month grade. Stores missing from StoreDivGrade get
+        // VolumeGroup=null so the eligible loop can add them to Blocked with
+        // reason "No VolumeGroup".
+        if (runOption == RunOption.FillSKUMaxRoundRobin)
+        {
+            foreach (var r in otsRunRowsList)
+            {
+                r.VolumeGroup = storeDivGrade.TryGetValue((r.StoreID, r.DivCode), out var g) ? g : null;
+            }
+        }
 
         var storesByDiv = eomStores.GroupBy(s => s.DivCode).ToDictionary(g => g.Key, g => g.ToList());
         var rulesByKey  = rulesRaw
@@ -759,30 +855,6 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                 var key = (r.StoreID, div);
                 prevAllocatedSeed[key] = prevAllocatedSeed.GetValueOrDefault(key, 0) + (r.Qty ?? 0);
             }
-        }
-
-        // Combined POQty per (OraPONo, DivCode) — used to pick the SKUMax band
-        // for the new FillSKUMaxRoundRobin algorithm.
-        var comboPoQtyByKey = new Dictionary<(string OraPONo, int DivCode), int>();
-        if (runOption == RunOption.FillSKUMaxRoundRobin)
-        {
-            foreach (var l in lines)
-            {
-                if (!divByItem.TryGetValue(l.ItemCode, out var dc) || dc == 0) continue;
-                var key = (l.OraPONo ?? "", dc);
-                comboPoQtyByKey[key] = comboPoQtyByKey.GetValueOrDefault(key, 0) + l.Qty;
-            }
-        }
-
-        // SKUMax picker for the new algorithm: band selected by combined POQty
-        // per (OraPONo, DivCode), not per-item Qty. Returns 0 if no band matches.
-        int SkuMaxForCombo(string country, int divCode, string groupCode, string oraPONo)
-        {
-            if (!rulesByKey.TryGetValue((country, divCode, groupCode), out var bands)) return 0;
-            var qty = comboPoQtyByKey.GetValueOrDefault((oraPONo ?? "", divCode), 0);
-            foreach (var b in bands)
-                if (qty >= b.WHStockFrom && qty <= b.WHStockTo) return b.SKUMax;
-            return 0;
         }
 
         double? ComputeOts(string sid, int div)
@@ -932,8 +1004,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                     // from every pass AND added to the Blocked Items list so the
                     // operator can see the shortfall.
                     // (Rows with SimItemSkuMax > 0 or no row at all proceed through
-                    // the LPM_SKUMaxRule band lookup — same as the pre-existing
-                    // logic; Pass 4 uncapped RR fills anything the band misses.)
+                    // the LPM_SkuMaxBands tier lookup.)
                     var itemKey = line.ItemCode.ToUpperInvariant();
                     bool IsSimSkuBlocked(string sid) =>
                         simSkuMaxBlocked.Contains((sid.ToUpperInvariant(), itemKey));
@@ -947,6 +1018,42 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                             Division: itemRow.Division, Department: itemRow.Department,
                             StoreID: r.StoreID, StoreName: sName, Country: r.Country,
                             PoQty: line.Qty, DivCode: divCode, BlockReason: "LPM_SimItemSkuMax.SkuMax=0"));
+                    }
+
+                    // Hard block: stores without a VolumeGroup in StoreDivGrade for
+                    // the current Month/Year. Operator must Generate Volume Group
+                    // first to cover them.
+                    var noVgStores = eligible.Where(r => string.IsNullOrWhiteSpace(r.VolumeGroup)).ToList();
+                    foreach (var r in noVgStores)
+                    {
+                        eligible.Remove(r);
+                        storeNameById.TryGetValue(r.StoreID, out var sName);
+                        blocked.Add(new BlockedItemRow(
+                            Contno: line.ContNo, ItemCode: line.ItemCode, ItemName: orgRow.itemname,
+                            Division: itemRow.Division, Department: itemRow.Department,
+                            StoreID: r.StoreID, StoreName: sName, Country: r.Country,
+                            PoQty: line.Qty, DivCode: divCode, BlockReason: "No VolumeGroup (StoreDivGrade)"));
+                    }
+
+                    // Hard block: (DivCode, VolumeGroup) has no LPM_SkuMaxBands row
+                    // whose PoQtyFrom..PoQtyTo contains this item's PoQty.
+                    bool HasBand(OtsRunLookupRow r)
+                    {
+                        if (!skuMaxBandsByKey.TryGetValue((r.DivCode, r.VolumeGroup ?? ""), out var bands)) return false;
+                        foreach (var b in bands)
+                            if (line.Qty >= b.From && line.Qty <= b.To) return true;
+                        return false;
+                    }
+                    var noBandStores = eligible.Where(r => !HasBand(r)).ToList();
+                    foreach (var r in noBandStores)
+                    {
+                        eligible.Remove(r);
+                        storeNameById.TryGetValue(r.StoreID, out var sName);
+                        blocked.Add(new BlockedItemRow(
+                            Contno: line.ContNo, ItemCode: line.ItemCode, ItemName: orgRow.itemname,
+                            Division: itemRow.Division, Department: itemRow.Department,
+                            StoreID: r.StoreID, StoreName: sName, Country: r.Country,
+                            PoQty: line.Qty, DivCode: divCode, BlockReason: "No SkuMax band (LPM_SkuMaxBands)"));
                     }
 
                     // ECOM Manual Priority — when the operator ticks the checkbox
@@ -1016,26 +1123,37 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                         remaining -= ecomPreAllocTake;
                     }
 
-                    static int VolumeGroupRank(string? vg)
+                    int VolumeGroupRank(string? vg)
                     {
                         if (string.IsNullOrWhiteSpace(vg)) return 999;
-                        var v = vg.Trim().ToUpperInvariant();
-                        if (v == "A+") return 0;
-                        return 1 + (v[0] - 'A');
+                        return vgSortOrder.TryGetValue(vg.Trim(), out var rank) ? rank : 999;
                     }
 
-                    // Raw SKUMax from the LPM_SKUMaxRule band + effective cap
-                    // (max(0, raw - per-(Store, Item) SOH)). SOH comes from
-                    // racks.dbo.LPM_locstock — matches RawSkuMax's per-item grain.
-                    // (Using r.SOHToday from the OTS run here was wrong: division-
-                    // level SOH subtracted from a per-item band ceiling always
-                    // clipped cap to 0.)
+                    // Tier-based SKUMax: pick the (DivCode, VG, PoQtyRange) band
+                    // whose PoQtyFrom..PoQtyTo contains line.Qty, then pick the
+                    // MinMin / MinMax / IdealMax / MaxMax column based on the
+                    // store's LiveOtsPct relative to AvgOts +/- OTSBandPct
+                    // (percentage points, from WmsAppConfig). Effective cap
+                    // subtracts per-(Store, Item) SOH from LPM_locstock.
+                    // eligible has already been filtered for "no band" / "no VG";
+                    // this call assumes a band exists.
                     (int Raw, int Cap) SkuMaxRawAndCapFor(OtsRunLookupRow r)
                     {
-                        var sk = SkuMaxForCombo(r.Country, r.DivCode, r.VolumeGroup ?? "", line.OraPONo ?? "");
+                        var bands = skuMaxBandsByKey[(r.DivCode, r.VolumeGroup ?? "")];
+                        (int From, int To, int? MinMin, int? MinMax, int? IdealMax, int? MaxMax) b = default;
+                        foreach (var x in bands)
+                            if (line.Qty >= x.From && line.Qty <= x.To) { b = x; break; }
+                        var ots = LiveOtsPct(r);
+                        var tier = (ots switch
+                        {
+                            < 0                                      => b.MinMin,
+                            _ when ots <  avgOts - otsBandPct        => b.MinMax,
+                            _ when ots <= avgOts + otsBandPct        => b.IdealMax,
+                            _                                        => b.MaxMax,
+                        }) ?? 0;
                         var soh = itemSohByStore.GetValueOrDefault(
                             (r.StoreID.ToUpperInvariant(), line.ItemCode.ToUpperInvariant()), 0);
-                        return (sk, Math.Max(0, sk - soh));
+                        return (tier, Math.Max(0, tier - soh));
                     }
                     int CapFor(OtsRunLookupRow r) => SkuMaxRawAndCapFor(r).Cap;
 
