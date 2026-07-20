@@ -160,11 +160,10 @@
         catch { /* fall back to empty list if the lookup fails */ }
     }
 
-    private async Task ToggleCountry(string country, bool isChecked)
+    private void ToggleCountry(string country, bool isChecked)
     {
         if (isChecked) _selectedCountries.Add(country);
         else _selectedCountries.Remove(country);
-        await LoadAsync();
     }
 
     private async Task LoadAsync()
