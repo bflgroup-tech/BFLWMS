@@ -12,7 +12,6 @@ public static class MenuKeys
     public const string OTS_FOR_PO_ALLOCATION     = "OTS_FOR_PO_ALLOCATION";
     public const string MANUAL_ALLOCATION_UPLOAD  = "MANUAL_ALLOCATION_UPLOAD";
     public const string OPEN_CONTAINER            = "OPEN_CONTAINER";
-    public const string ROBOTIC                   = "ROBOTIC";
     public const string ROBOTIC_CHUTE_MAPPING     = "ROBOTIC_CHUTE_MAPPING";
     public const string ROBOTIC_CHUTE_MAPPING_TECHNO = "ROBOTIC_CHUTE_MAPPING_TECHNO";
 
@@ -66,8 +65,7 @@ public static class MenuKeys
         new MenuEntry(MANUAL_ALLOCATION_UPLOAD, "Container Counting","Manual Allocation Upload",  "counting/manual-allocation-upload", new[] { Roles.Admin, Roles.WHManager }),
         new MenuEntry(OPEN_CONTAINER,        "Container Counting",  "Open Container",            "counting/open-container",   new[] { Roles.Admin, Roles.WHManager, Roles.WHSupervisor }),
 
-        new MenuEntry(ROBOTIC,                "Robotic",             "Robotic",                   "robotic/dashboard",         new[] { Roles.Admin, Roles.WHAssociate, Roles.WHSupervisor, Roles.WHManager }),
-        new MenuEntry(ROBOTIC_CHUTE_MAPPING,  "Robotic",             "Chute Mapping",              "robotic/chute-mapping",     new[] { Roles.Admin, Roles.WHAssociate, Roles.WHSupervisor, Roles.WHManager }),
+        new MenuEntry(ROBOTIC_CHUTE_MAPPING,  "Robotic",             "Chute Mapping (Jafza)",      "robotic/chute-mapping",     new[] { Roles.Admin, Roles.WHAssociate, Roles.WHSupervisor, Roles.WHManager }),
         new MenuEntry(ROBOTIC_CHUTE_MAPPING_TECHNO, "Robotic",       "Chute Mapping (Techno)",     "robotic/chute-mapping-techno", new[] { Roles.Admin, Roles.WHAssociate, Roles.WHSupervisor, Roles.WHManager }),
 
         new MenuEntry(DATASYNC_CONTAINER_ALLOCATION, "Data Sync",   "Container Allocation Data Sync", "datasync/container-allocation", new[] { Roles.Admin, Roles.WHManager }),

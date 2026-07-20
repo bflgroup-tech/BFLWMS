@@ -144,11 +144,22 @@ public class ChuteMappingService(
         if ((int)resp.StatusCode != 200)
             throw new Exception($"API error {(int)resp.StatusCode}: {content}");
 
-        // Parse response body: { "status": true/false, "message": "..." }
-        using var doc   = JsonDocument.Parse(content);
-        var root        = doc.RootElement;
-        var bodyStatus  = root.TryGetProperty("status",  out var sProp) && sProp.GetBoolean();
-        var bodyMessage = root.TryGetProperty("message", out var mProp) ? mProp.GetString() : null;
+        // Parse response body if present: { "status": true/false, "message": "..." }.
+        // Some warehouses' status APIs (e.g. Techno's) return 200 with an empty/non-JSON
+        // body on success rather than this envelope — the 200 status alone confirms success then.
+        bool bodyStatus = true;
+        string? bodyMessage = null;
+        if (!string.IsNullOrWhiteSpace(content))
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(content);
+                var root = doc.RootElement;
+                bodyStatus  = !root.TryGetProperty("status", out var sProp) || sProp.GetBoolean();
+                bodyMessage = root.TryGetProperty("message", out var mProp) ? mProp.GetString() : null;
+            }
+            catch (JsonException) { /* non-JSON 200 body — treat as success */ }
+        }
 
         if (!bodyStatus)
             throw new Exception(string.IsNullOrWhiteSpace(bodyMessage) ? "Operation rejected by API." : bodyMessage);
@@ -237,16 +248,20 @@ public class ChuteMappingService(
     }
 
     // Shop list for the "Shop" / "Building - Division" dropdown modes, read from the requesting
-    // warehouse's own BFLDATA.dbo.DataSettings ('N' = Shop, 'Y' = Building - Division). Per-shop
-    // chute counts still come separately from that warehouse's ROBOTICS.dbo.ChuteConfiguration
-    // via GetAllocatedChuteCountsAsync.
+    // warehouse's own BFLDATA.dbo.DataSettings ('N' = Shop, 'Y' = Building - Division — further
+    // restricted to shops under the R1-DV division via ShopinShop). Per-shop chute counts still
+    // come separately from that warehouse's ROBOTICS.dbo.ChuteConfiguration via GetAllocatedChuteCountsAsync.
     public async Task<List<ShopNameRow>> GetShopsByBuildingFlagAsync(string warehouse, string buildingFlag, CancellationToken ct = default)
     {
         await using var robo = OpenRobo(warehouse);
         await robo.OpenAsync(ct);
+        var sql = buildingFlag == "Y"
+            ? @"SELECT RoboShopId, ShopName FROM BFLDATA.dbo.DataSettings
+                WHERE building='Y' AND active='Y'
+                  AND ShopName IN (SELECT SubShop FROM BFLDATA.dbo.ShopinShop WHERE MainShop='R1-DV')"
+            : "SELECT RoboShopId, ShopName FROM BFLDATA.dbo.DataSettings WHERE building=@Building AND active='Y'";
         var rows = await robo.QueryAsync<ShopNameRow>(new CommandDefinition(
-            "SELECT RoboShopId, ShopName FROM BFLDATA.dbo.DataSettings WHERE building=@Building AND active='Y'",
-            new { Building = buildingFlag }, commandTimeout: 15, cancellationToken: ct));
+            sql, new { Building = buildingFlag }, commandTimeout: 15, cancellationToken: ct));
         return rows.ToList();
     }
 }

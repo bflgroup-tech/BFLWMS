@@ -58,7 +58,6 @@
                     Load
                 </button>
                 <button class="aiwms-btn" style="flex-shrink:0;white-space:nowrap;background:#f59e0b;color:#000"
-                        disabled="@(!_containerLoaded)"
                         @onclick="AutoAllocateChuteAsync">
                     Auto Config
                 </button>
@@ -88,6 +87,7 @@
                 <table class="aiwms-table aiwms-table-dense">
                     <thead style="position:sticky;top:0;z-index:1">
                         <tr>
+                            <th style="width:28px">#</th>
                             <th style="width:55px">ID</th>
                             <th style="width:260px;max-width:260px">Shop Name</th>
                             <th style="text-align:center;width:48px;cursor:pointer;user-select:none" @onclick="ToggleQtySort" title="Sort by Cont Qty">
@@ -100,15 +100,16 @@
                     <tbody>
                         @if (!displayNames.Any())
                         {
-                            <tr><td colspan="5" style="color:var(--text-muted)">No results</td></tr>
+                            <tr><td colspan="6" style="color:var(--text-muted)">No results</td></tr>
                         }
-                        @foreach (var s in displayNames)
+                        @foreach (var (s, idx) in displayNames.Select((s, i) => (s, i)))
                         {
                             var isRowSelected = _highlightShopId == s.RoboShopId?.ToString();
                             <tr draggable="true"
                                 @ondragstart="@(() => { _dragShopId = s.RoboShopId?.ToString(); _dragShopName = s.ShopName ?? ""; })"
                                 @onclick="@(() => ToggleHighlight(isRowSelected ? null : s.RoboShopId?.ToString()))"
                                 style="cursor:grab;background:@(isRowSelected ? "#FFA500" : "")">
+                                <td style="font-weight:600;color:@(isRowSelected ? "#000" : "var(--text-muted)")">@(idx + 1)</td>
                                 <td style="font-weight:600;white-space:nowrap;color:@(isRowSelected ? "#000" : "var(--text-muted)")">@s.RoboShopId</td>
                                 <td style="font-weight:600;max-width:260px;word-break:break-word;white-space:normal;color:@(isRowSelected ? "#000" : "var(--text)")">@s.ShopName</td>
                                 <td style="font-weight:600;text-align:center;color:@(isRowSelected ? "#000" : "var(--text-muted)")">@(s.Qty > 0 ? s.Qty.ToString() : "")</td>
@@ -280,6 +281,10 @@
                                                     }
                                                 </div>
                                             }
+                                            else
+                                            {
+                                                <div style="height:100%;border-radius:6px;border:1px dashed var(--card-iborder,rgba(255,255,255,.07));box-sizing:border-box"></div>
+                                            }
                                         </td>
                                     }
                                     @if (showDown)
@@ -339,6 +344,10 @@
                                                         </div>
                                                     }
                                                 </div>
+                                            }
+                                            else
+                                            {
+                                                <div style="height:100%;border-radius:6px;border:1px dashed var(--card-iborder,rgba(255,255,255,.07));box-sizing:border-box"></div>
                                             }
                                         </td>
                                     }
@@ -674,15 +683,10 @@
             Snack.Add("Please tick \"Show disabled chutes (allow mapping changes)\" before running Auto Config.", Severity.Warning);
             return;
         }
-        if (string.IsNullOrWhiteSpace(_globalContainerNo)) return;
-
-        await LoadShopNamesFromProcAsync();
-        StateHasChanged();
-
         var shops = _shopNames.Where(s => s.RoboShopId != null).ToList();
         if (shops.Count == 0)
         {
-            Snack.Add("No shops found for this container.", Severity.Warning);
+            Snack.Add("No shops found.", Severity.Warning);
             return;
         }
 
@@ -717,7 +721,23 @@
             (freeCells[i], freeCells[j]) = (freeCells[j], freeCells[i]);
         }
 
-        int cellIdx = 0;
+        char SectionOf(string chuteId) => char.ToUpper(_rx.Match(chuteId).Groups[1].Value.FirstOrDefault());
+
+        // Sections each shop already occupies — from saved assignments AND from pending
+        // (not-yet-saved) overrides, e.g. a previous Auto Config click this session — so
+        // Auto Config never adds a second chute for the same shop into a column it's already in.
+        var existingSectionsByShop = new Dictionary<string, HashSet<char>>();
+        void MarkSectionUsed(string shopId, string chuteId)
+        {
+            if (!existingSectionsByShop.TryGetValue(shopId, out var set))
+                existingSectionsByShop[shopId] = set = new HashSet<char>();
+            set.Add(SectionOf(chuteId));
+        }
+        foreach (var r in _rows)
+            if (r.ShopId != null && r.ChuteId != null) MarkSectionUsed(r.ShopId, r.ChuteId);
+        foreach (var (chuteId, ovr) in _cellOverrides)
+            MarkSectionUsed(ovr.ShopId, chuteId);
+
         int totalAssigned = 0;
         int totalRequested = 0;
         foreach (var shop in shops)
@@ -727,10 +747,18 @@
             if (want <= 0) continue;   // 0 (or blank/invalid) = don't allocate any
             totalRequested += want;
 
+            // Spread this shop's chutes across different sections/columns — never put two
+            // of this shop's chutes in the same column, even if that leaves "want" unmet.
+            var usedSections = existingSectionsByShop.TryGetValue(shopId, out var existing)
+                ? new HashSet<char>(existing)
+                : new HashSet<char>();
             int given = 0;
-            while (given < want && cellIdx < freeCells.Count)
+            while (given < want && freeCells.Count > 0)
             {
-                var chuteId = freeCells[cellIdx++];
+                int idx = freeCells.FindIndex(c => !usedSections.Contains(SectionOf(c)));
+                if (idx == -1) break;   // no free cell left in an unused section for this shop
+                var chuteId = freeCells[idx];
+                freeCells.RemoveAt(idx);
 
                 int pendingQty;
                 try { pendingQty = await Chute.GetChutePendingQtyAsync(_warehouse, chuteId); }
@@ -738,6 +766,7 @@
 
                 if (pendingQty > 0) continue;   // has pending items — same rule as a manual drop
 
+                usedSections.Add(SectionOf(chuteId));
                 _cellOverrides[chuteId] = (shopId, shop.ShopName ?? "");
                 given++;
                 totalAssigned++;
