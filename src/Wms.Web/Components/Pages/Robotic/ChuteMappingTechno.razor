@@ -81,6 +81,7 @@
                 <table class="aiwms-table aiwms-table-dense">
                     <thead style="position:sticky;top:0;z-index:1">
                         <tr>
+                            <th style="width:28px">#</th>
                             <th style="width:55px">ID</th>
                             <th>Shop Name</th>
                             <th style="text-align:center;width:38px">Existing Chutes</th>
@@ -90,19 +91,20 @@
                     <tbody>
                         @if (_shopNamesLoading)
                         {
-                            <tr><td colspan="4" style="color:var(--text-muted)">Loading…</td></tr>
+                            <tr><td colspan="5" style="color:var(--text-muted)">Loading…</td></tr>
                         }
                         else if (!displayNames.Any())
                         {
-                            <tr><td colspan="4" style="color:var(--text-muted)">No results</td></tr>
+                            <tr><td colspan="5" style="color:var(--text-muted)">No results</td></tr>
                         }
-                        @foreach (var s in displayNames)
+                        @foreach (var (s, idx) in displayNames.Select((s, i) => (s, i)))
                         {
                             var isRowSelected = _highlightShopId == s.RoboShopId?.ToString();
                             <tr draggable="true"
                                 @ondragstart="@(() => { _dragShopId = s.RoboShopId?.ToString(); _dragShopName = s.ShopName ?? ""; })"
                                 @onclick="@(() => ToggleHighlight(isRowSelected ? null : s.RoboShopId?.ToString()))"
                                 style="cursor:grab;background:@(isRowSelected ? "#FFA500" : "")">
+                                <td style="font-weight:600;color:@(isRowSelected ? "#000" : "var(--text-muted)")">@(idx + 1)</td>
                                 <td style="font-weight:600;white-space:nowrap;color:@(isRowSelected ? "#000" : "var(--text-muted)")">@s.RoboShopId</td>
                                 <td style="font-weight:600;word-break:break-word;white-space:normal;color:@(isRowSelected ? "#000" : "var(--text)")">@s.ShopName</td>
                                 <td style="font-weight:600;text-align:center;color:@(isRowSelected ? "#000" : "var(--text-muted)")">@GetAllocatedChutes(s.RoboShopId?.ToString())</td>
@@ -541,7 +543,21 @@
             (freeCells[i], freeCells[j]) = (freeCells[j], freeCells[i]);
         }
 
-        int cellIdx = 0;
+        // Sections each shop already occupies — from saved assignments AND from pending
+        // (not-yet-saved) overrides, e.g. a previous Auto Config click this session — so
+        // Auto Config never adds a second chute for the same shop into a column it's already in.
+        var existingSectionsByShop = new Dictionary<string, HashSet<string>>();
+        void MarkSectionUsed(string shopId, string chuteId)
+        {
+            if (!existingSectionsByShop.TryGetValue(shopId, out var set))
+                existingSectionsByShop[shopId] = set = new HashSet<string>();
+            set.Add(chuteId.Split('-')[1]);
+        }
+        foreach (var r in _rows)
+            if (r.ShopId != null && r.ChuteId != null) MarkSectionUsed(r.ShopId, r.ChuteId);
+        foreach (var (chuteId, ovr) in _cellOverrides)
+            MarkSectionUsed(ovr.ShopId, chuteId);
+
         int totalAssigned = 0;
         int totalRequested = 0;
         foreach (var shop in shops)
@@ -551,10 +567,20 @@
             if (want <= 0) continue;
             totalRequested += want;
 
+            // Spread this shop's chutes across different sections/columns — never put two
+            // of this shop's chutes in the same column, even if that leaves "want" unmet.
+            var usedSections = existingSectionsByShop.TryGetValue(shopId, out var existing)
+                ? new HashSet<string>(existing)
+                : new HashSet<string>();
             int given = 0;
-            while (given < want && cellIdx < freeCells.Count)
+            while (given < want && freeCells.Count > 0)
             {
-                var chuteId = freeCells[cellIdx++];
+                int idx = freeCells.FindIndex(c => !usedSections.Contains(c.Split('-')[1]));
+                if (idx == -1) break;   // no free cell left in an unused section for this shop
+                var chuteId = freeCells[idx];
+                freeCells.RemoveAt(idx);
+
+                usedSections.Add(chuteId.Split('-')[1]);
                 _cellOverrides[chuteId] = (shopId, shop.ShopName ?? "");
                 given++;
                 totalAssigned++;
