@@ -680,10 +680,37 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         var aW = anchor.Week;
         var anchorKey = aY * 100 + aW;
 
-        // 1c) Per (StoreID, DivCode), sum (SalesAmt * MonthlyWeightage) over
+        // 1c) Refresh MonthlyWeightage on every LPM_Weekly_SalesAmt row from
+        //     LPM_MonthlyWeight for the picked RunMonth so the stored value
+        //     stays a single-source recon check for the current Generate run.
+        //     Rows in periods without a configured (RunMonth, PeriodMonth)
+        //     rule get MonthlyWeightage = NULL and drop out of the SUM below.
+        //     Country filter locks to 'UAE' since that's the sole country
+        //     populated in the current config; change here if per-country
+        //     rules land later. UpdatedTS is stamped in GST.
+        await c.ExecuteAsync(new CommandDefinition(@"
+            UPDATE ws
+               SET MonthlyWeightage = mw.WeightPct,
+                   UpdatedTS = DATEADD(hour, 4, SYSUTCDATETIME())
+              FROM dbo.LPM_Weekly_SalesAmt ws
+              LEFT JOIN dbo.LPM_MonthlyWeight mw WITH (NOLOCK)
+                     ON mw.Country     = 'UAE'
+                    AND mw.RunYear     = @runYear
+                    AND mw.RunMonth    = @runMonth
+                    AND mw.PeriodYear  = ws.Year1
+                    AND mw.PeriodMonth = ws.Month1",
+            new { runYear = year, runMonth = month },
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+
+        // 1d) Per (StoreID, DivCode), sum SalesAmt * MonthlyWeightage over
         //     the up-to-12 most recent LPM_Weekly_SalesAmt rows at/before the
-        //     anchor. Sort key is (Year1 DESC, Week DESC) to match wk being
-        //     a fiscal-year-resetting week number. Stores with fewer than 12
+        //     anchor. MonthlyWeightage is now the RunMonth->PeriodMonth
+        //     WeightPct (populated by 1c above), so this straight product
+        //     gives 0.25 x AprilTotal + 0.30 x MayTotal + 0.45 x JuneTotal
+        //     etc. for a July run.
+        //
+        //     Sort key is (Year1 DESC, Week DESC) to match wk being a
+        //     fiscal-year-resetting week number. Stores with fewer than 12
         //     rows in the window use whatever's available (per ops guidance
         //     while the weekly-sales history is still being backfilled).
         var weightedRows = (await c.QueryAsync<(string StoreID, int DivCode, int WeekCount, decimal MonthlySalesAmt)>(new CommandDefinition(@"
@@ -735,7 +762,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
             .Where(r => !string.Equals(r.Country, "ECOM", StringComparison.OrdinalIgnoreCase)
                         && (r.SalesAmt ?? 0) > 0)
             .GroupBy(r => r.DivCode)
-            .ToDictionary(g => g.Key, g => g.Average(x => x.SalesAmt ?? 0));
+            .ToDictionary(g => g.Key, g => Math.Round(g.Average(x => x.SalesAmt ?? 0), 0, MidpointRounding.AwayFromZero));
 
         // 4) Assign grade per row.
         //    Grade A logic scoped per DivCode across all non-ECOM stores.
@@ -749,7 +776,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                 .Select(r => new
                 {
                     r.Country, r.StoreID, r.DivCode, r.SalesAmt,
-                    Pct = avg > 0 ? Math.Round((r.SalesAmt ?? 0) / avg * 100m, 2) : (decimal?)null
+                    Pct = avg > 0 ? Math.Round((r.SalesAmt ?? 0) / avg * 100m, 0, MidpointRounding.AwayFromZero) : (decimal?)null
                 })
                 .OrderByDescending(x => x.Pct ?? 0)
                 .ToList();
@@ -771,7 +798,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                 }
                 else
                 {
-                    pct = avg > 0 ? Math.Round((r.SalesAmt ?? 0) / avg * 100m, 2) : (decimal?)null;
+                    pct = avg > 0 ? Math.Round((r.SalesAmt ?? 0) / avg * 100m, 0, MidpointRounding.AwayFromZero) : (decimal?)null;
                     if (aStoreIds.Contains(r.StoreID))
                     {
                         grade = "A";
