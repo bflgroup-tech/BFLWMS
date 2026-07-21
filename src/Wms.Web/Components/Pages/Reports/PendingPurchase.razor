@@ -1,0 +1,75 @@
+@page "/reports/pending-purchase"
+@rendermode RenderMode.InteractiveServer
+@using Wms.Core
+@using Wms.Data.Lpm
+@attribute [Authorize(Policy = MenuKeys.RPT_PENDING_PURCHASE)]
+@inject CountingReportsService Svc
+
+<PageTitle>WMS — Pending Purchase (GRN) Status</PageTitle>
+
+<div class="aiwms-page-header">
+    <h2>Pending Purchase (GRN) Status</h2>
+    <p>Containers counted (<code>bfldata.dbo.BuildingCompletion</code>) from <b>01/01/2026</b> onwards whose GRN row has not yet landed in <code>usa.dbo.usapurchase</code>. Ageing = days since counting.</p>
+</div>
+
+<div class="aiwms-section">
+    <button class="aiwms-btn aiwms-btn-primary" @onclick="LoadAsync" disabled="@_loading">
+        @(_loading ? "Loading…" : (_loaded ? "Refresh" : "Load"))
+    </button>
+    @if (!string.IsNullOrEmpty(_message))
+    {
+        <div class="aiwms-alert @(_isError ? "error" : "info")" style="margin-top:12px">@_message</div>
+    }
+</div>
+
+@if (_rows.Count > 0)
+{
+    <div class="aiwms-section">
+        <div class="aiwms-card-header">@_rows.Count container(s) — @_rows.Sum(r => r.CountedQty).ToString("N0") total counted qty</div>
+        <table class="aiwms-table aiwms-table-dense">
+            <thead>
+                <tr>
+                    <th>ContNo</th>
+                    <th>Counting Date</th>
+                    <th style="text-align:right">Counted Qty</th>
+                    <th style="text-align:right">Ageing Days</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var r in _rows)
+                {
+                    <tr>
+                        <td style="font-family:var(--font-mono)"><b>@r.ContNo</b></td>
+                        <td>@r.CountingDate.ToString("dd/MM/yyyy")</td>
+                        <td style="text-align:right">@r.CountedQty.ToString("N0")</td>
+                        <td style="text-align:right"><b>@r.AgeingDays</b></td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+@code {
+    private bool _loading;
+    private bool _loaded;
+    private string _message = "";
+    private bool _isError;
+    private List<PendingPurchaseRow> _rows = new();
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        _loading = true; _message = ""; _isError = false;
+        try
+        {
+            _rows = await Svc.GetPendingPurchaseAsync();
+            _loaded = true;
+            if (_rows.Count == 0)
+                _message = "No pending purchases — every counted container has a matching row in usa.usapurchase.";
+        }
+        catch (Exception ex) { _message = $"Load failed: {ex.Message}"; _isError = true; }
+        finally { _loading = false; }
+    }
+}

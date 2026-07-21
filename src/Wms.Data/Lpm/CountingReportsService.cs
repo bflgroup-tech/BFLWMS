@@ -193,6 +193,32 @@ public class CountingReportsService(IOnPremConnectionResolver resolver)
         return rows.AsList();
     }
 
+    /// <summary>
+    /// Pending Purchase (GRN) Status — containers that have completed counting
+    /// (bfldata.BuildingCompletion) on/after 2026-01-01 but whose GRN row has
+    /// not yet landed in usa.usapurchase. Ageing = days since Trndate (GST).
+    /// </summary>
+    public async Task<List<PendingPurchaseRow>> GetPendingPurchaseAsync(CancellationToken ct = default)
+    {
+        await using var opb = OpenOnPremBackup();
+        var rows = await opb.QueryAsync<PendingPurchaseRow>(new CommandDefinition(@"
+            SELECT bc.ContNo,
+                   CAST(bc.Trndate AS DATE) AS CountingDate,
+                   ISNULL(bc.BuildingQty, 0) AS CountedQty,
+                   DATEDIFF(day, bc.Trndate,
+                            CAST(DATEADD(hour, 4, SYSUTCDATETIME()) AS DATE)) AS AgeingDays
+              FROM bfldata.dbo.BuildingCompletion bc WITH (NOLOCK)
+             WHERE bc.Trndate >= '2026-01-01'
+               AND NOT EXISTS (
+                   SELECT 1
+                     FROM usa.dbo.usapurchase up WITH (NOLOCK)
+                    WHERE up.ContNo = bc.ContNo
+               )
+             ORDER BY bc.Trndate DESC, bc.ContNo",
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        return rows.AsList();
+    }
+
     private sealed class AzureSummaryRow
     {
         public string    ContNo              { get; set; } = "";

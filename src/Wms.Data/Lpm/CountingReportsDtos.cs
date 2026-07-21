@@ -32,3 +32,11 @@ public record CountingProductionRow(
     DateTime TrnDate,
     string?  UserName,
     int      Qty);
+
+/// <summary>One row in the Pending Purchase (GRN) Status report — containers
+/// counted (bfldata.BuildingCompletion) but not yet purchased (usa.usapurchase).</summary>
+public record PendingPurchaseRow(
+    string   ContNo,
+    DateTime CountingDate,
+    int      CountedQty,
+    int      AgeingDays);
