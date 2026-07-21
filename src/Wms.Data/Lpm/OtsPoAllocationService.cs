@@ -776,7 +776,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                 .Select(r => new
                 {
                     r.Country, r.StoreID, r.DivCode, r.SalesAmt,
-                    Pct = avg > 0 ? Math.Round((r.SalesAmt ?? 0) / avg * 100m, 2) : (decimal?)null
+                    Pct = avg > 0 ? Math.Round((r.SalesAmt ?? 0) / avg * 100m, 0, MidpointRounding.AwayFromZero) : (decimal?)null
                 })
                 .OrderByDescending(x => x.Pct ?? 0)
                 .ToList();
@@ -798,7 +798,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                 }
                 else
                 {
-                    pct = avg > 0 ? Math.Round((r.SalesAmt ?? 0) / avg * 100m, 2) : (decimal?)null;
+                    pct = avg > 0 ? Math.Round((r.SalesAmt ?? 0) / avg * 100m, 0, MidpointRounding.AwayFromZero) : (decimal?)null;
                     if (aStoreIds.Contains(r.StoreID))
                     {
                         grade = "A";
