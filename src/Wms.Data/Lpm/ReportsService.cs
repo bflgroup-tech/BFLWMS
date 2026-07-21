@@ -374,15 +374,15 @@ public class ReportsService(IOnPremConnectionResolver resolver)
     }
 
     /// <summary>
-    /// Counting Completion Report — Detailed. Deliberately avoids the item-
-    /// master join (Datareporting.dbo.vUPC_SUBCLASS) the first cut of this
-    /// report used for per-item Division — Box Category, Item Code/Name, and
-    /// Qty all come straight off BuildingCompletionDet, and Divisions reuses
-    /// the same container-level, comma-joined BuildingCompletionSumm.Division
-    /// value as the Summary report. One row per (Country, ContNo, ItemCode,
-    /// PalletType); contNo, when given, narrows to a single container. Rows
-    /// with zero CheckedQty (not actually counted) are dropped; the rest are
-    /// ordered by Country, ContNo.
+    /// Counting Completion Report — Detailed. One row per (Country, ContNo,
+    /// ItemCode, PalletType) from BFLDATA.dbo.BuildingCompletionDet — Box
+    /// Category (Pallettype), Item Code/Name, and Qty (CheckedQty) all come
+    /// straight off that table. Division is the item's own division (from
+    /// Datareporting.dbo.vUPC_SUBCLASS via ItemCode = upc) — unlike
+    /// Summary/Allocation-wise, this view is item-level so the container's
+    /// full Divisions list would be misleading here. contNo, when given,
+    /// narrows to a single container. Rows with zero CheckedQty (not
+    /// actually counted) are dropped; the rest are ordered by Country, ContNo.
     /// </summary>
     public async Task<List<CountingCompletionDetailRow>> GetCountingDetailAsync(
         IEnumerable<string>? countries, DateTime fromDate, DateTime toDate, string? contNo, CancellationToken ct = default)
@@ -397,7 +397,7 @@ public class ReportsService(IOnPremConnectionResolver resolver)
             IF OBJECT_ID('tempdb..#CDBase')     IS NOT NULL DROP TABLE #CDBase;
             IF OBJECT_ID('tempdb..#CDPurchase') IS NOT NULL DROP TABLE #CDPurchase;
 
-            SELECT s.Country, s.ContNo, s.Division
+            SELECT DISTINCT s.Country, s.ContNo
               INTO #CDBase
               FROM BFLDATA.dbo.BuildingCompletionSumm s WITH (NOLOCK)
              WHERE s.Trndate >= @from
@@ -424,18 +424,12 @@ public class ReportsService(IOnPremConnectionResolver resolver)
                 ItemName     = MAX(d.itemname),
                 Qty          = SUM(ISNULL(d.CheckedQty, 0)),
                 LpmMonths    = FORMAT(MAX(d.LPMDT), 'MMM-yyyy'),
-                Divisions = STUFF((
-                    SELECT ', ' + x.v
-                      FROM (SELECT DISTINCT bb.Division AS v
-                              FROM #CDBase bb
-                             WHERE bb.Country = b.Country AND bb.ContNo = d.ContNo
-                               AND bb.Division IS NOT NULL AND bb.Division <> '') x
-                     ORDER BY x.v
-                       FOR XML PATH(''), TYPE).value('.', 'NVARCHAR(MAX)'), 1, 2, ''),
-                Brand = MAX(d.Brand)
+                Division     = MAX(sub.Division),
+                Brand        = MAX(d.Brand)
               FROM BFLDATA.dbo.BuildingCompletionDet d WITH (NOLOCK)
-              JOIN (SELECT DISTINCT Country, ContNo FROM #CDBase) b ON b.ContNo = d.ContNo
+              JOIN #CDBase b ON b.ContNo = d.ContNo
               LEFT JOIN #CDPurchase p ON p.ContNo = d.ContNo
+              LEFT JOIN Datareporting.dbo.vUPC_SUBCLASS sub WITH (NOLOCK) ON sub.itemcode = d.upc
              WHERE d.ContNo IN (SELECT DISTINCT ContNo FROM #CDBase)
              GROUP BY b.Country, d.ContNo, d.upc, ISNULL(d.Pallettype, '(none)')
             HAVING SUM(ISNULL(d.CheckedQty, 0)) > 0
