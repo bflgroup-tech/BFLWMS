@@ -23,6 +23,7 @@ public static class MenuKeys
 
     public const string RPT_COUNTING              = "RPT_COUNTING";
     public const string RPT_CONT_COUNTING_PROD    = "RPT_CONT_COUNTING_PROD";
+    public const string RPT_PENDING_PURCHASE      = "RPT_PENDING_PURCHASE";
     public const string RPT_MISSING_EXCESS        = "RPT_MISSING_EXCESS";
     public const string RPT_NON_LPM_WH_STOCK      = "RPT_NON_LPM_WH_STOCK";
     public const string RPT_LPM_WH_STOCK          = "RPT_LPM_WH_STOCK";
@@ -78,6 +79,7 @@ public static class MenuKeys
 
         new MenuEntry(RPT_COUNTING,          "Reports",             "Counting Report",           "reports/counting",          new[] { Roles.Admin, Roles.Reports, Roles.WHManager, Roles.WHSupervisor }),
         new MenuEntry(RPT_CONT_COUNTING_PROD,"Reports",             "Cont Counting Production Report", "reports/cont-counting-production", new[] { Roles.Admin, Roles.Reports, Roles.WHManager, Roles.WHSupervisor }),
+        new MenuEntry(RPT_PENDING_PURCHASE,  "Reports",             "Pending Purchase (GRN) Status",  "reports/pending-purchase",         new[] { Roles.Admin, Roles.Reports, Roles.WHManager, Roles.WHSupervisor }),
         new MenuEntry(RPT_MISSING_EXCESS,    "Reports",             "Missing / Excess Items from Production", "reports/missing-excess",   new[] { Roles.Admin, Roles.Reports }),
         new MenuEntry(RPT_NON_LPM_WH_STOCK,  "Reports",             "Non-LPM WH Stock Report",   "reports/non-lpm-wh-stock",  new[] { Roles.Admin, Roles.Reports }),
         new MenuEntry(RPT_LPM_WH_STOCK,      "Reports",             "LPM WH Stock Report",       "reports/lpm-wh-stock",      new[] { Roles.Admin, Roles.Reports }),
