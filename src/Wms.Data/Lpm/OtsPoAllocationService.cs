@@ -664,78 +664,62 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
 
         if (baseRows.Count == 0) return 0;
 
-        // 1b) Anchor = latest OTSDate from LPM_OTS_Output. Week-of-month =
-        //     ((day-1)/7)+1 -> 1..5. Weekly rollup rows with
-        //     (Year1, Month1, Week) at/before this anchor are eligible.
-        var anchorDate = await c.ExecuteScalarAsync<DateTime?>(new CommandDefinition(
-            "SELECT MAX(OTSDate) FROM dbo.LPM_OTS_Output WITH (NOLOCK)",
-            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-        if (anchorDate is null)
+        // 1b) Anchor = latest fiscal week from LPM_OTS_Output. wk is per-year
+        //     (resets each year) so we read (Year, wk) from the row with the
+        //     most recent OTSDate. Weekly rollup rows with (Year1, Week) at
+        //     or before that anchor are eligible.
+        var anchor = (await c.QueryAsync<(int Year, int Week)>(new CommandDefinition(@"
+            SELECT TOP 1 YEAR(OTSDate) AS [Year], wk AS [Week]
+              FROM dbo.LPM_OTS_Output WITH (NOLOCK)
+             ORDER BY OTSDate DESC",
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).FirstOrDefault();
+        if (anchor.Year == 0)
             throw new InvalidOperationException(
-                "Cannot Generate Volume Group: dbo.LPM_OTS_Output has no rows (no OTSDate anchor).");
-        var aY = anchorDate.Value.Year;
-        var aM = anchorDate.Value.Month;
-        var aW = ((anchorDate.Value.Day - 1) / 7) + 1;
-        var anchorKey = aY * 10000 + aM * 100 + aW;
+                "Cannot Generate Volume Group: dbo.LPM_OTS_Output has no rows (no anchor wk).");
+        var aY = anchor.Year;
+        var aW = anchor.Week;
+        var anchorKey = aY * 100 + aW;
 
         // 1c) Per (StoreID, DivCode), sum (SalesAmt * MonthlyWeightage) over
-        //     the 12 most recent LPM_Weekly_SalesAmt rows at/before the anchor.
-        //     WeekCount is returned so we can reject any (Store, Div) short of
-        //     the 12-week floor.
-        const int RequiredWeeks = 12;
+        //     the up-to-12 most recent LPM_Weekly_SalesAmt rows at/before the
+        //     anchor. Sort key is (Year1 DESC, Week DESC) to match wk being
+        //     a fiscal-year-resetting week number. Stores with fewer than 12
+        //     rows in the window use whatever's available (per ops guidance
+        //     while the weekly-sales history is still being backfilled).
         var weightedRows = (await c.QueryAsync<(string StoreID, int DivCode, int WeekCount, decimal MonthlySalesAmt)>(new CommandDefinition(@"
             ;WITH ranked AS (
                 SELECT StoreID, DivCode, SalesAmt, MonthlyWeightage,
                        ROW_NUMBER() OVER (
                            PARTITION BY StoreID, DivCode
-                           ORDER BY Year1 DESC, Month1 DESC, Week DESC
+                           ORDER BY Year1 DESC, Week DESC
                        ) AS rn
                   FROM dbo.LPM_Weekly_SalesAmt WITH (NOLOCK)
-                 WHERE (Year1 * 10000 + Month1 * 100 + Week) <= @anchorKey
+                 WHERE (Year1 * 100 + Week) <= @anchorKey
             )
             SELECT StoreID, DivCode,
                    COUNT(*) AS WeekCount,
                    CAST(SUM(
                        CAST(ISNULL(SalesAmt, 0) AS DECIMAL(18,2)) *
-                       CAST(ISNULL(MonthlyWeightage, 0) AS DECIMAL(9,4))
+                       CAST(MonthlyWeightage AS DECIMAL(9,4))
                    ) AS DECIMAL(18,2)) AS MonthlySalesAmt
               FROM ranked
-             WHERE rn <= @required
+             WHERE rn <= 12
              GROUP BY StoreID, DivCode",
-            new { anchorKey, required = RequiredWeeks },
+            new { anchorKey },
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).ToList();
 
         var weightedByKey = weightedRows.ToDictionary(
             r => (r.StoreID, r.DivCode),
-            r => (r.WeekCount, r.MonthlySalesAmt),
-            comparer: null);
+            r => r.MonthlySalesAmt);
 
-        // 1d) Validate 12-week coverage against the base set. Any (Store, Div)
-        //     that's missing or short is a hard error — the operator must
-        //     backfill LPM_Weekly_SalesAmt before Generate can proceed.
-        var short12 = new List<string>();
-        foreach (var r in baseRows)
-        {
-            if (!weightedByKey.TryGetValue((r.StoreID, r.DivCode), out var w) || w.WeekCount < RequiredWeeks)
-            {
-                var have = weightedByKey.TryGetValue((r.StoreID, r.DivCode), out var w2) ? w2.WeekCount : 0;
-                short12.Add($"{r.StoreID}/Div{r.DivCode} (have {have})");
-                if (short12.Count >= 10) break;   // keep the message readable
-            }
-        }
-        if (short12.Count > 0)
-            throw new InvalidOperationException(
-                $"Cannot Generate Volume Group: {short12.Count}+ (Store, Div) combinations have fewer than {RequiredWeeks} weekly-sales rows " +
-                $"at/before OTS anchor {aY:D4}-{aM:D2} wk{aW}. Backfill dbo.LPM_Weekly_SalesAmt first. Examples: " +
-                string.Join(", ", short12));
-
-        // 1e) Overlay MonthlySalesAmt onto baseRows as the SalesAmt used by
-        //     the grade math below.
+        // 1d) Overlay MonthlySalesAmt onto baseRows as the SalesAmt used by
+        //     the grade math below. Stores with no weekly rows at all use 0
+        //     (they still get graded — usually to the lowest bucket).
         baseRows = baseRows.Select(r => (
             r.Country,
             r.StoreID,
             r.DivCode,
-            SalesAmt: (decimal?)weightedByKey[(r.StoreID, r.DivCode)].MonthlySalesAmt
+            SalesAmt: weightedByKey.TryGetValue((r.StoreID, r.DivCode), out var m) ? (decimal?)m : 0m
         )).ToList();
 
         // 2) Non-special (B..I) grade bands, ordered widest first for stable matching.
