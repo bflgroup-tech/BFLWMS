@@ -16,3 +16,43 @@ public record CountingCompletionSummaryRow(
     string?   LpmMonths,
     string?   Divisions,
     string?   Brands);
+
+/// <summary>
+/// Counting Completion Report — Detailed. One row per (Country, ContNo,
+/// ItemCode, PalletType) from BFLDATA.dbo.BuildingCompletionDet — Box
+/// Category (Pallettype), Item Code/Name, and Qty (CheckedQty) all come
+/// directly off that single table, no item-master join needed. Divisions
+/// reuses the same container-level, comma-joined value as the Summary report
+/// (from BuildingCompletionSumm.Division) rather than a per-item lookup.
+/// </summary>
+public record CountingCompletionDetailRow(
+    string    Country,
+    string    ContNo,
+    DateTime? PurchaseDate,
+    string?   PalletType,
+    string    ItemCode,
+    string?   ItemName,
+    int       Qty,
+    string?   LpmMonths,
+    string?   Divisions,
+    string?   Brand);
+
+/// <summary>
+/// Counting Completion Report — Detailed / Allocation-wise. Same shape as
+/// CountingCompletionSummaryRow, but broken down further by PalletType (Box
+/// Category): one row per (Country, ContNo, PalletType) instead of one row
+/// per (Country, ContNo). BuildQty is SUM(CheckedQty) for that container +
+/// box category. No ItemCode/ItemName — those belong to the Item-wise view.
+/// </summary>
+public record CountingAllocationRow(
+    string    Country,
+    string    ContNo,
+    DateTime? CountingCompletionDate,
+    DateTime? PurchaseDate,
+    string?   PONo,
+    DateTime? CountingStartDate,
+    string?   PalletType,
+    int       BuildQty,
+    string?   LpmMonths,
+    string?   Divisions,
+    string?   Brands);
