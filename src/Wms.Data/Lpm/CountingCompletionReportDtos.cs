@@ -21,9 +21,9 @@ public record CountingCompletionSummaryRow(
 /// Counting Completion Report — Detailed. One row per (Country, ContNo,
 /// ItemCode, PalletType) from BFLDATA.dbo.BuildingCompletionDet — Box
 /// Category (Pallettype), Item Code/Name, and Qty (CheckedQty) all come
-/// directly off that single table, no item-master join needed. Divisions
-/// reuses the same container-level, comma-joined value as the Summary report
-/// (from BuildingCompletionSumm.Division) rather than a per-item lookup.
+/// directly off that single table. Division is the item's own division
+/// (from Datareporting.dbo.vUPC_SUBCLASS via ItemCode = upc), not the
+/// container-level list used by Summary/Allocation-wise.
 /// </summary>
 public record CountingCompletionDetailRow(
     string    Country,
@@ -34,7 +34,7 @@ public record CountingCompletionDetailRow(
     string?   ItemName,
     int       Qty,
     string?   LpmMonths,
-    string?   Divisions,
+    string?   Division,
     string?   Brand);
 
 /// <summary>
