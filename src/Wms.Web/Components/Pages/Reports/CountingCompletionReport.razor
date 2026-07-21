@@ -15,17 +15,20 @@
 </div>
 
 <div class="aiwms-section">
-    <div style="display:flex; gap:14px; align-items:center; margin-bottom:14px; flex-wrap:wrap">
+    <div style="display:flex; gap:14px; align-items:center; margin-bottom:8px; flex-wrap:wrap">
         <strong style="font-size:11px; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">Report:</strong>
         <label style="display:flex; align-items:center; gap:4px; cursor:pointer">
-            <input type="radio" name="rpt" value="Summary" checked="@(_view == "Summary")" @onchange="@(_ => _view = "Summary")" /> Summary
+            <input type="radio" name="rpt" value="Summary" checked="@(_view == "Summary")" @onchange="@(() => SetView("Summary"))" /> Summary
         </label>
-        <label style="display:flex; align-items:center; gap:4px; opacity:0.5; cursor:not-allowed" title="Coming soon">
-            <input type="radio" name="rpt" value="Detailed" disabled /> Detailed <em style="font-size:11px">(coming soon)</em>
+        <label style="display:flex; align-items:center; gap:4px; cursor:pointer">
+            <input type="radio" name="rpt" value="Allocation" checked="@(_view == "Allocation")" @onchange="@(() => SetView("Allocation"))" /> Allocation-wise Summary
+        </label>
+        <label style="display:flex; align-items:center; gap:4px; cursor:pointer">
+            <input type="radio" name="rpt" value="Detailed" checked="@(_view == "Detailed")" @onchange="@(() => SetView("Detailed"))" /> Detailed
         </label>
     </div>
 
-    <div style="display:grid; grid-template-columns: 1fr 1fr 1fr auto; gap:12px; align-items:end;">
+    <div style="display:grid; grid-template-columns: @(_view == "Summary" ? "1.2fr 1fr 1fr auto" : "1.2fr 1fr 1fr 1fr auto"); gap:12px; align-items:end;">
         <div>
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COUNTRY (select any)</label>
             <div style="display:flex; flex-direction:column; gap:4px; max-height:120px; overflow-y:auto; border:1px solid var(--border-default); border-radius:var(--r-sm); padding:8px 10px; background:white;">
@@ -46,9 +49,16 @@
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COMPLETION TO *</label>
             <input type="date" @bind="_to" @bind:format="yyyy-MM-dd" max="@DateTime.Today.ToString("yyyy-MM-dd")" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
         </div>
+        @if (_view != "Summary")
+        {
+            <div>
+                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">CONTAINER NO (optional)</label>
+                <input @bind="_contNoFilter" @bind:event="oninput" placeholder="e.g. KWLOC7172" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
+            </div>
+        }
         <div style="display:flex; gap:8px">
             <button class="aiwms-btn aiwms-btn-primary" @onclick="LoadAsync" disabled="@(_loading || _from > _to)">@(_loading ? "Loading..." : "Load")</button>
-            <button class="aiwms-btn aiwms-btn-secondary" @onclick="ExportExcelAsync" disabled="@(_exporting || _rows.Count == 0)">@(_exporting ? "Exporting..." : "Export Excel")</button>
+            <button class="aiwms-btn aiwms-btn-secondary" @onclick="ExportExcelAsync" disabled="@(_exporting || CurrentRowCount == 0)">@(_exporting ? "Exporting..." : "Export Excel")</button>
         </div>
     </div>
 
@@ -58,13 +68,13 @@
     }
 </div>
 
-@if (_rows.Count > 0)
+@if (_view == "Summary" && _summaryRows.Count > 0)
 {
     <div class="aiwms-section">
         <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:12px;">
             <div style="background:var(--surface-1, #f7f7f5); border-radius:var(--r-sm); padding:12px 16px;">
                 <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">Total Containers</div>
-                <div style="font-size:1.4rem; font-weight:800">@FilteredRows().Count.ToString("N0")</div>
+                <div style="font-size:1.4rem; font-weight:800">@FilteredSummaryRows().Count.ToString("N0")</div>
             </div>
             <div style="background:var(--surface-1, #f7f7f5); border-radius:var(--r-sm); padding:12px 16px;">
                 <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">Total PO Count</div>
@@ -72,7 +82,7 @@
             </div>
             <div style="background:var(--surface-1, #f7f7f5); border-radius:var(--r-sm); padding:12px 16px;">
                 <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">Total Counted Qty</div>
-                <div style="font-size:1.4rem; font-weight:800">@FilteredRows().Sum(r => r.CountedQty).ToString("N0")</div>
+                <div style="font-size:1.4rem; font-weight:800">@FilteredSummaryRows().Sum(r => r.CountedQty).ToString("N0")</div>
             </div>
         </div>
     </div>
@@ -85,7 +95,7 @@
             </div>
         </div>
 
-        <div class="aiwms-card-header">Summary - @FilteredRows().Count row(s)</div>
+        <div class="aiwms-card-header">Summary - @FilteredSummaryRows().Count row(s)</div>
         <div style="overflow-x:auto">
         <table class="aiwms-table aiwms-table-dense" style="table-layout:fixed; width:100%">
             <colgroup>
@@ -115,7 +125,7 @@
                 </tr>
             </thead>
             <tbody>
-                @foreach (var r in FilteredRows())
+                @foreach (var r in FilteredSummaryRows())
                 {
                     <tr>
                         <td>@DisplayCountry(r.Country)</td>
@@ -135,6 +145,163 @@
         </div>
     </div>
 }
+else if (_view == "Allocation" && _allocRows.Count > 0)
+{
+    <div class="aiwms-section">
+        <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:12px;">
+            <div style="background:var(--surface-1, #f7f7f5); border-radius:var(--r-sm); padding:12px 16px;">
+                <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">Total Containers</div>
+                <div style="font-size:1.4rem; font-weight:800">@FilteredAllocRows().Select(r => r.ContNo).Distinct(StringComparer.OrdinalIgnoreCase).Count().ToString("N0")</div>
+            </div>
+            <div style="background:var(--surface-1, #f7f7f5); border-radius:var(--r-sm); padding:12px 16px;">
+                <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">Box Categories</div>
+                <div style="font-size:1.4rem; font-weight:800">@FilteredAllocRows().Select(r => r.PalletType).Distinct(StringComparer.OrdinalIgnoreCase).Count().ToString("N0")</div>
+            </div>
+            <div style="background:var(--surface-1, #f7f7f5); border-radius:var(--r-sm); padding:12px 16px;">
+                <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">Total Build Qty</div>
+                <div style="font-size:1.4rem; font-weight:800">@FilteredAllocRows().Sum(r => r.BuildQty).ToString("N0")</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="aiwms-section">
+        <div style="display:flex; gap:12px; align-items:end; margin-bottom:14px; flex-wrap:wrap">
+            <div style="flex:1; min-width:240px">
+                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">SEARCH (CONT NO / PO NO / BOX CATEGORY / DIVISION / BRAND)</label>
+                <input @bind="_search" @bind:event="oninput" placeholder="Type to filter..." style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
+            </div>
+        </div>
+
+        <div class="aiwms-card-header">Allocation-wise - @FilteredAllocRows().Count row(s)</div>
+        <div style="overflow-x:auto">
+        <table class="aiwms-table aiwms-table-dense" style="table-layout:fixed; width:100%">
+            <colgroup>
+                <col style="width:70px" />
+                <col style="width:110px" />
+                <col style="width:110px" />
+                <col style="width:130px" />
+                <col style="width:130px" />
+                <col style="width:130px" />
+                <col style="width:110px" />
+                <col style="width:100px" />
+                <col style="width:140px" />
+                <col style="width:200px" />
+                <col style="width:220px" />
+            </colgroup>
+            <thead>
+                <tr>
+                    <th>Country</th>
+                    <th>Cont No</th>
+                    <th>PO No</th>
+                    <th>Counting Start Date</th>
+                    <th>Counting Completion Date</th>
+                    <th>Cont-Purchase Date</th>
+                    <th>Box Category</th>
+                    <th style="text-align:center">Build Qty</th>
+                    <th>LPM Months</th>
+                    <th>Divisions</th>
+                    <th>Brands</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var r in FilteredAllocRows())
+                {
+                    <tr>
+                        <td>@DisplayCountry(r.Country)</td>
+                        <td style="font-family:var(--font-mono)"><b>@r.ContNo</b></td>
+                        <td style="word-break:break-word">@r.PONo</td>
+                        <td>@FmtDate(r.CountingStartDate)</td>
+                        <td>@FmtDate(r.CountingCompletionDate)</td>
+                        <td>@FmtDate(r.PurchaseDate)</td>
+                        <td style="word-break:break-word">@r.PalletType</td>
+                        <td style="text-align:center">@r.BuildQty.ToString("N0")</td>
+                        <td style="word-break:break-word">@r.LpmMonths</td>
+                        <td style="word-break:break-word">@r.Divisions</td>
+                        <td style="word-break:break-word">@r.Brands</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+        </div>
+    </div>
+}
+else if (_view == "Detailed" && _detailRows.Count > 0)
+{
+    <div class="aiwms-section">
+        <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:12px;">
+            <div style="background:var(--surface-1, #f7f7f5); border-radius:var(--r-sm); padding:12px 16px;">
+                <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">Total Containers</div>
+                <div style="font-size:1.4rem; font-weight:800">@FilteredDetailRows().Select(r => r.ContNo).Distinct(StringComparer.OrdinalIgnoreCase).Count().ToString("N0")</div>
+            </div>
+            <div style="background:var(--surface-1, #f7f7f5); border-radius:var(--r-sm); padding:12px 16px;">
+                <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">Total Items</div>
+                <div style="font-size:1.4rem; font-weight:800">@FilteredDetailRows().Count.ToString("N0")</div>
+            </div>
+            <div style="background:var(--surface-1, #f7f7f5); border-radius:var(--r-sm); padding:12px 16px;">
+                <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">Total Qty</div>
+                <div style="font-size:1.4rem; font-weight:800">@FilteredDetailRows().Sum(r => r.Qty).ToString("N0")</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="aiwms-section">
+        <div style="display:flex; gap:12px; align-items:end; margin-bottom:14px; flex-wrap:wrap">
+            <div style="flex:1; min-width:240px">
+                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">SEARCH (CONT NO / BOX CATEGORY / ITEM CODE / ITEM NAME / DIVISION / BRAND)</label>
+                <input @bind="_search" @bind:event="oninput" placeholder="Type to filter..." style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
+            </div>
+        </div>
+
+        <div class="aiwms-card-header">Item-wise - @FilteredDetailRows().Count row(s)</div>
+        <div style="overflow-x:auto">
+        <table class="aiwms-table aiwms-table-dense" style="table-layout:fixed; width:100%">
+            <colgroup>
+                <col style="width:70px" />
+                <col style="width:110px" />
+                <col style="width:130px" />
+                <col style="width:110px" />
+                <col style="width:130px" />
+                <col style="width:260px" />
+                <col style="width:80px" />
+                <col style="width:100px" />
+                <col style="width:150px" />
+                <col style="width:110px" />
+            </colgroup>
+            <thead>
+                <tr>
+                    <th>Country</th>
+                    <th>Cont No</th>
+                    <th>Cont-Purchase Date</th>
+                    <th>Box Category</th>
+                    <th>Item Code</th>
+                    <th>Item Name</th>
+                    <th style="text-align:center">Qty</th>
+                    <th>LPM Months</th>
+                    <th>Divisions</th>
+                    <th>Brand</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var r in FilteredDetailRows())
+                {
+                    <tr>
+                        <td>@DisplayCountry(r.Country)</td>
+                        <td style="font-family:var(--font-mono)"><b>@r.ContNo</b></td>
+                        <td>@FmtDate(r.PurchaseDate)</td>
+                        <td style="word-break:break-word">@r.PalletType</td>
+                        <td style="font-family:var(--font-mono)">@r.ItemCode</td>
+                        <td style="word-break:break-word">@r.ItemName</td>
+                        <td style="text-align:center">@r.Qty.ToString("N0")</td>
+                        <td style="word-break:break-word">@r.LpmMonths</td>
+                        <td style="word-break:break-word">@r.Divisions</td>
+                        <td style="word-break:break-word">@r.Brand</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+        </div>
+    </div>
+}
 
 @code {
     private string _view = "Summary";
@@ -142,12 +309,22 @@
     private HashSet<string> _selectedCountries = new();
     private DateTime _from = DateTime.Today.AddDays(-7);
     private DateTime _to   = DateTime.Today;
+    private string _contNoFilter = "";
     private bool _loading;
     private bool _exporting;
     private string _message = "";
     private bool _isError;
     private string _search = "";
-    private List<CountingCompletionSummaryRow> _rows = new();
+    private List<CountingCompletionSummaryRow> _summaryRows = new();
+    private List<CountingAllocationRow>        _allocRows   = new();
+    private List<CountingCompletionDetailRow>  _detailRows  = new();
+
+    private int CurrentRowCount => _view switch
+    {
+        "Summary" => _summaryRows.Count,
+        "Allocation" => _allocRows.Count,
+        _ => _detailRows.Count
+    };
 
     protected override async Task OnInitializedAsync()
     {
@@ -166,13 +343,29 @@
         else _selectedCountries.Remove(country);
     }
 
+    private void SetView(string view) => _view = view;
+
     private async Task LoadAsync()
     {
-        _loading = true; _message = ""; _isError = false; _rows = new();
+        _loading = true; _message = ""; _isError = false;
+        _summaryRows = new(); _allocRows = new(); _detailRows = new();
         try
         {
-            _rows = await Svc.GetCountingCompletionSummaryAsync(_selectedCountries, _from, _to);
-            if (_rows.Count == 0) _message = "No rows for the selected filters.";
+            if (_view == "Summary")
+            {
+                _summaryRows = await Svc.GetCountingCompletionSummaryAsync(_selectedCountries, _from, _to);
+                if (_summaryRows.Count == 0) _message = "No rows for the selected filters.";
+            }
+            else if (_view == "Allocation")
+            {
+                _allocRows = await Svc.GetCountingAllocationAsync(_selectedCountries, _from, _to, _contNoFilter);
+                if (_allocRows.Count == 0) _message = "No rows for the selected filters.";
+            }
+            else
+            {
+                _detailRows = await Svc.GetCountingDetailAsync(_selectedCountries, _from, _to, _contNoFilter);
+                if (_detailRows.Count == 0) _message = "No rows for the selected filters.";
+            }
         }
         catch (Exception ex) { _message = ex.Message; _isError = true; }
         finally { _loading = false; }
@@ -180,56 +373,145 @@
 
     private async Task ExportExcelAsync()
     {
-        if (_rows.Count == 0) return;
+        if (CurrentRowCount == 0) return;
         _exporting = true;
         try
         {
             using var wb = new XLWorkbook();
-            var ws = wb.AddWorksheet("Counting Completion");
-            string[] headers =
-            {
-                "Country", "Cont No", "PO No", "Counting Start Date", "Counting Completion Date",
-                "Cont-Purchase Date", "Counted Qty", "LPM Months", "Divisions", "Brands"
-            };
-            for (int i = 0; i < headers.Length; i++) ws.Cell(1, i + 1).Value = headers[i];
-            ws.Row(1).Style.Font.Bold = true;
+            string name;
 
-            int row = 2;
-            foreach (var r in FilteredRows())
+            if (_view == "Summary")
             {
-                ws.Cell(row, 1).Value = DisplayCountry(r.Country);
-                ws.Cell(row, 2).Value = r.ContNo;
-                ws.Cell(row, 3).Value = r.PONo;
-                ws.Cell(row, 4).Value = FmtDate(r.CountingStartDate);
-                ws.Cell(row, 5).Value = FmtDate(r.CountingCompletionDate);
-                ws.Cell(row, 6).Value = FmtDate(r.PurchaseDate);
-                ws.Cell(row, 7).Value = r.CountedQty;
-                ws.Cell(row, 8).Value = r.LpmMonths;
-                ws.Cell(row, 9).Value = r.Divisions;
-                ws.Cell(row, 10).Value = r.Brands;
-                row++;
+                var ws = wb.AddWorksheet("Counting Completion");
+                string[] headers =
+                {
+                    "Country", "Cont No", "PO No", "Counting Start Date", "Counting Completion Date",
+                    "Cont-Purchase Date", "Counted Qty", "LPM Months", "Divisions", "Brands"
+                };
+                for (int i = 0; i < headers.Length; i++) ws.Cell(1, i + 1).Value = headers[i];
+                ws.Row(1).Style.Font.Bold = true;
+
+                int row = 2;
+                foreach (var r in FilteredSummaryRows())
+                {
+                    ws.Cell(row, 1).Value  = DisplayCountry(r.Country);
+                    ws.Cell(row, 2).Value  = r.ContNo;
+                    ws.Cell(row, 3).Value  = r.PONo;
+                    ws.Cell(row, 4).Value  = FmtDate(r.CountingStartDate);
+                    ws.Cell(row, 5).Value  = FmtDate(r.CountingCompletionDate);
+                    ws.Cell(row, 6).Value  = FmtDate(r.PurchaseDate);
+                    ws.Cell(row, 7).Value  = r.CountedQty;
+                    ws.Cell(row, 8).Value  = r.LpmMonths;
+                    ws.Cell(row, 9).Value  = r.Divisions;
+                    ws.Cell(row, 10).Value = r.Brands;
+                    row++;
+                }
+                ws.Columns().AdjustToContents();
+                name = $"counting-completion-summary-{_from:yyyyMMdd}-{_to:yyyyMMdd}.xlsx";
             }
-            ws.Columns().AdjustToContents();
+            else if (_view == "Allocation")
+            {
+                var ws = wb.AddWorksheet("Allocation-wise");
+                string[] headers =
+                {
+                    "Country", "Cont No", "PO No", "Counting Start Date", "Counting Completion Date",
+                    "Cont-Purchase Date", "Box Category", "Build Qty", "LPM Months", "Divisions", "Brands"
+                };
+                for (int i = 0; i < headers.Length; i++) ws.Cell(1, i + 1).Value = headers[i];
+                ws.Row(1).Style.Font.Bold = true;
+
+                int row = 2;
+                foreach (var r in FilteredAllocRows())
+                {
+                    ws.Cell(row, 1).Value  = DisplayCountry(r.Country);
+                    ws.Cell(row, 2).Value  = r.ContNo;
+                    ws.Cell(row, 3).Value  = r.PONo;
+                    ws.Cell(row, 4).Value  = FmtDate(r.CountingStartDate);
+                    ws.Cell(row, 5).Value  = FmtDate(r.CountingCompletionDate);
+                    ws.Cell(row, 6).Value  = FmtDate(r.PurchaseDate);
+                    ws.Cell(row, 7).Value  = r.PalletType;
+                    ws.Cell(row, 8).Value  = r.BuildQty;
+                    ws.Cell(row, 9).Value  = r.LpmMonths;
+                    ws.Cell(row, 10).Value = r.Divisions;
+                    ws.Cell(row, 11).Value = r.Brands;
+                    row++;
+                }
+                ws.Columns().AdjustToContents();
+                name = $"counting-completion-allocation-wise-{_from:yyyyMMdd}-{_to:yyyyMMdd}.xlsx";
+            }
+            else
+            {
+                var ws = wb.AddWorksheet("Item-wise");
+                string[] headers =
+                {
+                    "Country", "Cont No", "Cont-Purchase Date", "Box Category", "Item Code", "Item Name",
+                    "Qty", "LPM Months", "Divisions", "Brand"
+                };
+                for (int i = 0; i < headers.Length; i++) ws.Cell(1, i + 1).Value = headers[i];
+                ws.Row(1).Style.Font.Bold = true;
+
+                int row = 2;
+                foreach (var r in FilteredDetailRows())
+                {
+                    ws.Cell(row, 1).Value  = DisplayCountry(r.Country);
+                    ws.Cell(row, 2).Value  = r.ContNo;
+                    ws.Cell(row, 3).Value  = FmtDate(r.PurchaseDate);
+                    ws.Cell(row, 4).Value  = r.PalletType;
+                    ws.Cell(row, 5).Value  = r.ItemCode;
+                    ws.Cell(row, 6).Value  = r.ItemName;
+                    ws.Cell(row, 7).Value  = r.Qty;
+                    ws.Cell(row, 8).Value  = r.LpmMonths;
+                    ws.Cell(row, 9).Value  = r.Divisions;
+                    ws.Cell(row, 10).Value = r.Brand;
+                    row++;
+                }
+                ws.Columns().AdjustToContents();
+                name = $"counting-completion-item-wise-{_from:yyyyMMdd}-{_to:yyyyMMdd}.xlsx";
+            }
 
             using var ms = new MemoryStream();
             wb.SaveAs(ms);
             var b64 = Convert.ToBase64String(ms.ToArray());
-            var name = $"counting-completion-report-{_from:yyyyMMdd}-{_to:yyyyMMdd}.xlsx";
             await JS.InvokeVoidAsync("downloadFileWithPicker", name, b64,
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
         }
         finally { _exporting = false; }
     }
 
-    private List<CountingCompletionSummaryRow> FilteredRows()
+    private List<CountingCompletionSummaryRow> FilteredSummaryRows()
     {
-        if (string.IsNullOrWhiteSpace(_search)) return _rows;
+        if (string.IsNullOrWhiteSpace(_search)) return _summaryRows;
         var term = _search.Trim();
-        return _rows.Where(r =>
+        return _summaryRows.Where(r =>
             Matches(r.ContNo, term) ||
             Matches(r.PONo, term) ||
             Matches(r.Divisions, term) ||
             Matches(r.Brands, term)).ToList();
+    }
+
+    private List<CountingAllocationRow> FilteredAllocRows()
+    {
+        if (string.IsNullOrWhiteSpace(_search)) return _allocRows;
+        var term = _search.Trim();
+        return _allocRows.Where(r =>
+            Matches(r.ContNo, term) ||
+            Matches(r.PONo, term) ||
+            Matches(r.PalletType, term) ||
+            Matches(r.Divisions, term) ||
+            Matches(r.Brands, term)).ToList();
+    }
+
+    private List<CountingCompletionDetailRow> FilteredDetailRows()
+    {
+        if (string.IsNullOrWhiteSpace(_search)) return _detailRows;
+        var term = _search.Trim();
+        return _detailRows.Where(r =>
+            Matches(r.ContNo, term) ||
+            Matches(r.PalletType, term) ||
+            Matches(r.ItemCode, term) ||
+            Matches(r.ItemName, term) ||
+            Matches(r.Divisions, term) ||
+            Matches(r.Brand, term)).ToList();
     }
 
     private static bool Matches(string? value, string term) =>
@@ -237,7 +519,7 @@
 
     private int TotalPoCount()
     {
-        return FilteredRows()
+        return FilteredSummaryRows()
             .SelectMany(r => (r.PONo ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .Count();

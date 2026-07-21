@@ -269,6 +269,185 @@ public class ReportsService(IOnPremConnectionResolver resolver)
         return rows.AsList();
     }
 
+    /// <summary>
+    /// Counting Completion Report — Detailed / Allocation-wise. Same columns
+    /// as the Summary report (PO No, Counting Start/Completion Date,
+    /// Cont-Purchase Date, LPM Months, Divisions, Brands), but broken down
+    /// further by PalletType (Box Category) — one row per (Country, ContNo,
+    /// PalletType), with BuildQty = SUM(CheckedQty) for that box category.
+    /// No ItemCode/ItemName (that's the Item-wise view). Rows with zero
+    /// CheckedQty are dropped; ordered by Country, ContNo.
+    /// </summary>
+    public async Task<List<CountingAllocationRow>> GetCountingAllocationAsync(
+        IEnumerable<string>? countries, DateTime fromDate, DateTime toDate, string? contNo, CancellationToken ct = default)
+    {
+        var countryList = countries?.Where(s => !string.IsNullOrWhiteSpace(s)).ToArray() ?? Array.Empty<string>();
+        var noCountryFilter = countryList.Length == 0;
+        var contNoFilter = string.IsNullOrWhiteSpace(contNo) ? null : contNo.Trim();
+
+        await using var c = OpenOnPremBackup();
+        var rows = await c.QueryAsync<CountingAllocationRow>(new CommandDefinition(@"
+            SET NOCOUNT ON;
+            IF OBJECT_ID('tempdb..#CABase')     IS NOT NULL DROP TABLE #CABase;
+            IF OBJECT_ID('tempdb..#CADet')      IS NOT NULL DROP TABLE #CADet;
+            IF OBJECT_ID('tempdb..#CAPurchase') IS NOT NULL DROP TABLE #CAPurchase;
+
+            SELECT s.Country,
+                   s.ContNo,
+                   s.Trndate           AS CountingCompletionDate,
+                   s.POnumber          AS PONo,
+                   s.CountingStartDate,
+                   s.Division
+              INTO #CABase
+              FROM BFLDATA.dbo.BuildingCompletionSumm s WITH (NOLOCK)
+             WHERE s.Trndate >= @from
+               AND s.Trndate <  @toExclusive
+               AND (@noCountryFilter = 1 OR s.Country IN @countries)
+               AND (@contNoFilter IS NULL OR s.ContNo = @contNoFilter);
+
+            CREATE CLUSTERED INDEX IX_CABase ON #CABase (Country, ContNo);
+
+            SELECT det.ContNo, det.Pallettype, det.CheckedQty, det.LPMDT, det.Brand
+              INTO #CADet
+              FROM BFLDATA.dbo.BuildingCompletionDet det WITH (NOLOCK)
+             WHERE det.ContNo IN (SELECT DISTINCT ContNo FROM #CABase);
+
+            CREATE CLUSTERED INDEX IX_CADet ON #CADet (ContNo);
+
+            SELECT up.ContNo, PurchaseDate = MIN(up.Trndate)
+              INTO #CAPurchase
+              FROM USA.dbo.UsaPurchase up WITH (NOLOCK)
+             WHERE up.ContNo IN (SELECT DISTINCT ContNo FROM #CABase)
+             GROUP BY up.ContNo;
+
+            CREATE CLUSTERED INDEX IX_CAPurchase ON #CAPurchase (ContNo);
+
+            SELECT
+                b.Country,
+                b.ContNo,
+                CountingCompletionDate = MAX(b.CountingCompletionDate),
+                PurchaseDate           = MAX(p.PurchaseDate),
+                PONo                   = MAX(b.PONo),
+                CountingStartDate      = MIN(b.CountingStartDate),
+                PalletType             = ISNULL(d.Pallettype, '(none)'),
+                BuildQty               = SUM(ISNULL(d.CheckedQty, 0)),
+                LpmMonths = STUFF((
+                    SELECT ', ' + x.v
+                      FROM (SELECT DISTINCT
+                                   FORMAT(d2.LPMDT, 'MMM-yyyy') AS v,
+                                   DATEFROMPARTS(YEAR(d2.LPMDT), MONTH(d2.LPMDT), 1) AS n
+                              FROM #CADet d2
+                             WHERE d2.ContNo = b.ContNo
+                               AND ISNULL(d2.Pallettype, '(none)') = ISNULL(d.Pallettype, '(none)')
+                               AND d2.LPMDT IS NOT NULL) x
+                     ORDER BY x.n
+                       FOR XML PATH(''), TYPE).value('.', 'NVARCHAR(MAX)'), 1, 2, ''),
+                Divisions = STUFF((
+                    SELECT ', ' + x.v
+                      FROM (SELECT DISTINCT bb.Division AS v
+                              FROM #CABase bb
+                             WHERE bb.Country = b.Country AND bb.ContNo = b.ContNo
+                               AND bb.Division IS NOT NULL AND bb.Division <> '') x
+                     ORDER BY x.v
+                       FOR XML PATH(''), TYPE).value('.', 'NVARCHAR(MAX)'), 1, 2, ''),
+                Brands = STUFF((
+                    SELECT ', ' + x.v
+                      FROM (SELECT DISTINCT d3.Brand AS v
+                              FROM #CADet d3
+                             WHERE d3.ContNo = b.ContNo
+                               AND ISNULL(d3.Pallettype, '(none)') = ISNULL(d.Pallettype, '(none)')
+                               AND d3.Brand IS NOT NULL AND d3.Brand <> '') x
+                     ORDER BY x.v
+                       FOR XML PATH(''), TYPE).value('.', 'NVARCHAR(MAX)'), 1, 2, '')
+              FROM #CABase b
+              JOIN #CADet d ON d.ContNo = b.ContNo
+              LEFT JOIN #CAPurchase p ON p.ContNo = b.ContNo
+             GROUP BY b.Country, b.ContNo, ISNULL(d.Pallettype, '(none)')
+            HAVING SUM(ISNULL(d.CheckedQty, 0)) > 0
+             ORDER BY b.Country, b.ContNo;
+
+            DROP TABLE #CABase, #CADet, #CAPurchase;",
+            new { countries = countryList, noCountryFilter = noCountryFilter ? 1 : 0, contNoFilter,
+                  from = fromDate.Date, toExclusive = toDate.Date.AddDays(1) },
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        return rows.AsList();
+    }
+
+    /// <summary>
+    /// Counting Completion Report — Detailed. Deliberately avoids the item-
+    /// master join (Datareporting.dbo.vUPC_SUBCLASS) the first cut of this
+    /// report used for per-item Division — Box Category, Item Code/Name, and
+    /// Qty all come straight off BuildingCompletionDet, and Divisions reuses
+    /// the same container-level, comma-joined BuildingCompletionSumm.Division
+    /// value as the Summary report. One row per (Country, ContNo, ItemCode,
+    /// PalletType); contNo, when given, narrows to a single container. Rows
+    /// with zero CheckedQty (not actually counted) are dropped; the rest are
+    /// ordered by Country, ContNo.
+    /// </summary>
+    public async Task<List<CountingCompletionDetailRow>> GetCountingDetailAsync(
+        IEnumerable<string>? countries, DateTime fromDate, DateTime toDate, string? contNo, CancellationToken ct = default)
+    {
+        var countryList = countries?.Where(s => !string.IsNullOrWhiteSpace(s)).ToArray() ?? Array.Empty<string>();
+        var noCountryFilter = countryList.Length == 0;
+        var contNoFilter = string.IsNullOrWhiteSpace(contNo) ? null : contNo.Trim();
+
+        await using var c = OpenOnPremBackup();
+        var rows = await c.QueryAsync<CountingCompletionDetailRow>(new CommandDefinition(@"
+            SET NOCOUNT ON;
+            IF OBJECT_ID('tempdb..#CDBase')     IS NOT NULL DROP TABLE #CDBase;
+            IF OBJECT_ID('tempdb..#CDPurchase') IS NOT NULL DROP TABLE #CDPurchase;
+
+            SELECT s.Country, s.ContNo, s.Division
+              INTO #CDBase
+              FROM BFLDATA.dbo.BuildingCompletionSumm s WITH (NOLOCK)
+             WHERE s.Trndate >= @from
+               AND s.Trndate <  @toExclusive
+               AND (@noCountryFilter = 1 OR s.Country IN @countries)
+               AND (@contNoFilter IS NULL OR s.ContNo = @contNoFilter);
+
+            CREATE CLUSTERED INDEX IX_CDBase ON #CDBase (ContNo);
+
+            SELECT up.ContNo, PurchaseDate = MIN(up.Trndate)
+              INTO #CDPurchase
+              FROM USA.dbo.UsaPurchase up WITH (NOLOCK)
+             WHERE up.ContNo IN (SELECT DISTINCT ContNo FROM #CDBase)
+             GROUP BY up.ContNo;
+
+            CREATE CLUSTERED INDEX IX_CDPurchase ON #CDPurchase (ContNo);
+
+            SELECT
+                b.Country,
+                d.ContNo,
+                PurchaseDate = MAX(p.PurchaseDate),
+                PalletType   = ISNULL(d.Pallettype, '(none)'),
+                ItemCode     = d.upc,
+                ItemName     = MAX(d.itemname),
+                Qty          = SUM(ISNULL(d.CheckedQty, 0)),
+                LpmMonths    = FORMAT(MAX(d.LPMDT), 'MMM-yyyy'),
+                Divisions = STUFF((
+                    SELECT ', ' + x.v
+                      FROM (SELECT DISTINCT bb.Division AS v
+                              FROM #CDBase bb
+                             WHERE bb.Country = b.Country AND bb.ContNo = d.ContNo
+                               AND bb.Division IS NOT NULL AND bb.Division <> '') x
+                     ORDER BY x.v
+                       FOR XML PATH(''), TYPE).value('.', 'NVARCHAR(MAX)'), 1, 2, ''),
+                Brand = MAX(d.Brand)
+              FROM BFLDATA.dbo.BuildingCompletionDet d WITH (NOLOCK)
+              JOIN (SELECT DISTINCT Country, ContNo FROM #CDBase) b ON b.ContNo = d.ContNo
+              LEFT JOIN #CDPurchase p ON p.ContNo = d.ContNo
+             WHERE d.ContNo IN (SELECT DISTINCT ContNo FROM #CDBase)
+             GROUP BY b.Country, d.ContNo, d.upc, ISNULL(d.Pallettype, '(none)')
+            HAVING SUM(ISNULL(d.CheckedQty, 0)) > 0
+             ORDER BY b.Country, d.ContNo;
+
+            DROP TABLE #CDBase, #CDPurchase;",
+            new { countries = countryList, noCountryFilter = noCountryFilter ? 1 : 0, contNoFilter,
+                  from = fromDate.Date, toExclusive = toDate.Date.AddDays(1) },
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        return rows.AsList();
+    }
+
     // SQL prefix that materialises #BadBoxes — must be prepended to whatever
     // query references the temp table, so the build + read happen in the
     // SAME Dapper command (= same SQL Server session). Splitting it across
