@@ -342,7 +342,16 @@ else if (_view == "Detailed" && _detailRows.Count > 0)
         else _selectedCountries.Remove(country);
     }
 
-    private void SetView(string view) => _view = view;
+    // Switching Report type re-runs the same Container No search automatically
+    // (cheap, single-container lookup) — no need to click Load again, same as
+    // the Production Summary Report's Summary/Detailed toggle. A plain
+    // country + date-range search still requires an explicit Load, since
+    // Detailed can return tens of thousands of rows for a wide search.
+    private async Task SetView(string view)
+    {
+        _view = view;
+        if (HasContNoFilter) await LoadAsync();
+    }
 
     private async Task LoadAsync()
     {
