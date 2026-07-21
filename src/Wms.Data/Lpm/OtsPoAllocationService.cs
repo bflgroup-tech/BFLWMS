@@ -735,7 +735,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
             .Where(r => !string.Equals(r.Country, "ECOM", StringComparison.OrdinalIgnoreCase)
                         && (r.SalesAmt ?? 0) > 0)
             .GroupBy(r => r.DivCode)
-            .ToDictionary(g => g.Key, g => g.Average(x => x.SalesAmt ?? 0));
+            .ToDictionary(g => g.Key, g => Math.Round(g.Average(x => x.SalesAmt ?? 0), 0, MidpointRounding.AwayFromZero));
 
         // 4) Assign grade per row.
         //    Grade A logic scoped per DivCode across all non-ECOM stores.
