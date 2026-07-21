@@ -680,18 +680,34 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         var aW = anchor.Week;
         var anchorKey = aY * 100 + aW;
 
-        // 1c) Per (StoreID, DivCode), sum
-        //         SalesAmt * MonthlyWeightage(within-month share) *
-        //         LPM_MonthlyWeight.WeightPct(RunMonth -> PeriodMonth)
-        //     over the up-to-12 most recent LPM_Weekly_SalesAmt rows at/before
-        //     the anchor. The RunMonth in the LPM_MonthlyWeight join is the
-        //     page's picked Month/Year (@runMonth/@runYear) so each historical
-        //     week's contribution is scaled by that month's share for the
-        //     forecast RunMonth. Country filter locks to 'UAE' since that's
-        //     the sole country populated in the current config; change here if
-        //     per-country rules land later. Weeks that fall outside every
-        //     configured PeriodMonth get NULL from the LEFT JOIN and drop out
-        //     of SUM entirely.
+        // 1c) Refresh MonthlyWeightage on every LPM_Weekly_SalesAmt row from
+        //     LPM_MonthlyWeight for the picked RunMonth so the stored value
+        //     stays a single-source recon check for the current Generate run.
+        //     Rows in periods without a configured (RunMonth, PeriodMonth)
+        //     rule get MonthlyWeightage = NULL and drop out of the SUM below.
+        //     Country filter locks to 'UAE' since that's the sole country
+        //     populated in the current config; change here if per-country
+        //     rules land later. UpdatedTS is stamped in GST.
+        await c.ExecuteAsync(new CommandDefinition(@"
+            UPDATE ws
+               SET MonthlyWeightage = mw.WeightPct,
+                   UpdatedTS = DATEADD(hour, 4, SYSUTCDATETIME())
+              FROM dbo.LPM_Weekly_SalesAmt ws
+              LEFT JOIN dbo.LPM_MonthlyWeight mw WITH (NOLOCK)
+                     ON mw.Country     = 'UAE'
+                    AND mw.RunYear     = @runYear
+                    AND mw.RunMonth    = @runMonth
+                    AND mw.PeriodYear  = ws.Year1
+                    AND mw.PeriodMonth = ws.Month1",
+            new { runYear = year, runMonth = month },
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+
+        // 1d) Per (StoreID, DivCode), sum SalesAmt * MonthlyWeightage over
+        //     the up-to-12 most recent LPM_Weekly_SalesAmt rows at/before the
+        //     anchor. MonthlyWeightage is now the RunMonth->PeriodMonth
+        //     WeightPct (populated by 1c above), so this straight product
+        //     gives 0.25 x AprilTotal + 0.30 x MayTotal + 0.45 x JuneTotal
+        //     etc. for a July run.
         //
         //     Sort key is (Year1 DESC, Week DESC) to match wk being a
         //     fiscal-year-resetting week number. Stores with fewer than 12
@@ -699,32 +715,24 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         //     while the weekly-sales history is still being backfilled).
         var weightedRows = (await c.QueryAsync<(string StoreID, int DivCode, int WeekCount, decimal MonthlySalesAmt)>(new CommandDefinition(@"
             ;WITH ranked AS (
-                SELECT ws.StoreID, ws.DivCode, ws.SalesAmt, ws.MonthlyWeightage,
-                       mw.WeightPct AS RunMonthWeight,
+                SELECT StoreID, DivCode, SalesAmt, MonthlyWeightage,
                        ROW_NUMBER() OVER (
-                           PARTITION BY ws.StoreID, ws.DivCode
-                           ORDER BY ws.Year1 DESC, ws.Week DESC
+                           PARTITION BY StoreID, DivCode
+                           ORDER BY Year1 DESC, Week DESC
                        ) AS rn
-                  FROM dbo.LPM_Weekly_SalesAmt ws WITH (NOLOCK)
-                  LEFT JOIN dbo.LPM_MonthlyWeight mw WITH (NOLOCK)
-                         ON mw.Country     = 'UAE'
-                        AND mw.RunYear     = @runYear
-                        AND mw.RunMonth    = @runMonth
-                        AND mw.PeriodYear  = ws.Year1
-                        AND mw.PeriodMonth = ws.Month1
-                 WHERE (ws.Year1 * 100 + ws.Week) <= @anchorKey
+                  FROM dbo.LPM_Weekly_SalesAmt WITH (NOLOCK)
+                 WHERE (Year1 * 100 + Week) <= @anchorKey
             )
             SELECT StoreID, DivCode,
                    COUNT(*) AS WeekCount,
                    CAST(SUM(
                        CAST(ISNULL(SalesAmt, 0) AS DECIMAL(18,2)) *
-                       CAST(MonthlyWeightage AS DECIMAL(9,4)) *
-                       CAST(RunMonthWeight   AS DECIMAL(9,4))
+                       CAST(MonthlyWeightage AS DECIMAL(9,4))
                    ) AS DECIMAL(18,2)) AS MonthlySalesAmt
               FROM ranked
              WHERE rn <= 12
              GROUP BY StoreID, DivCode",
-            new { anchorKey, runYear = year, runMonth = month },
+            new { anchorKey },
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).ToList();
 
         var weightedByKey = weightedRows.ToDictionary(
