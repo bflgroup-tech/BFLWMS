@@ -680,32 +680,51 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         var aW = anchor.Week;
         var anchorKey = aY * 100 + aW;
 
-        // 1c) Per (StoreID, DivCode), sum (SalesAmt * MonthlyWeightage) over
-        //     the up-to-12 most recent LPM_Weekly_SalesAmt rows at/before the
-        //     anchor. Sort key is (Year1 DESC, Week DESC) to match wk being
-        //     a fiscal-year-resetting week number. Stores with fewer than 12
+        // 1c) Per (StoreID, DivCode), sum
+        //         SalesAmt * MonthlyWeightage(within-month share) *
+        //         LPM_MonthlyWeight.WeightPct(RunMonth -> PeriodMonth)
+        //     over the up-to-12 most recent LPM_Weekly_SalesAmt rows at/before
+        //     the anchor. The RunMonth in the LPM_MonthlyWeight join is the
+        //     page's picked Month/Year (@runMonth/@runYear) so each historical
+        //     week's contribution is scaled by that month's share for the
+        //     forecast RunMonth. Country filter locks to 'UAE' since that's
+        //     the sole country populated in the current config; change here if
+        //     per-country rules land later. Weeks that fall outside every
+        //     configured PeriodMonth get NULL from the LEFT JOIN and drop out
+        //     of SUM entirely.
+        //
+        //     Sort key is (Year1 DESC, Week DESC) to match wk being a
+        //     fiscal-year-resetting week number. Stores with fewer than 12
         //     rows in the window use whatever's available (per ops guidance
         //     while the weekly-sales history is still being backfilled).
         var weightedRows = (await c.QueryAsync<(string StoreID, int DivCode, int WeekCount, decimal MonthlySalesAmt)>(new CommandDefinition(@"
             ;WITH ranked AS (
-                SELECT StoreID, DivCode, SalesAmt, MonthlyWeightage,
+                SELECT ws.StoreID, ws.DivCode, ws.SalesAmt, ws.MonthlyWeightage,
+                       mw.WeightPct AS RunMonthWeight,
                        ROW_NUMBER() OVER (
-                           PARTITION BY StoreID, DivCode
-                           ORDER BY Year1 DESC, Week DESC
+                           PARTITION BY ws.StoreID, ws.DivCode
+                           ORDER BY ws.Year1 DESC, ws.Week DESC
                        ) AS rn
-                  FROM dbo.LPM_Weekly_SalesAmt WITH (NOLOCK)
-                 WHERE (Year1 * 100 + Week) <= @anchorKey
+                  FROM dbo.LPM_Weekly_SalesAmt ws WITH (NOLOCK)
+                  LEFT JOIN dbo.LPM_MonthlyWeight mw WITH (NOLOCK)
+                         ON mw.Country     = 'UAE'
+                        AND mw.RunYear     = @runYear
+                        AND mw.RunMonth    = @runMonth
+                        AND mw.PeriodYear  = ws.Year1
+                        AND mw.PeriodMonth = ws.Month1
+                 WHERE (ws.Year1 * 100 + ws.Week) <= @anchorKey
             )
             SELECT StoreID, DivCode,
                    COUNT(*) AS WeekCount,
                    CAST(SUM(
                        CAST(ISNULL(SalesAmt, 0) AS DECIMAL(18,2)) *
-                       CAST(MonthlyWeightage AS DECIMAL(9,4))
+                       CAST(MonthlyWeightage AS DECIMAL(9,4)) *
+                       CAST(RunMonthWeight   AS DECIMAL(9,4))
                    ) AS DECIMAL(18,2)) AS MonthlySalesAmt
               FROM ranked
              WHERE rn <= 12
              GROUP BY StoreID, DivCode",
-            new { anchorKey },
+            new { anchorKey, runYear = year, runMonth = month },
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).ToList();
 
         var weightedByKey = weightedRows.ToDictionary(
@@ -735,7 +754,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
             .Where(r => !string.Equals(r.Country, "ECOM", StringComparison.OrdinalIgnoreCase)
                         && (r.SalesAmt ?? 0) > 0)
             .GroupBy(r => r.DivCode)
-            .ToDictionary(g => g.Key, g => g.Average(x => x.SalesAmt ?? 0));
+            .ToDictionary(g => g.Key, g => Math.Round(g.Average(x => x.SalesAmt ?? 0), 0, MidpointRounding.AwayFromZero));
 
         // 4) Assign grade per row.
         //    Grade A logic scoped per DivCode across all non-ECOM stores.
