@@ -85,8 +85,8 @@ public static class MenuKeys
         new MenuEntry(RPT_TRANSFER_GIN_GRN,  "Reports",             "Transfer/GIN/GRN History",  "reports/transfer-gin-grn",  new[] { Roles.Admin, Roles.Reports }),
         new MenuEntry(RPT_COUNTING_COMPLETION,"Reports",            "Counting Completion Report","reports/counting-completion",new[] { Roles.Admin, Roles.Reports }),
         new MenuEntry(RPT_JAFZA_DIVISION_PROD,"Reports",            "Jafza Manual Production",  "reports/jafza-division-production",new[] { Roles.Admin, Roles.Reports }),
-        new MenuEntry(RPT_CONTAINER_RECEIPT, "Reports",             "Container Receipt Report",  "reports/container-receipt", new[] { Roles.Admin, Roles.Reports }, "Inbound"),
         new MenuEntry(RPT_IN_TRANSIT,        "Reports",             "In-Transit Report",         "reports/in-transit",        new[] { Roles.Admin, Roles.Reports }, "Inbound"),
+        new MenuEntry(RPT_CONTAINER_RECEIPT, "Reports",             "Container Receipt Report",  "reports/container-receipt", new[] { Roles.Admin, Roles.Reports }, "Inbound"),
         new MenuEntry(RPT_SYNC_DATA_COUNT,   "IT",                 "Sync Data Count",           "reports/sync-data-count",   new[] { Roles.Admin, Roles.Reports }),
 
         new MenuEntry(ADMIN_USERS,           "Admin",               "Users & Roles",             "admin/users",               new[] { Roles.Admin }),
