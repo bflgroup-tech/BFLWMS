@@ -304,7 +304,7 @@ else if (_view == "Detailed" && _detailRows.Count > 0)
     private string _view = "Summary";
     private List<string> _countries = new();
     private HashSet<string> _selectedCountries = new();
-    private DateTime _from = DateTime.Today.AddDays(-7);
+    private DateTime _from = DateTime.Today.AddDays(-1);
     private DateTime _to   = DateTime.Today;
     private string _contNoFilter = "";
     private bool _loading;
