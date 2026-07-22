@@ -1,12 +1,13 @@
 namespace Wms.Data.Lpm;
 
 /// <summary>
-/// JAFZA Division-wise Production Report — Summary. One row per (TrnDate,
-/// Division), CheckedQty = SUM(CheckedQty) from Online.dbo.PhotoChecking.
+/// JAFZA Manual Production Report — Summary. One row per (TrnDate, Division,
+/// Username), CheckedQty = SUM(CheckedQty) from Online.dbo.PhotoChecking.
 /// </summary>
 public record JafzaProductionSummaryRow(
     DateTime TrnDate,
     string   Division,
+    string   Username,
     int      CheckedQty);
 
 /// <summary>

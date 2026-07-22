@@ -7,10 +7,10 @@
 @inject JafzaDivisionProductionService Svc
 @inject IJSRuntime JS
 
-<PageTitle>WMS - JAFZA Division-wise Production Report</PageTitle>
+<PageTitle>WMS - Jafza Manual Production</PageTitle>
 
 <div class="aiwms-page-header">
-    <h2>JAFZA Division-wise Production Report</h2>
+    <h2>Jafza Manual Production</h2>
     <p>Photo-checking production from Online.dbo.PhotoChecking (Warehouse = JAFZA). Scans before 05:00 count toward the previous day's shift. Date range is limited to 7 days.</p>
 </div>
 
@@ -57,10 +57,14 @@
 @if (_view == "Summary" && _summaryRows.Count > 0)
 {
     <div class="aiwms-section">
-        <div style="display:grid; grid-template-columns: repeat(2, 1fr); gap:12px;">
+        <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:12px;">
             <div style="background:var(--surface-1, #f7f7f5); border-radius:var(--r-sm); padding:12px 16px;">
                 <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">Total Divisions</div>
                 <div style="font-size:1.4rem; font-weight:800">@FilteredSummaryRows().Select(r => r.Division).Distinct(StringComparer.OrdinalIgnoreCase).Count().ToString("N0")</div>
+            </div>
+            <div style="background:var(--surface-1, #f7f7f5); border-radius:var(--r-sm); padding:12px 16px;">
+                <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">Total Users</div>
+                <div style="font-size:1.4rem; font-weight:800">@FilteredSummaryRows().Select(r => r.Username).Distinct(StringComparer.OrdinalIgnoreCase).Count().ToString("N0")</div>
             </div>
             <div style="background:var(--surface-1, #f7f7f5); border-radius:var(--r-sm); padding:12px 16px;">
                 <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">Total Checked Qty</div>
@@ -72,7 +76,7 @@
     <div class="aiwms-section">
         <div style="display:flex; gap:12px; align-items:end; margin-bottom:14px; flex-wrap:wrap">
             <div style="flex:1; min-width:240px">
-                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">SEARCH (DIVISION)</label>
+                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">SEARCH (DIVISION / USERNAME)</label>
                 <input @bind="_search" @bind:event="oninput" placeholder="Type to filter..." style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
             </div>
         </div>
@@ -83,12 +87,14 @@
             <colgroup>
                 <col style="width:140px" />
                 <col style="width:260px" />
+                <col style="width:150px" />
                 <col style="width:140px" />
             </colgroup>
             <thead>
                 <tr>
                     <th>Trn Date</th>
                     <th>Division</th>
+                    <th>Username</th>
                     <th style="text-align:center">Checked Qty</th>
                 </tr>
             </thead>
@@ -98,6 +104,7 @@
                     <tr>
                         <td>@FmtDate(r.TrnDate)</td>
                         <td style="word-break:break-word">@r.Division</td>
+                        <td>@r.Username</td>
                         <td style="text-align:center">@r.CheckedQty.ToString("N0")</td>
                     </tr>
                 }
@@ -228,7 +235,7 @@ else if (_view == "Detailed" && _detailRows.Count > 0)
             if (_view == "Summary")
             {
                 var ws = wb.AddWorksheet("Summary");
-                string[] headers = { "Trn Date", "Division", "Checked Qty" };
+                string[] headers = { "Trn Date", "Division", "Username", "Checked Qty" };
                 for (int i = 0; i < headers.Length; i++) ws.Cell(1, i + 1).Value = headers[i];
                 ws.Row(1).Style.Font.Bold = true;
 
@@ -237,11 +244,12 @@ else if (_view == "Detailed" && _detailRows.Count > 0)
                 {
                     ws.Cell(row, 1).Value = FmtDate(r.TrnDate);
                     ws.Cell(row, 2).Value = r.Division;
-                    ws.Cell(row, 3).Value = r.CheckedQty;
+                    ws.Cell(row, 3).Value = r.Username;
+                    ws.Cell(row, 4).Value = r.CheckedQty;
                     row++;
                 }
                 ws.Columns().AdjustToContents();
-                name = $"jafza-division-production-summary-{_from:yyyyMMdd}-{_to:yyyyMMdd}.xlsx";
+                name = $"jafza-manual-production-summary-{_from:yyyyMMdd}-{_to:yyyyMMdd}.xlsx";
             }
             else
             {
@@ -263,7 +271,7 @@ else if (_view == "Detailed" && _detailRows.Count > 0)
                     row++;
                 }
                 ws.Columns().AdjustToContents();
-                name = $"jafza-division-production-detailed-{_from:yyyyMMdd}-{_to:yyyyMMdd}.xlsx";
+                name = $"jafza-manual-production-detailed-{_from:yyyyMMdd}-{_to:yyyyMMdd}.xlsx";
             }
 
             using var ms = new MemoryStream();
@@ -279,7 +287,7 @@ else if (_view == "Detailed" && _detailRows.Count > 0)
     {
         if (string.IsNullOrWhiteSpace(_search)) return _summaryRows;
         var term = _search.Trim();
-        return _summaryRows.Where(r => Matches(r.Division, term)).ToList();
+        return _summaryRows.Where(r => Matches(r.Division, term) || Matches(r.Username, term)).ToList();
     }
 
     private List<JafzaProductionDetailRow> FilteredDetailRows()

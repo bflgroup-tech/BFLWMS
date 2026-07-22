@@ -98,7 +98,7 @@ public class JafzaDivisionProductionService(IOnPremConnectionResolver resolver)
         END CATCH
         ";
 
-    /// <summary>Division-wise summary — one row per (TrnDate, Division).</summary>
+    /// <summary>Division-wise summary — one row per (TrnDate, Division, Username).</summary>
     public async Task<List<JafzaProductionSummaryRow>> GetSummaryAsync(
         DateTime fromDate, DateTime toDate, string? username, CancellationToken ct = default)
     {
@@ -108,12 +108,13 @@ public class JafzaDivisionProductionService(IOnPremConnectionResolver resolver)
             SELECT
                 b.TrnDate,
                 Division   = d.DivisionY,
+                Username   = b.CheckedBy,
                 CheckedQty = SUM(b.CheckedQty)
               FROM #JafzaBase b
               JOIN #JafzaDiv d ON d.GroupCode = b.GroupCode
              WHERE ISNULL(d.DivisionY, '') <> ''
-             GROUP BY b.TrnDate, d.DivisionY
-             ORDER BY b.TrnDate, Division;
+             GROUP BY b.TrnDate, d.DivisionY, b.CheckedBy
+             ORDER BY b.TrnDate, Division, Username;
 
             DROP TABLE #JafzaBase, #JafzaDiv, #JafzaSize;",
             new { from = fromDate.Date, to = toDate.Date, username = usernameFilter },
