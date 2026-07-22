@@ -9,6 +9,11 @@
 
 <PageTitle>WMS â€” Production Summary Report</PageTitle>
 
+<style>
+    .psr-country-select summary { list-style: none; }
+    .psr-country-select summary::-webkit-details-marker { display: none; }
+</style>
+
 <div class="aiwms-page-header">
     <h2>Production Summary Report</h2>
     <p>Per-batch view of items scanned through QC (<code>usa.dbo.amechecking</code>), split by LPM vs Non-LPM via <code>LPMSIM_Batch.Sources</code>. Each picked date is one WH production day: <strong>06:00 GST â†’ 06:00 GST next day</strong>.</p>
@@ -16,17 +21,23 @@
 
 <div class="aiwms-section">
     <div style="display:grid; grid-template-columns: 1fr 1fr 1fr auto auto; gap:12px; align-items:end;">
-        <div>
+        <div class="psr-country-select">
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COUNTRY (select any) *</label>
-            <div style="display:flex; flex-direction:column; gap:4px; max-height:120px; overflow-y:auto; border:1px solid var(--border-default); border-radius:var(--r-sm); padding:8px 10px; background:white;">
-                @foreach (var c in _countries)
-                {
-                    <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:13px">
-                        <input type="checkbox" checked="@_selectedCountries.Contains(c)" @onchange="@(e => ToggleCountry(c, (bool)e.Value!))" />
-                        @c
-                    </label>
-                }
-            </div>
+            <details style="position:relative;">
+                <summary style="display:flex; align-items:center; justify-content:space-between; gap:8px; width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white; cursor:pointer; user-select:none;">
+                    <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">@CountrySelectionLabel</span>
+                    <span style="color:var(--text-secondary); font-size:10px; flex-shrink:0;">&#9660;</span>
+                </summary>
+                <div style="position:absolute; top:100%; left:0; right:0; z-index:20; margin-top:4px; display:flex; flex-direction:column; gap:4px; max-height:220px; overflow-y:auto; border:1px solid var(--border-default); border-radius:var(--r-sm); padding:8px 10px; background:white; box-shadow:0 4px 12px rgba(0,0,0,0.15);">
+                    @foreach (var c in _countries)
+                    {
+                        <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:13px">
+                            <input type="checkbox" checked="@_selectedCountries.Contains(c)" @onchange="@(e => ToggleCountry(c, (bool)e.Value!))" />
+                            @c
+                        </label>
+                    }
+                </div>
+            </details>
         </div>
         <div>
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">FROM</label>
@@ -235,6 +246,20 @@ else if (_loadedOnce && _rows.Count == 0)
     {
         if (isChecked) _selectedCountries.Add(country);
         else _selectedCountries.Remove(country);
+    }
+
+    private string CountrySelectionLabel
+    {
+        get
+        {
+            var picked = _countries.Where(c => _selectedCountries.Contains(c)).ToList();
+            return picked.Count switch
+            {
+                0 => "Select countries...",
+                <= 2 => string.Join(", ", picked),
+                _ => $"{picked.Count} countries selected"
+            };
+        }
     }
 
     private sealed record CountryRow(
