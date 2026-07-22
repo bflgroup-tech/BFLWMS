@@ -247,6 +247,8 @@ else if (_loadedOnce && _rows.Count == 0)
         try
         {
             var list = await Svc.GetCountriesAsync();
+            var excluded = new[] { "ECOM", "Ex2Locations", "Oman" };
+            list = list.Where(c => !excluded.Contains(c, StringComparer.OrdinalIgnoreCase)).ToList();
             if (list.Count > 0) _countries = list;
         }
         catch { /* fall back to the hard-coded UAE seed if the lookup fails */ }
