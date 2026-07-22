@@ -135,7 +135,7 @@ else if (_view == "Detailed" && _detailRows.Count > 0)
     <div class="aiwms-section">
         <div style="display:flex; gap:12px; align-items:end; margin-bottom:14px; flex-wrap:wrap">
             <div style="flex:1; min-width:240px">
-                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">SEARCH (UPC / USERNAME / GROUP CODE / DIVISION / SIZE)</label>
+                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">SEARCH (UPC / USERNAME / GROUP CODE / DIVISION / PO NO)</label>
                 <input @bind="_search" @bind:event="oninput" placeholder="Type to filter..." style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
             </div>
         </div>
@@ -145,22 +145,24 @@ else if (_view == "Detailed" && _detailRows.Count > 0)
         <table class="aiwms-table aiwms-table-dense" style="table-layout:fixed; width:100%">
             <colgroup>
                 <col style="width:110px" />
+                <col style="width:100px" />
                 <col style="width:150px" />
                 <col style="width:100px" />
-                <col style="width:100px" />
                 <col style="width:200px" />
-                <col style="width:80px" />
                 <col style="width:110px" />
+                <col style="width:110px" />
+                <col style="width:120px" />
             </colgroup>
             <thead>
                 <tr>
                     <th>Trn Date</th>
-                    <th>UPC</th>
                     <th>Username</th>
+                    <th>UPC</th>
                     <th>Group Code</th>
                     <th>Division</th>
-                    <th>Size</th>
                     <th style="text-align:center">Checked Qty</th>
+                    <th>LPMDT</th>
+                    <th>ORAPONO</th>
                 </tr>
             </thead>
             <tbody>
@@ -168,12 +170,13 @@ else if (_view == "Detailed" && _detailRows.Count > 0)
                 {
                     <tr>
                         <td>@FmtDate(r.TrnDate)</td>
-                        <td style="font-family:var(--font-mono)">@r.UPC</td>
                         <td>@r.Username</td>
+                        <td style="font-family:var(--font-mono)">@r.UPC</td>
                         <td>@r.GroupCode</td>
                         <td style="word-break:break-word">@r.Division</td>
-                        <td>@r.Size</td>
                         <td style="text-align:center">@r.CheckedQty.ToString("N0")</td>
+                        <td>@FmtNullableDate(r.Lpmdt)</td>
+                        <td>@r.OraPoNo</td>
                     </tr>
                 }
             </tbody>
@@ -199,7 +202,16 @@ else if (_view == "Detailed" && _detailRows.Count > 0)
 
     private int CurrentRowCount => _view == "Summary" ? _summaryRows.Count : _detailRows.Count;
 
-    private void SetView(string view) => _view = view;
+    // Switching Report type re-runs the same From/To/Username search
+    // automatically — no need to click Load again, same as the Production
+    // Summary Report's Summary/Detailed toggle. The 7-day cap already keeps
+    // Detailed's result size bounded, so unlike Counting Completion Report
+    // this doesn't need a narrower-filter guard before auto-reloading.
+    private async Task SetView(string view)
+    {
+        _view = view;
+        if (IsRangeValid) await LoadAsync();
+    }
 
     private async Task LoadAsync()
     {
@@ -254,7 +266,7 @@ else if (_view == "Detailed" && _detailRows.Count > 0)
             else
             {
                 var ws = wb.AddWorksheet("Detailed");
-                string[] headers = { "Trn Date", "UPC", "Username", "Group Code", "Division", "Size", "Checked Qty" };
+                string[] headers = { "Trn Date", "Username", "UPC", "Group Code", "Division", "Checked Qty", "LPMDT", "ORAPONO" };
                 for (int i = 0; i < headers.Length; i++) ws.Cell(1, i + 1).Value = headers[i];
                 ws.Row(1).Style.Font.Bold = true;
 
@@ -262,12 +274,13 @@ else if (_view == "Detailed" && _detailRows.Count > 0)
                 foreach (var r in FilteredDetailRows())
                 {
                     ws.Cell(row, 1).Value = FmtDate(r.TrnDate);
-                    ws.Cell(row, 2).Value = r.UPC;
-                    ws.Cell(row, 3).Value = r.Username;
+                    ws.Cell(row, 2).Value = r.Username;
+                    ws.Cell(row, 3).Value = r.UPC;
                     ws.Cell(row, 4).Value = r.GroupCode;
                     ws.Cell(row, 5).Value = r.Division;
-                    ws.Cell(row, 6).Value = r.Size;
-                    ws.Cell(row, 7).Value = r.CheckedQty;
+                    ws.Cell(row, 6).Value = r.CheckedQty;
+                    ws.Cell(row, 7).Value = FmtNullableDate(r.Lpmdt);
+                    ws.Cell(row, 8).Value = r.OraPoNo;
                     row++;
                 }
                 ws.Columns().AdjustToContents();
@@ -299,11 +312,12 @@ else if (_view == "Detailed" && _detailRows.Count > 0)
             Matches(r.Username, term) ||
             Matches(r.GroupCode, term) ||
             Matches(r.Division, term) ||
-            Matches(r.Size, term)).ToList();
+            Matches(r.OraPoNo, term)).ToList();
     }
 
     private static bool Matches(string? value, string term) =>
         !string.IsNullOrEmpty(value) && value.Contains(term, StringComparison.OrdinalIgnoreCase);
 
     private static string FmtDate(DateTime d) => d.ToString("dd-MMM-yyyy");
+    private static string FmtNullableDate(DateTime? d) => d.HasValue ? d.Value.ToString("dd-MMM-yyyy") : "";
 }

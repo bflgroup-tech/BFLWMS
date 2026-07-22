@@ -12,7 +12,7 @@ public record JafzaProductionSummaryRow(
 
 /// <summary>
 /// JAFZA Division-wise Production Report — Detailed. One row per (TrnDate,
-/// UPC, Username, GroupCode, Division, Size).
+/// UPC, Username, GroupCode, Division, LPMDT, OraPONo).
 /// </summary>
 public record JafzaProductionDetailRow(
     DateTime TrnDate,
@@ -20,5 +20,6 @@ public record JafzaProductionDetailRow(
     string   Username,
     string   GroupCode,
     string   Division,
-    string?  Size,
-    int      CheckedQty);
+    int      CheckedQty,
+    DateTime? Lpmdt,
+    string?  OraPoNo);

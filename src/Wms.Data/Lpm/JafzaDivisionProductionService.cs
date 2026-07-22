@@ -19,16 +19,13 @@ namespace Wms.Data.Lpm;
 ///
 /// Division comes from USA.dbo.USAPriority.DivisionY via GroupCode; rows
 /// with no matching/blank Division are dropped (matches the legacy
-/// "delete where isnull(Division,'')=''" step). Size comes from
-/// USA.dbo.UPCBarCodes.Size1 via UPC, with a best-effort TFL.dbo.ToysLib
-/// fallback (Itemcode = UPC) when Size1 is blank — wrapped in a T-SQL
-/// TRY/CATCH (not split into a separate Dapper call) since TFL access isn't
-/// guaranteed in every environment and this DB's temp tables don't survive
-/// across separate ExecuteAsync/QueryAsync calls on the same connection —
-/// same lesson as the #BadBoxes prefix elsewhere in this file's sibling
-/// ReportsService.cs. The legacy PAYROLL.dbo.employee name lookup is
-/// intentionally NOT ported (that database isn't reachable from this
-/// connection) — Username is the raw CheckedBy value.
+/// "delete where isnull(Division,'')=''" step). LPMDT/OraPONo are read
+/// directly off PhotoChecking (confirmed present on the live schema) and
+/// are part of the detail grain, since the same UPC can be scanned under
+/// different POs/production runs on the same day. The legacy
+/// PAYROLL.dbo.employee name lookup is intentionally NOT ported (that
+/// database isn't reachable from this connection) — Username is the raw
+/// CheckedBy value.
 /// </summary>
 public class JafzaDivisionProductionService(IOnPremConnectionResolver resolver)
 {
@@ -41,34 +38,33 @@ public class JafzaDivisionProductionService(IOnPremConnectionResolver resolver)
         return c;
     }
 
-    // Materialises #JafzaBase / #JafzaDiv / #JafzaSize — must be prepended to
-    // whatever query reads them, so the build + read happen in the SAME
-    // Dapper command (= same SQL Server batch). Splitting it across separate
+    // Materialises #JafzaBase / #JafzaDiv — must be prepended to whatever
+    // query reads them, so the build + read happen in the SAME Dapper
+    // command (= same SQL Server batch). Splitting it across separate
     // ExecuteAsync/QueryAsync calls drops the temp tables between commands
     // (confirmed in testing — "Invalid object name '#JafzaBase'").
     private const string BasePrefix = @"
         SET NOCOUNT ON;
         IF OBJECT_ID('tempdb..#JafzaBase') IS NOT NULL DROP TABLE #JafzaBase;
         IF OBJECT_ID('tempdb..#JafzaDiv')  IS NOT NULL DROP TABLE #JafzaDiv;
-        IF OBJECT_ID('tempdb..#JafzaSize') IS NOT NULL DROP TABLE #JafzaSize;
 
-        SELECT TrnDate, Time1, UPC, CheckedQty = COUNT(UPC), CheckedBy, GroupCode
+        SELECT TrnDate, Time1, UPC, CheckedQty = COUNT(UPC), CheckedBy, GroupCode, LPMDT = LPMdt, OraPONo
           INTO #JafzaBase
           FROM Online.dbo.PhotoChecking WITH (NOLOCK)
          WHERE Warehouse = 'JAFZA'
            AND TrnDate >= @from AND TrnDate <= @to
            AND LEFT(Time1, 2) NOT IN ('00','01','02','03','04')
            AND (@username IS NULL OR CheckedBy = @username)
-         GROUP BY TrnDate, UPC, CheckedBy, GroupCode, Time1;
+         GROUP BY TrnDate, UPC, CheckedBy, GroupCode, Time1, LPMdt, OraPONo;
 
-        INSERT INTO #JafzaBase (TrnDate, Time1, UPC, CheckedQty, CheckedBy, GroupCode)
-        SELECT DATEADD(day, -1, TrnDate), Time1, UPC, COUNT(UPC), CheckedBy, GroupCode
+        INSERT INTO #JafzaBase (TrnDate, Time1, UPC, CheckedQty, CheckedBy, GroupCode, LPMDT, OraPONo)
+        SELECT DATEADD(day, -1, TrnDate), Time1, UPC, COUNT(UPC), CheckedBy, GroupCode, LPMdt, OraPONo
           FROM Online.dbo.PhotoChecking WITH (NOLOCK)
          WHERE Warehouse = 'JAFZA'
            AND TrnDate > @from AND TrnDate <= DATEADD(day, 1, @to)
            AND LEFT(Time1, 2) IN ('00','01','02','03','04')
            AND (@username IS NULL OR CheckedBy = @username)
-         GROUP BY TrnDate, UPC, CheckedBy, GroupCode, Time1;
+         GROUP BY TrnDate, UPC, CheckedBy, GroupCode, Time1, LPMdt, OraPONo;
 
         CREATE CLUSTERED INDEX IX_JafzaBase ON #JafzaBase (UPC);
 
@@ -78,24 +74,6 @@ public class JafzaDivisionProductionService(IOnPremConnectionResolver resolver)
          WHERE GroupCode IN (SELECT DISTINCT GroupCode FROM #JafzaBase);
 
         CREATE CLUSTERED INDEX IX_JafzaDiv ON #JafzaDiv (GroupCode);
-
-        SELECT UPC, Size1 = MAX(Size1)
-          INTO #JafzaSize
-          FROM USA.dbo.UPCBarCodes WITH (NOLOCK)
-         WHERE UPC IN (SELECT DISTINCT UPC FROM #JafzaBase)
-         GROUP BY UPC;
-
-        CREATE CLUSTERED INDEX IX_JafzaSize ON #JafzaSize (UPC);
-
-        BEGIN TRY
-            UPDATE s SET s.Size1 = t.ToysType
-              FROM #JafzaSize s
-              JOIN TFL.dbo.ToysLib t ON t.Itemcode = s.UPC
-             WHERE ISNULL(s.Size1, '') = '';
-        END TRY
-        BEGIN CATCH
-            -- TFL not reachable in this environment; leave sizes as-is
-        END CATCH
         ";
 
     /// <summary>Division-wise summary — one row per (TrnDate, Division, Username).</summary>
@@ -116,13 +94,13 @@ public class JafzaDivisionProductionService(IOnPremConnectionResolver resolver)
              GROUP BY b.TrnDate, d.DivisionY, b.CheckedBy
              ORDER BY b.TrnDate, Division, Username;
 
-            DROP TABLE #JafzaBase, #JafzaDiv, #JafzaSize;",
+            DROP TABLE #JafzaBase, #JafzaDiv;",
             new { from = fromDate.Date, to = toDate.Date, username = usernameFilter },
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         return rows.AsList();
     }
 
-    /// <summary>Item-wise detail — one row per (TrnDate, UPC, Username, GroupCode).</summary>
+    /// <summary>Item-wise detail — one row per (TrnDate, UPC, Username, GroupCode, LPMDT, OraPONo).</summary>
     public async Task<List<JafzaProductionDetailRow>> GetDetailAsync(
         DateTime fromDate, DateTime toDate, string? username, CancellationToken ct = default)
     {
@@ -135,16 +113,16 @@ public class JafzaDivisionProductionService(IOnPremConnectionResolver resolver)
                 Username   = b.CheckedBy,
                 b.GroupCode,
                 Division   = d.DivisionY,
-                Size       = s.Size1,
-                CheckedQty = SUM(b.CheckedQty)
+                CheckedQty = SUM(b.CheckedQty),
+                Lpmdt      = b.LPMDT,
+                OraPoNo    = b.OraPONo
               FROM #JafzaBase b
               JOIN #JafzaDiv d ON d.GroupCode = b.GroupCode
-              LEFT JOIN #JafzaSize s ON s.UPC = b.UPC
              WHERE ISNULL(d.DivisionY, '') <> ''
-             GROUP BY b.TrnDate, b.UPC, b.CheckedBy, b.GroupCode, d.DivisionY, s.Size1
+             GROUP BY b.TrnDate, b.UPC, b.CheckedBy, b.GroupCode, d.DivisionY, b.LPMDT, b.OraPONo
              ORDER BY b.TrnDate, b.UPC;
 
-            DROP TABLE #JafzaBase, #JafzaDiv, #JafzaSize;",
+            DROP TABLE #JafzaBase, #JafzaDiv;",
             new { from = fromDate.Date, to = toDate.Date, username = usernameFilter },
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         return rows.AsList();
