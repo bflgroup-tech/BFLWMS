@@ -85,6 +85,7 @@ public class Program
         builder.Services.AddScoped<WarehouseBoxesService>();
         builder.Services.AddScoped<TransferGinGrnService>();
         builder.Services.AddScoped<ContainerReceiptService>();
+        builder.Services.AddScoped<InTransitReportService>();
         builder.Services.AddScoped<SyncDataCountService>();
         builder.Services.AddScoped<MissingExcessSnapshotService>();
         builder.Services.AddScoped<CountingReportsService>();
