@@ -88,6 +88,7 @@ public class Program
         builder.Services.AddScoped<SyncDataCountService>();
         builder.Services.AddScoped<MissingExcessSnapshotService>();
         builder.Services.AddScoped<CountingReportsService>();
+        builder.Services.AddScoped<JafzaDivisionProductionService>();
         builder.Services.AddScoped<OtsPoAllocationService>();
 
         // Robotics chute-mapping/status APIs used by the Chute Mapping page.

@@ -29,6 +29,7 @@ public static class MenuKeys
     public const string RPT_WAREHOUSE_BOXES       = "RPT_WAREHOUSE_BOXES";
     public const string RPT_TRANSFER_GIN_GRN      = "RPT_TRANSFER_GIN_GRN";
     public const string RPT_COUNTING_COMPLETION   = "RPT_COUNTING_COMPLETION";
+    public const string RPT_JAFZA_DIVISION_PROD   = "RPT_JAFZA_DIVISION_PROD";
     public const string RPT_SYNC_DATA_COUNT       = "RPT_SYNC_DATA_COUNT";
     public const string RPT_CONTAINER_RECEIPT     = "RPT_CONTAINER_RECEIPT";
 
@@ -82,6 +83,7 @@ public static class MenuKeys
         new MenuEntry(RPT_WAREHOUSE_BOXES,   "Reports",             "Warehouse Boxes",           "reports/warehouse-boxes",   new[] { Roles.Admin, Roles.Reports }),
         new MenuEntry(RPT_TRANSFER_GIN_GRN,  "Reports",             "Transfer/GIN/GRN History",  "reports/transfer-gin-grn",  new[] { Roles.Admin, Roles.Reports }),
         new MenuEntry(RPT_COUNTING_COMPLETION,"Reports",            "Counting Completion Report","reports/counting-completion",new[] { Roles.Admin, Roles.Reports }),
+        new MenuEntry(RPT_JAFZA_DIVISION_PROD,"Reports",            "JAFZA Division-wise Production Report","reports/jafza-division-production",new[] { Roles.Admin, Roles.Reports }),
         new MenuEntry(RPT_CONTAINER_RECEIPT, "Reports",             "Container Receipt Report",  "reports/container-receipt", new[] { Roles.Admin, Roles.Reports }, "Inbound"),
         new MenuEntry(RPT_SYNC_DATA_COUNT,   "IT",                 "Sync Data Count",           "reports/sync-data-count",   new[] { Roles.Admin, Roles.Reports }),
 
