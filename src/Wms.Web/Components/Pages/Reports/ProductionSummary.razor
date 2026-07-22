@@ -25,7 +25,7 @@
     <div style="display:grid; grid-template-columns: 1fr 1fr 1fr auto auto; gap:12px; align-items:end;">
         <div class="psr-country-select">
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COUNTRY (select any) *</label>
-            <details style="position:relative;">
+            <details id="psr-country-dropdown" style="position:relative;">
                 <summary style="display:flex; align-items:center; justify-content:space-between; gap:8px; width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white; cursor:pointer; user-select:none;">
                     <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">@CountrySelectionLabel</span>
                     <span style="color:var(--text-secondary); font-size:10px; flex-shrink:0;">&#9660;</span>
@@ -256,6 +256,20 @@ else if (_loadedOnce && _rows.Count == 0)
             foreach (var c in Resolver.GetConfiguredCountries()) _configuredCountries.Add(c);
         }
         catch { /* if this fails, checkboxes just won't show the "(not connected)" hint */ }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        await JS.InvokeVoidAsync("eval", @"
+            (function(){
+                if (window.__psrCountryDropdownBound) return;
+                window.__psrCountryDropdownBound = true;
+                document.addEventListener('click', function (e) {
+                    var d = document.getElementById('psr-country-dropdown');
+                    if (d && d.open && !d.contains(e.target)) d.removeAttribute('open');
+                });
+            })();");
     }
 
     private void ToggleCountry(string country, bool isChecked)
