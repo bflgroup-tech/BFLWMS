@@ -377,7 +377,7 @@
                             <td>@g.Division</td>
                             <td style="text-align:right">@g.SalesAmt?.ToString("N0")</td>
                             <td style="text-align:right">@g.AvgSalesAmt?.ToString("N0")</td>
-                            <td style="text-align:right">@(g.AvgSalesPct.HasValue ? g.AvgSalesPct.Value.ToString("F1") + "%" : "")</td>
+                            <td style="text-align:right">@(g.AvgSalesPct.HasValue ? g.AvgSalesPct.Value.ToString("F0") + "%" : "")</td>
                             <td><b>@g.Grade</b></td>
                         </tr>
                     }

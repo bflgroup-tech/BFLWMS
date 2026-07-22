@@ -182,12 +182,18 @@ public class ReportsService(IOnPremConnectionResolver resolver)
     /// Trndate on USA.dbo.UsaPurchase for the container (MIN(Trndate) per
     /// ContNo == "TOP 1 ... ORDER BY Trndate ASC"), materialized into
     /// #CCPurchase the same way as #CCDet.
+    ///
+    /// contNo, when given, narrows to a single container AND skips the date
+    /// range filter entirely (search that container across all time) — the
+    /// UI treats Container No as a standalone lookup, not an additional
+    /// filter on top of the date range.
     /// </summary>
     public async Task<List<CountingCompletionSummaryRow>> GetCountingCompletionSummaryAsync(
-        IEnumerable<string>? countries, DateTime fromDate, DateTime toDate, CancellationToken ct = default)
+        IEnumerable<string>? countries, DateTime fromDate, DateTime toDate, string? contNo, CancellationToken ct = default)
     {
         var countryList = countries?.Where(s => !string.IsNullOrWhiteSpace(s)).ToArray() ?? Array.Empty<string>();
         var noCountryFilter = countryList.Length == 0;
+        var contNoFilter = string.IsNullOrWhiteSpace(contNo) ? null : contNo.Trim();
 
         await using var c = OpenOnPremBackup();
         var rows = await c.QueryAsync<CountingCompletionSummaryRow>(new CommandDefinition(@"
@@ -205,9 +211,9 @@ public class ReportsService(IOnPremConnectionResolver resolver)
                    s.Division
               INTO #CCBase
               FROM BFLDATA.dbo.BuildingCompletionSumm s WITH (NOLOCK)
-             WHERE s.Trndate >= @from
-               AND s.Trndate <  @toExclusive
-               AND (@noCountryFilter = 1 OR s.Country IN @countries);
+             WHERE (@contNoFilter IS NOT NULL OR (s.Trndate >= @from AND s.Trndate < @toExclusive))
+               AND (@noCountryFilter = 1 OR s.Country IN @countries)
+               AND (@contNoFilter IS NULL OR s.ContNo = @contNoFilter);
 
             CREATE CLUSTERED INDEX IX_CCBase ON #CCBase (Country, ContNo);
 
@@ -264,7 +270,8 @@ public class ReportsService(IOnPremConnectionResolver resolver)
              ORDER BY b.Country, CountingCompletionDate;
 
             DROP TABLE #CCBase, #CCDet, #CCPurchase;",
-            new { countries = countryList, noCountryFilter = noCountryFilter ? 1 : 0, from = fromDate.Date, toExclusive = toDate.Date.AddDays(1) },
+            new { countries = countryList, noCountryFilter = noCountryFilter ? 1 : 0, contNoFilter,
+                  from = fromDate.Date, toExclusive = toDate.Date.AddDays(1) },
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         return rows.AsList();
     }
@@ -276,7 +283,9 @@ public class ReportsService(IOnPremConnectionResolver resolver)
     /// further by PalletType (Box Category) — one row per (Country, ContNo,
     /// PalletType), with BuildQty = SUM(CheckedQty) for that box category.
     /// No ItemCode/ItemName (that's the Item-wise view). Rows with zero
-    /// CheckedQty are dropped; ordered by Country, ContNo.
+    /// CheckedQty are dropped; ordered by Country, ContNo. contNo, when
+    /// given, also skips the date range filter entirely (see
+    /// GetCountingCompletionSummaryAsync for why).
     /// </summary>
     public async Task<List<CountingAllocationRow>> GetCountingAllocationAsync(
         IEnumerable<string>? countries, DateTime fromDate, DateTime toDate, string? contNo, CancellationToken ct = default)
@@ -300,8 +309,7 @@ public class ReportsService(IOnPremConnectionResolver resolver)
                    s.Division
               INTO #CABase
               FROM BFLDATA.dbo.BuildingCompletionSumm s WITH (NOLOCK)
-             WHERE s.Trndate >= @from
-               AND s.Trndate <  @toExclusive
+             WHERE (@contNoFilter IS NOT NULL OR (s.Trndate >= @from AND s.Trndate < @toExclusive))
                AND (@noCountryFilter = 1 OR s.Country IN @countries)
                AND (@contNoFilter IS NULL OR s.ContNo = @contNoFilter);
 
@@ -381,8 +389,10 @@ public class ReportsService(IOnPremConnectionResolver resolver)
     /// Datareporting.dbo.vUPC_SUBCLASS via ItemCode = upc) — unlike
     /// Summary/Allocation-wise, this view is item-level so the container's
     /// full Divisions list would be misleading here. contNo, when given,
-    /// narrows to a single container. Rows with zero CheckedQty (not
-    /// actually counted) are dropped; the rest are ordered by Country, ContNo.
+    /// narrows to a single container and skips the date range filter
+    /// entirely (see GetCountingCompletionSummaryAsync for why). Rows with
+    /// zero CheckedQty (not actually counted) are dropped; the rest are
+    /// ordered by Country, ContNo.
     /// </summary>
     public async Task<List<CountingCompletionDetailRow>> GetCountingDetailAsync(
         IEnumerable<string>? countries, DateTime fromDate, DateTime toDate, string? contNo, CancellationToken ct = default)
@@ -400,8 +410,7 @@ public class ReportsService(IOnPremConnectionResolver resolver)
             SELECT DISTINCT s.Country, s.ContNo
               INTO #CDBase
               FROM BFLDATA.dbo.BuildingCompletionSumm s WITH (NOLOCK)
-             WHERE s.Trndate >= @from
-               AND s.Trndate <  @toExclusive
+             WHERE (@contNoFilter IS NOT NULL OR (s.Trndate >= @from AND s.Trndate < @toExclusive))
                AND (@noCountryFilter = 1 OR s.Country IN @countries)
                AND (@contNoFilter IS NULL OR s.ContNo = @contNoFilter);
 
