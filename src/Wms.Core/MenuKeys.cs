@@ -27,7 +27,6 @@ public static class MenuKeys
     public const string RPT_LPM_WH_STOCK          = "RPT_LPM_WH_STOCK";
     public const string RPT_PRODUCTION_SUMMARY    = "RPT_PRODUCTION_SUMMARY";
     public const string RPT_WAREHOUSE_BOXES       = "RPT_WAREHOUSE_BOXES";
-    public const string RPT_RACKS                 = "RPT_RACKS";
     public const string RPT_TRANSFER_GIN_GRN      = "RPT_TRANSFER_GIN_GRN";
     public const string RPT_COUNTING_COMPLETION   = "RPT_COUNTING_COMPLETION";
     public const string RPT_SYNC_DATA_COUNT       = "RPT_SYNC_DATA_COUNT";
@@ -81,7 +80,6 @@ public static class MenuKeys
         new MenuEntry(RPT_LPM_WH_STOCK,      "Reports",             "LPM WH Stock Report",       "reports/lpm-wh-stock",      new[] { Roles.Admin, Roles.Reports }),
         new MenuEntry(RPT_PRODUCTION_SUMMARY,"Reports",             "Production Summary Report", "reports/production-summary",new[] { Roles.Admin, Roles.Reports }),
         new MenuEntry(RPT_WAREHOUSE_BOXES,   "Reports",             "Warehouse Boxes",           "reports/warehouse-boxes",   new[] { Roles.Admin, Roles.Reports }),
-        new MenuEntry(RPT_RACKS,             "Reports",             "Test Racks",                "reports/racks",             new[] { Roles.Admin, Roles.Reports }),
         new MenuEntry(RPT_TRANSFER_GIN_GRN,  "Reports",             "Transfer/GIN/GRN History",  "reports/transfer-gin-grn",  new[] { Roles.Admin, Roles.Reports }),
         new MenuEntry(RPT_COUNTING_COMPLETION,"Reports",            "Counting Completion Report","reports/counting-completion",new[] { Roles.Admin, Roles.Reports }),
         new MenuEntry(RPT_CONTAINER_RECEIPT, "Reports",             "Container Receipt Report",  "reports/container-receipt", new[] { Roles.Admin, Roles.Reports }, "Inbound"),
