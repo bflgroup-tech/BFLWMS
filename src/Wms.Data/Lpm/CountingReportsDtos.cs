@@ -6,4 +6,5 @@ public record PendingPurchaseRow(
     string   ContNo,
     DateTime CountingDate,
     int      CountedQty,
-    int      AgeingDays);
+    int      AgeingDays,
+    string   Divisions);
