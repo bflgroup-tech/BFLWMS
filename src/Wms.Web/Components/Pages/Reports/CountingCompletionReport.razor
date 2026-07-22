@@ -28,7 +28,7 @@
         </label>
     </div>
 
-    <div style="display:grid; grid-template-columns: @(_view == "Summary" ? "1.2fr 1fr 1fr auto" : "1.2fr 1fr 1fr 1fr auto"); gap:12px; align-items:end;">
+    <div style="display:grid; grid-template-columns: 1.2fr 1fr 1fr 1fr auto; gap:12px; align-items:end;">
         <div>
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COUNTRY (select any)</label>
             <div style="display:flex; flex-direction:column; gap:4px; max-height:120px; overflow-y:auto; border:1px solid var(--border-default); border-radius:var(--r-sm); padding:8px 10px; background:white;">
@@ -42,22 +42,19 @@
             </div>
         </div>
         <div>
-            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COMPLETION FROM *</label>
-            <input type="date" @bind="_from" @bind:format="yyyy-MM-dd" max="@DateTime.Today.ToString("yyyy-MM-dd")" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COMPLETION FROM @(HasContNoFilter ? "" : "*")</label>
+            <input type="date" @bind="_from" @bind:format="yyyy-MM-dd" max="@DateTime.Today.ToString("yyyy-MM-dd")" disabled="@HasContNoFilter" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
         </div>
         <div>
-            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COMPLETION TO *</label>
-            <input type="date" @bind="_to" @bind:format="yyyy-MM-dd" max="@DateTime.Today.ToString("yyyy-MM-dd")" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COMPLETION TO @(HasContNoFilter ? "" : "*")</label>
+            <input type="date" @bind="_to" @bind:format="yyyy-MM-dd" max="@DateTime.Today.ToString("yyyy-MM-dd")" disabled="@HasContNoFilter" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
         </div>
-        @if (_view != "Summary")
-        {
-            <div>
-                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">CONTAINER NO (optional)</label>
-                <input @bind="_contNoFilter" @bind:event="oninput" placeholder="e.g. KWLOC7172" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
-            </div>
-        }
+        <div>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">CONTAINER NO (searches all dates)</label>
+            <input @bind="_contNoFilter" @bind:event="oninput" placeholder="e.g. KWLOC7172" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
+        </div>
         <div style="display:flex; gap:8px">
-            <button class="aiwms-btn aiwms-btn-primary" @onclick="LoadAsync" disabled="@(_loading || _from > _to)">@(_loading ? "Loading..." : "Load")</button>
+            <button class="aiwms-btn aiwms-btn-primary" @onclick="LoadAsync" disabled="@(_loading || (!HasContNoFilter && _from > _to))">@(_loading ? "Loading..." : "Load")</button>
             <button class="aiwms-btn aiwms-btn-secondary" @onclick="ExportExcelAsync" disabled="@(_exporting || CurrentRowCount == 0)">@(_exporting ? "Exporting..." : "Export Excel")</button>
         </div>
     </div>
@@ -326,6 +323,8 @@ else if (_view == "Detailed" && _detailRows.Count > 0)
         _ => _detailRows.Count
     };
 
+    private bool HasContNoFilter => !string.IsNullOrWhiteSpace(_contNoFilter);
+
     protected override async Task OnInitializedAsync()
     {
         try
@@ -343,7 +342,16 @@ else if (_view == "Detailed" && _detailRows.Count > 0)
         else _selectedCountries.Remove(country);
     }
 
-    private void SetView(string view) => _view = view;
+    // Switching Report type re-runs the same Container No search automatically
+    // (cheap, single-container lookup) — no need to click Load again, same as
+    // the Production Summary Report's Summary/Detailed toggle. A plain
+    // country + date-range search still requires an explicit Load, since
+    // Detailed can return tens of thousands of rows for a wide search.
+    private async Task SetView(string view)
+    {
+        _view = view;
+        if (HasContNoFilter) await LoadAsync();
+    }
 
     private async Task LoadAsync()
     {
@@ -353,7 +361,7 @@ else if (_view == "Detailed" && _detailRows.Count > 0)
         {
             if (_view == "Summary")
             {
-                _summaryRows = await Svc.GetCountingCompletionSummaryAsync(_selectedCountries, _from, _to);
+                _summaryRows = await Svc.GetCountingCompletionSummaryAsync(_selectedCountries, _from, _to, _contNoFilter);
                 if (_summaryRows.Count == 0) _message = "No rows for the selected filters.";
             }
             else if (_view == "Allocation")
