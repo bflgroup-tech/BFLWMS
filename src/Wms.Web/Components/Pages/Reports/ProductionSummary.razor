@@ -2,9 +2,11 @@
 @rendermode RenderMode.InteractiveServer
 @using System.Text
 @using Wms.Core
+@using Wms.Data.Configuration
 @using Wms.Data.Lpm
 @attribute [Authorize(Policy = MenuKeys.RPT_PRODUCTION_SUMMARY)]
 @inject ReportsService Svc
+@inject IOnPremConnectionResolver Resolver
 @inject Microsoft.JSInterop.IJSRuntime JS
 
 <PageTitle>WMS â€” Production Summary Report</PageTitle>
@@ -34,6 +36,10 @@
                         <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:13px">
                             <input type="checkbox" checked="@_selectedCountries.Contains(c)" @onchange="@(e => ToggleCountry(c, (bool)e.Value!))" />
                             @c
+                            @if (!_configuredCountries.Contains(c))
+                            {
+                                <span style="color:var(--s-pending, #C98512); font-size:11px; font-style:italic;">(not connected)</span>
+                            }
                         </label>
                     }
                 </div>
@@ -223,6 +229,10 @@ else if (_loadedOnce && _rows.Count == 0)
 @code {
     private List<string> _countries = new() { "UAE" };
     private HashSet<string> _selectedCountries = new(StringComparer.OrdinalIgnoreCase) { "UAE" };
+    // UAE always reads via OnPremBackup (no per-country connection string needed), so it's
+    // implicitly "configured" regardless of UAE_DB_ConnectionString. Every other country needs
+    // a configured {Country}_DB_ConnectionString or GetProductionCheckingAsync silently returns 0 rows.
+    private HashSet<string> _configuredCountries = new(StringComparer.OrdinalIgnoreCase) { "UAE" };
     private DateTime _from = CurrentProductionDayGst();
     private DateTime _to   = CurrentProductionDayGst();
     private string _view = "Summary";
@@ -240,6 +250,12 @@ else if (_loadedOnce && _rows.Count == 0)
             if (list.Count > 0) _countries = list;
         }
         catch { /* fall back to the hard-coded UAE seed if the lookup fails */ }
+
+        try
+        {
+            foreach (var c in Resolver.GetConfiguredCountries()) _configuredCountries.Add(c);
+        }
+        catch { /* if this fails, checkboxes just won't show the "(not connected)" hint */ }
     }
 
     private void ToggleCountry(string country, bool isChecked)
@@ -317,7 +333,11 @@ else if (_loadedOnce && _rows.Count == 0)
                 _transferQty     += result.TransferQty;
             }
             _loadedOnce = true;
-            ShowInfo($"Loaded {_rows.Count} detailed rows, {_summary.Count} summary rows across {countries.Count} countr{(countries.Count == 1 ? "y" : "ies")}.");
+            var baseMsg = $"Loaded {_rows.Count} detailed rows, {_summary.Count} summary rows across {countries.Count} countr{(countries.Count == 1 ? "y" : "ies")}.";
+            var unconfigured = countries.Where(c => !_configuredCountries.Contains(c)).ToList();
+            ShowInfo(unconfigured.Count == 0
+                ? baseMsg
+                : $"{baseMsg} Note: {string.Join(", ", unconfigured)} {(unconfigured.Count == 1 ? "has" : "have")} no DB connection configured, so {(unconfigured.Count == 1 ? "it" : "they")} will always show 0 rows here.");
         }
         catch (Exception ex) { ShowError($"Load failed: {ex.Message}"); }
         finally { _loading = false; _loadingMsg = null; }
