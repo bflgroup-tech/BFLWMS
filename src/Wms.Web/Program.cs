@@ -87,7 +87,6 @@ public class Program
         builder.Services.AddScoped<ContainerReceiptService>();
         builder.Services.AddScoped<SyncDataCountService>();
         builder.Services.AddScoped<MissingExcessSnapshotService>();
-        builder.Services.AddScoped<RacksService>();
         builder.Services.AddScoped<CountingReportsService>();
         builder.Services.AddScoped<OtsPoAllocationService>();
 
