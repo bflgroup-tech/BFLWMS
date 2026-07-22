@@ -2,12 +2,19 @@
 @rendermode RenderMode.InteractiveServer
 @using System.Text
 @using Wms.Core
+@using Wms.Data.Configuration
 @using Wms.Data.Lpm
 @attribute [Authorize(Policy = MenuKeys.RPT_PRODUCTION_SUMMARY)]
 @inject ReportsService Svc
+@inject IOnPremConnectionResolver Resolver
 @inject Microsoft.JSInterop.IJSRuntime JS
 
 <PageTitle>WMS â€” Production Summary Report</PageTitle>
+
+<style>
+    .psr-country-select summary { list-style: none; }
+    .psr-country-select summary::-webkit-details-marker { display: none; }
+</style>
 
 <div class="aiwms-page-header">
     <h2>Production Summary Report</h2>
@@ -16,11 +23,27 @@
 
 <div class="aiwms-section">
     <div style="display:grid; grid-template-columns: 1fr 1fr 1fr auto auto; gap:12px; align-items:end;">
-        <div>
-            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COUNTRY *</label>
-            <select @bind="_country" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;">
-                @foreach (var c in _countries) { <option value="@c">@c</option> }
-            </select>
+        <div class="psr-country-select">
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COUNTRY (select any) *</label>
+            <details style="position:relative;">
+                <summary style="display:flex; align-items:center; justify-content:space-between; gap:8px; width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white; cursor:pointer; user-select:none;">
+                    <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">@CountrySelectionLabel</span>
+                    <span style="color:var(--text-secondary); font-size:10px; flex-shrink:0;">&#9660;</span>
+                </summary>
+                <div style="position:absolute; top:100%; left:0; right:0; z-index:20; margin-top:4px; display:flex; flex-direction:column; gap:4px; max-height:220px; overflow-y:auto; border:1px solid var(--border-default); border-radius:var(--r-sm); padding:8px 10px; background:white; box-shadow:0 4px 12px rgba(0,0,0,0.15);">
+                    @foreach (var c in _countries)
+                    {
+                        <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:13px">
+                            <input type="checkbox" checked="@_selectedCountries.Contains(c)" @onchange="@(e => ToggleCountry(c, (bool)e.Value!))" />
+                            @c
+                            @if (!_configuredCountries.Contains(c))
+                            {
+                                <span style="color:var(--s-pending, #C98512); font-size:11px; font-style:italic;">(not connected)</span>
+                            }
+                        </label>
+                    }
+                </div>
+            </details>
         </div>
         <div>
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">FROM</label>
@@ -78,9 +101,11 @@ else if (_rows.Count > 0)
 
         @if (_view == "Summary")
         {
+            var multiCountry = _selectedCountries.Count > 1;
             var pivot = _summary
-                .GroupBy(s => new { s.ProductionDay, s.Division })
+                .GroupBy(s => new { s.Country, s.ProductionDay, s.Division })
                 .Select(g => new DivisionPivotRow(
+                    g.Key.Country,
                     g.Key.ProductionDay,
                     g.Key.Division,
                     g.Where(x => x.Kind == "LPM").Sum(x => x.TotalScanned),
@@ -93,15 +118,17 @@ else if (_rows.Count > 0)
                     g.Sum(x => x.OmanStoreQty),
                     g.Sum(x => x.Ex2StoreQty)))
                 .OrderByDescending(x => x.ProductionDay)
+                .ThenBy(x => x.Country)
                 .ThenBy(x => x.Division)
                 .ToList();
             var hasMixed = pivot.Sum(x => x.Mixed) > 0;
-            var isUae = string.Equals(_country, "UAE", StringComparison.OrdinalIgnoreCase);
+            var isUae = _selectedCountries.Contains("UAE");
 
             <table class="aiwms-table aiwms-table-dense">
                 <thead>
                     <tr>
                         <th>Date</th>
+                        @if (multiCountry) { <th>Country</th> }
                         <th>Division</th>
                         <th style="text-align:right">LPM</th>
                         <th style="text-align:right">Non-LPM</th>
@@ -122,6 +149,7 @@ else if (_rows.Count > 0)
                     {
                         <tr>
                             <td>@p.ProductionDay.ToString("dd-MMM-yyyy")</td>
+                            @if (multiCountry) { <td>@p.Country</td> }
                             <td>@p.Division</td>
                             <td style="text-align:right">@p.Lpm.ToString("N0")</td>
                             <td style="text-align:right">@p.NonLpm.ToString("N0")</td>
@@ -138,7 +166,7 @@ else if (_rows.Count > 0)
                         </tr>
                     }
                     <tr style="font-weight:700; background:#fff7e0">
-                        <td colspan="2">TOTAL</td>
+                        <td colspan="@(multiCountry ? 3 : 2)">TOTAL</td>
                         <td style="text-align:right">@pivot.Sum(x => x.Lpm).ToString("N0")</td>
                         <td style="text-align:right">@pivot.Sum(x => x.NonLpm).ToString("N0")</td>
                         @if (hasMixed) { <td style="text-align:right">@pivot.Sum(x => x.Mixed).ToString("N0")</td> }
@@ -157,10 +185,12 @@ else if (_rows.Count > 0)
         }
         else
         {
+            var multiCountryDetail = _selectedCountries.Count > 1;
             <table class="aiwms-table aiwms-table-dense">
                 <thead>
                     <tr>
                         <th>Date</th>
+                        @if (multiCountryDetail) { <th>Country</th> }
                         <th>BatchNo</th>
                         <th>Kind</th>
                         <th>Division</th>
@@ -173,6 +203,7 @@ else if (_rows.Count > 0)
                     {
                         <tr>
                             <td>@r.ProductionDay.ToString("dd-MMM-yyyy")</td>
+                            @if (multiCountryDetail) { <td>@r.Country</td> }
                             <td>@(r.BatchNo?.ToString() ?? "Unknown")</td>
                             <td>@r.Kind</td>
                             <td>@r.Division</td>
@@ -181,7 +212,7 @@ else if (_rows.Count > 0)
                         </tr>
                     }
                     <tr style="font-weight:700; background:#fff7e0">
-                        <td colspan="4">TOTAL</td>
+                        <td colspan="@(multiCountryDetail ? 5 : 4)">TOTAL</td>
                         <td style="text-align:right">@_rows.Sum(r => r.TotalScanned).ToString("N0")</td>
                         <td style="text-align:right">@_rows.Sum(r => r.StoreQty).ToString("N0")</td>
                     </tr>
@@ -197,7 +228,11 @@ else if (_loadedOnce && _rows.Count == 0)
 
 @code {
     private List<string> _countries = new() { "UAE" };
-    private string _country = "UAE";
+    private HashSet<string> _selectedCountries = new(StringComparer.OrdinalIgnoreCase) { "UAE" };
+    // UAE always reads via OnPremBackup (no per-country connection string needed), so it's
+    // implicitly "configured" regardless of UAE_DB_ConnectionString. Every other country needs
+    // a configured {Country}_DB_ConnectionString or GetProductionCheckingAsync silently returns 0 rows.
+    private HashSet<string> _configuredCountries = new(StringComparer.OrdinalIgnoreCase) { "UAE" };
     private DateTime _from = CurrentProductionDayGst();
     private DateTime _to   = CurrentProductionDayGst();
     private string _view = "Summary";
@@ -215,17 +250,51 @@ else if (_loadedOnce && _rows.Count == 0)
             if (list.Count > 0) _countries = list;
         }
         catch { /* fall back to the hard-coded UAE seed if the lookup fails */ }
+
+        try
+        {
+            foreach (var c in Resolver.GetConfiguredCountries()) _configuredCountries.Add(c);
+        }
+        catch { /* if this fails, checkboxes just won't show the "(not connected)" hint */ }
     }
 
-    private List<ProductionCheckingRow>        _rows = new();
-    private List<ProductionCheckingSummaryRow> _summary = new();
+    private void ToggleCountry(string country, bool isChecked)
+    {
+        if (isChecked) _selectedCountries.Add(country);
+        else _selectedCountries.Remove(country);
+    }
+
+    private string CountrySelectionLabel
+    {
+        get
+        {
+            var picked = _countries.Where(c => _selectedCountries.Contains(c)).ToList();
+            return picked.Count switch
+            {
+                0 => "Select countries...",
+                <= 2 => string.Join(", ", picked),
+                _ => $"{picked.Count} countries selected"
+            };
+        }
+    }
+
+    private sealed record CountryRow(
+        string Country, DateTime ProductionDay, long? BatchNo, string Kind, string Division,
+        long TotalScanned, int StoreQty);
+
+    private sealed record CountrySummaryRow(
+        string Country, DateTime ProductionDay, string Kind, string Division,
+        long TotalScanned, int StoreQty, int UaeStoreQty, int OmanStoreQty, int Ex2StoreQty);
+
+    private List<CountryRow>        _rows = new();
+    private List<CountrySummaryRow> _summary = new();
     private int  _overallStoreQty;
     private long _transferQty;
 
-    private bool CanLoad => !string.IsNullOrWhiteSpace(_country) && _from <= _to;
+    private bool CanLoad => _selectedCountries.Count > 0 && _from <= _to;
 
     private sealed record DivisionPivotRow(
-        DateTime ProductionDay, string Division,
+        string Country, DateTime ProductionDay, string Division,
         long Lpm, long NonLpm, long Mixed, long Unknown,
         long ScannedQty, int StoresQty, int UaeQty, int OmanQty, int Ex2Qty);
 
@@ -241,20 +310,34 @@ else if (_loadedOnce && _rows.Count == 0)
     {
         if (!CanLoad) return;
         _loading = true; _message = ""; _loadedOnce = false;
-        _loadingMsg = string.Equals(_country, "UAE", StringComparison.OrdinalIgnoreCase)
-            ? "Reading scans from UAE masterâ€¦"
-            : $"Connecting to {_country} server, reading scans, then enriching against LPMSIM_Batchâ€¦";
         _rows.Clear(); _summary.Clear(); _overallStoreQty = 0; _transferQty = 0;
         await InvokeAsync(StateHasChanged);
         try
         {
-            var result = await Svc.GetProductionCheckingAsync(_country, _from, _to);
-            _rows            = result.Rows;
-            _summary         = result.Summary;
-            _overallStoreQty = result.OverallStoreQty;
-            _transferQty     = result.TransferQty;
+            var countries = _selectedCountries.ToList();
+            for (int i = 0; i < countries.Count; i++)
+            {
+                var country = countries[i];
+                _loadingMsg = string.Equals(country, "UAE", StringComparison.OrdinalIgnoreCase)
+                    ? $"Reading scans from UAE masterâ€¦ ({i + 1}/{countries.Count})"
+                    : $"Connecting to {country} server, reading scans, then enriching against LPMSIM_Batchâ€¦ ({i + 1}/{countries.Count})";
+                await InvokeAsync(StateHasChanged);
+
+                var result = await Svc.GetProductionCheckingAsync(country, _from, _to);
+                _rows.AddRange(result.Rows.Select(r => new CountryRow(
+                    country, r.ProductionDay, r.BatchNo, r.Kind, r.Division, r.TotalScanned, r.StoreQty)));
+                _summary.AddRange(result.Summary.Select(s => new CountrySummaryRow(
+                    country, s.ProductionDay, s.Kind, s.Division, s.TotalScanned, s.StoreQty,
+                    s.UaeStoreQty, s.OmanStoreQty, s.Ex2StoreQty)));
+                _overallStoreQty += result.OverallStoreQty;
+                _transferQty     += result.TransferQty;
+            }
             _loadedOnce = true;
-            ShowInfo($"Loaded {_rows.Count} detailed rows, {_summary.Count} summary rows.");
+            var baseMsg = $"Loaded {_rows.Count} detailed rows, {_summary.Count} summary rows across {countries.Count} countr{(countries.Count == 1 ? "y" : "ies")}.";
+            var unconfigured = countries.Where(c => !_configuredCountries.Contains(c)).ToList();
+            ShowInfo(unconfigured.Count == 0
+                ? baseMsg
+                : $"{baseMsg} Note: {string.Join(", ", unconfigured)} {(unconfigured.Count == 1 ? "has" : "have")} no DB connection configured, so {(unconfigured.Count == 1 ? "it" : "they")} will always show 0 rows here.");
         }
         catch (Exception ex) { ShowError($"Load failed: {ex.Message}"); }
         finally { _loading = false; _loadingMsg = null; }
@@ -264,25 +347,28 @@ else if (_loadedOnce && _rows.Count == 0)
     {
         if (_rows.Count == 0) return;
         var sb = new StringBuilder();
+        var multiCountry = _selectedCountries.Count > 1;
         if (_view == "Summary")
         {
             var pivot = _summary
-                .GroupBy(s => new { s.ProductionDay, s.Division })
+                .GroupBy(s => new { s.Country, s.ProductionDay, s.Division })
                 .Select(g => new DivisionPivotRow(
-                    g.Key.ProductionDay, g.Key.Division,
+                    g.Key.Country, g.Key.ProductionDay, g.Key.Division,
                     g.Where(x => x.Kind == "LPM").Sum(x => x.TotalScanned),
                     g.Where(x => x.Kind == "Non-LPM").Sum(x => x.TotalScanned),
                     g.Where(x => x.Kind == "Mixed").Sum(x => x.TotalScanned),
                     g.Where(x => x.Kind == "Unknown").Sum(x => x.TotalScanned),
                     g.Sum(x => x.TotalScanned), g.Sum(x => x.StoreQty),
                     g.Sum(x => x.UaeStoreQty), g.Sum(x => x.OmanStoreQty), g.Sum(x => x.Ex2StoreQty)))
-                .OrderByDescending(x => x.ProductionDay).ThenBy(x => x.Division).ToList();
-            var isUae = string.Equals(_country, "UAE", StringComparison.OrdinalIgnoreCase);
+                .OrderByDescending(x => x.ProductionDay).ThenBy(x => x.Country).ThenBy(x => x.Division).ToList();
+            var isUae = _selectedCountries.Contains("UAE");
+            if (multiCountry) sb.Append("Country,");
             sb.Append("Date,Division,LPM,Non-LPM,Mixed,Unknown,Scanned Qty,Stores Qty");
             if (isUae) sb.Append(",UAE Qty,Oman Qty,Ex2 Qty");
             sb.AppendLine();
             foreach (var p in pivot)
             {
+                if (multiCountry) sb.Append(Csv(p.Country)).Append(',');
                 sb.Append(p.ProductionDay.ToString("yyyy-MM-dd")).Append(',')
                   .Append(Csv(p.Division)).Append(',')
                   .Append(p.Lpm).Append(',').Append(p.NonLpm).Append(',')
@@ -291,6 +377,7 @@ else if (_loadedOnce && _rows.Count == 0)
                 if (isUae) sb.Append(',').Append(p.UaeQty).Append(',').Append(p.OmanQty).Append(',').Append(p.Ex2Qty);
                 sb.AppendLine();
             }
+            if (multiCountry) sb.Append(",");
             sb.Append("TOTAL,,").Append(pivot.Sum(x => x.Lpm)).Append(',').Append(pivot.Sum(x => x.NonLpm)).Append(',')
               .Append(pivot.Sum(x => x.Mixed)).Append(',').Append(pivot.Sum(x => x.Unknown)).Append(',')
               .Append(pivot.Sum(x => x.ScannedQty)).Append(',').Append(pivot.Sum(x => x.StoresQty));
@@ -299,13 +386,19 @@ else if (_loadedOnce && _rows.Count == 0)
         }
         else
         {
+            if (multiCountry) sb.Append("Country,");
             sb.AppendLine("Date,BatchNo,Kind,Division,Total Scanned,Store Qty");
             foreach (var r in _rows)
+            {
+                if (multiCountry) sb.Append(Csv(r.Country)).Append(',');
                 sb.AppendLine($"{r.ProductionDay:yyyy-MM-dd},{r.BatchNo?.ToString() ?? "Unknown"},{Csv(r.Kind)},{Csv(r.Division)},{r.TotalScanned},{r.StoreQty}");
+            }
+            if (multiCountry) sb.Append(",");
             sb.AppendLine($"TOTAL,,,,{_rows.Sum(r => r.TotalScanned)},{_rows.Sum(r => r.StoreQty)}");
         }
         var b64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(sb.ToString()));
-        var filename = $"ProductionSummary_{_country}_{_view}_{_from:yyyyMMdd}_{_to:yyyyMMdd}.csv";
+        var countryTag = _selectedCountries.Count > 3 ? $"Multi{_selectedCountries.Count}" : string.Join("-", _selectedCountries.OrderBy(c => c));
+        var filename = $"ProductionSummary_{countryTag}_{_view}_{_from:yyyyMMdd}_{_to:yyyyMMdd}.csv";
         await JS.InvokeVoidAsync("eval", $"(function(){{var a=document.createElement('a');a.href='data:text/csv;base64,{b64}';a.download='{filename}';document.body.appendChild(a);a.click();document.body.removeChild(a);}})();");
     }
 
