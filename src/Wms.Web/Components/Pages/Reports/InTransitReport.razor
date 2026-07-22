@@ -24,15 +24,14 @@
                 @foreach (var c in _countries) { <option value="@c">@c.ToUpperInvariant()</option> }
             </select>
         </div>
-    </div>
-
-    <div style="display:flex; gap:10px; margin-top:10px">
-        <button class="aiwms-btn aiwms-btn-primary" @onclick="LoadAsync" disabled="@_loading">
-            @(_loading ? "Loading…" : "Load")
-        </button>
-        <button class="aiwms-btn aiwms-btn-secondary" @onclick="ExportCsvAsync" disabled="@(_loading || _rows.Count == 0)">
-            Export to Excel
-        </button>
+        <div style="display:flex; gap:10px;">
+            <button class="aiwms-btn aiwms-btn-primary" @onclick="LoadAsync" disabled="@_loading">
+                @(_loading ? "Loading…" : "Load")
+            </button>
+            <button class="aiwms-btn aiwms-btn-secondary" @onclick="ExportCsvAsync" disabled="@(_loading || _rows.Count == 0)">
+                Export to Excel
+            </button>
+        </div>
         @if (_rows.Count > 0)
         {
             <span style="font-size:12px; color:var(--text-secondary); align-self:center">@_rows.Count rows</span>
@@ -69,9 +68,9 @@
                     <th>GINNO</th>
                     <th>Released On</th>
                     <th>ETA</th>
-                    <th>Ship No.</th>
-                    <th>Quantity</th>
-                    <th>Box Count</th>
+                    <th style="text-align:right;">Ship No.</th>
+                    <th style="text-align:right;">Quantity</th>
+                    <th style="text-align:right;">Box Count</th>
                     <th>From</th>
                     <th>Remarks</th>
                     <th>Division</th>
@@ -87,9 +86,9 @@
                         <td>@r.GinNo</td>
                         <td>@r.ReleasedDate.ToString("dd/MM/yyyy")</td>
                         <td>@(r.EtaDate?.ToString("dd/MM/yyyy") ?? "")</td>
-                        <td>@r.ShipNo</td>
-                        <td>@r.TotalQty</td>
-                        <td>@r.TransferCount</td>
+                        <td style="text-align:right;">@r.ShipNo</td>
+                        <td style="text-align:right;">@r.TotalQty.ToString("N0")</td>
+                        <td style="text-align:right;">@r.TransferCount.ToString("N0")</td>
                         <td>@r.Whouse</td>
                         <td>@r.Remarks</td>
                         <td style="word-break:break-word; white-space:normal;">@r.Division</td>
@@ -98,6 +97,14 @@
                     </tr>
                 }
             </tbody>
+            <tfoot>
+                <tr style="font-weight:600; border-top:2px solid var(--border-default);">
+                    <td colspan="5" style="text-align:right;">Total</td>
+                    <td style="text-align:right;">@_rows.Sum(r => r.TotalQty).ToString("N0")</td>
+                    <td style="text-align:right;">@_rows.Sum(r => r.TransferCount).ToString("N0")</td>
+                    <td colspan="5"></td>
+                </tr>
+            </tfoot>
         </table>
     </div>
 }
@@ -156,6 +163,7 @@
             sb.AppendLine($"{Csv(r.Country)},{Csv(r.GinNo)},{r.ReleasedDate:yyyy-MM-dd},{(r.EtaDate.HasValue ? r.EtaDate.Value.ToString("yyyy-MM-dd") : "")}," +
                           $"{Csv(r.ShipNo)},{r.TotalQty},{r.TransferCount},{Csv(r.Whouse)},{Csv(r.Remarks)}," +
                           $"{Csv(r.Division)},{Csv(r.Department)},{Csv(r.Brand)}");
+        sb.AppendLine($",,,,Total,{_rows.Sum(r => r.TotalQty)},{_rows.Sum(r => r.TransferCount)},,,,,");
 
         var b64      = Convert.ToBase64String(Encoding.UTF8.GetBytes(sb.ToString()));
         var country  = string.IsNullOrWhiteSpace(_country) ? "BFLGroup" : _country;

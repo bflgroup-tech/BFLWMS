@@ -5,27 +5,29 @@ using Microsoft.Data.SqlClient;
 namespace Wms.Data.Lpm;
 
 /// <summary>
-/// Backs the Container Receipt Report.
+/// Backs the Container Receipt Report (Inbound).
 ///
-/// Connection routing mirrors SyncDataCountService/TransferGinGrnService:
-///   - UAE has no dedicated connection string — always OnPremBackup, and only
-///     runs the ContReceipt/vUSAOrder branch (UAE doesn't use the
-///     contreceiptExport + goodsissue/verifygin GIN/GRN flow).
-///   - KSA/Kuwait/Qatar/Bahrain each have their own server. Resolve the
-///     DataName via WhBoxItemsSource, then connect with InitialCatalog
-///     overridden to that DataName — bfldata/usa/hodata are then local
-///     sibling databases on that server.
+/// Everything lives on the single OnPremBackup (UAE master) server —
+/// bfldata/USA/etc. are sibling catalogs on that same server, reached via
+/// 3-part naming. The report's "country" filter is bfldata.dbo.DataSettings
+/// .SIMCountry; contreceiptExport.Country instead stores the resolved
+/// DataName (e.g. "BFLKSA"), so DataName is looked up per country via the
+/// same WhBoxItemsSource helper ContainerAllocation/WarehouseBoxes use.
+///
+/// One row per GIN:
+///   - GinDate: earliest bfldata..vGoodsIssueplt.EntryDate for that GIN.
+///   - ReleasedOn/ShipNo/TotalQty/TransferCount: USA.dbo.ExportPass.
+///   - ReceiptDt: bfldata..contreceiptExport (also the driver/date-range table).
+///   - ReceivedBoxes: count of bfldata..VerifyGin rows with Verified='Y'.
+///   - GinToExportPassDays / ReleasedOnToReceiptDtDays: day-diffs for the two gaps.
+///   - BoxCountDiff: TransferCount - ReceivedBoxes.
 /// </summary>
 public class ContainerReceiptService(IOnPremConnectionResolver resolver)
 {
     private const int ConnectTimeoutSeconds = 60;
-    private const int CommandTimeoutSeconds = 300;
+    private const int CommandTimeoutSeconds = 120;
 
-    private const string UaeWarehouse = "UAE";
-
-    public static readonly string[] Warehouses = ["KSA", "UAE", "Kuwait", "Qatar", "Bahrain"];
-
-    private SqlConnection OpenOnPrem()
+    private SqlConnection OpenOnPremBackup()
     {
         var b = new SqlConnectionStringBuilder(resolver.GetOnPremBackupConnectionString())
             { ConnectTimeout = ConnectTimeoutSeconds };
@@ -34,126 +36,108 @@ public class ContainerReceiptService(IOnPremConnectionResolver resolver)
         return c;
     }
 
-    private async Task<SqlConnection> OpenWarehouseAsync(string warehouse, CancellationToken ct)
+    public async Task<List<string>> GetCountriesAsync(CancellationToken ct = default)
     {
-        await using var onprem = OpenOnPrem();
-        var dataName = await WhBoxItemsSource.ResolveDataNameAsync(onprem, warehouse, ct);
-        if (string.IsNullOrWhiteSpace(dataName))
-            throw new InvalidOperationException(
-                $"No DataName found in BFLDATA.dbo.DataSettings for warehouse '{warehouse}'.");
-
-        var csb = new SqlConnectionStringBuilder(resolver.GetCountryConnectionString(warehouse))
-        {
-            InitialCatalog = dataName,
-            ConnectTimeout = ConnectTimeoutSeconds
-        };
-        var conn = new SqlConnection(csb.ConnectionString);
-        await conn.OpenAsync(ct);
-        return conn;
+        await using var c = OpenOnPremBackup();
+        var rows = await c.QueryAsync<string>(new CommandDefinition(
+            @"SELECT DISTINCT SIMCountry FROM bfldata..DataSettings
+              WHERE SIMCountry NOT IN ('', 'ECOM', 'Ex2Locations', 'UAE')
+              ORDER BY SIMCountry",
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        return rows.Where(s => !string.IsNullOrWhiteSpace(s)).ToList();
     }
 
     public async Task<ContainerReceiptResult> GetContainerReceiptsAsync(
         ContainerReceiptFilter f, CancellationToken ct = default)
     {
-        if (!string.IsNullOrWhiteSpace(f.Warehouse))
+        if (!string.IsNullOrWhiteSpace(f.Country))
         {
-            var singleRows = await GetForWarehouseAsync(f.Warehouse, f.DateFrom, f.DateTo, ct);
-            return new ContainerReceiptResult(singleRows, []);
+            var rows = await GetForCountryAsync(f.Country, f.DateFrom, f.DateTo, ct);
+            return new ContainerReceiptResult(rows, []);
         }
 
+        var countries = await GetCountriesAsync(ct);
         var warnings = new List<string>();
-        var tasks = Warehouses.Select(async w =>
+        var tasks = countries.Select(async country =>
         {
             try
             {
-                return await GetForWarehouseAsync(w, f.DateFrom, f.DateTo, ct);
+                return await GetForCountryAsync(country, f.DateFrom, f.DateTo, ct);
             }
             catch (Exception ex)
             {
-                lock (warnings) warnings.Add($"{w}: {ex.Message}");
+                lock (warnings) warnings.Add($"{country}: {ex.Message}");
                 return new List<ContainerReceiptRow>();
             }
         });
 
-        var perWarehouse = await Task.WhenAll(tasks);
-        var rows = perWarehouse.SelectMany(r => r).OrderBy(r => r.ReceiptDt).ToList();
-        return new ContainerReceiptResult(rows, warnings);
+        var perCountry = await Task.WhenAll(tasks);
+        var allRows = perCountry.SelectMany(r => r).OrderBy(r => r.ReceiptDt).ToList();
+        return new ContainerReceiptResult(allRows, warnings);
     }
 
-    private async Task<List<ContainerReceiptRow>> GetForWarehouseAsync(
-        string warehouse, DateTime dateFrom, DateTime dateTo, CancellationToken ct)
+    private async Task<List<ContainerReceiptRow>> GetForCountryAsync(
+        string country, DateTime dateFrom, DateTime dateTo, CancellationToken ct)
     {
         var from = dateFrom.Date;
         var to   = dateTo.Date.AddDays(1).AddSeconds(-1);
 
-        if (string.Equals(warehouse, UaeWarehouse, StringComparison.OrdinalIgnoreCase))
-        {
-            await using var c = OpenOnPrem();
-            var rows = await c.QueryAsync<ContainerReceiptRow>(new CommandDefinition(
-                UaeSql, new { warehouse = UaeWarehouse, from, to },
-                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-            return rows.AsList();
-        }
+        await using var conn = OpenOnPremBackup();
+        var dataName = await WhBoxItemsSource.ResolveDataNameAsync(conn, country, ct);
+        if (string.IsNullOrWhiteSpace(dataName))
+            throw new InvalidOperationException(
+                $"No DataName found in bfldata.dbo.DataSettings for country '{country}'.");
 
-        await using var conn = await OpenWarehouseAsync(warehouse, ct);
-        var whRows = await conn.QueryAsync<ContainerReceiptRow>(new CommandDefinition(
-            NonUaeSql, new { warehouse, from, to },
+        var rawRows = await conn.QueryAsync<RawRow>(new CommandDefinition(
+            Sql, new { country = dataName, from, to },
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-        return whRows.AsList();
+
+        return rawRows.Select(r => new ContainerReceiptRow(
+            Country:                   country,
+            GinNo:                     r.GinNo,
+            GinDate:                   r.GinDate,
+            ReleasedOn:                r.ReleasedOn,
+            GinToExportPassDays:       DayDiff(r.GinDate, r.ReleasedOn),
+            ShipNo:                    r.ShipNo,
+            TotalQty:                  r.TotalQty,
+            TransferCount:             r.TransferCount,
+            ReceiptDt:                 r.ReceiptDt,
+            ReleasedOnToReceiptDtDays: DayDiff(r.ReleasedOn, r.ReceiptDt),
+            ReceivedBoxes:             r.ReceivedBoxes,
+            BoxCountDiff:              r.TransferCount - r.ReceivedBoxes
+        )).OrderBy(r => r.ReceiptDt).ToList();
     }
 
-    private const string NonUaeSql = @"
-;WITH GoodsIssueAgg AS (
-    SELECT GINNo, SUM(Qty) AS ShipmentQty, COUNT(DISTINCT TrfNo) AS BoxCount
-    FROM bfldata..goodsissue WITH (NOLOCK)
-    GROUP BY GINNo
-),
-VerifyGinAgg AS (
-    SELECT GINNo, COUNT(*) AS GRNDone
-    FROM bfldata..verifygin WITH (NOLOCK)
-    WHERE Verified = 'Y'
-    GROUP BY GINNo
-),
-UsaOrgAgg AS (
-    SELECT ContNo, SUM(OrgQty) AS ShipmentQty
-    FROM usa..usaorgfile WITH (NOLOCK)
-    GROUP BY ContNo
-)
-SELECT
-    @warehouse AS Warehouse, x.TCMNo AS ContNo, x.GinNo, x.ReceiptDt,
-    '' AS InvoiceNo, x.ReceivedBy, x.Supplier AS SuppCode,
-    ISNULL(gi.ShipmentQty,0) AS ShipmentQty, ISNULL(gi.BoxCount,0) AS BoxCount, ISNULL(vg.GRNDone,0) AS GRNDone
-FROM bfldata.dbo.contreceiptExport x WITH (NOLOCK)
-LEFT JOIN GoodsIssueAgg gi ON gi.GINNo = x.GinNo
-LEFT JOIN VerifyGinAgg  vg ON vg.GINNo = x.GinNo
-WHERE x.ReceiptDt >= @from AND x.ReceiptDt <= @to
+    private static int? DayDiff(DateTime? from, DateTime? to) =>
+        from.HasValue && to.HasValue ? (to.Value.Date - from.Value.Date).Days : null;
 
-UNION ALL
+    private record RawRow(
+        string GinNo, DateTime ReceiptDt, DateTime? GinDate, DateTime? ReleasedOn,
+        string ShipNo, int TotalQty, int TransferCount, int ReceivedBoxes);
 
-SELECT
-    @warehouse AS Warehouse, A.TCMNo AS ContNo, '' AS GinNo, A.ReceiptDt,
-    B.InvoiceNo, A.ReceivedBy, B.suppcode,
-    ISNULL(uo.ShipmentQty,0) AS ShipmentQty, 0 AS BoxCount, 0 AS GRNDone
-FROM BFLDATA.dbo.ContReceipt A WITH (NOLOCK)
-INNER JOIN HODATA.dbo.vUSAOrder B WITH (NOLOCK) ON B.refno = A.TCMNo
-LEFT JOIN UsaOrgAgg uo ON uo.ContNo = B.refno
-WHERE A.ReceiptDt >= @from AND A.ReceiptDt <= @to
-
-ORDER BY ReceiptDt;";
-
-    private const string UaeSql = @"
-;WITH UsaOrgAgg AS (
-    SELECT ContNo, SUM(OrgQty) AS ShipmentQty
-    FROM usa..usaorgfile WITH (NOLOCK)
-    GROUP BY ContNo
-)
-SELECT
-    @warehouse AS Warehouse, A.TCMNo AS ContNo, '' AS GinNo, A.ReceiptDt,
-    B.InvoiceNo, A.ReceivedBy, B.suppcode,
-    ISNULL(uo.ShipmentQty,0) AS ShipmentQty, 0 AS BoxCount, 0 AS GRNDone
-FROM BFLDATA.dbo.ContReceipt A WITH (NOLOCK)
-INNER JOIN HODATA.dbo.vUSAOrder B WITH (NOLOCK) ON B.refno = A.TCMNo
-LEFT JOIN UsaOrgAgg uo ON uo.ContNo = B.refno
-WHERE A.ReceiptDt >= @from AND A.ReceiptDt <= @to
-ORDER BY ReceiptDt;";
+    private const string Sql = @"
+        SELECT
+            cre.GINNO       AS GinNo,
+            cre.ReceiptDt   AS ReceiptDt,
+            gi.EntryDate    AS GinDate,
+            ep.ReleasedDate AS ReleasedOn,
+            ISNULL(ep.Shipno,'')        AS ShipNo,
+            ISNULL(ep.TotalQty,0)       AS TotalQty,
+            ISNULL(ep.TransferCount,0)  AS TransferCount,
+            ISNULL(vg.ReceivedBoxes,0)  AS ReceivedBoxes
+        FROM bfldata..contreceiptExport cre WITH (NOLOCK)
+        LEFT JOIN (
+            SELECT srno, MIN(entrydate) AS EntryDate
+            FROM bfldata..vGoodsIssueplt WITH (NOLOCK)
+            GROUP BY srno
+        ) gi ON gi.srno = cre.GINNO
+        LEFT JOIN USA.dbo.ExportPass ep WITH (NOLOCK) ON ep.GINNo = cre.GINNO
+        LEFT JOIN (
+            SELECT GINNO, COUNT(TrfNo) AS ReceivedBoxes
+            FROM bfldata..VerifyGin WITH (NOLOCK)
+            WHERE Verified = 'Y'
+            GROUP BY GINNO
+        ) vg ON vg.GINNO = cre.GINNO
+        WHERE cre.country = @country AND cre.ReceiptDt >= @from AND cre.ReceiptDt <= @to
+        ORDER BY cre.ReceiptDt";
 }
