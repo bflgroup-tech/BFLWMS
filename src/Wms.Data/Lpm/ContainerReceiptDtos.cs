@@ -1,25 +1,27 @@
 namespace Wms.Data.Lpm;
 
 public record ContainerReceiptRow(
-    string   Warehouse,
-    string   ContNo,
-    string   GinNo,
-    DateTime ReceiptDt,
-    string   InvoiceNo,
-    string   ReceivedBy,
-    string   SuppCode,
-    int      ShipmentQty,
-    int      BoxCount,
-    int      GRNDone
+    string    Country,
+    string    GinNo,
+    DateTime? GinDate,
+    DateTime? ReleasedOn,
+    int?      GinToExportPassDays,
+    string    ShipNo,
+    int       TotalQty,
+    int       TransferCount,
+    DateTime  ReceiptDt,
+    int?      ReleasedOnToReceiptDtDays,
+    int       ReceivedBoxes,
+    int       BoxCountDiff
 );
 
 public record ContainerReceiptFilter(
-    string?  Warehouse,   // null/"" = "BFL Group" (all warehouses)
+    string?  Country,   // null/"" = "BFL Group" (all countries)
     DateTime DateFrom,
     DateTime DateTo
 );
 
 public record ContainerReceiptResult(
     List<ContainerReceiptRow> Rows,
-    List<string>              Warnings   // one entry per warehouse that failed during a "BFL Group" fan-out
+    List<string>              Warnings   // one entry per country that failed during a "BFL Group" fan-out
 );
