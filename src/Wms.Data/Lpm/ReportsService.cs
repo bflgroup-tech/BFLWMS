@@ -201,6 +201,9 @@ public class ReportsService(IOnPremConnectionResolver resolver)
             IF OBJECT_ID('tempdb..#CCBase')     IS NOT NULL DROP TABLE #CCBase;
             IF OBJECT_ID('tempdb..#CCDet')      IS NOT NULL DROP TABLE #CCDet;
             IF OBJECT_ID('tempdb..#CCPurchase') IS NOT NULL DROP TABLE #CCPurchase;
+            IF OBJECT_ID('tempdb..#CCLpm')      IS NOT NULL DROP TABLE #CCLpm;
+            IF OBJECT_ID('tempdb..#CCDiv')      IS NOT NULL DROP TABLE #CCDiv;
+            IF OBJECT_ID('tempdb..#CCBrand')    IS NOT NULL DROP TABLE #CCBrand;
 
             SELECT s.Country,
                    s.ContNo,
@@ -232,6 +235,34 @@ public class ReportsService(IOnPremConnectionResolver resolver)
 
             CREATE CLUSTERED INDEX IX_CCPurchase ON #CCPurchase (ContNo);
 
+            -- LPM Months / Divisions / Brands used to be correlated STUFF+FOR XML PATH
+            -- subqueries evaluated once per OUTPUT row (effectively O(rows x detail
+            -- rows) — very slow once a date range spans hundreds of containers).
+            -- Pre-aggregating each into its own STRING_AGG'd temp table (one row per
+            -- key) turns this into a handful of set-based passes plus a cheap join.
+            SELECT ContNo, LpmMonths = STRING_AGG(Lbl, ', ') WITHIN GROUP (ORDER BY SortKey)
+              INTO #CCLpm
+              FROM (SELECT DISTINCT ContNo,
+                           Lbl = FORMAT(LPMDT, 'MMM-yyyy'),
+                           SortKey = DATEFROMPARTS(YEAR(LPMDT), MONTH(LPMDT), 1)
+                      FROM #CCDet WHERE LPMDT IS NOT NULL) x
+             GROUP BY ContNo;
+            CREATE CLUSTERED INDEX IX_CCLpm ON #CCLpm (ContNo);
+
+            SELECT Country, ContNo, Divisions = STRING_AGG(Division, ', ') WITHIN GROUP (ORDER BY Division)
+              INTO #CCDiv
+              FROM (SELECT DISTINCT Country, ContNo, Division
+                      FROM #CCBase WHERE Division IS NOT NULL AND Division <> '') x
+             GROUP BY Country, ContNo;
+            CREATE CLUSTERED INDEX IX_CCDiv ON #CCDiv (Country, ContNo);
+
+            SELECT ContNo, Brands = STRING_AGG(Brand, ', ') WITHIN GROUP (ORDER BY Brand)
+              INTO #CCBrand
+              FROM (SELECT DISTINCT ContNo, Brand
+                      FROM #CCDet WHERE Brand IS NOT NULL AND Brand <> '') x
+             GROUP BY ContNo;
+            CREATE CLUSTERED INDEX IX_CCBrand ON #CCBrand (ContNo);
+
             SELECT
                 b.Country,
                 b.ContNo,
@@ -240,36 +271,18 @@ public class ReportsService(IOnPremConnectionResolver resolver)
                 PONo                   = MAX(b.PONo),
                 CountingStartDate      = MIN(b.CountingStartDate),
                 CountedQty             = SUM(ISNULL(b.CountedQty, 0)),
-                LpmMonths = STUFF((
-                    SELECT ', ' + d.v
-                      FROM (SELECT DISTINCT
-                                   FORMAT(x.LPMDT, 'MMM-yyyy') AS v,
-                                   DATEFROMPARTS(YEAR(x.LPMDT), MONTH(x.LPMDT), 1) AS n
-                              FROM #CCDet x
-                             WHERE x.ContNo = b.ContNo AND x.LPMDT IS NOT NULL) d
-                     ORDER BY d.n
-                       FOR XML PATH(''), TYPE).value('.', 'NVARCHAR(MAX)'), 1, 2, ''),
-                Divisions = STUFF((
-                    SELECT ', ' + d.v
-                      FROM (SELECT DISTINCT x.Division AS v
-                              FROM #CCBase x
-                             WHERE x.Country = b.Country AND x.ContNo = b.ContNo
-                               AND x.Division IS NOT NULL AND x.Division <> '') d
-                     ORDER BY d.v
-                       FOR XML PATH(''), TYPE).value('.', 'NVARCHAR(MAX)'), 1, 2, ''),
-                Brands = STUFF((
-                    SELECT ', ' + d.v
-                      FROM (SELECT DISTINCT x.Brand AS v
-                              FROM #CCDet x
-                             WHERE x.ContNo = b.ContNo AND x.Brand IS NOT NULL AND x.Brand <> '') d
-                     ORDER BY d.v
-                       FOR XML PATH(''), TYPE).value('.', 'NVARCHAR(MAX)'), 1, 2, '')
+                LpmMonths              = MAX(lm.LpmMonths),
+                Divisions              = MAX(dv.Divisions),
+                Brands                 = MAX(br.Brands)
               FROM #CCBase b
-              LEFT JOIN #CCPurchase p ON p.ContNo = b.ContNo
+              LEFT JOIN #CCPurchase p  ON p.ContNo = b.ContNo
+              LEFT JOIN #CCLpm      lm ON lm.ContNo = b.ContNo
+              LEFT JOIN #CCDiv      dv ON dv.Country = b.Country AND dv.ContNo = b.ContNo
+              LEFT JOIN #CCBrand    br ON br.ContNo = b.ContNo
              GROUP BY b.Country, b.ContNo
              ORDER BY b.Country, CountingCompletionDate;
 
-            DROP TABLE #CCBase, #CCDet, #CCPurchase;",
+            DROP TABLE #CCBase, #CCDet, #CCPurchase, #CCLpm, #CCDiv, #CCBrand;",
             new { countries = countryList, noCountryFilter = noCountryFilter ? 1 : 0, contNoFilter,
                   from = fromDate.Date, toExclusive = toDate.Date.AddDays(1) },
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
@@ -300,6 +313,9 @@ public class ReportsService(IOnPremConnectionResolver resolver)
             IF OBJECT_ID('tempdb..#CABase')     IS NOT NULL DROP TABLE #CABase;
             IF OBJECT_ID('tempdb..#CADet')      IS NOT NULL DROP TABLE #CADet;
             IF OBJECT_ID('tempdb..#CAPurchase') IS NOT NULL DROP TABLE #CAPurchase;
+            IF OBJECT_ID('tempdb..#CALpm')      IS NOT NULL DROP TABLE #CALpm;
+            IF OBJECT_ID('tempdb..#CADiv')      IS NOT NULL DROP TABLE #CADiv;
+            IF OBJECT_ID('tempdb..#CABrand')    IS NOT NULL DROP TABLE #CABrand;
 
             SELECT s.Country,
                    s.ContNo,
@@ -320,7 +336,7 @@ public class ReportsService(IOnPremConnectionResolver resolver)
               FROM BFLDATA.dbo.BuildingCompletionDet det WITH (NOLOCK)
              WHERE det.ContNo IN (SELECT DISTINCT ContNo FROM #CABase);
 
-            CREATE CLUSTERED INDEX IX_CADet ON #CADet (ContNo);
+            CREATE CLUSTERED INDEX IX_CADet ON #CADet (ContNo, Pallettype);
 
             SELECT up.ContNo, PurchaseDate = MIN(up.Trndate)
               INTO #CAPurchase
@@ -330,6 +346,35 @@ public class ReportsService(IOnPremConnectionResolver resolver)
 
             CREATE CLUSTERED INDEX IX_CAPurchase ON #CAPurchase (ContNo);
 
+            -- LPM Months / Divisions / Brands used to be correlated STUFF+FOR XML PATH
+            -- subqueries evaluated once per OUTPUT row (Country x ContNo x PalletType) —
+            -- pre-aggregating each into its own STRING_AGG'd temp table (one row per key)
+            -- turns this into a handful of set-based passes plus a cheap join instead.
+            SELECT ContNo, PalletType = ISNULL(Pallettype, '(none)'),
+                   LpmMonths = STRING_AGG(Lbl, ', ') WITHIN GROUP (ORDER BY SortKey)
+              INTO #CALpm
+              FROM (SELECT DISTINCT ContNo, Pallettype,
+                           Lbl = FORMAT(LPMDT, 'MMM-yyyy'),
+                           SortKey = DATEFROMPARTS(YEAR(LPMDT), MONTH(LPMDT), 1)
+                      FROM #CADet WHERE LPMDT IS NOT NULL) x
+             GROUP BY ContNo, ISNULL(Pallettype, '(none)');
+            CREATE CLUSTERED INDEX IX_CALpm ON #CALpm (ContNo, PalletType);
+
+            SELECT Country, ContNo, Divisions = STRING_AGG(Division, ', ') WITHIN GROUP (ORDER BY Division)
+              INTO #CADiv
+              FROM (SELECT DISTINCT Country, ContNo, Division
+                      FROM #CABase WHERE Division IS NOT NULL AND Division <> '') x
+             GROUP BY Country, ContNo;
+            CREATE CLUSTERED INDEX IX_CADiv ON #CADiv (Country, ContNo);
+
+            SELECT ContNo, PalletType = ISNULL(Pallettype, '(none)'),
+                   Brands = STRING_AGG(Brand, ', ') WITHIN GROUP (ORDER BY Brand)
+              INTO #CABrand
+              FROM (SELECT DISTINCT ContNo, Pallettype, Brand
+                      FROM #CADet WHERE Brand IS NOT NULL AND Brand <> '') x
+             GROUP BY ContNo, ISNULL(Pallettype, '(none)');
+            CREATE CLUSTERED INDEX IX_CABrand ON #CABrand (ContNo, PalletType);
+
             SELECT
                 b.Country,
                 b.ContNo,
@@ -338,43 +383,23 @@ public class ReportsService(IOnPremConnectionResolver resolver)
                 PONo                   = MAX(b.PONo),
                 CountingStartDate      = MIN(b.CountingStartDate),
                 PalletType             = ISNULL(d.Pallettype, '(none)'),
+                TypeName               = MAX(pt.TypeName),
                 BuildQty               = SUM(ISNULL(d.CheckedQty, 0)),
-                LpmMonths = STUFF((
-                    SELECT ', ' + x.v
-                      FROM (SELECT DISTINCT
-                                   FORMAT(d2.LPMDT, 'MMM-yyyy') AS v,
-                                   DATEFROMPARTS(YEAR(d2.LPMDT), MONTH(d2.LPMDT), 1) AS n
-                              FROM #CADet d2
-                             WHERE d2.ContNo = b.ContNo
-                               AND ISNULL(d2.Pallettype, '(none)') = ISNULL(d.Pallettype, '(none)')
-                               AND d2.LPMDT IS NOT NULL) x
-                     ORDER BY x.n
-                       FOR XML PATH(''), TYPE).value('.', 'NVARCHAR(MAX)'), 1, 2, ''),
-                Divisions = STUFF((
-                    SELECT ', ' + x.v
-                      FROM (SELECT DISTINCT bb.Division AS v
-                              FROM #CABase bb
-                             WHERE bb.Country = b.Country AND bb.ContNo = b.ContNo
-                               AND bb.Division IS NOT NULL AND bb.Division <> '') x
-                     ORDER BY x.v
-                       FOR XML PATH(''), TYPE).value('.', 'NVARCHAR(MAX)'), 1, 2, ''),
-                Brands = STUFF((
-                    SELECT ', ' + x.v
-                      FROM (SELECT DISTINCT d3.Brand AS v
-                              FROM #CADet d3
-                             WHERE d3.ContNo = b.ContNo
-                               AND ISNULL(d3.Pallettype, '(none)') = ISNULL(d.Pallettype, '(none)')
-                               AND d3.Brand IS NOT NULL AND d3.Brand <> '') x
-                     ORDER BY x.v
-                       FOR XML PATH(''), TYPE).value('.', 'NVARCHAR(MAX)'), 1, 2, '')
+                LpmMonths              = MAX(lm.LpmMonths),
+                Divisions              = MAX(dv.Divisions),
+                Brands                 = MAX(br.Brands)
               FROM #CABase b
               JOIN #CADet d ON d.ContNo = b.ContNo
-              LEFT JOIN #CAPurchase p ON p.ContNo = b.ContNo
+              LEFT JOIN #CAPurchase p  ON p.ContNo = b.ContNo
+              LEFT JOIN BFLDATA.dbo.PalletType pt WITH (NOLOCK) ON pt.PalletType = d.Pallettype
+              LEFT JOIN #CALpm      lm ON lm.ContNo = b.ContNo AND lm.PalletType = ISNULL(d.Pallettype, '(none)')
+              LEFT JOIN #CADiv      dv ON dv.Country = b.Country AND dv.ContNo = b.ContNo
+              LEFT JOIN #CABrand    br ON br.ContNo = b.ContNo AND br.PalletType = ISNULL(d.Pallettype, '(none)')
              GROUP BY b.Country, b.ContNo, ISNULL(d.Pallettype, '(none)')
             HAVING SUM(ISNULL(d.CheckedQty, 0)) > 0
              ORDER BY b.Country, b.ContNo;
 
-            DROP TABLE #CABase, #CADet, #CAPurchase;",
+            DROP TABLE #CABase, #CADet, #CAPurchase, #CALpm, #CADiv, #CABrand;",
             new { countries = countryList, noCountryFilter = noCountryFilter ? 1 : 0, contNoFilter,
                   from = fromDate.Date, toExclusive = toDate.Date.AddDays(1) },
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
@@ -429,6 +454,7 @@ public class ReportsService(IOnPremConnectionResolver resolver)
                 d.ContNo,
                 PurchaseDate = MAX(p.PurchaseDate),
                 PalletType   = ISNULL(d.Pallettype, '(none)'),
+                TypeName     = MAX(pt.TypeName),
                 ItemCode     = d.upc,
                 ItemName     = MAX(d.itemname),
                 Qty          = SUM(ISNULL(d.CheckedQty, 0)),
@@ -439,6 +465,7 @@ public class ReportsService(IOnPremConnectionResolver resolver)
               JOIN #CDBase b ON b.ContNo = d.ContNo
               LEFT JOIN #CDPurchase p ON p.ContNo = d.ContNo
               LEFT JOIN Datareporting.dbo.vUPC_SUBCLASS sub WITH (NOLOCK) ON sub.itemcode = d.upc
+              LEFT JOIN BFLDATA.dbo.PalletType pt WITH (NOLOCK) ON pt.PalletType = d.Pallettype
              WHERE d.ContNo IN (SELECT DISTINCT ContNo FROM #CDBase)
              GROUP BY b.Country, d.ContNo, d.upc, ISNULL(d.Pallettype, '(none)')
             HAVING SUM(ISNULL(d.CheckedQty, 0)) > 0

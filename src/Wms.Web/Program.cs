@@ -82,6 +82,7 @@ public class Program
         });
 
         builder.Services.AddScoped<ReportsService>();
+        builder.Services.AddScoped<CountingCompletionTodayService>();
         builder.Services.AddScoped<WarehouseBoxesService>();
         builder.Services.AddScoped<TransferGinGrnService>();
         builder.Services.AddScoped<ContainerReceiptService>();
