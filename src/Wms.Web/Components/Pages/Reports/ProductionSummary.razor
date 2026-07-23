@@ -25,7 +25,7 @@
     <div style="display:grid; grid-template-columns: 1fr 1fr 1fr auto auto; gap:12px; align-items:end;">
         <div class="psr-country-select">
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COUNTRY (select any) *</label>
-            <details style="position:relative;">
+            <details id="psr-country-dropdown" style="position:relative;">
                 <summary style="display:flex; align-items:center; justify-content:space-between; gap:8px; width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white; cursor:pointer; user-select:none;">
                     <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">@CountrySelectionLabel</span>
                     <span style="color:var(--text-secondary); font-size:10px; flex-shrink:0;">&#9660;</span>
@@ -91,6 +91,30 @@ else if (_rows.Count > 0)
             @MetricCard("Unknown",       unkQty.ToString("N0"),           "#fef3c7", "#92400e", false)
         </div>
     </div>
+
+    @if (_selectedCountries.Count > 1)
+    {
+        <div class="aiwms-section">
+            <div class="aiwms-card-header">By Country</div>
+            @foreach (var cs in CountrySummaries())
+            {
+                <div style="margin-bottom:14px;">
+                    <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary); margin-bottom:6px;">@cs.Country</div>
+                    <div style="display:grid; grid-template-columns: 2fr 1fr 1fr 1fr 1fr 1fr; gap:12px;">
+                        @MetricCard("Store Qty",      cs.StoreQty.ToString("N0"),     "#fdf2f8", "#9d174d", false)
+                        @if (cs.TransferQty > 0)
+                        {
+                            @MetricCard("Transfer Qty", cs.TransferQty.ToString("N0"), "#ccfbf1", "#0f766e", false)
+                        }
+                        @MetricCard("Total Scanned",  cs.TotalScanned.ToString("N0"), "#dbeafe", "#1e40af", false)
+                        @MetricCard("LPM",            cs.Lpm.ToString("N0"),          "#dcfce7", "#166534", false)
+                        @MetricCard("Non-LPM",        cs.NonLpm.ToString("N0"),       "#f3e8ff", "#6b21a8", false)
+                        @MetricCard("Unknown",        cs.Unknown.ToString("N0"),      "#fef3c7", "#92400e", false)
+                    </div>
+                </div>
+            }
+        </div>
+    }
 
     <div class="aiwms-section">
         <div style="display:flex; gap:14px; align-items:center; margin-bottom:10px">
@@ -247,6 +271,8 @@ else if (_loadedOnce && _rows.Count == 0)
         try
         {
             var list = await Svc.GetCountriesAsync();
+            var excluded = new[] { "ECOM", "Ex2Locations", "Oman" };
+            list = list.Where(c => !excluded.Contains(c, StringComparer.OrdinalIgnoreCase)).ToList();
             if (list.Count > 0) _countries = list;
         }
         catch { /* fall back to the hard-coded UAE seed if the lookup fails */ }
@@ -256,6 +282,20 @@ else if (_loadedOnce && _rows.Count == 0)
             foreach (var c in Resolver.GetConfiguredCountries()) _configuredCountries.Add(c);
         }
         catch { /* if this fails, checkboxes just won't show the "(not connected)" hint */ }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        await JS.InvokeVoidAsync("eval", @"
+            (function(){
+                if (window.__psrCountryDropdownBound) return;
+                window.__psrCountryDropdownBound = true;
+                document.addEventListener('click', function (e) {
+                    var d = document.getElementById('psr-country-dropdown');
+                    if (d && d.open && !d.contains(e.target)) d.removeAttribute('open');
+                });
+            })();");
     }
 
     private void ToggleCountry(string country, bool isChecked)
@@ -290,8 +330,25 @@ else if (_loadedOnce && _rows.Count == 0)
     private List<CountrySummaryRow> _summary = new();
     private int  _overallStoreQty;
     private long _transferQty;
+    private Dictionary<string, long> _transferQtyByCountry = new(StringComparer.OrdinalIgnoreCase);
 
     private bool CanLoad => _selectedCountries.Count > 0 && _from <= _to;
+
+    private sealed record CountrySummaryTotals(
+        string Country, long StoreQty, long TransferQty, long TotalScanned, long Lpm, long NonLpm, long Unknown);
+
+    private List<CountrySummaryTotals> CountrySummaries() =>
+        _rows.GroupBy(r => r.Country)
+            .Select(g => new CountrySummaryTotals(
+                g.Key,
+                g.Sum(r => r.StoreQty),
+                _transferQtyByCountry.GetValueOrDefault(g.Key),
+                g.Sum(r => r.TotalScanned),
+                g.Where(r => r.Kind == "LPM").Sum(r => r.TotalScanned),
+                g.Where(r => r.Kind == "Non-LPM").Sum(r => r.TotalScanned),
+                g.Where(r => r.Kind == "Unknown").Sum(r => r.TotalScanned)))
+            .OrderBy(c => c.Country)
+            .ToList();
 
     private sealed record DivisionPivotRow(
         string Country, DateTime ProductionDay, string Division,
@@ -310,7 +367,7 @@ else if (_loadedOnce && _rows.Count == 0)
     {
         if (!CanLoad) return;
         _loading = true; _message = ""; _loadedOnce = false;
-        _rows.Clear(); _summary.Clear(); _overallStoreQty = 0; _transferQty = 0;
+        _rows.Clear(); _summary.Clear(); _overallStoreQty = 0; _transferQty = 0; _transferQtyByCountry.Clear();
         await InvokeAsync(StateHasChanged);
         try
         {
@@ -331,6 +388,7 @@ else if (_loadedOnce && _rows.Count == 0)
                     s.UaeStoreQty, s.OmanStoreQty, s.Ex2StoreQty)));
                 _overallStoreQty += result.OverallStoreQty;
                 _transferQty     += result.TransferQty;
+                _transferQtyByCountry[country] = result.TransferQty;
             }
             _loadedOnce = true;
             var baseMsg = $"Loaded {_rows.Count} detailed rows, {_summary.Count} summary rows across {countries.Count} countr{(countries.Count == 1 ? "y" : "ies")}.";
