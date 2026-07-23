@@ -5,23 +5,41 @@
 @using ClosedXML.Excel
 @attribute [Authorize(Policy = MenuKeys.RPT_JAFZA_DIVISION_PROD)]
 @inject JafzaDivisionProductionService Svc
+@inject JafzaRoboProductionService RoboSvc
 @inject IJSRuntime JS
 
-<PageTitle>WMS - Jafza Manual Production</PageTitle>
+<PageTitle>WMS - Jafza Manual/Robo Production</PageTitle>
 
 <div class="aiwms-page-header">
-    <h2>Jafza Manual Production</h2>
-    <p>Photo-checking production from Online.dbo.PhotoChecking (Warehouse = JAFZA). Scans before 05:00 count toward the previous day's shift. Date range is limited to 7 days.</p>
+    <h2>Jafza Manual/Robo Production</h2>
+    @if (_source == "Manual")
+    {
+        <p>Photo-checking production from Online.dbo.PhotoChecking (Warehouse = JAFZA). Scans before 05:00 count toward the previous day's shift. Date range is limited to 7 days.</p>
+    }
+    else
+    {
+        <p>Robo pairing production from ROBOTICS.dbo.PairingConformationDetail (JafazaRoboDb). Scans before 05:00 count toward the previous day's shift. Date range is limited to 7 days.</p>
+    }
 </div>
 
 <div class="aiwms-section">
+    <div style="display:flex; gap:14px; align-items:center; margin-bottom:8px; flex-wrap:wrap">
+        <strong style="font-size:11px; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">Source:</strong>
+        <label style="display:flex; align-items:center; gap:4px; cursor:pointer">
+            <input type="radio" name="src" value="Manual" checked="@(_source == "Manual")" @onchange="@(() => SetSource("Manual"))" /> Manual
+        </label>
+        <label style="display:flex; align-items:center; gap:4px; cursor:pointer">
+            <input type="radio" name="src" value="Robo" checked="@(_source == "Robo")" @onchange="@(() => SetSource("Robo"))" /> Robo
+        </label>
+    </div>
+
     <div style="display:flex; gap:14px; align-items:center; margin-bottom:14px; flex-wrap:wrap">
         <strong style="font-size:11px; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">Report:</strong>
         <label style="display:flex; align-items:center; gap:4px; cursor:pointer">
             <input type="radio" name="rpt" value="Summary" checked="@(_view == "Summary")" @onchange="@(() => SetView("Summary"))" /> Summary (Division-wise)
         </label>
         <label style="display:flex; align-items:center; gap:4px; cursor:pointer">
-            <input type="radio" name="rpt" value="Detailed" checked="@(_view == "Detailed")" @onchange="@(() => SetView("Detailed"))" /> Detailed (UPC-wise)
+            <input type="radio" name="rpt" value="Detailed" checked="@(_view == "Detailed")" @onchange="@(() => SetView("Detailed"))" /> Detailed (Item-wise)
         </label>
     </div>
 
@@ -54,138 +72,272 @@
     }
 </div>
 
-@if (_view == "Summary" && _summaryRows.Count > 0)
+@if (_source == "Manual")
 {
-    <div class="aiwms-section">
-        <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:12px;">
-            <div style="background:var(--surface-1, #f7f7f5); border-radius:var(--r-sm); padding:12px 16px;">
-                <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">Total Divisions</div>
-                <div style="font-size:1.4rem; font-weight:800">@FilteredSummaryRows().Select(r => r.Division).Distinct(StringComparer.OrdinalIgnoreCase).Count().ToString("N0")</div>
-            </div>
-            <div style="background:var(--surface-1, #f7f7f5); border-radius:var(--r-sm); padding:12px 16px;">
-                <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">Total Users</div>
-                <div style="font-size:1.4rem; font-weight:800">@FilteredSummaryRows().Select(r => r.Username).Distinct(StringComparer.OrdinalIgnoreCase).Count().ToString("N0")</div>
-            </div>
-            <div style="background:var(--surface-1, #f7f7f5); border-radius:var(--r-sm); padding:12px 16px;">
-                <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">Total Checked Qty</div>
-                <div style="font-size:1.4rem; font-weight:800">@FilteredSummaryRows().Sum(r => r.CheckedQty).ToString("N0")</div>
-            </div>
-        </div>
-    </div>
-
-    <div class="aiwms-section">
-        <div style="display:flex; gap:12px; align-items:end; margin-bottom:14px; flex-wrap:wrap">
-            <div style="flex:1; min-width:240px">
-                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">SEARCH (DIVISION / USERNAME)</label>
-                <input @bind="_search" @bind:event="oninput" placeholder="Type to filter..." style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
+    @if (_view == "Summary" && _summaryRows.Count > 0)
+    {
+        <div class="aiwms-section">
+            <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:12px;">
+                <div style="background:var(--surface-1, #f7f7f5); border-radius:var(--r-sm); padding:12px 16px;">
+                    <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">Total Divisions</div>
+                    <div style="font-size:1.4rem; font-weight:800">@FilteredSummaryRows().Select(r => r.Division).Distinct(StringComparer.OrdinalIgnoreCase).Count().ToString("N0")</div>
+                </div>
+                <div style="background:var(--surface-1, #f7f7f5); border-radius:var(--r-sm); padding:12px 16px;">
+                    <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">Total Users</div>
+                    <div style="font-size:1.4rem; font-weight:800">@FilteredSummaryRows().Select(r => r.Username).Distinct(StringComparer.OrdinalIgnoreCase).Count().ToString("N0")</div>
+                </div>
+                <div style="background:var(--surface-1, #f7f7f5); border-radius:var(--r-sm); padding:12px 16px;">
+                    <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">Total Checked Qty</div>
+                    <div style="font-size:1.4rem; font-weight:800">@FilteredSummaryRows().Sum(r => r.CheckedQty).ToString("N0")</div>
+                </div>
             </div>
         </div>
 
-        <div class="aiwms-card-header">Summary - @FilteredSummaryRows().Count row(s)</div>
-        <div style="overflow-x:auto">
-        <table class="aiwms-table aiwms-table-dense" style="table-layout:fixed; width:100%">
-            <colgroup>
-                <col style="width:140px" />
-                <col style="width:260px" />
-                <col style="width:150px" />
-                <col style="width:140px" />
-            </colgroup>
-            <thead>
-                <tr>
-                    <th>Trn Date</th>
-                    <th>Division</th>
-                    <th>Username</th>
-                    <th style="text-align:center">Checked Qty</th>
-                </tr>
-            </thead>
-            <tbody>
-                @foreach (var r in FilteredSummaryRows())
-                {
+        <div class="aiwms-section">
+            <div style="display:flex; gap:12px; align-items:end; margin-bottom:14px; flex-wrap:wrap">
+                <div style="flex:1; min-width:240px">
+                    <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">SEARCH (DIVISION / USERNAME)</label>
+                    <input @bind="_search" @bind:event="oninput" placeholder="Type to filter..." style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
+                </div>
+            </div>
+
+            <div class="aiwms-card-header">Summary - @FilteredSummaryRows().Count row(s)</div>
+            <div style="overflow-x:auto">
+            <table class="aiwms-table aiwms-table-dense" style="table-layout:fixed; width:100%">
+                <colgroup>
+                    <col style="width:140px" />
+                    <col style="width:260px" />
+                    <col style="width:150px" />
+                    <col style="width:140px" />
+                </colgroup>
+                <thead>
                     <tr>
-                        <td>@FmtDate(r.TrnDate)</td>
-                        <td style="word-break:break-word">@r.Division</td>
-                        <td>@r.Username</td>
-                        <td style="text-align:center">@r.CheckedQty.ToString("N0")</td>
+                        <th>Trn Date</th>
+                        <th>Division</th>
+                        <th>Username</th>
+                        <th style="text-align:center">Checked Qty</th>
                     </tr>
-                }
-            </tbody>
-        </table>
+                </thead>
+                <tbody>
+                    @foreach (var r in FilteredSummaryRows())
+                    {
+                        <tr>
+                            <td>@FmtDate(r.TrnDate)</td>
+                            <td style="word-break:break-word">@r.Division</td>
+                            <td>@r.Username</td>
+                            <td style="text-align:center">@r.CheckedQty.ToString("N0")</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+            </div>
         </div>
-    </div>
+    }
+    else if (_view == "Detailed" && _detailRows.Count > 0)
+    {
+        <div class="aiwms-section">
+            <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:12px;">
+                <div style="background:var(--surface-1, #f7f7f5); border-radius:var(--r-sm); padding:12px 16px;">
+                    <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">Total Items</div>
+                    <div style="font-size:1.4rem; font-weight:800">@FilteredDetailRows().Count.ToString("N0")</div>
+                </div>
+                <div style="background:var(--surface-1, #f7f7f5); border-radius:var(--r-sm); padding:12px 16px;">
+                    <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">Total Users</div>
+                    <div style="font-size:1.4rem; font-weight:800">@FilteredDetailRows().Select(r => r.Username).Distinct(StringComparer.OrdinalIgnoreCase).Count().ToString("N0")</div>
+                </div>
+                <div style="background:var(--surface-1, #f7f7f5); border-radius:var(--r-sm); padding:12px 16px;">
+                    <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">Total Checked Qty</div>
+                    <div style="font-size:1.4rem; font-weight:800">@FilteredDetailRows().Sum(r => r.CheckedQty).ToString("N0")</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="aiwms-section">
+            <div style="display:flex; gap:12px; align-items:end; margin-bottom:14px; flex-wrap:wrap">
+                <div style="flex:1; min-width:240px">
+                    <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">SEARCH (UPC / USERNAME / GROUP CODE / DIVISION / PO NO)</label>
+                    <input @bind="_search" @bind:event="oninput" placeholder="Type to filter..." style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
+                </div>
+            </div>
+
+            <div class="aiwms-card-header">Detailed - @FilteredDetailRows().Count row(s)</div>
+            <div style="overflow-x:auto">
+            <table class="aiwms-table aiwms-table-dense" style="table-layout:fixed; width:100%">
+                <colgroup>
+                    <col style="width:110px" />
+                    <col style="width:100px" />
+                    <col style="width:150px" />
+                    <col style="width:100px" />
+                    <col style="width:200px" />
+                    <col style="width:110px" />
+                    <col style="width:110px" />
+                    <col style="width:120px" />
+                </colgroup>
+                <thead>
+                    <tr>
+                        <th>Trn Date</th>
+                        <th>Username</th>
+                        <th>UPC</th>
+                        <th>Group Code</th>
+                        <th>Division</th>
+                        <th style="text-align:center">Checked Qty</th>
+                        <th>LPMDT</th>
+                        <th>ORAPONO</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var r in FilteredDetailRows())
+                    {
+                        <tr>
+                            <td>@FmtDate(r.TrnDate)</td>
+                            <td>@r.Username</td>
+                            <td style="font-family:var(--font-mono)">@r.UPC</td>
+                            <td>@r.GroupCode</td>
+                            <td style="word-break:break-word">@r.Division</td>
+                            <td style="text-align:center">@r.CheckedQty.ToString("N0")</td>
+                            <td>@FmtNullableDate(r.Lpmdt)</td>
+                            <td>@r.OraPoNo</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+            </div>
+        </div>
+    }
 }
-else if (_view == "Detailed" && _detailRows.Count > 0)
+else
 {
-    <div class="aiwms-section">
-        <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:12px;">
-            <div style="background:var(--surface-1, #f7f7f5); border-radius:var(--r-sm); padding:12px 16px;">
-                <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">Total Items</div>
-                <div style="font-size:1.4rem; font-weight:800">@FilteredDetailRows().Count.ToString("N0")</div>
-            </div>
-            <div style="background:var(--surface-1, #f7f7f5); border-radius:var(--r-sm); padding:12px 16px;">
-                <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">Total Users</div>
-                <div style="font-size:1.4rem; font-weight:800">@FilteredDetailRows().Select(r => r.Username).Distinct(StringComparer.OrdinalIgnoreCase).Count().ToString("N0")</div>
-            </div>
-            <div style="background:var(--surface-1, #f7f7f5); border-radius:var(--r-sm); padding:12px 16px;">
-                <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">Total Checked Qty</div>
-                <div style="font-size:1.4rem; font-weight:800">@FilteredDetailRows().Sum(r => r.CheckedQty).ToString("N0")</div>
-            </div>
-        </div>
-    </div>
-
-    <div class="aiwms-section">
-        <div style="display:flex; gap:12px; align-items:end; margin-bottom:14px; flex-wrap:wrap">
-            <div style="flex:1; min-width:240px">
-                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">SEARCH (UPC / USERNAME / GROUP CODE / DIVISION / PO NO)</label>
-                <input @bind="_search" @bind:event="oninput" placeholder="Type to filter..." style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
+    @if (_view == "Summary" && _roboSummaryRows.Count > 0)
+    {
+        <div class="aiwms-section">
+            <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:12px;">
+                <div style="background:var(--surface-1, #f7f7f5); border-radius:var(--r-sm); padding:12px 16px;">
+                    <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">Total Divisions</div>
+                    <div style="font-size:1.4rem; font-weight:800">@FilteredRoboSummaryRows().Select(r => r.Division).Distinct(StringComparer.OrdinalIgnoreCase).Count().ToString("N0")</div>
+                </div>
+                <div style="background:var(--surface-1, #f7f7f5); border-radius:var(--r-sm); padding:12px 16px;">
+                    <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">Total Users</div>
+                    <div style="font-size:1.4rem; font-weight:800">@FilteredRoboSummaryRows().Select(r => r.Username).Distinct(StringComparer.OrdinalIgnoreCase).Count().ToString("N0")</div>
+                </div>
+                <div style="background:var(--surface-1, #f7f7f5); border-radius:var(--r-sm); padding:12px 16px;">
+                    <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">Total Qty</div>
+                    <div style="font-size:1.4rem; font-weight:800">@FilteredRoboSummaryRows().Sum(r => r.Qty).ToString("N0")</div>
+                </div>
             </div>
         </div>
 
-        <div class="aiwms-card-header">Detailed - @FilteredDetailRows().Count row(s)</div>
-        <div style="overflow-x:auto">
-        <table class="aiwms-table aiwms-table-dense" style="table-layout:fixed; width:100%">
-            <colgroup>
-                <col style="width:110px" />
-                <col style="width:100px" />
-                <col style="width:150px" />
-                <col style="width:100px" />
-                <col style="width:200px" />
-                <col style="width:110px" />
-                <col style="width:110px" />
-                <col style="width:120px" />
-            </colgroup>
-            <thead>
-                <tr>
-                    <th>Trn Date</th>
-                    <th>Username</th>
-                    <th>UPC</th>
-                    <th>Group Code</th>
-                    <th>Division</th>
-                    <th style="text-align:center">Checked Qty</th>
-                    <th>LPMDT</th>
-                    <th>ORAPONO</th>
-                </tr>
-            </thead>
-            <tbody>
-                @foreach (var r in FilteredDetailRows())
-                {
+        <div class="aiwms-section">
+            <div style="display:flex; gap:12px; align-items:end; margin-bottom:14px; flex-wrap:wrap">
+                <div style="flex:1; min-width:240px">
+                    <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">SEARCH (DIVISION / USERNAME)</label>
+                    <input @bind="_search" @bind:event="oninput" placeholder="Type to filter..." style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
+                </div>
+            </div>
+
+            <div class="aiwms-card-header">Summary (Robo) - @FilteredRoboSummaryRows().Count row(s)</div>
+            <div style="overflow-x:auto">
+            <table class="aiwms-table aiwms-table-dense" style="table-layout:fixed; width:100%">
+                <colgroup>
+                    <col style="width:140px" />
+                    <col style="width:260px" />
+                    <col style="width:150px" />
+                    <col style="width:140px" />
+                </colgroup>
+                <thead>
                     <tr>
-                        <td>@FmtDate(r.TrnDate)</td>
-                        <td>@r.Username</td>
-                        <td style="font-family:var(--font-mono)">@r.UPC</td>
-                        <td>@r.GroupCode</td>
-                        <td style="word-break:break-word">@r.Division</td>
-                        <td style="text-align:center">@r.CheckedQty.ToString("N0")</td>
-                        <td>@FmtNullableDate(r.Lpmdt)</td>
-                        <td>@r.OraPoNo</td>
+                        <th>Trn Date</th>
+                        <th>Division</th>
+                        <th>Username</th>
+                        <th style="text-align:center">Qty</th>
                     </tr>
-                }
-            </tbody>
-        </table>
+                </thead>
+                <tbody>
+                    @foreach (var r in FilteredRoboSummaryRows())
+                    {
+                        <tr>
+                            <td>@FmtDate(r.TrnDate)</td>
+                            <td style="word-break:break-word">@r.Division</td>
+                            <td>@r.Username</td>
+                            <td style="text-align:center">@r.Qty.ToString("N0")</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+            </div>
         </div>
-    </div>
+    }
+    else if (_view == "Detailed" && _roboDetailRows.Count > 0)
+    {
+        <div class="aiwms-section">
+            <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:12px;">
+                <div style="background:var(--surface-1, #f7f7f5); border-radius:var(--r-sm); padding:12px 16px;">
+                    <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">Total Items</div>
+                    <div style="font-size:1.4rem; font-weight:800">@FilteredRoboDetailRows().Count.ToString("N0")</div>
+                </div>
+                <div style="background:var(--surface-1, #f7f7f5); border-radius:var(--r-sm); padding:12px 16px;">
+                    <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">Total Users</div>
+                    <div style="font-size:1.4rem; font-weight:800">@FilteredRoboDetailRows().Select(r => r.Username).Distinct(StringComparer.OrdinalIgnoreCase).Count().ToString("N0")</div>
+                </div>
+                <div style="background:var(--surface-1, #f7f7f5); border-radius:var(--r-sm); padding:12px 16px;">
+                    <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">Total Qty</div>
+                    <div style="font-size:1.4rem; font-weight:800">@FilteredRoboDetailRows().Sum(r => r.Qty).ToString("N0")</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="aiwms-section">
+            <div style="display:flex; gap:12px; align-items:end; margin-bottom:14px; flex-wrap:wrap">
+                <div style="flex:1; min-width:240px">
+                    <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">SEARCH (ITEM CODE / USERNAME / GROUP CODE / GROUP NAME / DIVISION)</label>
+                    <input @bind="_search" @bind:event="oninput" placeholder="Type to filter..." style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
+                </div>
+            </div>
+
+            <div class="aiwms-card-header">Detailed (Robo) - @FilteredRoboDetailRows().Count row(s)</div>
+            <div style="overflow-x:auto">
+            <table class="aiwms-table aiwms-table-dense" style="table-layout:fixed; width:100%">
+                <colgroup>
+                    <col style="width:110px" />
+                    <col style="width:150px" />
+                    <col style="width:150px" />
+                    <col style="width:100px" />
+                    <col style="width:180px" />
+                    <col style="width:200px" />
+                    <col style="width:110px" />
+                </colgroup>
+                <thead>
+                    <tr>
+                        <th>Trn Date</th>
+                        <th>Item Code</th>
+                        <th>Username</th>
+                        <th>Group Code</th>
+                        <th>Group Name</th>
+                        <th>Division</th>
+                        <th style="text-align:center">Qty</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var r in FilteredRoboDetailRows())
+                    {
+                        <tr>
+                            <td>@FmtDate(r.TrnDate)</td>
+                            <td style="font-family:var(--font-mono)">@r.ItemCode</td>
+                            <td>@r.Username</td>
+                            <td>@r.GroupCode</td>
+                            <td style="word-break:break-word">@r.GroupName</td>
+                            <td style="word-break:break-word">@r.Division</td>
+                            <td style="text-align:center">@r.Qty.ToString("N0")</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+            </div>
+        </div>
+    }
 }
 
 @code {
+    private string _source = "Manual";
     private string _view = "Summary";
     private DateTime _from = DateTime.Today;
     private DateTime _to   = DateTime.Today;
@@ -197,16 +349,30 @@ else if (_view == "Detailed" && _detailRows.Count > 0)
     private string _search = "";
     private List<JafzaProductionSummaryRow> _summaryRows = new();
     private List<JafzaProductionDetailRow>  _detailRows  = new();
+    private List<JafzaRoboProductionSummaryRow> _roboSummaryRows = new();
+    private List<JafzaRoboProductionDetailRow>  _roboDetailRows  = new();
 
     private bool IsRangeValid => _from <= _to && (_to - _from).TotalDays <= 6;
 
-    private int CurrentRowCount => _view == "Summary" ? _summaryRows.Count : _detailRows.Count;
+    private int CurrentRowCount => (_source, _view) switch
+    {
+        ("Manual", "Summary") => _summaryRows.Count,
+        ("Manual", _)         => _detailRows.Count,
+        (_, "Summary")        => _roboSummaryRows.Count,
+        _                     => _roboDetailRows.Count
+    };
 
-    // Switching Report type re-runs the same From/To/Username search
+    // Switching Source or Report type re-runs the same From/To/Username search
     // automatically — no need to click Load again, same as the Production
     // Summary Report's Summary/Detailed toggle. The 7-day cap already keeps
     // Detailed's result size bounded, so unlike Counting Completion Report
     // this doesn't need a narrower-filter guard before auto-reloading.
+    private async Task SetSource(string source)
+    {
+        _source = source;
+        if (IsRangeValid) await LoadAsync();
+    }
+
     private async Task SetView(string view)
     {
         _view = view;
@@ -218,17 +384,34 @@ else if (_view == "Detailed" && _detailRows.Count > 0)
         if (!IsRangeValid) return;
         _loading = true; _message = ""; _isError = false;
         _summaryRows = new(); _detailRows = new();
+        _roboSummaryRows = new(); _roboDetailRows = new();
         try
         {
-            if (_view == "Summary")
+            if (_source == "Manual")
             {
-                _summaryRows = await Svc.GetSummaryAsync(_from, _to, _username);
-                if (_summaryRows.Count == 0) _message = "No rows for the selected filters.";
+                if (_view == "Summary")
+                {
+                    _summaryRows = await Svc.GetSummaryAsync(_from, _to, _username);
+                    if (_summaryRows.Count == 0) _message = "No rows for the selected filters.";
+                }
+                else
+                {
+                    _detailRows = await Svc.GetDetailAsync(_from, _to, _username);
+                    if (_detailRows.Count == 0) _message = "No rows for the selected filters.";
+                }
             }
             else
             {
-                _detailRows = await Svc.GetDetailAsync(_from, _to, _username);
-                if (_detailRows.Count == 0) _message = "No rows for the selected filters.";
+                if (_view == "Summary")
+                {
+                    _roboSummaryRows = await RoboSvc.GetSummaryAsync(_from, _to, _username);
+                    if (_roboSummaryRows.Count == 0) _message = "No rows for the selected filters.";
+                }
+                else
+                {
+                    _roboDetailRows = await RoboSvc.GetDetailAsync(_from, _to, _username);
+                    if (_roboDetailRows.Count == 0) _message = "No rows for the selected filters.";
+                }
             }
         }
         catch (Exception ex) { _message = ex.Message; _isError = true; }
@@ -244,7 +427,7 @@ else if (_view == "Detailed" && _detailRows.Count > 0)
             using var wb = new XLWorkbook();
             string name;
 
-            if (_view == "Summary")
+            if (_source == "Manual" && _view == "Summary")
             {
                 var ws = wb.AddWorksheet("Summary");
                 string[] headers = { "Trn Date", "Division", "Username", "Checked Qty" };
@@ -263,7 +446,7 @@ else if (_view == "Detailed" && _detailRows.Count > 0)
                 ws.Columns().AdjustToContents();
                 name = $"jafza-manual-production-summary-{_from:yyyyMMdd}-{_to:yyyyMMdd}.xlsx";
             }
-            else
+            else if (_source == "Manual")
             {
                 var ws = wb.AddWorksheet("Detailed");
                 string[] headers = { "Trn Date", "Username", "UPC", "Group Code", "Division", "Checked Qty", "LPMDT", "ORAPONO" };
@@ -285,6 +468,47 @@ else if (_view == "Detailed" && _detailRows.Count > 0)
                 }
                 ws.Columns().AdjustToContents();
                 name = $"jafza-manual-production-detailed-{_from:yyyyMMdd}-{_to:yyyyMMdd}.xlsx";
+            }
+            else if (_view == "Summary")
+            {
+                var ws = wb.AddWorksheet("Summary (Robo)");
+                string[] headers = { "Trn Date", "Division", "Username", "Qty" };
+                for (int i = 0; i < headers.Length; i++) ws.Cell(1, i + 1).Value = headers[i];
+                ws.Row(1).Style.Font.Bold = true;
+
+                int row = 2;
+                foreach (var r in FilteredRoboSummaryRows())
+                {
+                    ws.Cell(row, 1).Value = FmtDate(r.TrnDate);
+                    ws.Cell(row, 2).Value = r.Division;
+                    ws.Cell(row, 3).Value = r.Username;
+                    ws.Cell(row, 4).Value = r.Qty;
+                    row++;
+                }
+                ws.Columns().AdjustToContents();
+                name = $"jafza-robo-production-summary-{_from:yyyyMMdd}-{_to:yyyyMMdd}.xlsx";
+            }
+            else
+            {
+                var ws = wb.AddWorksheet("Detailed (Robo)");
+                string[] headers = { "Trn Date", "Item Code", "Username", "Group Code", "Group Name", "Division", "Qty" };
+                for (int i = 0; i < headers.Length; i++) ws.Cell(1, i + 1).Value = headers[i];
+                ws.Row(1).Style.Font.Bold = true;
+
+                int row = 2;
+                foreach (var r in FilteredRoboDetailRows())
+                {
+                    ws.Cell(row, 1).Value = FmtDate(r.TrnDate);
+                    ws.Cell(row, 2).Value = r.ItemCode;
+                    ws.Cell(row, 3).Value = r.Username;
+                    ws.Cell(row, 4).Value = r.GroupCode;
+                    ws.Cell(row, 5).Value = r.GroupName;
+                    ws.Cell(row, 6).Value = r.Division;
+                    ws.Cell(row, 7).Value = r.Qty;
+                    row++;
+                }
+                ws.Columns().AdjustToContents();
+                name = $"jafza-robo-production-detailed-{_from:yyyyMMdd}-{_to:yyyyMMdd}.xlsx";
             }
 
             using var ms = new MemoryStream();
@@ -313,6 +537,25 @@ else if (_view == "Detailed" && _detailRows.Count > 0)
             Matches(r.GroupCode, term) ||
             Matches(r.Division, term) ||
             Matches(r.OraPoNo, term)).ToList();
+    }
+
+    private List<JafzaRoboProductionSummaryRow> FilteredRoboSummaryRows()
+    {
+        if (string.IsNullOrWhiteSpace(_search)) return _roboSummaryRows;
+        var term = _search.Trim();
+        return _roboSummaryRows.Where(r => Matches(r.Division, term) || Matches(r.Username, term)).ToList();
+    }
+
+    private List<JafzaRoboProductionDetailRow> FilteredRoboDetailRows()
+    {
+        if (string.IsNullOrWhiteSpace(_search)) return _roboDetailRows;
+        var term = _search.Trim();
+        return _roboDetailRows.Where(r =>
+            Matches(r.ItemCode, term) ||
+            Matches(r.Username, term) ||
+            Matches(r.GroupCode, term) ||
+            Matches(r.GroupName, term) ||
+            Matches(r.Division, term)).ToList();
     }
 
     private static bool Matches(string? value, string term) =>
