@@ -106,10 +106,7 @@ else if (VisibleRows().Count > 0)
                     <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary); margin-bottom:6px;">@cs.Country</div>
                     <div style="display:grid; grid-template-columns: 2fr 1fr 1fr 1fr 1fr 1fr; gap:12px;">
                         @MetricCard("Store Qty",      cs.StoreQty.ToString("N0"),     "#fdf2f8", "#9d174d", false)
-                        @if (cs.TransferQty > 0)
-                        {
-                            @MetricCard("Transfer Qty", cs.TransferQty.ToString("N0"), "#ccfbf1", "#0f766e", false)
-                        }
+                        @MetricCard("Transfer Qty",   cs.TransferQty.ToString("N0"),  "#ccfbf1", "#0f766e", false)
                         @MetricCard("Total Scanned",  cs.TotalScanned.ToString("N0"), "#dbeafe", "#1e40af", false)
                         @MetricCard("LPM",            cs.Lpm.ToString("N0"),          "#dcfce7", "#166534", false)
                         @MetricCard("Non-LPM",        cs.NonLpm.ToString("N0"),       "#f3e8ff", "#6b21a8", false)
