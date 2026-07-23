@@ -1,0 +1,186 @@
+@page "/reports/in-transit"
+@rendermode RenderMode.InteractiveServer
+@using System.Text
+@using Wms.Core
+@using Wms.Data.Lpm
+@attribute [Authorize(Policy = MenuKeys.RPT_IN_TRANSIT)]
+@inject InTransitReportService Svc
+@inject ICurrentUser CurrentUser
+@inject Microsoft.JSInterop.IJSRuntime JS
+
+<PageTitle>WMS — In-Transit Report</PageTitle>
+
+<div class="aiwms-page-header">
+    <h2>In-Transit Report</h2>
+    <p>Containers released from UAE and not yet receipted at destination, per country.</p>
+</div>
+
+<div class="aiwms-section" style="padding:10px 16px;">
+    <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:flex-end;">
+        <div style="flex:0 0 160px;">
+            <label class="aiwms-filter-label">COUNTRY</label>
+            <select @bind="_country" style="width:100%; padding:5px 7px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:12px; background:white">
+                <option value="">BFL Group</option>
+                @foreach (var c in _countries) { <option value="@c">@c.ToUpperInvariant()</option> }
+            </select>
+        </div>
+        <div style="display:flex; gap:10px;">
+            <button class="aiwms-btn aiwms-btn-primary" @onclick="LoadAsync" disabled="@_loading">
+                @(_loading ? "Loading…" : "Load")
+            </button>
+            <button class="aiwms-btn aiwms-btn-secondary" @onclick="ExportCsvAsync" disabled="@(_loading || _rows.Count == 0)">
+                Export to Excel
+            </button>
+        </div>
+        @if (_rows.Count > 0)
+        {
+            <span style="font-size:12px; color:var(--text-secondary); align-self:center">@_rows.Count rows</span>
+        }
+    </div>
+
+    @if (!string.IsNullOrEmpty(_message))
+    {
+        <div class="aiwms-alert @(_isError ? "error" : "info")" style="margin-top:12px">@_message</div>
+    }
+</div>
+
+@if (_rows.Count > 0)
+{
+    <div class="aiwms-section">
+        <table class="aiwms-table aiwms-table-dense" style="table-layout:fixed; width:100%;">
+            <colgroup>
+                <col style="width:70px;" />
+                <col style="width:80px;" />
+                <col style="width:95px;" />
+                <col style="width:95px;" />
+                <col style="width:70px;" />
+                <col style="width:80px;" />
+                <col style="width:80px;" />
+                <col style="width:70px;" />
+                <col style="width:210px;" />
+                <col style="width:160px;" />
+                <col style="width:160px;" />
+                <col style="width:160px;" />
+            </colgroup>
+            <thead>
+                <tr>
+                    <th>Country</th>
+                    <th>GINNO</th>
+                    <th>Released On</th>
+                    <th>ETA</th>
+                    <th style="text-align:right;">Ship No.</th>
+                    <th style="text-align:right;">Quantity</th>
+                    <th style="text-align:right;">Box Count</th>
+                    <th>From</th>
+                    <th>Remarks</th>
+                    <th>Division</th>
+                    <th>Department</th>
+                    <th>Brand</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var r in _rows)
+                {
+                    <tr>
+                        <td>@r.Country</td>
+                        <td>@r.GinNo</td>
+                        <td>@r.ReleasedDate.ToString("dd/MM/yyyy")</td>
+                        <td>@(r.EtaDate?.ToString("dd/MM/yyyy") ?? "")</td>
+                        <td style="text-align:right;">@r.ShipNo</td>
+                        <td style="text-align:right;">@r.TotalQty.ToString("N0")</td>
+                        <td style="text-align:right;">@r.TransferCount.ToString("N0")</td>
+                        <td>@r.Whouse</td>
+                        <td>@r.Remarks</td>
+                        <td style="word-break:break-word; white-space:normal;">@r.Division</td>
+                        <td style="word-break:break-word; white-space:normal;">@r.Department</td>
+                        <td style="word-break:break-word; white-space:normal;">@r.Brand</td>
+                    </tr>
+                }
+            </tbody>
+            <tfoot>
+                <tr style="font-weight:600; border-top:2px solid var(--border-default);">
+                    <td colspan="5" style="text-align:right;">Total</td>
+                    <td style="text-align:right;">@_rows.Sum(r => r.TotalQty).ToString("N0")</td>
+                    <td style="text-align:right;">@_rows.Sum(r => r.TransferCount).ToString("N0")</td>
+                    <td colspan="5"></td>
+                </tr>
+            </tfoot>
+        </table>
+    </div>
+}
+
+@code {
+    private List<InTransitReportRow> _rows = new();
+    private List<string> _countries = new();
+
+    private string _country = "";
+
+    // Not user-facing — "in-transit" is defined by not-yet-receipted, not by a date
+    // window, but ExportPass.Trndate still needs a floor to bound the scan.
+    private static readonly DateTime Since = new(DateTime.Today.Year, 1, 1);
+
+    private bool   _loading;
+    private string _message = "";
+    private bool   _isError;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await CurrentUser.EnsureLoadedAsync();
+        _countries = await Svc.GetCountriesAsync();
+
+        // Default to the signed-in user's own country when it's one of the export
+        // destinations in the list. UAE (the export origin, not in _countries) and
+        // any user with no country fall through to "BFL Group" (_country stays "").
+        if (!string.IsNullOrWhiteSpace(CurrentUser.Country) &&
+            _countries.Contains(CurrentUser.Country, StringComparer.OrdinalIgnoreCase))
+        {
+            _country = CurrentUser.Country!;
+        }
+    }
+
+    private async Task LoadAsync()
+    {
+        _loading = true; _message = ""; _rows.Clear();
+        await InvokeAsync(StateHasChanged);
+        try
+        {
+            var filter = new InTransitReportFilter(
+                Country: string.IsNullOrWhiteSpace(_country) ? null : _country,
+                Since:   Since);
+
+            _rows = await Svc.GetInTransitAsync(filter);
+            ShowInfo($"Loaded {_rows.Count} rows.");
+        }
+        catch (Exception ex) { ShowError($"Load failed: {ex.Message}"); }
+        finally { _loading = false; }
+    }
+
+    private async Task ExportCsvAsync()
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("Country,GINNO,Released On,ETA,Ship No.,Quantity,Box Count,From,Remarks,Division,Department,Brand");
+        foreach (var r in _rows)
+            sb.AppendLine($"{Csv(r.Country)},{Csv(r.GinNo)},{r.ReleasedDate:yyyy-MM-dd},{(r.EtaDate.HasValue ? r.EtaDate.Value.ToString("yyyy-MM-dd") : "")}," +
+                          $"{Csv(r.ShipNo)},{r.TotalQty},{r.TransferCount},{Csv(r.Whouse)},{Csv(r.Remarks)}," +
+                          $"{Csv(r.Division)},{Csv(r.Department)},{Csv(r.Brand)}");
+        sb.AppendLine($",,,,Total,{_rows.Sum(r => r.TotalQty)},{_rows.Sum(r => r.TransferCount)},,,,,");
+
+        var b64      = Convert.ToBase64String(Encoding.UTF8.GetBytes(sb.ToString()));
+        var country  = string.IsNullOrWhiteSpace(_country) ? "BFLGroup" : _country;
+        var filename = $"InTransit_{country}_{DateTime.Today:yyyyMMdd}.csv";
+        await JS.InvokeVoidAsync("eval",
+            $"(function(){{var a=document.createElement('a');a.href='data:text/csv;base64,{b64}';" +
+            $"a.download='{filename}';document.body.appendChild(a);a.click();document.body.removeChild(a);}})();");
+    }
+
+    private static string Csv(string? s)
+    {
+        if (s is null) return "";
+        return (s.Contains(',') || s.Contains('"') || s.Contains('\n'))
+            ? "\"" + s.Replace("\"", "\"\"") + "\""
+            : s;
+    }
+
+    private void ShowError(string msg) { _message = msg; _isError = true; }
+    private void ShowInfo(string msg)  { _message = msg; _isError = false; }
+}
