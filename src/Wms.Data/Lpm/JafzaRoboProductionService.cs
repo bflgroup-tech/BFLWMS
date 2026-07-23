@@ -18,10 +18,12 @@ namespace Wms.Data.Lpm;
 ///      LEFT(TrnTime,2) IN ('00'..'04')) — same shift-boundary rule as the
 ///      Manual report.
 ///   3) Username → display name: if it already looks like a robot login
-///      ('ROBO%') keep it as-is; otherwise resolve via FABSMAIN..[user]
-///      (UserName → RecStartingNo, used as a fallback empcode) and then
-///      PAYROLL..Employee (empcode → EmpName) — both FABSMAIN and PAYROLL
-///      only exist on this robotics server, not on OnPremBackupDB.
+///      ('ROBO%') keep it as-is; otherwise fall back to the raw empcode.
+///      The legacy FABSMAIN..[user] and PAYROLL..Employee name lookups are
+///      NOT ported — neither table is reachable from the JafazaRoboDb
+///      connection ("Invalid object name 'FABSMAIN..user'" confirmed;
+///      PAYROLL removed proactively for the same reason — this is a
+///      dedicated robotics server, unlikely to also host general HR data).
 ///   4) GroupCode: hodata..itemmaster first, USA..UPCbarcodes as a fallback
 ///      when itemmaster has no match.
 ///   5) Division: USA..USAPRIORITY.DivisionY via GroupCode — deduplicated
@@ -50,8 +52,8 @@ public class JafzaRoboProductionService(IOnPremConnectionResolver resolver)
         IF OBJECT_ID('tempdb..#pair')  IS NOT NULL DROP TABLE #pair;
         IF OBJECT_ID('tempdb..#div')   IS NOT NULL DROP TABLE #div;
 
-        CREATE TABLE #pair (area varchar(10), trndate smalldatetime, trntime varchar(15),
-                            itemcode varchar(20), empcode varchar(20), qty int);
+        CREATE TABLE #pair (area varchar(20), trndate smalldatetime, trntime varchar(30),
+                            itemcode varchar(50), empcode varchar(50), qty int);
 
         INSERT INTO #pair (area, trndate, trntime, itemcode, empcode, qty)
         SELECT 'AUTO', TrnDate, TrnTime, itemcode, username, COUNT(*)
@@ -60,20 +62,12 @@ public class JafzaRoboProductionService(IOnPremConnectionResolver resolver)
            AND (@username IS NULL OR username = @username)
          GROUP BY TrnDate, TrnTime, username, itemcode;
 
-        ALTER TABLE #pair ADD grp varchar(5), empname varchar(150), div varchar(200);
+        ALTER TABLE #pair ADD grp varchar(10), empname varchar(200), div varchar(200);
 
         UPDATE #pair SET empname = empcode WHERE empcode LIKE 'ROBO%';
 
         UPDATE #pair SET trndate = DATEADD(day, -1, trndate)
          WHERE LEFT(trntime, 2) IN ('00','01','02','03','04');
-
-        UPDATE a SET a.empcode = b.RecStartingNo
-          FROM #pair a JOIN FABSMAIN..[user] b ON a.empcode = b.UserName
-         WHERE ISNULL(a.empname, '') = '' AND ISNULL(b.RecStartingNo, '') <> '';
-
-        UPDATE a SET a.empname = b.EmpName
-          FROM #pair a JOIN PAYROLL..Employee b ON a.empcode = b.empcode
-         WHERE ISNULL(a.empname, '') = '';
 
         UPDATE a SET a.grp = b.GroupCode
           FROM #pair a JOIN hodata..itemmaster b ON a.itemcode = b.ItemCode;
