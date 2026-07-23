@@ -24,13 +24,16 @@ namespace Wms.Data.Lpm;
 ///      connection ("Invalid object name 'FABSMAIN..user'" confirmed;
 ///      PAYROLL removed proactively for the same reason — this is a
 ///      dedicated robotics server, unlikely to also host general HR data).
-///   4) GroupCode: hodata..itemmaster first, USA..UPCbarcodes as a fallback
-///      when itemmaster has no match.
+///   4) GroupCode: USA..UPCbarcodes via ItemCode. The legacy hodata..itemmaster
+///      lookup (tried first, before the UPCbarcodes fallback) is NOT ported —
+///      hodata isn't reachable from this connection either
+///      ("Invalid object name 'hodata..itemmaster'").
 ///   5) Division: USA..USAPRIORITY.DivisionY via GroupCode — deduplicated
 ///      into its own temp table first (unlike the legacy scalar subquery)
 ///      since USAPRIORITY can have more than one row per GroupCode, which
 ///      would otherwise raise "Subquery returned more than 1 value".
-///   6) GroupName (Detailed only): hodata..itemgroup.description via GroupCode.
+///   6) GroupName (Detailed only): NOT populated (always null) — the legacy
+///      source was hodata..itemgroup.description, same unreachable database.
 /// </summary>
 public class JafzaRoboProductionService(IOnPremConnectionResolver resolver)
 {
@@ -70,11 +73,7 @@ public class JafzaRoboProductionService(IOnPremConnectionResolver resolver)
          WHERE LEFT(trntime, 2) IN ('00','01','02','03','04');
 
         UPDATE a SET a.grp = b.GroupCode
-          FROM #pair a JOIN hodata..itemmaster b ON a.itemcode = b.ItemCode;
-
-        UPDATE a SET a.grp = b.GroupCode
-          FROM #pair a JOIN USA..UPCbarcodes b ON a.itemcode = b.ItemCode
-         WHERE ISNULL(a.grp, '') = '';
+          FROM #pair a JOIN USA..UPCbarcodes b ON a.itemcode = b.ItemCode;
 
         SELECT DISTINCT GroupCode, DivisionY
           INTO #div
@@ -122,7 +121,7 @@ public class JafzaRoboProductionService(IOnPremConnectionResolver resolver)
                 p.itemcode AS ItemCode,
                 Username   = ISNULL(NULLIF(p.empname, ''), p.empcode),
                 GroupCode  = p.grp,
-                GroupName  = (SELECT ig.description FROM hodata..itemgroup ig WHERE ig.GroupCode = p.grp),
+                GroupName  = CAST(NULL AS varchar(200)),
                 Division   = p.div,
                 Qty        = SUM(p.qty)
               FROM #pair p
