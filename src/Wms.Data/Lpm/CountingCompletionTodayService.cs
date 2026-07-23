@@ -60,6 +60,11 @@ public class CountingCompletionTodayService(IOnPremConnectionResolver resolver)
 
         foreach (var country in countries)
         {
+            // MALAYSIA's connection string is configured but its server doesn't have
+            // the Online database this report needs — excluded for now until that's
+            // sorted out, rather than surfacing a raw SQL error to the user.
+            if (string.Equals(country, "MALAYSIA", StringComparison.OrdinalIgnoreCase)) continue;
+
             string? connStr;
             if (string.Equals(country, "UAE", StringComparison.OrdinalIgnoreCase))
             {
@@ -72,11 +77,20 @@ public class CountingCompletionTodayService(IOnPremConnectionResolver resolver)
             }
             if (string.IsNullOrWhiteSpace(connStr)) continue; // not configured — skip silently
 
-            await using var conn = new SqlConnection(connStr);
-            await conn.OpenAsync(ct);
-            var rows = await conn.QueryAsync<RawRow>(new CommandDefinition(
-                RawQuerySql, new { today }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-            all.AddRange(rows.Select(r => new CountryRow(country, r)));
+            try
+            {
+                await using var conn = new SqlConnection(connStr);
+                await conn.OpenAsync(ct);
+                var rows = await conn.QueryAsync<RawRow>(new CommandDefinition(
+                    RawQuerySql, new { today }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+                all.AddRange(rows.Select(r => new CountryRow(country, r)));
+            }
+            catch
+            {
+                // That country's server is reachable but doesn't have what this query
+                // needs (e.g. no Online database) — skip it rather than failing the
+                // whole report for every other selected country.
+            }
         }
         return all;
     }
