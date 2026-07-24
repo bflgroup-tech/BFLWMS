@@ -72,7 +72,7 @@ public record AllocationRow(
     string?  SkuMaxBand       = null,    // 'MinMin' / 'MinMax' / 'IdealMax' / 'MaxMax' — the tier the picker landed on at the LAST pass that wrote this row.
     decimal? AvgOtsMin        = null,    // AvgOts - OTSBandPct — lower edge of the IdealMax band for this item.
     decimal? AvgOtsMax        = null,    // AvgOts + OTSBandPct — upper edge of the IdealMax band for this item.
-    int?     InitialOtsQty    = null,    // OtsQtyToday from WmsOtsPoAllocationRun (pre-decrement) for this (Store, Div).
+    decimal? InitialOtsPct    = null,    // OtsPercentToday from WmsOtsPoAllocationRun (static, matches OTS PO Allocation report %).
     int?     Soh              = null,    // per-(Store, Item) SOH from racks.LPM_locstock used in cap = tier - SOH.
     int?     RunningOtsQty    = null);   // runningOtsQty at the moment this row was written (after prior-item decrements).
 
