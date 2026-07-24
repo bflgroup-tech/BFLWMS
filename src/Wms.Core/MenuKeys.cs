@@ -38,6 +38,7 @@ public static class MenuKeys
     public const string ADMIN_WH_MASTER           = "ADMIN_WH_MASTER";
     public const string ADMIN_AUDIT_LOG           = "ADMIN_AUDIT_LOG";
     public const string ADMIN_NIGHTLY_BATCHES     = "ADMIN_NIGHTLY_BATCHES";
+    public const string ADMIN_PENDING_GOODS_RECEIPT_EMAIL = "ADMIN_PENDING_GOODS_RECEIPT_EMAIL";
 
     /// <summary>One catalogue entry per menu item.</summary>
     /// <param name="Category">
@@ -93,6 +94,7 @@ public static class MenuKeys
         new MenuEntry(ADMIN_WH_MASTER,       "Admin",               "WH Master",                 "admin/wh-master",           new[] { Roles.Admin }),
         new MenuEntry(ADMIN_AUDIT_LOG,       "Admin",               "Audit Log",                 "admin/audit",               new[] { Roles.Admin }),
         new MenuEntry(ADMIN_NIGHTLY_BATCHES, "Admin",               "Nightly Batches Status",    "admin/nightly-batches",     new[] { Roles.Admin }),
+        new MenuEntry(ADMIN_PENDING_GOODS_RECEIPT_EMAIL, "Admin",   "Pending Goods Receipt Email","admin/pending-goods-receipt-email", new[] { Roles.Admin }),
     };
 
     /// <summary>Claim type emitted per granted menu by WmsClaimsTransformer.</summary>
