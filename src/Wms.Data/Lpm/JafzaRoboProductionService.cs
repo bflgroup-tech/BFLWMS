@@ -22,11 +22,12 @@ namespace Wms.Data.Lpm;
 ///      LEFT(TrnTime,2) IN ('00'..'04')) — same shift-boundary rule as the
 ///      Manual report — folded into the same GROUP BY so TrnTime itself
 ///      doesn't need to survive past this query.
-///   2) EmpName: 'ROBO%' logins display as-is; everything else resolves via
-///      FABSMAIN.dbo.[user] (UserName -> RecStartingNo). The legacy
-///      PAYROLL.dbo.Employee follow-up lookup (RecStartingNo -> EmpName)
-///      is NOT ported — PAYROLL doesn't exist on this SQL Server instance
-///      at all (confirmed), so RecStartingNo is shown as-is.
+///   2) EmpName: not ported. 'ROBO%' logins display as-is; everything else
+///      falls back to the raw empcode/username. The legacy FABSMAIN.dbo.[user]
+///      and PAYROLL.dbo.Employee lookups are NOT ported — FABSMAIN exists on
+///      this server but the app's login has no GRANT to it ("The server
+///      principal ... is not able to access the database 'FABSMAIN'"), and
+///      PAYROLL doesn't exist on this instance at all.
 ///   3) GroupCode: USA.dbo.UPCBarCodes.GroupCode via ItemCode. The legacy
 ///      hodata.dbo.itemmaster lookup (tried first) is NOT ported — no
 ///      practical difference observed once resolved against LOGBACKUP.
@@ -80,74 +81,50 @@ public class JafzaRoboProductionService(IOnPremConnectionResolver resolver)
     }
 
     private record EnrichmentLookups(
-        Dictionary<string, string?> EmpNameByCode,
         Dictionary<string, string?> GroupByItem,
         Dictionary<string, string?> DivByGroup,
         Dictionary<string, string?> GroupNameByGroup);
 
     private async Task<EnrichmentLookups> EnrichAsync(IReadOnlyList<RawPairRow> raw, CancellationToken ct)
     {
-        var empNameByCode  = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
         var groupByItem    = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
         var divByGroup     = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
         var groupNameByGroup = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
 
-        var nonRoboCodes = raw.Select(r => r.EmpCode)
-            .Where(e => !string.IsNullOrWhiteSpace(e) && !e.StartsWith("ROBO", StringComparison.OrdinalIgnoreCase))
-            .Distinct().ToArray();
         var itemCodes = raw.Select(r => r.ItemCode).Where(i => !string.IsNullOrWhiteSpace(i)).Distinct().ToArray();
-        if (nonRoboCodes.Length == 0 && itemCodes.Length == 0)
-            return new EnrichmentLookups(empNameByCode, groupByItem, divByGroup, groupNameByGroup);
+        if (itemCodes.Length == 0)
+            return new EnrichmentLookups(groupByItem, divByGroup, groupNameByGroup);
 
         await using var c = OpenOnPremBackup();
 
-        if (nonRoboCodes.Length > 0)
+        var groupRows = await c.QueryAsync<(string Itemcode, string? GroupCode)>(new CommandDefinition(@"
+            SELECT Itemcode, GroupCode = MAX(GroupCode)
+              FROM USA.dbo.UPCBarCodes
+             WHERE Itemcode IN @codes
+             GROUP BY Itemcode",
+            new { codes = itemCodes }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        foreach (var r in groupRows) groupByItem[r.Itemcode] = r.GroupCode;
+
+        var groupCodes = groupByItem.Values.Where(g => !string.IsNullOrWhiteSpace(g)).Distinct().ToArray()!;
+        if (groupCodes.Length > 0)
         {
-            var empRows = await c.QueryAsync<(string UserName, string? RecStartingNo)>(new CommandDefinition(@"
-                SELECT UserName, RecStartingNo
-                  FROM FABSMAIN.dbo.[user]
-                 WHERE UserName IN @codes",
-                new { codes = nonRoboCodes }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-            foreach (var r in empRows)
-                if (!string.IsNullOrWhiteSpace(r.RecStartingNo)) empNameByCode[r.UserName] = r.RecStartingNo;
+            var divRows = await c.QueryAsync<(string GroupCode, string? DivisionY)>(new CommandDefinition(@"
+                SELECT DISTINCT GroupCode, DivisionY
+                  FROM USA.dbo.USAPriority
+                 WHERE GroupCode IN @codes",
+                new { codes = groupCodes }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            foreach (var r in divRows) divByGroup[r.GroupCode] = r.DivisionY;
+
+            var nameRows = await c.QueryAsync<(string GroupCode, string? Description)>(new CommandDefinition(@"
+                SELECT GroupCode, Description
+                  FROM hodata.dbo.itemgroup
+                 WHERE GroupCode IN @codes",
+                new { codes = groupCodes }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            foreach (var r in nameRows) groupNameByGroup[r.GroupCode] = r.Description;
         }
 
-        if (itemCodes.Length > 0)
-        {
-            var groupRows = await c.QueryAsync<(string Itemcode, string? GroupCode)>(new CommandDefinition(@"
-                SELECT Itemcode, GroupCode = MAX(GroupCode)
-                  FROM USA.dbo.UPCBarCodes
-                 WHERE Itemcode IN @codes
-                 GROUP BY Itemcode",
-                new { codes = itemCodes }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-            foreach (var r in groupRows) groupByItem[r.Itemcode] = r.GroupCode;
-
-            var groupCodes = groupByItem.Values.Where(g => !string.IsNullOrWhiteSpace(g)).Distinct().ToArray()!;
-            if (groupCodes.Length > 0)
-            {
-                var divRows = await c.QueryAsync<(string GroupCode, string? DivisionY)>(new CommandDefinition(@"
-                    SELECT DISTINCT GroupCode, DivisionY
-                      FROM USA.dbo.USAPriority
-                     WHERE GroupCode IN @codes",
-                    new { codes = groupCodes }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-                foreach (var r in divRows) divByGroup[r.GroupCode] = r.DivisionY;
-
-                var nameRows = await c.QueryAsync<(string GroupCode, string? Description)>(new CommandDefinition(@"
-                    SELECT GroupCode, Description
-                      FROM hodata.dbo.itemgroup
-                     WHERE GroupCode IN @codes",
-                    new { codes = groupCodes }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-                foreach (var r in nameRows) groupNameByGroup[r.GroupCode] = r.Description;
-            }
-        }
-
-        return new EnrichmentLookups(empNameByCode, groupByItem, divByGroup, groupNameByGroup);
+        return new EnrichmentLookups(groupByItem, divByGroup, groupNameByGroup);
     }
-
-    private static string ResolveUsername(RawPairRow r, EnrichmentLookups lk) =>
-        r.EmpCode.StartsWith("ROBO", StringComparison.OrdinalIgnoreCase)
-            ? r.EmpCode
-            : lk.EmpNameByCode.GetValueOrDefault(r.EmpCode) ?? r.EmpCode;
 
     /// <summary>Division-wise summary — one row per (TrnDate, Division, Username).</summary>
     public async Task<List<JafzaRoboProductionSummaryRow>> GetSummaryAsync(
@@ -162,7 +139,7 @@ public class JafzaRoboProductionService(IOnPremConnectionResolver resolver)
             {
                 r.TrnDate,
                 r.Qty,
-                Username = ResolveUsername(r, lk),
+                Username = r.EmpCode,
                 Division = lk.DivByGroup.GetValueOrDefault(lk.GroupByItem.GetValueOrDefault(r.ItemCode) ?? "")
             })
             .Where(x => !string.IsNullOrWhiteSpace(x.Division))
@@ -193,7 +170,7 @@ public class JafzaRoboProductionService(IOnPremConnectionResolver resolver)
                     r.TrnDate,
                     r.ItemCode,
                     r.Qty,
-                    Username  = ResolveUsername(r, lk),
+                    Username  = r.EmpCode,
                     GroupCode = groupCode,
                     GroupName = string.IsNullOrWhiteSpace(groupCode) ? null : lk.GroupNameByGroup.GetValueOrDefault(groupCode),
                     Division  = string.IsNullOrWhiteSpace(groupCode) ? null : lk.DivByGroup.GetValueOrDefault(groupCode)
