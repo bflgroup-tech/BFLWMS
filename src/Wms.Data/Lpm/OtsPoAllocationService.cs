@@ -681,33 +681,30 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         var anchorKey = aY * 100 + aW;
 
         // 1c) Refresh MonthlyWeightage on every LPM_Weekly_SalesAmt row from
-        //     LPM_MonthlyWeight for the picked RunMonth so the stored value
-        //     stays a single-source recon check for the current Generate run.
-        //     Rows in periods without a configured (RunMonth, PeriodMonth)
-        //     rule get MonthlyWeightage = NULL and drop out of the SUM below.
-        //     Country filter locks to 'UAE' since that's the sole country
-        //     populated in the current config; change here if per-country
-        //     rules land later. UpdatedTS is stamped in GST.
+        //     LPM_WeeklyWeights (per-week WeightPct, keyed by (Country, Year, Week))
+        //     so the stored value stays a single-source recon check for the current
+        //     Generate run. Rows without a matching (Year, Week) config row get
+        //     MonthlyWeightage = NULL and drop out of the SUM below. Country
+        //     filter locks to 'UAE' — the sole country populated in the current
+        //     config; extend here if per-country rules land later. UpdatedTS
+        //     stamped in GST.
         await c.ExecuteAsync(new CommandDefinition(@"
             UPDATE ws
-               SET MonthlyWeightage = mw.WeightPct,
+               SET MonthlyWeightage = ww.WeightPct,
                    UpdatedTS = DATEADD(hour, 4, SYSUTCDATETIME())
               FROM dbo.LPM_Weekly_SalesAmt ws
-              LEFT JOIN dbo.LPM_MonthlyWeight mw WITH (NOLOCK)
-                     ON mw.Country     = 'UAE'
-                    AND mw.RunYear     = @runYear
-                    AND mw.RunMonth    = @runMonth
-                    AND mw.PeriodYear  = ws.Year1
-                    AND mw.PeriodMonth = ws.Month1",
-            new { runYear = year, runMonth = month },
+              LEFT JOIN dbo.LPM_WeeklyWeights ww WITH (NOLOCK)
+                     ON ww.Country = 'UAE'
+                    AND ww.Year1   = ws.Year1
+                    AND ww.Week    = ws.Week",
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
 
         // 1d) Per (StoreID, DivCode), sum SalesAmt * MonthlyWeightage over
         //     the up-to-12 most recent LPM_Weekly_SalesAmt rows at/before the
-        //     anchor. MonthlyWeightage is now the RunMonth->PeriodMonth
-        //     WeightPct (populated by 1c above), so this straight product
-        //     gives 0.25 x AprilTotal + 0.30 x MayTotal + 0.45 x JuneTotal
-        //     etc. for a July run.
+        //     anchor. MonthlyWeightage is now the per-week WeightPct from
+        //     LPM_WeeklyWeights (populated by 1c above). Since 12 weeks of
+        //     weights are configured to sum to 1.0, this SUM directly yields
+        //     the weighted-average monthly sales.
         //
         //     Sort key is (Year1 DESC, Week DESC) to match wk being a
         //     fiscal-year-resetting week number. Stores with fewer than 12
