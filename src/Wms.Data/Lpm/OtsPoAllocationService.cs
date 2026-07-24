@@ -84,7 +84,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
     /// never generated. Used by the razor page to show "last generated" info.</summary>
     public async Task<DateTime?> GetLastGeneratedTsAsync(int month, int year, CancellationToken ct = default)
     {
-        await using var c = OpenWms();
+        await using var c = OpenOnPremBackup();
         return await c.ExecuteScalarAsync<DateTime?>(new CommandDefinition(@"
             SELECT MAX(RunTS) FROM dbo.WmsOtsPoAllocationRun WITH (NOLOCK)
              WHERE [Year] = @year AND [Month] = @month",
@@ -141,7 +141,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
     /// Used by the razor page's Rundate picker so operators can load prior days.</summary>
     public async Task<List<DateTime>> GetAvailableRunDatesAsync(int month, int year, CancellationToken ct = default)
     {
-        await using var c = OpenWms();
+        await using var c = OpenOnPremBackup();
         var rows = await c.QueryAsync<DateTime>(new CommandDefinition(@"
             SELECT DISTINCT OTSDate FROM dbo.WmsOtsPoAllocationRun WITH (NOLOCK)
              WHERE [Year] = @year AND [Month] = @month
@@ -178,7 +178,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                {dateClause}
                {divClause}
              ORDER BY Country, StoreID, DivCode";
-        await using var c = OpenWms();
+        await using var c = OpenOnPremBackup();
         var rows = await c.QueryAsync<PersistedRow>(new CommandDefinition(
             sql, new { month, year, ct = filter, divs = divisions?.ToArray(), dt = otsDate?.Date },
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
@@ -226,7 +226,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         var nowGst   = DateTime.UtcNow.AddHours(4);
         var otsDate  = nowGst.Date;   // today (GST), no time
 
-        await using var c = OpenWms();
+        await using var c = OpenOnPremBackup();
         await using var tx = (SqlTransaction)await c.BeginTransactionAsync(ct);
         try
         {
