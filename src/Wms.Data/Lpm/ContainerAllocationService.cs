@@ -1109,6 +1109,9 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                     var positives = eligible.Select(StaticOtsPct).Where(p => p > 0).ToList();
                     var avgOts = positives.Count > 0 ? positives.Average() : 0.0;
                     var avgOtsDecimal = (decimal)Math.Round(avgOts, 2);
+                    // IdealMax band edges for this item (stamped on every row for audit).
+                    var avgOtsMinDecimal = (decimal)Math.Round(avgOts - otsBandPct, 2);
+                    var avgOtsMaxDecimal = (decimal)Math.Round(avgOts + otsBandPct, 2);
 
                     // Materialise the ECOM pre-alloc row now that avgOtsDecimal is known.
                     if (ecomPreAllocTake > 0)
@@ -1146,23 +1149,24 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                     // subtracts per-(Store, Item) SOH from LPM_locstock.
                     // eligible has already been filtered for "no band" / "no VG";
                     // this call assumes a band exists.
-                    (int Raw, int Cap) SkuMaxRawAndCapFor(OtsRunLookupRow r)
+                    (int Raw, int Cap, string TierName) SkuMaxRawAndCapFor(OtsRunLookupRow r)
                     {
                         var bands = skuMaxBandsByKey[(r.DivCode, r.VolumeGroup ?? "")];
                         (int From, int To, int? MinMin, int? MinMax, int? IdealMax, int? MaxMax) b = default;
                         foreach (var x in bands)
                             if (line.Qty >= x.From && line.Qty <= x.To) { b = x; break; }
                         var ots = LiveOtsPct(r);
-                        var tier = (ots switch
+                        var (tierValue, tierName) = ots switch
                         {
-                            < 0                                      => b.MinMin,
-                            _ when ots <  avgOts - otsBandPct        => b.MinMax,
-                            _ when ots <= avgOts + otsBandPct        => b.IdealMax,
-                            _                                        => b.MaxMax,
-                        }) ?? 0;
+                            < 0                                      => (b.MinMin, "MinMin"),
+                            _ when ots <  avgOts - otsBandPct        => (b.MinMax, "MinMax"),
+                            _ when ots <= avgOts + otsBandPct        => (b.IdealMax, "IdealMax"),
+                            _                                        => (b.MaxMax, "MaxMax"),
+                        };
+                        var tier = tierValue ?? 0;
                         var soh = itemSohByStore.GetValueOrDefault(
                             (r.StoreID.ToUpperInvariant(), line.ItemCode.ToUpperInvariant()), 0);
-                        return (tier, Math.Max(0, tier - soh));
+                        return (tier, Math.Max(0, tier - soh), tierName);
                     }
                     int CapFor(OtsRunLookupRow r) => SkuMaxRawAndCapFor(r).Cap;
 
@@ -1171,9 +1175,13 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                     // RawSkuMax (all sourced from WmsOtsPoAllocationRun /
                     // LPM_SKUMaxRule) on every row.
                     AllocationRow BumpRow(AllocationRow? existing, OtsRunLookupRow r,
-                                          int delta, int rrExtra, int pass)
+                                          int delta, int rrExtra, int pass, string? tierNameOverride = null)
                     {
-                        var (rawSku, cap) = SkuMaxRawAndCapFor(r);
+                        var (rawSku, cap, tierName) = SkuMaxRawAndCapFor(r);
+                        var effectiveTierName = tierNameOverride ?? tierName;
+                        var soh = itemSohByStore.GetValueOrDefault(
+                            (r.StoreID.ToUpperInvariant(), line.ItemCode.ToUpperInvariant()), 0);
+                        var running = runningOtsQty.GetValueOrDefault((r.StoreID, r.DivCode), r.OtsQtyToday);
                         if (existing is null)
                         {
                             // OTS on the persisted row is clipped at 0 — LiveOtsPct
@@ -1189,6 +1197,12 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                                     OTS = Math.Max(0, LiveOtsPct(r)),
                                     TgtEOM = r.TgtEOM,
                                     RawSkuMax = rawSku,
+                                    SkuMaxBand = effectiveTierName,
+                                    AvgOtsMin = avgOtsMinDecimal,
+                                    AvgOtsMax = avgOtsMaxDecimal,
+                                    InitialOtsQty = r.OtsQtyToday,
+                                    Soh = soh,
+                                    RunningOtsQty = running,
                                 };
                             return pass switch
                             {
@@ -1203,6 +1217,13 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                             AllocQty = existing.AllocQty + delta,
                             RoundRobinExtra = existing.RoundRobinExtra + rrExtra,
                             AvgOtsPercent = existing.AvgOtsPercent ?? avgOtsDecimal,
+                            // Refresh audit fields at the latest pass write.
+                            SkuMaxBand = effectiveTierName,
+                            AvgOtsMin = existing.AvgOtsMin ?? avgOtsMinDecimal,
+                            AvgOtsMax = existing.AvgOtsMax ?? avgOtsMaxDecimal,
+                            InitialOtsQty = existing.InitialOtsQty ?? r.OtsQtyToday,
+                            Soh = existing.Soh ?? soh,
+                            RunningOtsQty = running,
                         };
                         return pass switch
                         {
@@ -1367,7 +1388,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                             var current = allocs.TryGetValue(r.StoreID, out var row) ? row.AllocQty : 0;
                             var take = Math.Min(cap - current, remaining);
                             if (take <= 0) continue;
-                            allocs[r.StoreID] = BumpRow(row, r, take, 0, pass: 1);
+                            allocs[r.StoreID] = BumpRow(row, r, take, 0, pass: 1, tierNameOverride: "MinMin");
                             remaining -= take;
                         }
 
@@ -1398,7 +1419,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                                 var current = allocs.TryGetValue(r.StoreID, out var row) ? row.AllocQty : 0;
                                 var take = Math.Min(cap - current, remaining);
                                 if (take <= 0) continue;
-                                allocs[r.StoreID] = BumpRow(row, r, take, 0, pass: 3);
+                                allocs[r.StoreID] = BumpRow(row, r, take, 0, pass: 3, tierNameOverride: "MinMax");
                                 remaining -= take;
                             }
                         }
@@ -1449,7 +1470,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                                             : (int)Math.Floor((double)remaining * minMax / totalMinMax);
                                         if (share <= 0) continue;
                                         var current = allocs.TryGetValue(r.StoreID, out var row) ? row.AllocQty : 0;
-                                        allocs[r.StoreID] = BumpRow(row, r, share, 0, pass: 4);
+                                        allocs[r.StoreID] = BumpRow(row, r, share, 0, pass: 4, tierNameOverride: "MinMax");
                                         remaining -= share;
                                         assigned += share;
                                     }
@@ -1834,6 +1855,12 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         dt.Columns.Add("Pass4Qty",         typeof(int));
         dt.Columns.Add("Pass4RatioCap",    typeof(int));
         dt.Columns.Add("AvgOtsPercent",    typeof(decimal));
+        dt.Columns.Add("SkuMaxBand",       typeof(string));
+        dt.Columns.Add("AvgOtsMin",        typeof(decimal));
+        dt.Columns.Add("AvgOtsMax",        typeof(decimal));
+        dt.Columns.Add("InitialOtsQty",    typeof(int));
+        dt.Columns.Add("Soh",              typeof(int));
+        dt.Columns.Add("RunningOtsQty",    typeof(int));
         dt.Columns.Add("OtsQtyToday",      typeof(int));
         dt.Columns.Add("TgtEOM",           typeof(int));
         dt.Columns.Add("RawSkuMax",        typeof(int));
@@ -1875,6 +1902,12 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                 (object?)r.Pass4Qty ?? DBNull.Value,
                 (object?)r.Pass4RatioCap ?? DBNull.Value,
                 (object?)r.AvgOtsPercent ?? DBNull.Value,
+                (object?)r.SkuMaxBand ?? DBNull.Value,
+                (object?)r.AvgOtsMin ?? DBNull.Value,
+                (object?)r.AvgOtsMax ?? DBNull.Value,
+                (object?)r.InitialOtsQty ?? DBNull.Value,
+                (object?)r.Soh ?? DBNull.Value,
+                (object?)r.RunningOtsQty ?? DBNull.Value,
                 (object?)r.OtsQtyToday ?? DBNull.Value,
                 (object?)r.TgtEOM ?? DBNull.Value,
                 (object?)r.RawSkuMax ?? DBNull.Value);

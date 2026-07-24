@@ -67,7 +67,14 @@ public record AllocationRow(
     decimal? AvgOtsPercent    = null,    // per-Division AVG(OtsPercentToday WHERE > 0) at item time
     int?     OtsQtyToday      = null,    // OtsQtyToday from WmsOtsPoAllocationRun for this (StoreID, DivCode) — initial value, not decremented
     int?     TgtEOM           = null,    // TgtEOM from WmsOtsPoAllocationRun for this (StoreID, DivCode) — FillSKUMax+RR only
-    int?     RawSkuMax        = null);   // Raw SKUMax from LPM_SKUMaxRule band lookup (before subtracting SOHToday) — FillSKUMax+RR only. 0 = no band matched.
+    int?     RawSkuMax        = null,    // Raw SKUMax from LPM_SKUMaxRule band lookup (before subtracting SOHToday) — FillSKUMax+RR only. 0 = no band matched.
+    // Analysis columns — same across all rows for a given item (AvgOtsMin/Max) or per-store snapshot.
+    string?  SkuMaxBand       = null,    // 'MinMin' / 'MinMax' / 'IdealMax' / 'MaxMax' — the tier the picker landed on at the LAST pass that wrote this row.
+    decimal? AvgOtsMin        = null,    // AvgOts - OTSBandPct — lower edge of the IdealMax band for this item.
+    decimal? AvgOtsMax        = null,    // AvgOts + OTSBandPct — upper edge of the IdealMax band for this item.
+    int?     InitialOtsQty    = null,    // OtsQtyToday from WmsOtsPoAllocationRun (pre-decrement) for this (Store, Div).
+    int?     Soh              = null,    // per-(Store, Item) SOH from racks.LPM_locstock used in cap = tier - SOH.
+    int?     RunningOtsQty    = null);   // runningOtsQty at the moment this row was written (after prior-item decrements).
 
 /// <summary>One row in the blocked-items list: an (item, store) pair that was
 /// excluded from allocation by LPM_StoreDeptAccess or LPM_StoreDivAccess.</summary>
