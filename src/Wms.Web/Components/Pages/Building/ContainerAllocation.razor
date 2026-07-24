@@ -35,7 +35,7 @@
         <div>
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">RUN OPTION</label>
             <select @bind="_runOption" @bind:after="OnRunOptionChangedAsync" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-family:var(--font-body); font-size:13px; background:white;">
-                <option value="FillSKUMaxRoundRobin">Fill SKUMax + Round Robin</option>
+                <option value="FillSKUMaxRoundRobin">Fill Min-Max plus Others (Ratio)</option>
                 <option value="FillMinMinPlusOthers">Fill Min-Min plus others</option>
             </select>
         </div>
