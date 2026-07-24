@@ -1272,22 +1272,36 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                             }
                         }
 
-                        // ---------- Pass 4: uncapped RR across all eligible stores ----------
-                        // Last-resort fallback so no leftover POqty stays unallocated
-                        // when LPM_SKUMaxRule bands are missing / SOH is already at cap.
-                        // Only skipped for SimItemSkuMax=0 stores (already pre-excluded above).
+                        // ---------- Pass 4: RATIO distribution across eligible stores ----------
+                        // Refresh tier cap per store using LiveOtsPct (already reflects
+                        // Passes 1-3 allocations via runningOtsQty). Distribute the
+                        // leftover proportionally to each store's cap so bigger stores
+                        // absorb bigger overflow shares. Cap-0 stores get nothing.
+                        // Store's Pass4RatioCap column captures the denominator so
+                        // operators can verify take_i = round(remaining * cap_i / SUM).
                         if (remaining > 0)
                         {
-                            var pass4Stores = SortByGroupThenOts(eligible).ToList();
-                            int idx = 0;
-                            while (remaining > 0 && pass4Stores.Count > 0)
+                            var pass4Stores = SortByGroupThenOts(eligible)
+                                .Select(r => (Row: r, Cap: CapFor(r)))
+                                .Where(x => x.Cap > 0)
+                                .ToList();
+                            var totalCap = pass4Stores.Sum(x => x.Cap);
+                            if (totalCap > 0)
                             {
-                                var r = pass4Stores[idx % pass4Stores.Count];
-                                var current = allocs.TryGetValue(r.StoreID, out var row) ? row.AllocQty : 0;
-                                allocs[r.StoreID] = BumpRow(row, r, 1, 1, pass: 4);
-                                remaining--;
-                                idx++;
-                                if (idx > 1_000_000) break;  // hard safety
+                                var origRemaining = remaining;
+                                for (int i = 0; i < pass4Stores.Count && remaining > 0; i++)
+                                {
+                                    var (r, cap) = pass4Stores[i];
+                                    var take = i == pass4Stores.Count - 1
+                                        ? remaining
+                                        : (int)Math.Floor((double)origRemaining * cap / totalCap);
+                                    if (take <= 0) continue;
+                                    var existingRow = allocs.TryGetValue(r.StoreID, out var row) ? row : null;
+                                    var newRow = BumpRow(existingRow, r, take, 0, pass: 4)
+                                        with { Pass4RatioCap = cap };
+                                    allocs[r.StoreID] = newRow;
+                                    remaining -= take;
+                                }
                             }
                         }
                     }
@@ -1813,6 +1827,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         dt.Columns.Add("Pass2Qty",         typeof(int));
         dt.Columns.Add("Pass3Qty",         typeof(int));
         dt.Columns.Add("Pass4Qty",         typeof(int));
+        dt.Columns.Add("Pass4RatioCap",    typeof(int));
         dt.Columns.Add("AvgOtsPercent",    typeof(decimal));
         dt.Columns.Add("OtsQtyToday",      typeof(int));
         dt.Columns.Add("TgtEOM",           typeof(int));
@@ -1853,6 +1868,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                 (object?)r.Pass2Qty ?? DBNull.Value,
                 (object?)r.Pass3Qty ?? DBNull.Value,
                 (object?)r.Pass4Qty ?? DBNull.Value,
+                (object?)r.Pass4RatioCap ?? DBNull.Value,
                 (object?)r.AvgOtsPercent ?? DBNull.Value,
                 (object?)r.OtsQtyToday ?? DBNull.Value,
                 (object?)r.TgtEOM ?? DBNull.Value,

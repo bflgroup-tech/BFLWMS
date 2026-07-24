@@ -62,7 +62,8 @@ public record AllocationRow(
     int?     Pass1Qty         = null,    // OTS% >= AvgOTS% pass
     int?     Pass2Qty         = null,    // 0 < OTS% < AvgOTS% pass
     int?     Pass3Qty         = null,    // OTS% <= 0 round-robin pass
-    int?     Pass4Qty         = null,    // uncapped RR fallback across all stores
+    int?     Pass4Qty         = null,    // Pass 4 ratio distribution across all eligible stores
+    int?     Pass4RatioCap    = null,    // Store's OTS-driven tier cap at Pass 4 time (denominator for the ratio share)
     decimal? AvgOtsPercent    = null,    // per-Division AVG(OtsPercentToday WHERE > 0) at item time
     int?     OtsQtyToday      = null,    // OtsQtyToday from WmsOtsPoAllocationRun for this (StoreID, DivCode) — initial value, not decremented
     int?     TgtEOM           = null,    // TgtEOM from WmsOtsPoAllocationRun for this (StoreID, DivCode) — FillSKUMax+RR only
