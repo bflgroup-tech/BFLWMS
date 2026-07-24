@@ -558,7 +558,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
             return (await wms.QueryAsync<OtsRunLookupRow>(new CommandDefinition(@"
                 SELECT Country, StoreID, DivCode, VolumeGroup,
                        TgtEOM, SOHToday, WeekSales, InTransit, Ex2DcSoh, CountingWIP,
-                       OtsQtyToday, OtsPercentToday
+                       OtsQtyToday, OtsPercentToday, ISNULL(CurrentEOW, 0) AS CurrentEOW
                   FROM dbo.WmsOtsPoAllocationRun WITH (NOLOCK)
                  WHERE [Month] = @m AND [Year] = @y
                    AND TgtEOM > 50
@@ -1086,10 +1086,15 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
 
                     // Live OTS% per (StoreID, DivCode) driven by runningOtsQty
                     // (decreases as we allocate). Used by Passes 2, 3, 4.
+                    // Denominator = CurrentEOW (matches OtsPercentToday's
+                    // formula on the OTS PO Allocation report). Falls back to
+                    // TgtEOM only when CurrentEOW is unavailable (older runs
+                    // before the CurrentEOW column was added).
                     double LiveOtsPct(OtsRunLookupRow r)
                     {
                         var qty = runningOtsQty.GetValueOrDefault((r.StoreID, r.DivCode), r.OtsQtyToday);
-                        return r.TgtEOM > 0 ? (double)qty / r.TgtEOM * 100.0 : 0.0;
+                        var denom = r.CurrentEOW > 0 ? r.CurrentEOW : r.TgtEOM;
+                        return denom > 0 ? (double)qty / denom * 100.0 : 0.0;
                     }
 
                     // Static OTS% straight from WmsOtsPoAllocationRun.OtsPercentToday.
@@ -2375,5 +2380,6 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         public int      CountingWIP      { get; set; }
         public int      OtsQtyToday      { get; set; }
         public decimal  OtsPercentToday  { get; set; }
+        public int      CurrentEOW       { get; set; }
     }
 }
