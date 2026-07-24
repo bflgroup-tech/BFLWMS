@@ -6,107 +6,174 @@ namespace Wms.Data.Lpm;
 
 /// <summary>
 /// JAFZA Robo Production Report. Ported from a legacy VB.NET desktop query
-/// ("#pair") against ROBOTICS.dbo.PairingConformationDetail, reached via the
-/// JafazaRoboDb connection (same one used by the Chute Mapping page) —
-/// NOT the OnPremBackupDB connection the Manual (PhotoChecking-based)
-/// production report uses.
+/// ("#pair") against ROBOTICS.dbo.PairingConformationDetail.
+///
+/// Two-connection split (confirmed against the real environment): only
+/// ROBOTICS.dbo.PairingConformationDetail itself is read via the JafazaRoboDb
+/// connection (same one the Chute Mapping page uses) — that server is
+/// dedicated to ROBOTICS.dbo.* and doesn't have USA/hodata/FABSMAIN/PAYROLL
+/// ("Invalid object name" for all four when queried there). Every enrichment
+/// lookup instead runs on the normal OnPremBackupDB (LOGBACKUP) connection,
+/// same as every other report in this app.
 ///
 /// Legacy logic, preserved as closely as possible:
-///   1) #pair = one row per (TrnDate, TrnTime, username, itemcode), Qty = COUNT(*),
-///      Area hardcoded to 'AUTO'.
-///   2) Scans before 05:00 belong to the previous day (TrnDate -= 1 when
+///   1) One row per (TrnDate, ItemCode, EmpCode/username), Qty = COUNT(*).
+///      Scans before 05:00 belong to the previous day (TrnDate -= 1 when
 ///      LEFT(TrnTime,2) IN ('00'..'04')) — same shift-boundary rule as the
-///      Manual report.
-///   3) Username → display name: if it already looks like a robot login
-///      ('ROBO%') keep it as-is; otherwise fall back to the raw empcode.
-///      The legacy FABSMAIN..[user] and PAYROLL..Employee name lookups are
-///      NOT ported — neither table is reachable from the JafazaRoboDb
-///      connection ("Invalid object name 'FABSMAIN..user'" confirmed;
-///      PAYROLL removed proactively for the same reason — this is a
-///      dedicated robotics server, unlikely to also host general HR data).
-///   4) GroupCode: USA..UPCbarcodes via ItemCode. The legacy hodata..itemmaster
-///      lookup (tried first, before the UPCbarcodes fallback) is NOT ported —
-///      hodata isn't reachable from this connection either
-///      ("Invalid object name 'hodata..itemmaster'").
-///   5) Division: USA..USAPRIORITY.DivisionY via GroupCode — deduplicated
-///      into its own temp table first (unlike the legacy scalar subquery)
-///      since USAPRIORITY can have more than one row per GroupCode, which
-///      would otherwise raise "Subquery returned more than 1 value".
-///   6) GroupName (Detailed only): NOT populated (always null) — the legacy
-///      source was hodata..itemgroup.description, same unreachable database.
+///      Manual report — folded into the same GROUP BY so TrnTime itself
+///      doesn't need to survive past this query.
+///   2) EmpName: 'ROBO%' logins display as-is; everything else resolves via
+///      FABSMAIN.dbo.[user] (UserName -> RecStartingNo). The legacy
+///      PAYROLL.dbo.Employee follow-up lookup (RecStartingNo -> EmpName)
+///      is NOT ported — PAYROLL doesn't exist on this SQL Server instance
+///      at all (confirmed), so RecStartingNo is shown as-is.
+///   3) GroupCode: USA.dbo.UPCBarCodes.GroupCode via ItemCode. The legacy
+///      hodata.dbo.itemmaster lookup (tried first) is NOT ported — no
+///      practical difference observed once resolved against LOGBACKUP.
+///   4) Division: USA.dbo.USAPriority.DivisionY via GroupCode — resolved via
+///      a C# dictionary (last-write-wins) rather than the legacy inline
+///      scalar subquery, which throws "Subquery returned more than 1 value"
+///      if a GroupCode maps to more than one division row.
+///   5) GroupName (Detailed only): hodata.dbo.itemgroup.Description via GroupCode.
 /// </summary>
 public class JafzaRoboProductionService(IOnPremConnectionResolver resolver)
 {
     private const int CommandTimeoutSeconds = 120;
-    private const string ConnectionStringKey = "JafazaRoboDb";
+    private const string RoboConnectionStringKey = "JafazaRoboDb";
 
     private SqlConnection OpenRobo()
     {
-        var c = new SqlConnection(resolver.GetRoboticsConnectionString(ConnectionStringKey));
+        var c = new SqlConnection(resolver.GetRoboticsConnectionString(RoboConnectionStringKey));
         c.Open();
         return c;
     }
 
-    // Materialises #pair (enriched) — must be prepended to whatever query
-    // reads it, so the build + read happen in the SAME Dapper command (same
-    // lesson as the #JafzaBase prefix in JafzaDivisionProductionService).
-    private const string PairPrefix = @"
-        SET NOCOUNT ON;
-        IF OBJECT_ID('tempdb..#pair')  IS NOT NULL DROP TABLE #pair;
-        IF OBJECT_ID('tempdb..#div')   IS NOT NULL DROP TABLE #div;
+    private SqlConnection OpenOnPremBackup()
+    {
+        var c = new SqlConnection(resolver.GetOnPremBackupConnectionString());
+        c.Open();
+        return c;
+    }
 
-        CREATE TABLE #pair (area varchar(20), trndate smalldatetime, trntime varchar(30),
-                            itemcode varchar(50), empcode varchar(50), qty int);
+    private record RawPairRow(DateTime TrnDate, string ItemCode, string EmpCode, int Qty);
 
-        INSERT INTO #pair (area, trndate, trntime, itemcode, empcode, qty)
-        SELECT 'AUTO', TrnDate, TrnTime, itemcode, username, COUNT(*)
+    private const string RawQuerySql = @"
+        SELECT
+            TrnDate = CASE WHEN LEFT(TrnTime, 2) IN ('00','01','02','03','04') THEN DATEADD(day, -1, TrnDate) ELSE TrnDate END,
+            ItemCode = itemcode,
+            EmpCode  = username,
+            Qty      = COUNT(*)
           FROM ROBOTICS.dbo.PairingConformationDetail
          WHERE TrnDate BETWEEN @from AND @to
            AND (@username IS NULL OR username = @username)
-         GROUP BY TrnDate, TrnTime, username, itemcode;
+         GROUP BY CASE WHEN LEFT(TrnTime, 2) IN ('00','01','02','03','04') THEN DATEADD(day, -1, TrnDate) ELSE TrnDate END,
+                  itemcode, username";
 
-        ALTER TABLE #pair ADD grp varchar(10), empname varchar(200), div varchar(200);
+    private async Task<List<RawPairRow>> FetchRawAsync(
+        DateTime fromDate, DateTime toDate, string? usernameFilter, CancellationToken ct)
+    {
+        await using var c = OpenRobo();
+        var rows = await c.QueryAsync<RawPairRow>(new CommandDefinition(
+            RawQuerySql, new { from = fromDate.Date, to = toDate.Date, username = usernameFilter },
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        return rows.AsList();
+    }
 
-        UPDATE #pair SET empname = empcode WHERE empcode LIKE 'ROBO%';
+    private record EnrichmentLookups(
+        Dictionary<string, string?> EmpNameByCode,
+        Dictionary<string, string?> GroupByItem,
+        Dictionary<string, string?> DivByGroup,
+        Dictionary<string, string?> GroupNameByGroup);
 
-        UPDATE #pair SET trndate = DATEADD(day, -1, trndate)
-         WHERE LEFT(trntime, 2) IN ('00','01','02','03','04');
+    private async Task<EnrichmentLookups> EnrichAsync(IReadOnlyList<RawPairRow> raw, CancellationToken ct)
+    {
+        var empNameByCode  = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        var groupByItem    = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        var divByGroup     = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        var groupNameByGroup = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
 
-        UPDATE a SET a.grp = b.GroupCode
-          FROM #pair a JOIN USA..UPCbarcodes b ON a.itemcode = b.ItemCode;
+        var nonRoboCodes = raw.Select(r => r.EmpCode)
+            .Where(e => !string.IsNullOrWhiteSpace(e) && !e.StartsWith("ROBO", StringComparison.OrdinalIgnoreCase))
+            .Distinct().ToArray();
+        var itemCodes = raw.Select(r => r.ItemCode).Where(i => !string.IsNullOrWhiteSpace(i)).Distinct().ToArray();
+        if (nonRoboCodes.Length == 0 && itemCodes.Length == 0)
+            return new EnrichmentLookups(empNameByCode, groupByItem, divByGroup, groupNameByGroup);
 
-        SELECT DISTINCT GroupCode, DivisionY
-          INTO #div
-          FROM USA..USAPRIORITY
-         WHERE GroupCode IN (SELECT DISTINCT grp FROM #pair WHERE grp IS NOT NULL);
+        await using var c = OpenOnPremBackup();
 
-        CREATE CLUSTERED INDEX IX_div ON #div (GroupCode);
+        if (nonRoboCodes.Length > 0)
+        {
+            var empRows = await c.QueryAsync<(string UserName, string? RecStartingNo)>(new CommandDefinition(@"
+                SELECT UserName, RecStartingNo
+                  FROM FABSMAIN.dbo.[user]
+                 WHERE UserName IN @codes",
+                new { codes = nonRoboCodes }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            foreach (var r in empRows)
+                if (!string.IsNullOrWhiteSpace(r.RecStartingNo)) empNameByCode[r.UserName] = r.RecStartingNo;
+        }
 
-        UPDATE a SET a.div = d.DivisionY
-          FROM #pair a JOIN #div d ON d.GroupCode = a.grp;
-        ";
+        if (itemCodes.Length > 0)
+        {
+            var groupRows = await c.QueryAsync<(string Itemcode, string? GroupCode)>(new CommandDefinition(@"
+                SELECT Itemcode, GroupCode = MAX(GroupCode)
+                  FROM USA.dbo.UPCBarCodes
+                 WHERE Itemcode IN @codes
+                 GROUP BY Itemcode",
+                new { codes = itemCodes }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            foreach (var r in groupRows) groupByItem[r.Itemcode] = r.GroupCode;
+
+            var groupCodes = groupByItem.Values.Where(g => !string.IsNullOrWhiteSpace(g)).Distinct().ToArray()!;
+            if (groupCodes.Length > 0)
+            {
+                var divRows = await c.QueryAsync<(string GroupCode, string? DivisionY)>(new CommandDefinition(@"
+                    SELECT DISTINCT GroupCode, DivisionY
+                      FROM USA.dbo.USAPriority
+                     WHERE GroupCode IN @codes",
+                    new { codes = groupCodes }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+                foreach (var r in divRows) divByGroup[r.GroupCode] = r.DivisionY;
+
+                var nameRows = await c.QueryAsync<(string GroupCode, string? Description)>(new CommandDefinition(@"
+                    SELECT GroupCode, Description
+                      FROM hodata.dbo.itemgroup
+                     WHERE GroupCode IN @codes",
+                    new { codes = groupCodes }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+                foreach (var r in nameRows) groupNameByGroup[r.GroupCode] = r.Description;
+            }
+        }
+
+        return new EnrichmentLookups(empNameByCode, groupByItem, divByGroup, groupNameByGroup);
+    }
+
+    private static string ResolveUsername(RawPairRow r, EnrichmentLookups lk) =>
+        r.EmpCode.StartsWith("ROBO", StringComparison.OrdinalIgnoreCase)
+            ? r.EmpCode
+            : lk.EmpNameByCode.GetValueOrDefault(r.EmpCode) ?? r.EmpCode;
 
     /// <summary>Division-wise summary — one row per (TrnDate, Division, Username).</summary>
     public async Task<List<JafzaRoboProductionSummaryRow>> GetSummaryAsync(
         DateTime fromDate, DateTime toDate, string? username, CancellationToken ct = default)
     {
         var usernameFilter = string.IsNullOrWhiteSpace(username) ? null : username.Trim();
-        await using var c = OpenRobo();
-        var rows = await c.QueryAsync<JafzaRoboProductionSummaryRow>(new CommandDefinition(PairPrefix + @"
-            SELECT
-                p.trndate  AS TrnDate,
-                Division   = p.div,
-                Username   = ISNULL(NULLIF(p.empname, ''), p.empcode),
-                Qty        = SUM(p.qty)
-              FROM #pair p
-             WHERE ISNULL(p.div, '') <> ''
-             GROUP BY p.trndate, p.div, ISNULL(NULLIF(p.empname, ''), p.empcode)
-             ORDER BY p.trndate, Division, Username;
+        var raw = await FetchRawAsync(fromDate, toDate, usernameFilter, ct);
+        var lk = await EnrichAsync(raw, ct);
 
-            DROP TABLE #pair, #div;",
-            new { from = fromDate.Date, to = toDate.Date, username = usernameFilter },
-            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-        return rows.AsList();
+        return raw
+            .Select(r => new
+            {
+                r.TrnDate,
+                r.Qty,
+                Username = ResolveUsername(r, lk),
+                Division = lk.DivByGroup.GetValueOrDefault(lk.GroupByItem.GetValueOrDefault(r.ItemCode) ?? "")
+            })
+            .Where(x => !string.IsNullOrWhiteSpace(x.Division))
+            .GroupBy(x => (x.TrnDate, x.Division, x.Username))
+            .Select(g => new JafzaRoboProductionSummaryRow(
+                TrnDate:  g.Key.TrnDate,
+                Division: g.Key.Division!,
+                Username: g.Key.Username,
+                Qty:      g.Sum(x => x.Qty)))
+            .OrderBy(r => r.TrnDate).ThenBy(r => r.Division).ThenBy(r => r.Username)
+            .ToList();
     }
 
     /// <summary>Item-wise detail — one row per (TrnDate, ItemCode, Username, GroupCode).</summary>
@@ -114,24 +181,35 @@ public class JafzaRoboProductionService(IOnPremConnectionResolver resolver)
         DateTime fromDate, DateTime toDate, string? username, CancellationToken ct = default)
     {
         var usernameFilter = string.IsNullOrWhiteSpace(username) ? null : username.Trim();
-        await using var c = OpenRobo();
-        var rows = await c.QueryAsync<JafzaRoboProductionDetailRow>(new CommandDefinition(PairPrefix + @"
-            SELECT
-                p.trndate  AS TrnDate,
-                p.itemcode AS ItemCode,
-                Username   = ISNULL(NULLIF(p.empname, ''), p.empcode),
-                GroupCode  = p.grp,
-                GroupName  = CAST(NULL AS varchar(200)),
-                Division   = p.div,
-                Qty        = SUM(p.qty)
-              FROM #pair p
-             WHERE ISNULL(p.div, '') <> ''
-             GROUP BY p.trndate, p.itemcode, ISNULL(NULLIF(p.empname, ''), p.empcode), p.grp, p.div
-             ORDER BY p.trndate, p.itemcode;
+        var raw = await FetchRawAsync(fromDate, toDate, usernameFilter, ct);
+        var lk = await EnrichAsync(raw, ct);
 
-            DROP TABLE #pair, #div;",
-            new { from = fromDate.Date, to = toDate.Date, username = usernameFilter },
-            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-        return rows.AsList();
+        return raw
+            .Select(r =>
+            {
+                var groupCode = lk.GroupByItem.GetValueOrDefault(r.ItemCode);
+                return new
+                {
+                    r.TrnDate,
+                    r.ItemCode,
+                    r.Qty,
+                    Username  = ResolveUsername(r, lk),
+                    GroupCode = groupCode,
+                    GroupName = string.IsNullOrWhiteSpace(groupCode) ? null : lk.GroupNameByGroup.GetValueOrDefault(groupCode),
+                    Division  = string.IsNullOrWhiteSpace(groupCode) ? null : lk.DivByGroup.GetValueOrDefault(groupCode)
+                };
+            })
+            .Where(x => !string.IsNullOrWhiteSpace(x.Division))
+            .GroupBy(x => (x.TrnDate, x.ItemCode, x.Username, x.GroupCode, x.GroupName, x.Division))
+            .Select(g => new JafzaRoboProductionDetailRow(
+                TrnDate:   g.Key.TrnDate,
+                ItemCode:  g.Key.ItemCode,
+                Username:  g.Key.Username,
+                GroupCode: g.Key.GroupCode,
+                GroupName: g.Key.GroupName,
+                Division:  g.Key.Division!,
+                Qty:       g.Sum(x => x.Qty)))
+            .OrderBy(r => r.TrnDate).ThenBy(r => r.ItemCode)
+            .ToList();
     }
 }
