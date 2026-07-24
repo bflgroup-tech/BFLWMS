@@ -55,9 +55,9 @@
     --s-seasonal:        #B8860B;   --s-seasonal-bg:  #FBF1D5;
     --s-draft:           #6B6B62;   --s-draft-bg:     #EDEDE8;
 
-    /* ─── Typography ─── */
-    --font-display:      'Figtree', 'Segoe UI', Tahoma, sans-serif;
-    --font-body:         'DM Sans', 'Segoe UI', Tahoma, sans-serif;
+    /* ─── Typography — system font stack (matches planning.bflgroup.ae) ─── */
+    --font-display:      -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    --font-body:         -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
     --font-mono:         'JetBrains Mono', 'Consolas', monospace;
     --font-icon:         'Material Symbols Outlined';
 
@@ -79,7 +79,7 @@
     --transition:        all .15s ease;
 
     /* ─── Legacy aliases — keep MainLayout/NavMenu working ─── */
-    --sidebar-width:     236px;
+    --sidebar-width:     264px;
     --sidebar-bg:        var(--bfl-charcoal);    /* dark sidebar, yellow accents */
     --sidebar-hover:     var(--bfl-grey-800);
     --sidebar-active:    var(--bfl-yellow);
@@ -241,11 +241,11 @@ a:hover { text-decoration: underline; }
 .aiwms-nav-section {
     font-family: var(--font-display);
     color: var(--bfl-yellow);
-    font-size: 10px;
+    font-size: 13.8px;
     text-transform: uppercase;
     letter-spacing: 1.2px;
     padding: 16px 12px 6px;
-    font-weight: 800;
+    font-weight: 700;
 }
 .aiwms-nav-subsection {
     font-family: var(--font-display);
@@ -266,8 +266,8 @@ a:hover { text-decoration: underline; }
     color: var(--sidebar-text);
     text-decoration: none;
     font-family: var(--font-display);
-    font-size: 10px;
-    font-weight: 600;
+    font-size: 13.12px;
+    font-weight: 400;
     border-radius: var(--r-sm);
     border-left: 3px solid transparent;
     transition: var(--transition);
