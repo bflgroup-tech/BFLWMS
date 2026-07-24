@@ -1200,7 +1200,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                                     SkuMaxBand = effectiveTierName,
                                     AvgOtsMin = avgOtsMinDecimal,
                                     AvgOtsMax = avgOtsMaxDecimal,
-                                    InitialOtsQty = r.OtsQtyToday,
+                                    InitialOtsPct = r.OtsPercentToday,
                                     Soh = soh,
                                     RunningOtsQty = running,
                                 };
@@ -1221,7 +1221,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                             SkuMaxBand = effectiveTierName,
                             AvgOtsMin = existing.AvgOtsMin ?? avgOtsMinDecimal,
                             AvgOtsMax = existing.AvgOtsMax ?? avgOtsMaxDecimal,
-                            InitialOtsQty = existing.InitialOtsQty ?? r.OtsQtyToday,
+                            InitialOtsPct = existing.InitialOtsPct ?? r.OtsPercentToday,
                             Soh = existing.Soh ?? soh,
                             RunningOtsQty = running,
                         };
@@ -1858,7 +1858,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         dt.Columns.Add("SkuMaxBand",       typeof(string));
         dt.Columns.Add("AvgOtsMin",        typeof(decimal));
         dt.Columns.Add("AvgOtsMax",        typeof(decimal));
-        dt.Columns.Add("InitialOtsQty",    typeof(int));
+        dt.Columns.Add("InitialOtsPct",    typeof(decimal));
         dt.Columns.Add("Soh",              typeof(int));
         dt.Columns.Add("RunningOtsQty",    typeof(int));
         dt.Columns.Add("OtsQtyToday",      typeof(int));
@@ -1905,7 +1905,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                 (object?)r.SkuMaxBand ?? DBNull.Value,
                 (object?)r.AvgOtsMin ?? DBNull.Value,
                 (object?)r.AvgOtsMax ?? DBNull.Value,
-                (object?)r.InitialOtsQty ?? DBNull.Value,
+                (object?)r.InitialOtsPct ?? DBNull.Value,
                 (object?)r.Soh ?? DBNull.Value,
                 (object?)r.RunningOtsQty ?? DBNull.Value,
                 (object?)r.OtsQtyToday ?? DBNull.Value,
