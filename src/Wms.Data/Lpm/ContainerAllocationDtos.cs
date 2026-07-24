@@ -95,10 +95,13 @@ public record AllocationStatus(
     int  FillSkuMaxRows,
     int  RoundRobinRows,
     int  FillSKUMaxRoundRobinRows = 0,
-    int  AzureAllocRows           = 0);  // dbo.WMS_ContAllocationData row count on Azure — > 0 means the container has been synced and Delete should be blocked at UI level
+    int  AzureAllocRows           = 0,   // dbo.WMS_ContAllocationData row count on Azure — > 0 means the container has been synced and Delete should be blocked at UI level
+    int  FillMinMinPlusOthersRows = 0);
 
-/// <summary>How to distribute qty across eligible stores.</summary>
-public enum RunOption { FillSKUMax = 0, RoundRobin = 1, FillSKUMaxRoundRobin = 2 }
+/// <summary>How to distribute qty across eligible stores.
+/// FillSKUMax and RoundRobin are kept for run-history compatibility but are
+/// no longer offered in the Container Allocation page dropdown.</summary>
+public enum RunOption { FillSKUMax = 0, RoundRobin = 1, FillSKUMaxRoundRobin = 2, FillMinMinPlusOthers = 3 }
 
 /// <summary>What ProcessAllocationAsync returns — allocations + the
 /// (item, store) pairs blocked by LPM_StoreDeptAccess / LPM_StoreDivAccess.</summary>
