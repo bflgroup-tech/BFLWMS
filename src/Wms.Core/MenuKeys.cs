@@ -76,7 +76,7 @@ public static class MenuKeys
 
         new MenuEntry(LPM_PRODUCTION,        "Production to Stores","LPM Production",            "production/lpm",            new[] { Roles.Admin, Roles.WHAssociate, Roles.WHSupervisor, Roles.WHManager }),
 
-        new MenuEntry(RPT_PENDING_PURCHASE,  "Reports",             "Pending Purchase (GRN) Status",  "reports/pending-purchase",         new[] { Roles.Admin, Roles.Reports, Roles.WHManager, Roles.WHSupervisor }),
+        new MenuEntry(RPT_PENDING_PURCHASE,  "Reports",             "Pending Goods Receipt",          "reports/pending-purchase",         new[] { Roles.Admin, Roles.Reports, Roles.WHManager, Roles.WHSupervisor }),
         new MenuEntry(RPT_MISSING_EXCESS,    "Reports",             "Missing / Excess Items from Production", "reports/missing-excess",   new[] { Roles.Admin, Roles.Reports }),
         new MenuEntry(RPT_NON_LPM_WH_STOCK,  "Reports",             "Non-LPM WH Stock Report",   "reports/non-lpm-wh-stock",  new[] { Roles.Admin, Roles.Reports }),
         new MenuEntry(RPT_LPM_WH_STOCK,      "Reports",             "LPM WH Stock Report",       "reports/lpm-wh-stock",      new[] { Roles.Admin, Roles.Reports }),
