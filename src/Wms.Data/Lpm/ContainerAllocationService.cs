@@ -577,8 +577,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         async Task<List<OtsRunLookupRow>> LoadOtsRunRows()
         {
             if (runOption != RunOption.FillSKUMaxRoundRobin && runOption != RunOption.FillMinMinPlusOthers) return new();
-            await using var wms = new SqlConnection(resolver.GetWmsAzureConnectionString());
-            await wms.OpenAsync(ct);
+            await using var wms = OpenOnPremBackup();
             return (await wms.QueryAsync<OtsRunLookupRow>(new CommandDefinition(@"
                 SELECT Country, StoreID, DivCode, VolumeGroup,
                        TgtEOM, SOHToday, WeekSales, InTransit, Ex2DcSoh, CountingWIP,
@@ -1454,10 +1453,9 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                             var pct = (double)remaining / line.Qty;
                             if (pct >= 0.10)
                             {
-                                // Flag the item — persist to WmsPlanningFlag and stop distributing.
-                                await using (var wFlag = new SqlConnection(resolver.GetWmsAzureConnectionString()))
+                                // Flag the item — persist to WmsPlanningFlag on LPMSIM.
+                                await using (var wFlag = OpenOnPremBackup())
                                 {
-                                    await wFlag.OpenAsync(ct);
                                     await wFlag.ExecuteAsync(new CommandDefinition(@"
                                         INSERT dbo.WmsPlanningFlag
                                             (ContNo, PONo, ItemCode, DivCode, PoQty, RemainingQty, RunOption, FlaggedBy)
