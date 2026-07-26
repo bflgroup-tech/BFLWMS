@@ -23,7 +23,7 @@ IF COL_LENGTH('dbo.WmsAllocationTrace', 'SkuMax') IS NOT NULL
 BEGIN
     EXEC sp_rename N'dbo.WmsAllocationTrace.SkuMax', N'DefaultSkuMax', N'COLUMN';
 END;
-IF COL_LENGTH('dbo.WmsAllocationTrace', 'OtsTierName') IS NULL
-BEGIN
-    ALTER TABLE dbo.WmsAllocationTrace ADD OtsTierName NVARCHAR(20) NULL;
-END;
+-- NOTE: OtsTierName was originally added here but has since been superseded.
+-- The follow-up migration db/migrate_lpmsim_wmsallocationtrace_drop_otstiername.sql
+-- drops it. RawSkuMax now follows TierName directly, so no separate OTS-picker
+-- tier name column is needed.
