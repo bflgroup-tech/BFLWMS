@@ -141,11 +141,10 @@ public record AllocationTraceRow(
     int      RunningOtsQtyAfter,
     string   RunOption,
     string?  SkipReason = null,     // NULL=allocated, else 'CapReached' / 'ShareZero'
-    // OTS picker reference values — same across all passes for a given (store, item),
-    // regardless of which pass fired. Distinct from the pass-specific TierName/Cap.
-    int?     DefaultSkuMax  = null, // OTS tier picker's effective cap (RawSkuMax - Soh)
-    int?     RawSkuMax      = null, // OTS tier picker's raw tier value
-    string?  OtsTierName    = null, // MinMin / MinMax / IdealMax / MaxMax  (OTS picker's tier)
+    // Tier values for the pass's TierName (Pass 1b -> MinMin, Pass 3 -> MinMax,
+    // Pass 2 -> OTS picker's tier, Pass 4 -> MinMax). One tier concept per row.
+    int?     DefaultSkuMax  = null, // RawSkuMax - Soh (never negative)
+    int?     RawSkuMax      = null, // Raw tier value for this row's TierName
     decimal? AvgOtsPercent  = null,
     decimal? AvgOtsMin      = null,
     decimal? AvgOtsMax      = null,

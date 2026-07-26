@@ -41,9 +41,8 @@ BEGIN
         RunBy                NVARCHAR(100) NULL,
         SkipReason           NVARCHAR(30)  NULL,          -- NULL=allocated | CapReached | ShareZero
         -- Mirror WMS_ContAllocationData audit columns for JOIN-friendly analysis:
-        DefaultSkuMax        INT           NULL,          -- OTS tier picker's effective cap (RawSkuMax - Soh)
-        RawSkuMax            INT           NULL,          -- OTS tier picker's raw tier value
-        OtsTierName          NVARCHAR(20)  NULL,          -- MinMin / MinMax / IdealMax / MaxMax  (the OTS picker's tier)
+        DefaultSkuMax        INT           NULL,          -- RawSkuMax - Soh (never negative)
+        RawSkuMax            INT           NULL,          -- Raw tier value for the pass's TierName (Pass 1b=MinMin, Pass 3=MinMax, Pass 2=OTS picker, Pass 4=MinMax)
         AvgOtsPercent        DECIMAL(9,2)  NULL,
         AvgOtsMin            DECIMAL(9,2)  NULL,
         AvgOtsMax            DECIMAL(9,2)  NULL,

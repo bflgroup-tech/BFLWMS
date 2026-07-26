@@ -1275,11 +1275,27 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                         var soh = itemSohByStore.GetValueOrDefault(
                             (r.StoreID.ToUpperInvariant(), line.ItemCode.ToUpperInvariant()), 0);
                         var running = runningOtsQty.GetValueOrDefault((r.StoreID, r.DivCode), r.OtsQtyToday);
-                        // OTS tier picker's raw + effective cap + tier name for this store
-                        // (regardless of which pass fired) — matches SkuMax/RawSkuMax on
-                        // WMS_ContAllocationData for JOIN analysis. OtsTierName distinguishes
-                        // "what the OTS picker chose" from the pass-specific TierName above.
-                        var (rawSku, defaultSkuMax, otsTierName) = SkuMaxRawAndCapFor(r);
+                        // RawSkuMax follows THIS row's TierName — Pass 1b uses MinMin,
+                        // Pass 3 uses MinMax, Pass 2 uses whatever the OTS picker chose,
+                        // Pass 4 uses MinMax. DefaultSkuMax = RawSkuMax - Soh.
+                        int rawTier = 0;
+                        if (skuMaxBandsByKey.TryGetValue((r.DivCode, r.VolumeGroup ?? ""), out var bandsForTrace))
+                        {
+                            foreach (var b in bandsForTrace)
+                            {
+                                if (line.Qty < b.From || line.Qty > b.To) continue;
+                                rawTier = tierName switch
+                                {
+                                    "MinMin"   => b.MinMin   ?? 0,
+                                    "MinMax"   => b.MinMax   ?? 0,
+                                    "IdealMax" => b.IdealMax ?? 0,
+                                    "MaxMax"   => b.MaxMax   ?? 0,
+                                    _          => 0,
+                                };
+                                break;
+                            }
+                        }
+                        var defaultSkuMax = Math.Max(0, rawTier - soh);
                         trace.Add(new AllocationTraceRow(
                             ContNo: line.ContNo, Itemcode: line.ItemCode, StoreID: r.StoreID,
                             DivCode: divCode, Pass: pass, SortRank: sortRank,
@@ -1294,8 +1310,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                             RunOption: runOption.ToString(),
                             SkipReason: skipReason,
                             DefaultSkuMax: defaultSkuMax,
-                            RawSkuMax: rawSku,
-                            OtsTierName: otsTierName,
+                            RawSkuMax: rawTier,
                             AvgOtsPercent: avgOtsDecimal,
                             AvgOtsMin: avgOtsMinDecimal,
                             AvgOtsMax: avgOtsMaxDecimal,
@@ -1711,7 +1726,6 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
             tdt.Columns.Add("SkipReason",         typeof(string));
             tdt.Columns.Add("DefaultSkuMax",      typeof(int));
             tdt.Columns.Add("RawSkuMax",          typeof(int));
-            tdt.Columns.Add("OtsTierName",        typeof(string));
             tdt.Columns.Add("AvgOtsPercent",      typeof(decimal));
             tdt.Columns.Add("AvgOtsMin",          typeof(decimal));
             tdt.Columns.Add("AvgOtsMax",          typeof(decimal));
@@ -1730,7 +1744,6 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                     (object?)t.SkipReason     ?? DBNull.Value,
                     (object?)t.DefaultSkuMax  ?? DBNull.Value,
                     (object?)t.RawSkuMax      ?? DBNull.Value,
-                    (object?)t.OtsTierName    ?? DBNull.Value,
                     (object?)t.AvgOtsPercent  ?? DBNull.Value,
                     (object?)t.AvgOtsMin      ?? DBNull.Value,
                     (object?)t.AvgOtsMax      ?? DBNull.Value,
