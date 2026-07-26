@@ -137,17 +137,27 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         return issues;
     }
 
-    /// <summary>Current fiscal week anchor — the same wk the Week Sales sum
-    /// starts at inside GenerateAsync (min wk in lpm_salestgtwk_stores across
-    /// stores active in the picked Month/Year). Nullable when nothing matches.
-    /// Used by the OTS page for the Week Sales tooltip so the wk range shown
-    /// matches what the algorithm actually summed. Falls back to
-    /// LPM_OTS_Output.wk when lpm_salestgtwk_stores is empty for the month.</summary>
+    /// <summary>Current fiscal week anchor from LPM_OTS_Output (latest OTSDate).
+    /// This is TODAY's fiscal wk, which OTS Week Sales anchors on — the sum
+    /// is (wk, wk+1, ..., wk+N-1) starting from this anchor. Nullable when
+    /// LPM_OTS_Output has no wk data. Falls back to MIN(wk) from
+    /// lpm_salestgtwk_stores if unavailable.
+    /// Used by the OTS page for the Week Sales header + cell tooltips so the
+    /// wk shown matches the wk the algorithm actually summed. month/year
+    /// params kept for API compat; only the fallback path uses them.</summary>
     public async Task<int?> GetCurrentOtsWkAsync(int? month = null, int? year = null, CancellationToken ct = default)
     {
         await using var c = OpenOnPremBackup();
-        // Preferred source: same table WeekSales reads from.
+        // Preferred source: today's fiscal wk from LPM_OTS_Output.
         var wk = await c.ExecuteScalarAsync<int?>(new CommandDefinition(@"
+            SELECT TOP 1 wk FROM dbo.LPM_OTS_Output WITH (NOLOCK)
+             WHERE wk IS NOT NULL
+             ORDER BY OTSDate DESC, wk DESC",
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        if (wk is int v && v > 0) return v;
+
+        // Fallback: earliest wk in lpm_salestgtwk_stores for the picked month.
+        return await c.ExecuteScalarAsync<int?>(new CommandDefinition(@"
             SELECT MIN(s.wk)
               FROM dbo.lpm_salestgtwk_stores s WITH (NOLOCK)
               JOIN dbo.LPM_EOM_Output e WITH (NOLOCK)
@@ -156,14 +166,6 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                AND (@y IS NULL OR e.Year1  = @y)
                AND s.wk IS NOT NULL",
             new { m = month, y = year },
-            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-        if (wk is int v && v > 0) return v;
-
-        // Fallback: LPM_OTS_Output (may be sparsely populated).
-        return await c.ExecuteScalarAsync<int?>(new CommandDefinition(@"
-            SELECT TOP 1 wk FROM dbo.LPM_OTS_Output WITH (NOLOCK)
-             WHERE wk IS NOT NULL
-             ORDER BY OTSDate DESC, wk DESC",
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
     }
 
@@ -459,6 +461,16 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         var weekSalesTask = SafeAsync(warnings, "Week Sales (lpm_salestgtwk_stores x BFL_MFP_OUTBOUND_T1)", async () =>
         {
             await using var c = OpenOnPremBackup();
+
+            // Anchor at today's fiscal wk from LPM_OTS_Output (matches what the
+            // tooltip + downstream code call "current wk"). If unavailable, fall
+            // back to the first wk found in lpm_salestgtwk_stores for the month.
+            var currentWk = await c.ExecuteScalarAsync<int?>(new CommandDefinition(@"
+                SELECT TOP 1 wk FROM dbo.LPM_OTS_Output WITH (NOLOCK)
+                 WHERE wk IS NOT NULL
+                 ORDER BY OTSDate DESC, wk DESC",
+                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+
             var rows = await c.QueryAsync<(string StoreID, int DivCode, string Country, int Wk, int Sales)>(new CommandDefinition(@"
                 SELECT s.StoreID, s.DivCode, e.Country, s.wk AS Wk, ISNULL(s.SalesTgtWk, 0) AS Sales
                   FROM dbo.lpm_salestgtwk_stores s WITH (NOLOCK)
@@ -468,14 +480,19 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                    AND (@ct IS NULL OR e.Country = @ct)",
                 new { month, year, ct = filter },
                 commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-            var minWk = rows.Any() ? rows.Min(r => r.Wk) : 0;
+            // Anchor = current fiscal wk from LPM_OTS_Output; fall back to
+            // MIN(wk) in the pulled rows if LPM_OTS_Output has no data.
+            var minWk = currentWk is int cw && cw > 0
+                ? cw
+                : (rows.Any() ? rows.Min(r => r.Wk) : 0);
             var maxWkPerCountry = rows.Any()
                 ? rows.GroupBy(r => r.Country).ToDictionary(
                     g => g.Key,
                     g => minWk + (weeksByCountry.TryGetValue(g.Key, out var w) ? w : 1) - 1)
                 : new Dictionary<string, int>();
 
-            // Existing per-store WeekSales (using lpm_salestgtwk_stores).
+            // Per-store WeekSales — sum wk in [minWk, minWk + N) using
+            // lpm_salestgtwk_stores as the per-store shape.
             var existing = rows
                 .GroupBy(r => (r.StoreID, r.DivCode))
                 .ToDictionary(g => g.Key, g =>
