@@ -200,7 +200,7 @@
                         @SortHeader("CurrentEOW",      "Current EOW",    null, true, title: "PrevMonthEOM − (WkReduction × weeksElapsedSoFar); falls back to TgtEOM when PrevMonthEOM = 0")
                         @SortHeader("SOHToday",        "SOH Today", null, true, title: "SUM(SOH) from racks.LPM_locstock for this (Store, Div)")
                         @SortHeader("WeeksToInclude",  "No. of Weeks to include Sales", null, true, title: "WmsCountryOtsWeeks.Weeks for the store's Country (defaults to 1 when missing)")
-                        @SortHeader("WeekSales",       "Week Sales", null, true, title: "SUM(SalesTgtWk) over the next N weeks starting current wk (N = No. of Weeks column)")
+                        @SortHeader("WeekSales",       "Week Sales", null, true, title: WeekSalesHeaderTitle())
                         @SortHeader("InTransit",       "InTransit", null, true, title: "(Ex2SOH + boxsoh) / storeCount(country); UAE = 0")
                         @SortHeader("Ex2DcSoh",        "Ex2 DC SOH", null, true, title: "r1whsoh / storeCount(country)")
                         @SortHeader("CountingWIP",     "Counting WIP", null, true, title: "SUM(AllocatedQty) for approved-but-not-completed containers per (Store, Div)")
@@ -499,6 +499,17 @@
     // Week Sales tooltip to show the exact wk range that was summed.
     private int? _currentOtsWk;
 
+    /// <summary>Tooltip for the Week Sales HEADER — shows the current fiscal
+    /// wk anchor so operators can see it without needing to hover a specific
+    /// cell. Falls back to the formula description when the wk isn't known.</summary>
+    private string WeekSalesHeaderTitle()
+    {
+        var baseText = "SUM(SalesTgtWk) over the next N weeks starting current wk (N = No. of Weeks column)";
+        return _currentOtsWk is int wk
+            ? $"Current wk = {wk}. {baseText}. Then rescaled per (Country x Div) to match BFL_MFP_OUTBOUND_T1.planned_sls totals."
+            : $"{baseText}. Then rescaled per (Country x Div) to match BFL_MFP_OUTBOUND_T1.planned_sls totals.";
+    }
+
     /// <summary>Tooltip for a Week Sales cell:
     /// "205 = SUM(SalesTgtWk wk 27..30) — Current wk 27, N=4".
     /// Falls back to a formula-only string if the current fiscal wk isn't available.</summary>
@@ -563,7 +574,7 @@
         await Me.EnsureLoadedAsync();
         try
         {
-            _currentOtsWk = await Svc.GetCurrentOtsWkAsync();
+            _currentOtsWk = await Svc.GetCurrentOtsWkAsync(_month == 0 ? null : _month, _year == 0 ? null : _year);
             _countries = await Svc.GetCountriesAsync();
             _countries = Me.FilterCountries(_countries).ToList();
             // Non-admins with a restricted country set lose the BFLGroup ("see all countries")
@@ -644,6 +655,7 @@
             _warnings = warnings;
             _lastGenerated = await Svc.GetLastGeneratedTsAsync(_month, _year);
             _availableDates = await Svc.GetAvailableRunDatesAsync(_month, _year);
+            _currentOtsWk = await Svc.GetCurrentOtsWkAsync(_month, _year);
             _proceedAnyway = false;
             _message = n == 0
                 ? "Generate returned no rows — nothing persisted."
