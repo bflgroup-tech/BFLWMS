@@ -534,31 +534,71 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                 existingByCountryDiv[key] = existingByCountryDiv.GetValueOrDefault(key, 0) + kv.Value;
             }
 
-            // Rescale so country-x-div sums match MFP totals.
+            // Rescale so country-x-div sums match MFP totals exactly (largest-remainder).
+            // Per-store Math.Round drifted the sum by ~0.03% (78/285k on UAE wk 29);
+            // floor+distribute-remainder eliminates that drift and makes each
+            // (country, div) sum equal Math.Round(mfpTotal).
+            var storeCountryDiv = existing.Keys
+                .ToDictionary(k => k, k => rows.First(r => r.StoreID == k.StoreID && r.DivCode == k.DivCode).Country);
+            var byCountryDiv = existing
+                .GroupBy(kv => (Cty: storeCountryDiv[kv.Key], Div: kv.Key.DivCode))
+                .ToDictionary(g => g.Key, g => g.ToList());
+
             var scaled = new Dictionary<(string StoreID, int DivCode), int>(existing.Count);
-            foreach (var kv in existing)
+            foreach (var group in byCountryDiv)
             {
-                var (storeId, div) = kv.Key;
-                var cty = rows.First(r => r.StoreID == storeId && r.DivCode == div).Country;
-                if (mfpTotals.TryGetValue((cty, div), out var mfp) && mfp > 0)
+                var (cty, div) = group.Key;
+                var members = group.Value;
+
+                if (!mfpTotals.TryGetValue((cty, div), out var mfp) || mfp <= 0)
                 {
-                    var existingCd = existingByCountryDiv.GetValueOrDefault((cty, div), 0);
-                    if (existingCd > 0)
+                    // MFP has no data for this country-x-div -> keep existing values.
+                    foreach (var kv in members) scaled[kv.Key] = kv.Value;
+                    continue;
+                }
+
+                var existingCd = existingByCountryDiv.GetValueOrDefault((cty, div), 0);
+                if (existingCd <= 0)
+                {
+                    // No lpm share to distribute against -> keep existing (usually 0).
+                    foreach (var kv in members) scaled[kv.Key] = kv.Value;
+                    continue;
+                }
+
+                var target = (int)Math.Round((double)mfp);
+                var scale = (double)mfp / existingCd;
+
+                // Floor per store; track fractional remainders for the largest-remainder pass.
+                var floors = new int[members.Count];
+                var remainders = new double[members.Count];
+                var floorSum = 0;
+                for (var i = 0; i < members.Count; i++)
+                {
+                    var raw = members[i].Value * scale;
+                    floors[i] = (int)Math.Floor(raw);
+                    remainders[i] = raw - floors[i];
+                    floorSum += floors[i];
+                }
+
+                // Distribute the difference (target - floorSum) one unit at a time
+                // to the stores with the largest remainders (or smallest if diff is negative).
+                var diff = target - floorSum;
+                if (diff != 0)
+                {
+                    var order = Enumerable.Range(0, members.Count)
+                        .OrderByDescending(i => diff > 0 ? remainders[i] : -remainders[i])
+                        .ToArray();
+                    var step = diff > 0 ? 1 : -1;
+                    var remaining = Math.Abs(diff);
+                    for (var j = 0; j < order.Length && remaining > 0; j++)
                     {
-                        var scale = (double)mfp / existingCd;
-                        scaled[kv.Key] = (int)Math.Round(kv.Value * scale);
-                    }
-                    else
-                    {
-                        // No lpm share to distribute against -> keep existing (usually 0).
-                        scaled[kv.Key] = kv.Value;
+                        floors[order[j]] += step;
+                        remaining--;
                     }
                 }
-                else
-                {
-                    // MFP has no data for this country-x-div -> fall back to existing.
-                    scaled[kv.Key] = kv.Value;
-                }
+
+                for (var i = 0; i < members.Count; i++)
+                    scaled[members[i].Key] = floors[i];
             }
             return scaled;
         }, () => new Dictionary<(string, int), int>());
