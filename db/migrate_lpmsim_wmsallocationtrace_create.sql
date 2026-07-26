@@ -39,6 +39,14 @@ BEGIN
         RunningOtsQtyAfter   INT           NOT NULL,      -- store's runningOtsQty at moment of decision
         RunOption            NVARCHAR(60)  NOT NULL,      -- FillSKUMaxRoundRobin | FillMinMinPlusOthers
         RunBy                NVARCHAR(100) NULL,
+        SkipReason           NVARCHAR(30)  NULL,          -- NULL=allocated | CapReached | ShareZero
+        -- Mirror WMS_ContAllocationData audit columns for JOIN-friendly analysis:
+        SkuMax               INT           NULL,          -- OTS tier picker's effective cap (tier - SOH)
+        RawSkuMax            INT           NULL,          -- OTS tier picker's raw tier value
+        AvgOtsPercent        DECIMAL(9,2)  NULL,
+        AvgOtsMin            DECIMAL(9,2)  NULL,
+        AvgOtsMax            DECIMAL(9,2)  NULL,
+        InitialOtsPct        DECIMAL(9,2)  NULL,          -- OtsPercentToday from WmsOtsPoAllocationRun (pre-allocation)
         CONSTRAINT PK_WmsAllocationTrace PRIMARY KEY (TraceId)
     );
     CREATE INDEX IX_WAT_ContItemStore ON dbo.WmsAllocationTrace (ContNo, Itemcode, StoreID, Pass);
