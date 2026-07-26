@@ -19,8 +19,11 @@ BEGIN
     ALTER TABLE dbo.WmsAllocationTrace ADD SkipReason NVARCHAR(30) NULL;
 END;
 IF COL_LENGTH('dbo.WmsAllocationTrace', 'SkuMax') IS NULL
+   AND COL_LENGTH('dbo.WmsAllocationTrace', 'DefaultSkuMax') IS NULL
 BEGIN
-    ALTER TABLE dbo.WmsAllocationTrace ADD SkuMax INT NULL;
+    -- fresh installs get DefaultSkuMax directly; the follow-up rename
+    -- migration handles environments that ran this script before that rename.
+    ALTER TABLE dbo.WmsAllocationTrace ADD DefaultSkuMax INT NULL;
 END;
 IF COL_LENGTH('dbo.WmsAllocationTrace', 'RawSkuMax') IS NULL
 BEGIN

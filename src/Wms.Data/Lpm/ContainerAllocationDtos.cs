@@ -141,9 +141,11 @@ public record AllocationTraceRow(
     int      RunningOtsQtyAfter,
     string   RunOption,
     string?  SkipReason = null,     // NULL=allocated, else 'CapReached' / 'ShareZero'
-    // Mirror WMS_ContAllocationData audit columns for JOIN-friendly analysis:
-    int?     SkuMax         = null, // OTS tier picker's effective cap (tier - SOH)
+    // OTS picker reference values — same across all passes for a given (store, item),
+    // regardless of which pass fired. Distinct from the pass-specific TierName/Cap.
+    int?     DefaultSkuMax  = null, // OTS tier picker's effective cap (RawSkuMax - Soh)
     int?     RawSkuMax      = null, // OTS tier picker's raw tier value
+    string?  OtsTierName    = null, // MinMin / MinMax / IdealMax / MaxMax  (OTS picker's tier)
     decimal? AvgOtsPercent  = null,
     decimal? AvgOtsMin      = null,
     decimal? AvgOtsMax      = null,
