@@ -271,11 +271,18 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         RunOption runOption = RunOption.FillSKUMax,
         IReadOnlyCollection<string>? allocationCountries = null,
         bool ecomManualPriority = false,
+        bool traceEnabled = false,
         CancellationToken ct = default)
     {
         var result  = new List<AllocationRow>();
         var blocked = new List<BlockedItemRow>();
-        if (string.IsNullOrWhiteSpace(contno)) return new(result, blocked);
+        // Trace is only meaningful for the two OTS-run based algorithms; the
+        // simpler FillSKUMax / RoundRobin paths don't have distinct passes to
+        // record. Callers still pass the flag, we just no-op here.
+        var traceOn = traceEnabled &&
+            (runOption == RunOption.FillSKUMaxRoundRobin || runOption == RunOption.FillMinMinPlusOthers);
+        var trace = traceOn ? new List<AllocationTraceRow>() : null;
+        if (string.IsNullOrWhiteSpace(contno)) return new(result, blocked, trace);
         contno = contno.Trim();
 
         // Everything in this method is prefetch-heavy — the per-line loop below
@@ -311,7 +318,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                     ORDER BY OraPONo, LPM, ItemCode",
                     new { c = contno }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).AsList();
         }
-        if (lines.Count == 0) return new(result, blocked);
+        if (lines.Count == 0) return new(result, blocked, trace);
 
         var distinctItemCodes = lines.Select(l => l.ItemCode).Distinct().ToArray();
         var hasCountryFilter  = allocationCountries is { Count: > 0 };
@@ -683,7 +690,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         }
 
         var distinctDivs = divByItem.Values.Where(d => d > 0).Distinct().ToArray();
-        if (distinctDivs.Length == 0) return new(result, blocked);
+        if (distinctDivs.Length == 0) return new(result, blocked, trace);
         var completedContnos = completed.Select(x => x.ContNo).Distinct().ToArray();
 
         // ================= Wave 2 =================
@@ -1258,6 +1265,29 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                         };
                     }
 
+                    // Trace hook — writes one row per Pass touch when the operator
+                    // ticked "Trace Allocation" on the razor page. No-ops otherwise.
+                    void RecordTrace(int pass, int sortRank, OtsRunLookupRow r, string tierName,
+                                     int cap, int currentBefore, int remainingBefore, int take)
+                    {
+                        if (trace is null) return;
+                        var soh = itemSohByStore.GetValueOrDefault(
+                            (r.StoreID.ToUpperInvariant(), line.ItemCode.ToUpperInvariant()), 0);
+                        var running = runningOtsQty.GetValueOrDefault((r.StoreID, r.DivCode), r.OtsQtyToday);
+                        trace.Add(new AllocationTraceRow(
+                            ContNo: line.ContNo, Itemcode: line.ItemCode, StoreID: r.StoreID,
+                            DivCode: divCode, Pass: pass, SortRank: sortRank,
+                            VolumeGroup: r.VolumeGroup, TierName: tierName,
+                            LiveOtsPctBefore: (decimal)Math.Round(LiveOtsPct(r), 2),
+                            Cap: cap, Soh: soh,
+                            CurrentBeforeTake: currentBefore,
+                            RemainingBefore: remainingBefore,
+                            Take: take,
+                            RemainingAfter: remainingBefore - take,
+                            RunningOtsQtyAfter: running - take,
+                            RunOption: runOption.ToString()));
+                    }
+
                     // Sort order used by Passes 2, 3, 4: VolumeGroup A+ -> E, then LiveOtsPct DESC.
                     IEnumerable<OtsRunLookupRow> SortByGroupThenOts(IEnumerable<OtsRunLookupRow> src) =>
                         src.OrderBy(r => VolumeGroupRank(r.VolumeGroup))
@@ -1272,15 +1302,18 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                     {
                         // ---------- Pass 1: OtsPercentToday >= Avg OtsPercentToday (sequential fill up to cap) ----------
                         var pass1Stores = SortByGroupThenStaticOts(eligible.Where(r => StaticOtsPct(r) >= avgOts)).ToList();
-                        foreach (var r in pass1Stores)
+                        for (var i = 0; i < pass1Stores.Count; i++)
                         {
                             if (remaining <= 0) break;
-                            var cap = CapFor(r);
+                            var r = pass1Stores[i];
+                            var (_, cap, tierName) = SkuMaxRawAndCapFor(r);
                             var current = allocs.TryGetValue(r.StoreID, out var row) ? row.AllocQty : 0;
                             var take = Math.Min(cap - current, remaining);
                             if (take <= 0) continue;
+                            var remBefore = remaining;
                             allocs[r.StoreID] = BumpRow(row, r, take, 0, pass: 1);
                             remaining -= take;
+                            RecordTrace(1, i, r, tierName, cap, current, remBefore, take);
                         }
 
                         // ---------- Pass 2: 0 < OTS% < AvgOTS% (sequential fill up to cap) ----------
@@ -1288,15 +1321,18 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                         {
                             var pass2Stores = SortByGroupThenOts(
                                 eligible.Where(r => LiveOtsPct(r) > 0 && LiveOtsPct(r) < avgOts)).ToList();
-                            foreach (var r in pass2Stores)
+                            for (var i = 0; i < pass2Stores.Count; i++)
                             {
                                 if (remaining <= 0) break;
-                                var cap = CapFor(r);
+                                var r = pass2Stores[i];
+                                var (_, cap, tierName) = SkuMaxRawAndCapFor(r);
                                 var current = allocs.TryGetValue(r.StoreID, out var row) ? row.AllocQty : 0;
                                 var take = Math.Min(cap - current, remaining);
                                 if (take <= 0) continue;
+                                var remBefore = remaining;
                                 allocs[r.StoreID] = BumpRow(row, r, take, 0, pass: 2);
                                 remaining -= take;
+                                RecordTrace(2, i, r, tierName, cap, current, remBefore, take);
                             }
                         }
 
@@ -1307,15 +1343,18 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                             while (remaining > 0 && pass3Stores.Count > 0)
                             {
                                 bool any = false;
-                                foreach (var r in pass3Stores)
+                                for (var i = 0; i < pass3Stores.Count; i++)
                                 {
                                     if (remaining <= 0) break;
-                                    var cap = CapFor(r);
+                                    var r = pass3Stores[i];
+                                    var (_, cap, tierName) = SkuMaxRawAndCapFor(r);
                                     var current = allocs.TryGetValue(r.StoreID, out var row) ? row.AllocQty : 0;
                                     if (current >= cap) continue;
+                                    var remBefore = remaining;
                                     allocs[r.StoreID] = BumpRow(row, r, 1, 0, pass: 3);
                                     remaining--;
                                     any = true;
+                                    RecordTrace(3, i, r, tierName, cap, current, remBefore, 1);
                                 }
                                 if (!any) break;
                             }
@@ -1346,10 +1385,13 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                                         : (int)Math.Floor((double)origRemaining * cap / totalCap);
                                     if (take <= 0) continue;
                                     var existingRow = allocs.TryGetValue(r.StoreID, out var row) ? row : null;
+                                    var current = existingRow?.AllocQty ?? 0;
+                                    var remBefore = remaining;
                                     var newRow = BumpRow(existingRow, r, take, 0, pass: 4)
                                         with { Pass4RatioCap = cap };
                                     allocs[r.StoreID] = newRow;
                                     remaining -= take;
+                                    RecordTrace(4, i, r, SkuMaxRawAndCapFor(r).TierName, cap, current, remBefore, take);
                                 }
                             }
                         }
@@ -1404,30 +1446,36 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                             .OrderBy(r => VolumeGroupRank(r.VolumeGroup))
                             .ThenByDescending(LiveOtsPct)
                             .ToList();
-                        foreach (var r in pass1bStores)
+                        for (var i = 0; i < pass1bStores.Count; i++)
                         {
                             if (remaining <= 0) break;
+                            var r = pass1bStores[i];
                             var cap = MinMinCapFor(r);
                             var current = allocs.TryGetValue(r.StoreID, out var row) ? row.AllocQty : 0;
                             var take = Math.Min(cap - current, remaining);
                             if (take <= 0) continue;
+                            var remBefore = remaining;
                             allocs[r.StoreID] = BumpRow(row, r, take, 0, pass: 1, tierNameOverride: "MinMin");
                             remaining -= take;
+                            RecordTrace(1, i, r, "MinMin", cap, current, remBefore, take);
                         }
 
                         // ---------- Pass 2: positive-OTS stores topped up to OTS-tier cap ----------
                         if (remaining > 0)
                         {
                             var pass2Stores = SortByGroupThenOts(eligible.Where(r => LiveOtsPct(r) >= 0)).ToList();
-                            foreach (var r in pass2Stores)
+                            for (var i = 0; i < pass2Stores.Count; i++)
                             {
                                 if (remaining <= 0) break;
-                                var tierCap = CapFor(r);   // MinMax/IdealMax/MaxMax picked by OTS-vs-avg band
+                                var r = pass2Stores[i];
+                                var (_, tierCap, tierName) = SkuMaxRawAndCapFor(r);   // MinMax/IdealMax/MaxMax picked by OTS-vs-avg band
                                 var current = allocs.TryGetValue(r.StoreID, out var row) ? row.AllocQty : 0;
                                 var take = Math.Min(tierCap - current, remaining);
                                 if (take <= 0) continue;
+                                var remBefore = remaining;
                                 allocs[r.StoreID] = BumpRow(row, r, take, 0, pass: 2);
                                 remaining -= take;
+                                RecordTrace(2, i, r, tierName, tierCap, current, remBefore, take);
                             }
                         }
 
@@ -1435,15 +1483,18 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                         if (remaining > 0)
                         {
                             var pass3Stores = SortByGroupThenOts(eligible.Where(r => LiveOtsPct(r) < 0)).ToList();
-                            foreach (var r in pass3Stores)
+                            for (var i = 0; i < pass3Stores.Count; i++)
                             {
                                 if (remaining <= 0) break;
+                                var r = pass3Stores[i];
                                 var cap = MinMaxCapFor(r);
                                 var current = allocs.TryGetValue(r.StoreID, out var row) ? row.AllocQty : 0;
                                 var take = Math.Min(cap - current, remaining);
                                 if (take <= 0) continue;
+                                var remBefore = remaining;
                                 allocs[r.StoreID] = BumpRow(row, r, take, 0, pass: 3, tierNameOverride: "MinMax");
                                 remaining -= take;
+                                RecordTrace(3, i, r, "MinMax", cap, current, remBefore, take);
                             }
                         }
 
@@ -1492,9 +1543,11 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                                             : (int)Math.Floor((double)remaining * minMax / totalMinMax);
                                         if (share <= 0) continue;
                                         var current = allocs.TryGetValue(r.StoreID, out var row) ? row.AllocQty : 0;
+                                        var remBefore = remaining;
                                         allocs[r.StoreID] = BumpRow(row, r, share, 0, pass: 4, tierNameOverride: "MinMax");
                                         remaining -= share;
                                         assigned += share;
+                                        RecordTrace(4, i, r, "MinMax", minMax, current, remBefore, share);
                                     }
                                     _ = assigned;
                                 }
@@ -1574,7 +1627,62 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         if (runOption == RunOption.RoundRobin && allocTotal > poTotal)
             Console.Error.WriteLine($"[ContainerAllocation] WARN: RoundRobin over-allocated {allocTotal} vs PO total {poTotal} (delta {allocTotal - poTotal}).");
 
-        return new AllocationProcessResult(result, blocked);
+        // Trace flush — writes one row per Pass touch to LPMSIM.dbo.WmsAllocationTrace
+        // when the operator ticked "Trace Allocation". No-op otherwise. Delete any
+        // existing rows for this ContNo first so re-processing gives a clean picture.
+        if (trace is { Count: > 0 })
+        {
+            progress?.Report(new AllocationProgress(0, trace.Count, "Writing allocation trace"));
+            await using var ct1 = OpenOnPremBackup();
+            ct1.ChangeDatabase("LPMSIM");
+            await ct1.ExecuteAsync(new CommandDefinition(
+                "DELETE FROM dbo.WmsAllocationTrace WHERE ContNo = @c",
+                new { c = contno }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+
+            var tdt = new DataTable();
+            tdt.Columns.Add("ContNo",             typeof(string));
+            tdt.Columns.Add("Itemcode",           typeof(string));
+            tdt.Columns.Add("StoreID",            typeof(string));
+            tdt.Columns.Add("DivCode",            typeof(int));
+            tdt.Columns.Add("Pass",               typeof(byte));
+            tdt.Columns.Add("SortRank",           typeof(int));
+            tdt.Columns.Add("VolumeGroup",        typeof(string));
+            tdt.Columns.Add("TierName",           typeof(string));
+            tdt.Columns.Add("LiveOtsPctBefore",   typeof(decimal));
+            tdt.Columns.Add("Cap",                typeof(int));
+            tdt.Columns.Add("Soh",                typeof(int));
+            tdt.Columns.Add("CurrentBeforeTake",  typeof(int));
+            tdt.Columns.Add("RemainingBefore",    typeof(int));
+            tdt.Columns.Add("Take",               typeof(int));
+            tdt.Columns.Add("RemainingAfter",     typeof(int));
+            tdt.Columns.Add("RunningOtsQtyAfter", typeof(int));
+            tdt.Columns.Add("RunOption",          typeof(string));
+            tdt.Columns.Add("RunBy",              typeof(string));
+
+            foreach (var t in trace)
+            {
+                tdt.Rows.Add(
+                    t.ContNo, t.Itemcode, t.StoreID, t.DivCode, (byte)t.Pass, t.SortRank,
+                    (object?)t.VolumeGroup ?? DBNull.Value,
+                    (object?)t.TierName    ?? DBNull.Value,
+                    (object?)t.LiveOtsPctBefore ?? DBNull.Value,
+                    t.Cap, t.Soh, t.CurrentBeforeTake, t.RemainingBefore, t.Take,
+                    t.RemainingAfter, t.RunningOtsQtyAfter, t.RunOption,
+                    (object?)user.Name ?? DBNull.Value);
+            }
+
+            using var tbulk = new SqlBulkCopy(ct1)
+            {
+                DestinationTableName = "dbo.WmsAllocationTrace",
+                BatchSize = 5000,
+                BulkCopyTimeout = CommandTimeoutSeconds,
+            };
+            foreach (DataColumn col in tdt.Columns)
+                tbulk.ColumnMappings.Add(col.ColumnName, col.ColumnName);
+            await tbulk.WriteToServerAsync(tdt, ct);
+        }
+
+        return new AllocationProcessResult(result, blocked, trace);
     }
 
     // ===================== Save Draft (LPMSIM tables) =====================

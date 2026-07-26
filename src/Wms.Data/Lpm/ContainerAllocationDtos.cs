@@ -115,7 +115,31 @@ public enum RunOption { FillSKUMax = 0, RoundRobin = 1, FillSKUMaxRoundRobin = 2
 /// (item, store) pairs blocked by LPM_StoreDeptAccess / LPM_StoreDivAccess.</summary>
 public record AllocationProcessResult(
     List<AllocationRow>    Allocations,
-    List<BlockedItemRow>   Blocked);
+    List<BlockedItemRow>   Blocked,
+    List<AllocationTraceRow>? Trace = null);
+
+/// <summary>Per-Pass audit trail — one row per (ContNo, Itemcode, StoreID, Pass)
+/// touch, captured only when the operator ticks "Trace Allocation" on the Container
+/// Allocation page. Persisted to dbo.WmsAllocationTrace on LPMSIM so operators can
+/// reconstruct WHY each store got its final quantity.</summary>
+public record AllocationTraceRow(
+    string   ContNo,
+    string   Itemcode,
+    string   StoreID,
+    int      DivCode,
+    int      Pass,               // 1..4
+    int      SortRank,           // position in the pass's sorted store list (0-based)
+    string?  VolumeGroup,
+    string?  TierName,           // MinMin / MinMax / IdealMax / MaxMax
+    decimal? LiveOtsPctBefore,
+    int      Cap,                // tier cap - SOH (what the Pass could give)
+    int      Soh,
+    int      CurrentBeforeTake,
+    int      RemainingBefore,
+    int      Take,
+    int      RemainingAfter,
+    int      RunningOtsQtyAfter,
+    string   RunOption);
 
 /// <summary>Header row read back for the "Processed Contnos" dropdown banner.
 /// Mirrors WMS_Cont_Allocation_Header columns.</summary>
