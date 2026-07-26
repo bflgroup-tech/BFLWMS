@@ -137,13 +137,29 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         return issues;
     }
 
-    /// <summary>Current fiscal week anchor from LPM_OTS_Output — the same wk
-    /// the Week Sales sum starts at (via ROW_NUMBER OVER (ORDER BY OTSDate
-    /// DESC) inside GenerateAsync's WeekSales CTE). Nullable when the table
-    /// is empty. Used by the OTS page for the Week Sales tooltip.</summary>
-    public async Task<int?> GetCurrentOtsWkAsync(CancellationToken ct = default)
+    /// <summary>Current fiscal week anchor — the same wk the Week Sales sum
+    /// starts at inside GenerateAsync (min wk in lpm_salestgtwk_stores across
+    /// stores active in the picked Month/Year). Nullable when nothing matches.
+    /// Used by the OTS page for the Week Sales tooltip so the wk range shown
+    /// matches what the algorithm actually summed. Falls back to
+    /// LPM_OTS_Output.wk when lpm_salestgtwk_stores is empty for the month.</summary>
+    public async Task<int?> GetCurrentOtsWkAsync(int? month = null, int? year = null, CancellationToken ct = default)
     {
         await using var c = OpenOnPremBackup();
+        // Preferred source: same table WeekSales reads from.
+        var wk = await c.ExecuteScalarAsync<int?>(new CommandDefinition(@"
+            SELECT MIN(s.wk)
+              FROM dbo.lpm_salestgtwk_stores s WITH (NOLOCK)
+              JOIN dbo.LPM_EOM_Output e WITH (NOLOCK)
+                ON e.StoreID = s.StoreID AND e.DivCode = s.DivCode
+             WHERE (@m IS NULL OR e.Month1 = @m)
+               AND (@y IS NULL OR e.Year1  = @y)
+               AND s.wk IS NOT NULL",
+            new { m = month, y = year },
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        if (wk is int v && v > 0) return v;
+
+        // Fallback: LPM_OTS_Output (may be sparsely populated).
         return await c.ExecuteScalarAsync<int?>(new CommandDefinition(@"
             SELECT TOP 1 wk FROM dbo.LPM_OTS_Output WITH (NOLOCK)
              WHERE wk IS NOT NULL
