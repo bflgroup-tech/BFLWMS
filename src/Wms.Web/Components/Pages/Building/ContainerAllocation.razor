@@ -87,6 +87,10 @@
                    title="When ticked, ECOM's Manual Allocation qty (StoreID='ONLINE') is allocated first per item; remaining qty distributes to other countries via the normal Pass 1-4 rules.">
                 <input type="checkbox" @bind="_ecomManualPriority" /> Follow ECOM Manual Allocation on priority
             </label>
+            <label style="display:flex; align-items:center; gap:6px; font-size:12px; cursor:pointer"
+                   title="When ticked, every Pass touch (1b/2/3/4) is written to LPMSIM.dbo.WmsAllocationTrace. Prior rows for this ContNo are cleared on each run. Use only for debugging — adds ~1 row per (store, pass, item).">
+                <input type="checkbox" @bind="_traceEnabled" /> Trace Allocation
+            </label>
         }
         @{
             var currentRoRows = _runOption switch
@@ -519,6 +523,7 @@
     private string _runOption = "FillMinMinPlusOthers";
     private bool _validate = true;
     private bool _ecomManualPriority = false;
+    private bool _traceEnabled = false;
     private long _totalPoQty;
     private List<BlockedItemRow> _blocked = new();
     private bool _showBlocked;
@@ -764,7 +769,7 @@
             var allocCsv = string.Join(",", _allocCountries);
             {
                 var sw = System.Diagnostics.Stopwatch.StartNew();
-                var procResult = await Svc.ProcessAllocationAsync(_contno, progress, ro, _allocCountries, _ecomManualPriority);
+                var procResult = await Svc.ProcessAllocationAsync(_contno, progress, ro, _allocCountries, _ecomManualPriority, _traceEnabled);
                 algoMs = sw.ElapsedMilliseconds;
                 _allocation = procResult.Allocations;
                 _blocked    = procResult.Blocked;
