@@ -508,6 +508,14 @@ a:hover { text-decoration: underline; }
     color: var(--text-primary);
 }
 .aiwms-table tbody tr:hover { background: var(--bfl-yellow-lite); }
+/* Without this, tfoot <td> falls back to the browser's default (near-zero) padding
+   while tbody td gets 10px/14px — same text-align:right column, but the numbers sit
+   at a different distance from the cell's right edge, so a Total row's digits don't
+   line up with the column above even though they're in the correct column. */
+.aiwms-table tfoot td {
+    padding: 10px 14px;
+    color: var(--text-primary);
+}
 
 /* ───── DETAIL GRID ───── */
 .aiwms-detail-grid {
@@ -799,6 +807,7 @@ a:hover { text-decoration: underline; }
 /* DENSE table */
 .aiwms-table-dense thead th { padding: 6px 10px; font-size: 9px; }
 .aiwms-table-dense tbody td { padding: 5px 10px; font-size: 12px; }
+.aiwms-table-dense tfoot td { padding: 5px 10px; font-size: 12px; }
 .aiwms-table-dense tbody tr.is-active { background: var(--bfl-yellow-lite); }
 .aiwms-table-dense tbody tr.is-active td { font-weight: 700; }
 .aiwms-table-dense tbody tr:hover { background: var(--bfl-grey-100); }
