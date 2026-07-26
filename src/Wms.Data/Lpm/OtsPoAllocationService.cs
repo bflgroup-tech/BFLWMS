@@ -648,6 +648,43 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
             ? Math.Min(weeksInMonth, runDay.Day / 7)
             : weeksInMonth;    // for past/future months, treat as fully-elapsed
         var results = new List<OtsPoAllocationRow>(baseRows.Count);
+        // Largest-remainder allocation for InTransit + Ex2 DC SOH so per-row
+        // amounts sum exactly to the (Country, Div) totals from LPM_Ex2ItemSOH
+        // (no integer-division loss). Prior code did `total / country_storeCount`
+        // per row, which lost up to N-1 units per (Country, Div) pair; across
+        // ~7 countries x ~15 divs the ribbon under-counted by ~0.1%.
+        //
+        // Divisor is now the count of rows in this (Country, Div) that actually
+        // exist in baseRows (i.e. have EOM data for the picked Month/Year) so
+        // the leftover is guaranteed to reach a real store. UAE is skipped for
+        // InTransit per prior spec.
+        var perRowInTransit = new Dictionary<(string Country, string StoreID, int DivCode), int>();
+        var perRowEx2Dc     = new Dictionary<(string Country, string StoreID, int DivCode), int>();
+        foreach (var group in baseRows.GroupBy(b => ((b.Country ?? "").Trim().ToUpperInvariant(), b.DivCode)))
+        {
+            var (cKey, divCode) = group.Key;
+            if (!ex2ByKey.TryGetValue(group.Key, out var totals)) continue;
+            var (inTransitTotal, ex2DcTotal) = totals;
+            var isUae = string.Equals(cKey, "UAE", StringComparison.OrdinalIgnoreCase);
+            var effectiveInTransit = isUae ? 0 : inTransitTotal;
+            var storesInGroup = group.ToList();
+            var n = storesInGroup.Count;
+            if (n == 0) continue;
+            // Sort deterministically so leftover units land consistently.
+            storesInGroup.Sort((a, b) => string.CompareOrdinal(a.StoreID, b.StoreID));
+            var itFloor = effectiveInTransit / n;
+            var itRem   = effectiveInTransit % n;
+            var e2Floor = ex2DcTotal        / n;
+            var e2Rem   = ex2DcTotal        % n;
+            for (int i = 0; i < n; i++)
+            {
+                var s = storesInGroup[i];
+                var key = (s.Country, s.StoreID, s.DivCode);
+                perRowInTransit[key] = itFloor + (i < itRem ? 1 : 0);
+                perRowEx2Dc[key]     = e2Floor + (i < e2Rem ? 1 : 0);
+            }
+        }
+
         foreach (var r in baseRows)
         {
             // SOH lookup — ECOM special-case sums SOH across the Online (UAE)
@@ -664,19 +701,9 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
             {
                 soh = sohByKey.TryGetValue((r.StoreID.Trim().ToUpperInvariant(), r.DivCode), out var s) ? s : 0;
             }
-            var ws     = weekSalesByKey.TryGetValue((r.StoreID, r.DivCode), out var w) ? w : 0;
-            var stores = storeCountByCountry.TryGetValue(r.Country, out var sc) ? sc : 0;
-            int inTransit = 0, ex2dc = 0;
-            var isUAE = string.Equals(r.Country, "UAE", StringComparison.OrdinalIgnoreCase);
-            var cKey  = (r.Country ?? "").Trim().ToUpperInvariant();
-            if (!isUAE
-                && ex2ByKey.TryGetValue((cKey, r.DivCode), out var e)
-                && stores > 0)
-            {
-                var (inTransitTotal, ex2DcTotal) = e;
-                inTransit = inTransitTotal / stores;
-                ex2dc     = ex2DcTotal    / stores;
-            }
+            var ws        = weekSalesByKey.TryGetValue((r.StoreID, r.DivCode), out var w) ? w : 0;
+            var inTransit = perRowInTransit.TryGetValue((r.Country, r.StoreID, r.DivCode), out var itPer) ? itPer : 0;
+            var ex2dc     = perRowEx2Dc.TryGetValue((r.Country, r.StoreID, r.DivCode), out var e2Per) ? e2Per : 0;
             var wip = wipByKey.TryGetValue((r.Country, r.StoreID, r.DivCode), out var v) ? v : 0;
 
             decimal wkReduction;
