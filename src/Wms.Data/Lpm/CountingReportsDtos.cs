@@ -5,6 +5,7 @@ namespace Wms.Data.Lpm;
 public record PendingPurchaseRow(
     string   ContNo,
     DateTime CountingDate,
+    string?  TrnTime,
     int      CountedQty,
     int      AgeingDays,
     string   Divisions);

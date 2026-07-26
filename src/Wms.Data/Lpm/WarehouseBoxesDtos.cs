@@ -37,6 +37,7 @@ public record WhBoxRow(
     string? Brand,
     string? Rack,
     string? Purchased,
+    DateTime? PurchaseDate,
     string? ContNo,
     DateTime? TrnDate,
     DateTime? CurrDate,

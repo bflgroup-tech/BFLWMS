@@ -158,7 +158,8 @@ public class WarehouseBoxesService(IOnPremConnectionResolver resolver)
                    MAX(scm.Department)                                                     AS Department,
                    MAX(w.Brand)                                                            AS Brand,
                    MAX(w.Rack)                                                             AS Rack,
-                   MAX(CASE WHEN w.ShopEligible = 'E' THEN 'N' ELSE NULL END)              AS Purchased,
+                   MAX(CASE WHEN w.PurDate IS NOT NULL OR up.Contno IS NOT NULL THEN 'Y' ELSE NULL END) AS Purchased,
+                   MAX(COALESCE(w.PurDate, up.Trndate))                                    AS PurchaseDate,
                    MAX(w.ContNo)                                                           AS ContNo,
                    MAX(w.TrnDate)                                                          AS TrnDate,
                    MAX(w.CurrDate)                                                         AS CurrDate,
@@ -174,6 +175,14 @@ public class WarehouseBoxesService(IOnPremConnectionResolver resolver)
                    WHERE u.itemcode = w.ItemCode
                    ORDER BY sm.Division
               ) scm
+              LEFT JOIN (
+                  -- USAPurchase fallback: whboxitems.PurDate lags same-day purchases,
+                  -- so recent (last 7 days) purchase records fill that gap.
+                  SELECT Contno, GroupCode, MAX(Trndate) AS Trndate
+                    FROM USA.dbo.USAPurchase
+                   WHERE Trndate >= DATEADD(day, -7, SYSUTCDATETIME())
+                   GROUP BY Contno, GroupCode
+              ) up ON up.Contno = w.ContNo AND up.GroupCode = w.GroupCode
              WHERE 1 = 1
                {whereExtra}
                AND (@lpmStatus = 0
@@ -213,12 +222,13 @@ public class WarehouseBoxesService(IOnPremConnectionResolver resolver)
                 Brand:          rdr.IsDBNull(11) ? null : rdr.GetString(11),
                 Rack:           rdr.IsDBNull(12) ? null : rdr.GetString(12),
                 Purchased:      rdr.IsDBNull(13) ? null : rdr.GetString(13),
-                ContNo:         rdr.IsDBNull(14) ? null : rdr.GetString(14),
-                TrnDate:        rdr.IsDBNull(15) ? null : rdr.GetDateTime(15),
-                CurrDate:       rdr.IsDBNull(16) ? null : rdr.GetDateTime(16),
-                SummerQty:      rdr.IsDBNull(17) ? 0 : rdr.GetInt64(17),
-                WinterQty:      rdr.IsDBNull(18) ? 0 : rdr.GetInt64(18),
-                OraPoNo:        rdr.IsDBNull(19) ? null : rdr.GetString(19)));
+                PurchaseDate:   rdr.IsDBNull(14) ? null : rdr.GetDateTime(14),
+                ContNo:         rdr.IsDBNull(15) ? null : rdr.GetString(15),
+                TrnDate:        rdr.IsDBNull(16) ? null : rdr.GetDateTime(16),
+                CurrDate:       rdr.IsDBNull(17) ? null : rdr.GetDateTime(17),
+                SummerQty:      rdr.IsDBNull(18) ? 0 : rdr.GetInt64(18),
+                WinterQty:      rdr.IsDBNull(19) ? 0 : rdr.GetInt64(19),
+                OraPoNo:        rdr.IsDBNull(20) ? null : rdr.GetString(20)));
         }
         return rows;
     }

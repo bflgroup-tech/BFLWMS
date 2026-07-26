@@ -2,6 +2,7 @@
 @rendermode RenderMode.InteractiveServer
 @using Wms.Core
 @using Wms.Data.Robotic
+@using ClosedXML.Excel
 @attribute [Authorize(Policy = MenuKeys.ROBOTIC_CHUTE_MAPPING_TECHNO)]
 @inject ChuteMappingService Chute
 @inject IJSRuntime JS
@@ -50,14 +51,29 @@
     <div style="flex:1;min-height:0;display:flex;gap:8px;overflow:hidden">
 
         <div style="display:flex;flex-direction:column;width:380px;flex-shrink:0">
+            <div style="display:flex;align-items:center;gap:10px;margin:8px 0 0;padding:8px;border:1px solid var(--border);border-radius:4px;flex-wrap:wrap">
+                <label style="display:flex;align-items:center;gap:5px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;margin:0">
+                    <input type="checkbox" @bind="_showExcelUpload" style="cursor:pointer;width:14px;height:14px" />
+                    Upload from Excel
+                </label>
+                <label class="aiwms-btn aiwms-btn-secondary"
+                       style="flex-shrink:0;white-space:nowrap;margin:0;@(_showExcelUpload ? "cursor:pointer;" : "cursor:not-allowed;opacity:.5;")">
+                    Upload from Excel
+                    <InputFile OnChange="OnExcelFileSelected" accept=".xlsx" disabled="@(!_showExcelUpload)" style="display:none" />
+                </label>
+                @if (!string.IsNullOrEmpty(_uploadedExcelFileName))
+                {
+                    <span style="font-size:12px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">@_uploadedExcelFileName</span>
+                }
+            </div>
             <div style="display:flex;gap:6px;padding:8px 0 0;flex-shrink:0">
                 <select @bind="_listMode" @bind:after="OnListModeChangedAsync" class="aiwms-input" style="flex:1;min-width:0">
                     <option value="Shop">Shop</option>
                     <option value="Building">Building - Division</option>
                 </select>
-                <button class="aiwms-btn" style="flex-shrink:0;white-space:nowrap;background:#f59e0b;color:#000"
-                        @onclick="AutoAllocateChuteAsync">
-                    Auto Config
+                <button class="aiwms-btn aiwms-btn-secondary" style="flex-shrink:0;white-space:nowrap"
+                        @onclick="ConvertAsync">
+                    Convert
                 </button>
             </div>
             <div style="display:flex;gap:6px;padding:8px 0 6px;flex-shrink:0">
@@ -70,11 +86,14 @@
             </div>
             <div style="flex:1;min-height:0;overflow:auto;border:1px solid var(--border);border-radius:4px">
                 @{
+                    var baseNames = _showExcelUpload
+                        ? _shopNames.Where(s => s.RoboShopId != null && _excelShopIds.Contains(s.RoboShopId.Value.ToString())).ToList()
+                        : _shopNames;
                     var displayNames = _shopNamesLoading
                         ? []
                         : string.IsNullOrWhiteSpace(_searchTerm)
-                            ? _shopNames
-                            : _shopNames.Where(s =>
+                            ? baseNames
+                            : baseNames.Where(s =>
                                 (s.RoboShopId?.ToString().Contains(_searchTerm, StringComparison.OrdinalIgnoreCase) ?? false) ||
                                 (s.ShopName?.Contains(_searchTerm, StringComparison.OrdinalIgnoreCase) ?? false)).ToList();
                 }
@@ -123,6 +142,10 @@
         <div style="display:flex;flex-direction:column;flex:1;min-width:0;overflow:hidden">
 
             <div style="flex-shrink:0;display:flex;align-items:center;gap:6px;padding:8px 0">
+                <button class="aiwms-btn" style="flex-shrink:0;white-space:nowrap;background:#f59e0b;color:#000;margin-right:14px"
+                        @onclick="AutoAllocateChuteAsync">
+                    Auto Config
+                </button>
                 <button class="aiwms-btn aiwms-btn-primary" disabled style="opacity:1">
                     Double
                 </button>
@@ -140,6 +163,10 @@
                     Show disabled chutes (allow mapping changes)
                 </label>
                 <span style="flex:1"></span>
+                <button class="aiwms-btn aiwms-btn-danger" style="white-space:nowrap"
+                        @onclick="ClearAllPendingItemsAsync">
+                    Clear all pending items from all chutes
+                </button>
                 <button class="aiwms-btn aiwms-btn-danger" style="white-space:nowrap"
                         @onclick="ClearAllOverrides">
                     Clear All@(_cellOverrides.Count > 0 ? $" ({_cellOverrides.Count})" : "")
@@ -304,6 +331,9 @@
 
     private string  _searchTerm = "";
     private string  _listMode = "Shop"; // "Shop" or "Building" — filtering behavior not yet wired up
+    private string? _uploadedExcelFileName;
+    private bool    _showExcelUpload;
+    private HashSet<string> _excelShopIds = new();
     private bool    _shopNamesLoading;
     private string? _dragShopId;
     private string  _dragShopName = "";
@@ -337,6 +367,112 @@
         StateHasChanged();
         await LoadShopNamesAsync();
         _shopNamesLoading = false;
+    }
+
+    // TODO: behavior not yet defined — placeholder until specified.
+    private Task ConvertAsync()
+    {
+        Snack.Add("Convert: not yet implemented.", Severity.Info);
+        return Task.CompletedTask;
+    }
+
+    // Expected columns: Location (matched against the shop list's Shop Name) and NoOfChutes
+    // (loaded into that shop's New Chutes input) — column header for location is read
+    // tolerantly since sample files have shipped with "Locartion" as well as "Location".
+    private async Task OnExcelFileSelected(InputFileChangeEventArgs e)
+    {
+        var file = e.File;
+        if (file is null) return;
+        if (!file.Name.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase))
+        {
+            Snack.Add("Please select a .xlsx file.", Severity.Warning);
+            return;
+        }
+        _uploadedExcelFileName = file.Name;
+        StateHasChanged();
+
+        List<(string Location, int Qty)> parsed;
+        try
+        {
+            await using var stream = file.OpenReadStream(maxAllowedSize: 10 * 1024 * 1024);
+            using var ms = new MemoryStream();
+            await stream.CopyToAsync(ms);
+            ms.Position = 0;
+            parsed = ParseChuteRequestXlsx(ms);
+        }
+        catch (Exception ex)
+        {
+            Snack.Add($"Excel parse failed: {ex.Message}", Severity.Error);
+            return;
+        }
+
+        if (parsed.Count == 0)
+        {
+            Snack.Add("No data rows found in the Excel.", Severity.Warning);
+            return;
+        }
+
+        var byName = _shopNames
+            .Where(s => s.RoboShopId != null && !string.IsNullOrWhiteSpace(s.ShopName))
+            .ToDictionary(s => s.ShopName!.Trim(), s => s.RoboShopId!.ToString()!, StringComparer.OrdinalIgnoreCase);
+
+        _excelShopIds = new HashSet<string>();
+        int matched = 0;
+        var unmatched = new List<string>();
+        foreach (var (location, qty) in parsed)
+        {
+            if (byName.TryGetValue(location, out var shopId))
+            {
+                _newChuteInputs[shopId] = qty.ToString();
+                _excelShopIds.Add(shopId);
+                matched++;
+            }
+            else
+            {
+                unmatched.Add(location);
+            }
+        }
+
+        StateHasChanged();
+        Snack.Add(unmatched.Count == 0
+            ? $"Loaded New Chutes for {matched} shop(s) from '{file.Name}'."
+            : $"Loaded {matched} of {parsed.Count} row(s) from '{file.Name}'. Unmatched: {string.Join(", ", unmatched)}",
+            unmatched.Count == 0 ? Severity.Success : Severity.Warning);
+    }
+
+    private static List<(string Location, int Qty)> ParseChuteRequestXlsx(Stream stream)
+    {
+        using var wb = new XLWorkbook(stream);
+        var ws = wb.Worksheet(1);
+        var last = ws.LastRowUsed();
+        if (last is null) return [];
+
+        var header = ws.Row(1);
+        int colLocation = 0, colQty = 0;
+        for (int col = 1; col <= header.LastCellUsed()!.Address.ColumnNumber; col++)
+        {
+            var h = (header.Cell(col).GetString() ?? "").Trim().ToLowerInvariant();
+            switch (h)
+            {
+                case "location": case "locartion": colLocation = col; break;
+                case "noofchutes": case "no of chutes": case "chutes": colQty = col; break;
+            }
+        }
+        if (colLocation == 0 || colQty == 0)
+            throw new InvalidOperationException("Header row must include: Location, NoOfChutes.");
+
+        var rows = new List<(string Location, int Qty)>();
+        for (int r = 2; r <= last.RowNumber(); r++)
+        {
+            var location = (ws.Cell(r, colLocation).GetString() ?? "").Trim();
+            if (string.IsNullOrEmpty(location)) continue;   // blank row
+            var qtyCell = ws.Cell(r, colQty);
+            int qty = 0;
+            try { qty = (int)Math.Round(qtyCell.GetDouble()); }
+            catch { int.TryParse(qtyCell.GetString(), out qty); }
+            rows.Add((location, qty));
+        }
+        return rows;
     }
 
     private async Task RefreshAllAsync()
@@ -596,6 +732,13 @@
     {
         _cellOverrides.Clear();
         _cellErrors.Clear();
+    }
+
+    // TODO: exact behavior not yet defined — placeholder until specified.
+    private Task ClearAllPendingItemsAsync()
+    {
+        Snack.Add("Clear all pending items from all chutes: not yet implemented.", Severity.Info);
+        return Task.CompletedTask;
     }
 
     private async Task SaveAllAsync()

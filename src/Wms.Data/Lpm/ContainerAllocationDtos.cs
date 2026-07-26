@@ -62,11 +62,19 @@ public record AllocationRow(
     int?     Pass1Qty         = null,    // OTS% >= AvgOTS% pass
     int?     Pass2Qty         = null,    // 0 < OTS% < AvgOTS% pass
     int?     Pass3Qty         = null,    // OTS% <= 0 round-robin pass
-    int?     Pass4Qty         = null,    // uncapped RR fallback across all stores
+    int?     Pass4Qty         = null,    // Pass 4 ratio distribution across all eligible stores
+    int?     Pass4RatioCap    = null,    // Store's OTS-driven tier cap at Pass 4 time (denominator for the ratio share)
     decimal? AvgOtsPercent    = null,    // per-Division AVG(OtsPercentToday WHERE > 0) at item time
     int?     OtsQtyToday      = null,    // OtsQtyToday from WmsOtsPoAllocationRun for this (StoreID, DivCode) — initial value, not decremented
     int?     TgtEOM           = null,    // TgtEOM from WmsOtsPoAllocationRun for this (StoreID, DivCode) — FillSKUMax+RR only
-    int?     RawSkuMax        = null);   // Raw SKUMax from LPM_SKUMaxRule band lookup (before subtracting SOHToday) — FillSKUMax+RR only. 0 = no band matched.
+    int?     RawSkuMax        = null,    // Raw SKUMax from LPM_SKUMaxRule band lookup (before subtracting SOHToday) — FillSKUMax+RR only. 0 = no band matched.
+    // Analysis columns — same across all rows for a given item (AvgOtsMin/Max) or per-store snapshot.
+    string?  SkuMaxBand       = null,    // 'MinMin' / 'MinMax' / 'IdealMax' / 'MaxMax' — the tier the picker landed on at the LAST pass that wrote this row.
+    decimal? AvgOtsMin        = null,    // AvgOts - OTSBandPct — lower edge of the IdealMax band for this item.
+    decimal? AvgOtsMax        = null,    // AvgOts + OTSBandPct — upper edge of the IdealMax band for this item.
+    decimal? InitialOtsPct    = null,    // OtsPercentToday from WmsOtsPoAllocationRun (static, matches OTS PO Allocation report %).
+    int?     Soh              = null,    // per-(Store, Item) SOH from racks.LPM_locstock used in cap = tier - SOH.
+    int?     RunningOtsQty    = null);   // runningOtsQty at the moment this row was written (after prior-item decrements).
 
 /// <summary>One row in the blocked-items list: an (item, store) pair that was
 /// excluded from allocation by LPM_StoreDeptAccess or LPM_StoreDivAccess.</summary>
@@ -95,10 +103,13 @@ public record AllocationStatus(
     int  FillSkuMaxRows,
     int  RoundRobinRows,
     int  FillSKUMaxRoundRobinRows = 0,
-    int  AzureAllocRows           = 0);  // dbo.WMS_ContAllocationData row count on Azure — > 0 means the container has been synced and Delete should be blocked at UI level
+    int  AzureAllocRows           = 0,   // dbo.WMS_ContAllocationData row count on Azure — > 0 means the container has been synced and Delete should be blocked at UI level
+    int  FillMinMinPlusOthersRows = 0);
 
-/// <summary>How to distribute qty across eligible stores.</summary>
-public enum RunOption { FillSKUMax = 0, RoundRobin = 1, FillSKUMaxRoundRobin = 2 }
+/// <summary>How to distribute qty across eligible stores.
+/// FillSKUMax and RoundRobin are kept for run-history compatibility but are
+/// no longer offered in the Container Allocation page dropdown.</summary>
+public enum RunOption { FillSKUMax = 0, RoundRobin = 1, FillSKUMaxRoundRobin = 2, FillMinMinPlusOthers = 3 }
 
 /// <summary>What ProcessAllocationAsync returns — allocations + the
 /// (item, store) pairs blocked by LPM_StoreDeptAccess / LPM_StoreDivAccess.</summary>

@@ -38,7 +38,7 @@
                 </Authorized>
             </AuthorizeView>
         </div>
-        <NavMenu />
+        <NavMenu @rendermode="RenderMode.InteractiveServer" />
         <div class="aiwms-sidebar-footer">v@_version</div>
     </aside>
 
@@ -84,7 +84,7 @@
         {
             Default = new Default
             {
-                FontFamily = new[] { "DM Sans", "Segoe UI", "Tahoma", "sans-serif" }
+                FontFamily = new[] { "Segoe UI", "-apple-system", "Roboto", "Helvetica", "Arial", "sans-serif" }
             }
         }
     };

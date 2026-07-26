@@ -3,6 +3,7 @@
 @using Microsoft.AspNetCore.Components.Authorization
 @inject AuthenticationStateProvider AuthProvider
 @inject IAuthorizationService AuthService
+@inject NavigationManager Nav
 
 <nav class="aiwms-nav">
     <NavLink class="aiwms-nav-link" ActiveClass="active" href="" Match="NavLinkMatch.All">
@@ -19,19 +20,27 @@
     }
     @foreach (var grp in grouped)
     {
-        <div class="aiwms-nav-section">@grp.Key</div>
-        @foreach (var cat in grp.GroupBy(m => m.Category))
+        var isExpanded = _expandedGroups.Contains(grp.Key);
+        <div class="aiwms-nav-section" style="cursor:pointer;display:flex;align-items:center;gap:6px"
+             @onclick="@(() => ToggleGroup(grp.Key))">
+            <span style="font-size:13px">@(isExpanded ? "−" : "+")</span>
+            <span>@grp.Key</span>
+        </div>
+        @if (isExpanded)
         {
-            @if (cat.Key is not null)
+            @foreach (var cat in grp.GroupBy(m => m.Category))
             {
-                <div class="aiwms-nav-subsection">@cat.Key</div>
-            }
-            @foreach (var menu in cat)
-            {
-                <NavLink class="@(cat.Key is not null ? "aiwms-nav-link aiwms-nav-link-indent" : "aiwms-nav-link")" ActiveClass="active" href="@menu.Url">
-                    <span class="aiwms-nav-icon">@IconFor(menu.Key)</span>
-                    <span>@menu.Label</span>
-                </NavLink>
+                @if (cat.Key is not null)
+                {
+                    <div class="aiwms-nav-subsection">@cat.Key</div>
+                }
+                @foreach (var menu in cat)
+                {
+                    <NavLink class="@(cat.Key is not null ? "aiwms-nav-link aiwms-nav-link-indent" : "aiwms-nav-link")" ActiveClass="active" href="@menu.Url">
+                        <span class="aiwms-nav-icon">@IconFor(menu.Key)</span>
+                        <span>@menu.Label</span>
+                    </NavLink>
+                }
             }
         }
     }
@@ -39,6 +48,7 @@
 
 @code {
     private HashSet<string> _visible = new();
+    private HashSet<string> _expandedGroups = new();
 
     protected override async Task OnInitializedAsync()
     {
@@ -49,6 +59,19 @@
             var result = await AuthService.AuthorizeAsync(user, null, menu.Key);
             if (result.Succeeded) _visible.Add(menu.Key);
         }
+
+        // Expand whichever group contains the current page so navigating straight to a
+        // link (bookmark, refresh) doesn't leave the active item hidden in a collapsed section.
+        var currentPath = new Uri(Nav.Uri).AbsolutePath.Trim('/');
+        var activeGroup = MenuKeys.All
+            .FirstOrDefault(m => string.Equals(m.Url.Trim('/'), currentPath, StringComparison.OrdinalIgnoreCase))
+            ?.Group;
+        if (activeGroup is not null) _expandedGroups.Add(activeGroup);
+    }
+
+    private void ToggleGroup(string group)
+    {
+        if (!_expandedGroups.Remove(group)) _expandedGroups.Add(group);
     }
 
     private static string IconFor(string key) => key switch
