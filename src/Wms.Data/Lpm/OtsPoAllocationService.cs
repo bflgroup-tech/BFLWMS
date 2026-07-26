@@ -430,7 +430,17 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         }, () => new Dictionary<(string, int), (int, int)>());
 
         // 4) Week Sales per (StoreID, DivCode) summed over next N weeks from currentWk.
-        var weekSalesTask = SafeAsync(warnings, "Week Sales (lpm_salestgtwk_stores)", async () =>
+        //    lpm_salestgtwk_stores gives per-store weekly sales; MFP OUTBOUND holds
+        //    the authoritative country-division total. We use lpm's per-store share
+        //    but scale to MFP's total so country-x-div sums exactly match MFP.
+        //
+        //      final ws (per store) = existing ws * (mfpTotal / countryDivExisting)
+        //
+        //    MFP grain is (territory, division, week, year) - no StoreID - so the
+        //    scaling preserves the per-store shape and makes MFP the source of
+        //    truth at country-x-div level. LPM_MfpTerritoryMap maps MFP's territory
+        //    code ('ae', 'sa', ...) to the SIMCountry we already use.
+        var weekSalesTask = SafeAsync(warnings, "Week Sales (lpm_salestgtwk_stores x BFL_MFP_OUTBOUND_T1)", async () =>
         {
             await using var c = OpenOnPremBackup();
             var rows = await c.QueryAsync<(string StoreID, int DivCode, string Country, int Wk, int Sales)>(new CommandDefinition(@"
@@ -443,7 +453,14 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                 new { month, year, ct = filter },
                 commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
             var minWk = rows.Any() ? rows.Min(r => r.Wk) : 0;
-            return rows
+            var maxWkPerCountry = rows.Any()
+                ? rows.GroupBy(r => r.Country).ToDictionary(
+                    g => g.Key,
+                    g => minWk + (weeksByCountry.TryGetValue(g.Key, out var w) ? w : 1) - 1)
+                : new Dictionary<string, int>();
+
+            // Existing per-store WeekSales (using lpm_salestgtwk_stores).
+            var existing = rows
                 .GroupBy(r => (r.StoreID, r.DivCode))
                 .ToDictionary(g => g.Key, g =>
                 {
@@ -451,6 +468,66 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                     var n = weeksByCountry.TryGetValue(cty, out var w) ? w : 1;
                     return g.Where(x => x.Wk >= minWk && x.Wk < minWk + n).Sum(x => x.Sales);
                 });
+
+            if (minWk == 0 || !rows.Any()) return existing;
+
+            // Pull MFP totals for the wk range and rescale existing per-store values.
+            var globalMaxWk = maxWkPerCountry.Values.DefaultIfEmpty(minWk).Max();
+            var mfpRows = await c.QueryAsync<(string Country, int DivCode, int Wk, decimal Planned)>(new CommandDefinition(@"
+                SELECT tm.SIMCountry AS Country, m.division AS DivCode, m.week AS Wk,
+                       SUM(ISNULL(m.planned_sls, 0)) AS Planned
+                  FROM dbo.BFL_MFP_OUTBOUND_T1 m WITH (NOLOCK)
+                  JOIN dbo.LPM_MfpTerritoryMap tm WITH (NOLOCK)
+                       ON tm.Territory = m.territory AND tm.IsActive = 1
+                 WHERE m.[year] = @year
+                   AND m.week BETWEEN @minWk AND @maxWk
+                 GROUP BY tm.SIMCountry, m.division, m.week",
+                new { year, minWk, maxWk = globalMaxWk },
+                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+
+            // Sum MFP planned_sls for the wk range per country (respecting per-country N).
+            var mfpTotals = mfpRows
+                .Where(r => maxWkPerCountry.TryGetValue(r.Country, out var mx) ? r.Wk <= mx : true)
+                .GroupBy(r => (r.Country, r.DivCode))
+                .ToDictionary(g => g.Key, g => g.Sum(x => x.Planned));
+
+            // Country-x-DivCode existing sums, drive the ratio for each store.
+            var existingByCountryDiv = new Dictionary<(string, int), int>();
+            foreach (var kv in existing)
+            {
+                var (storeId, div) = kv.Key;
+                var cty = rows.First(r => r.StoreID == storeId && r.DivCode == div).Country;
+                var key = (cty, div);
+                existingByCountryDiv[key] = existingByCountryDiv.GetValueOrDefault(key, 0) + kv.Value;
+            }
+
+            // Rescale so country-x-div sums match MFP totals.
+            var scaled = new Dictionary<(string StoreID, int DivCode), int>(existing.Count);
+            foreach (var kv in existing)
+            {
+                var (storeId, div) = kv.Key;
+                var cty = rows.First(r => r.StoreID == storeId && r.DivCode == div).Country;
+                if (mfpTotals.TryGetValue((cty, div), out var mfp) && mfp > 0)
+                {
+                    var existingCd = existingByCountryDiv.GetValueOrDefault((cty, div), 0);
+                    if (existingCd > 0)
+                    {
+                        var scale = (double)mfp / existingCd;
+                        scaled[kv.Key] = (int)Math.Round(kv.Value * scale);
+                    }
+                    else
+                    {
+                        // No lpm share to distribute against -> keep existing (usually 0).
+                        scaled[kv.Key] = kv.Value;
+                    }
+                }
+                else
+                {
+                    // MFP has no data for this country-x-div -> fall back to existing.
+                    scaled[kv.Key] = kv.Value;
+                }
+            }
+            return scaled;
         }, () => new Dictionary<(string, int), int>());
 
         // 5) Store count per country from LPM_EOM_Output.
