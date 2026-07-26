@@ -139,7 +139,15 @@ public record AllocationTraceRow(
     int      Take,
     int      RemainingAfter,
     int      RunningOtsQtyAfter,
-    string   RunOption);
+    string   RunOption,
+    string?  SkipReason = null,     // NULL=allocated, else 'CapReached' / 'ShareZero'
+    // Mirror WMS_ContAllocationData audit columns for JOIN-friendly analysis:
+    int?     SkuMax         = null, // OTS tier picker's effective cap (tier - SOH)
+    int?     RawSkuMax      = null, // OTS tier picker's raw tier value
+    decimal? AvgOtsPercent  = null,
+    decimal? AvgOtsMin      = null,
+    decimal? AvgOtsMax      = null,
+    decimal? InitialOtsPct  = null);
 
 /// <summary>Header row read back for the "Processed Contnos" dropdown banner.
 /// Mirrors WMS_Cont_Allocation_Header columns.</summary>

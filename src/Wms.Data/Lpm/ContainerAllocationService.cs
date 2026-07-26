@@ -1268,12 +1268,16 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                     // Trace hook — writes one row per Pass touch when the operator
                     // ticked "Trace Allocation" on the razor page. No-ops otherwise.
                     void RecordTrace(int pass, int sortRank, OtsRunLookupRow r, string tierName,
-                                     int cap, int currentBefore, int remainingBefore, int take)
+                                     int cap, int currentBefore, int remainingBefore, int take,
+                                     string? skipReason = null)
                     {
                         if (trace is null) return;
                         var soh = itemSohByStore.GetValueOrDefault(
                             (r.StoreID.ToUpperInvariant(), line.ItemCode.ToUpperInvariant()), 0);
                         var running = runningOtsQty.GetValueOrDefault((r.StoreID, r.DivCode), r.OtsQtyToday);
+                        // OTS tier picker's raw + effective cap for this store (regardless of which pass
+                        // fired) — matches SkuMax/RawSkuMax on WMS_ContAllocationData for JOIN analysis.
+                        var (rawSku, skuMax, _) = SkuMaxRawAndCapFor(r);
                         trace.Add(new AllocationTraceRow(
                             ContNo: line.ContNo, Itemcode: line.ItemCode, StoreID: r.StoreID,
                             DivCode: divCode, Pass: pass, SortRank: sortRank,
@@ -1285,7 +1289,14 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                             Take: take,
                             RemainingAfter: remainingBefore - take,
                             RunningOtsQtyAfter: running - take,
-                            RunOption: runOption.ToString()));
+                            RunOption: runOption.ToString(),
+                            SkipReason: skipReason,
+                            SkuMax: skuMax,
+                            RawSkuMax: rawSku,
+                            AvgOtsPercent: avgOtsDecimal,
+                            AvgOtsMin: avgOtsMinDecimal,
+                            AvgOtsMax: avgOtsMaxDecimal,
+                            InitialOtsPct: r.OtsPercentToday));
                     }
 
                     // Sort order used by Passes 2, 3, 4: VolumeGroup A+ -> E, then LiveOtsPct DESC.
@@ -1308,9 +1319,13 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                             var r = pass1Stores[i];
                             var (_, cap, tierName) = SkuMaxRawAndCapFor(r);
                             var current = allocs.TryGetValue(r.StoreID, out var row) ? row.AllocQty : 0;
-                            var take = Math.Min(cap - current, remaining);
-                            if (take <= 0) continue;
                             var remBefore = remaining;
+                            var take = Math.Min(cap - current, remaining);
+                            if (take <= 0)
+                            {
+                                RecordTrace(1, i, r, tierName, cap, current, remBefore, 0, skipReason: "CapReached");
+                                continue;
+                            }
                             allocs[r.StoreID] = BumpRow(row, r, take, 0, pass: 1);
                             remaining -= take;
                             RecordTrace(1, i, r, tierName, cap, current, remBefore, take);
@@ -1327,9 +1342,13 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                                 var r = pass2Stores[i];
                                 var (_, cap, tierName) = SkuMaxRawAndCapFor(r);
                                 var current = allocs.TryGetValue(r.StoreID, out var row) ? row.AllocQty : 0;
-                                var take = Math.Min(cap - current, remaining);
-                                if (take <= 0) continue;
                                 var remBefore = remaining;
+                                var take = Math.Min(cap - current, remaining);
+                                if (take <= 0)
+                                {
+                                    RecordTrace(2, i, r, tierName, cap, current, remBefore, 0, skipReason: "CapReached");
+                                    continue;
+                                }
                                 allocs[r.StoreID] = BumpRow(row, r, take, 0, pass: 2);
                                 remaining -= take;
                                 RecordTrace(2, i, r, tierName, cap, current, remBefore, take);
@@ -1340,6 +1359,9 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                         if (remaining > 0)
                         {
                             var pass3Stores = SortByGroupThenOts(eligible.Where(r => LiveOtsPct(r) <= 0)).ToList();
+                            // Only log a CapReached trace row once per (store, this pass) — the RR
+                            // outer while can visit the same capped store many times.
+                            var pass3SkipLogged = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                             while (remaining > 0 && pass3Stores.Count > 0)
                             {
                                 bool any = false;
@@ -1349,7 +1371,12 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                                     var r = pass3Stores[i];
                                     var (_, cap, tierName) = SkuMaxRawAndCapFor(r);
                                     var current = allocs.TryGetValue(r.StoreID, out var row) ? row.AllocQty : 0;
-                                    if (current >= cap) continue;
+                                    if (current >= cap)
+                                    {
+                                        if (pass3SkipLogged.Add(r.StoreID))
+                                            RecordTrace(3, i, r, tierName, cap, current, remaining, 0, skipReason: "CapReached");
+                                        continue;
+                                    }
                                     var remBefore = remaining;
                                     allocs[r.StoreID] = BumpRow(row, r, 1, 0, pass: 3);
                                     remaining--;
@@ -1383,10 +1410,14 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                                     var take = i == pass4Stores.Count - 1
                                         ? remaining
                                         : (int)Math.Floor((double)origRemaining * cap / totalCap);
-                                    if (take <= 0) continue;
                                     var existingRow = allocs.TryGetValue(r.StoreID, out var row) ? row : null;
                                     var current = existingRow?.AllocQty ?? 0;
                                     var remBefore = remaining;
+                                    if (take <= 0)
+                                    {
+                                        RecordTrace(4, i, r, SkuMaxRawAndCapFor(r).TierName, cap, current, remBefore, 0, skipReason: "ShareZero");
+                                        continue;
+                                    }
                                     var newRow = BumpRow(existingRow, r, take, 0, pass: 4)
                                         with { Pass4RatioCap = cap };
                                     allocs[r.StoreID] = newRow;
@@ -1452,9 +1483,13 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                             var r = pass1bStores[i];
                             var cap = MinMinCapFor(r);
                             var current = allocs.TryGetValue(r.StoreID, out var row) ? row.AllocQty : 0;
-                            var take = Math.Min(cap - current, remaining);
-                            if (take <= 0) continue;
                             var remBefore = remaining;
+                            var take = Math.Min(cap - current, remaining);
+                            if (take <= 0)
+                            {
+                                RecordTrace(1, i, r, "MinMin", cap, current, remBefore, 0, skipReason: "CapReached");
+                                continue;
+                            }
                             allocs[r.StoreID] = BumpRow(row, r, take, 0, pass: 1, tierNameOverride: "MinMin");
                             remaining -= take;
                             RecordTrace(1, i, r, "MinMin", cap, current, remBefore, take);
@@ -1470,9 +1505,13 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                                 var r = pass2Stores[i];
                                 var (_, tierCap, tierName) = SkuMaxRawAndCapFor(r);   // MinMax/IdealMax/MaxMax picked by OTS-vs-avg band
                                 var current = allocs.TryGetValue(r.StoreID, out var row) ? row.AllocQty : 0;
-                                var take = Math.Min(tierCap - current, remaining);
-                                if (take <= 0) continue;
                                 var remBefore = remaining;
+                                var take = Math.Min(tierCap - current, remaining);
+                                if (take <= 0)
+                                {
+                                    RecordTrace(2, i, r, tierName, tierCap, current, remBefore, 0, skipReason: "CapReached");
+                                    continue;
+                                }
                                 allocs[r.StoreID] = BumpRow(row, r, take, 0, pass: 2);
                                 remaining -= take;
                                 RecordTrace(2, i, r, tierName, tierCap, current, remBefore, take);
@@ -1489,9 +1528,13 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                                 var r = pass3Stores[i];
                                 var cap = MinMaxCapFor(r);
                                 var current = allocs.TryGetValue(r.StoreID, out var row) ? row.AllocQty : 0;
-                                var take = Math.Min(cap - current, remaining);
-                                if (take <= 0) continue;
                                 var remBefore = remaining;
+                                var take = Math.Min(cap - current, remaining);
+                                if (take <= 0)
+                                {
+                                    RecordTrace(3, i, r, "MinMax", cap, current, remBefore, 0, skipReason: "CapReached");
+                                    continue;
+                                }
                                 allocs[r.StoreID] = BumpRow(row, r, take, 0, pass: 3, tierNameOverride: "MinMax");
                                 remaining -= take;
                                 RecordTrace(3, i, r, "MinMax", cap, current, remBefore, take);
@@ -1541,9 +1584,13 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                                         var share = i == top3.Count - 1
                                             ? remaining
                                             : (int)Math.Floor((double)remaining * minMax / totalMinMax);
-                                        if (share <= 0) continue;
                                         var current = allocs.TryGetValue(r.StoreID, out var row) ? row.AllocQty : 0;
                                         var remBefore = remaining;
+                                        if (share <= 0)
+                                        {
+                                            RecordTrace(4, i, r, "MinMax", minMax, current, remBefore, 0, skipReason: "ShareZero");
+                                            continue;
+                                        }
                                         allocs[r.StoreID] = BumpRow(row, r, share, 0, pass: 4, tierNameOverride: "MinMax");
                                         remaining -= share;
                                         assigned += share;
@@ -1658,6 +1705,13 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
             tdt.Columns.Add("RunningOtsQtyAfter", typeof(int));
             tdt.Columns.Add("RunOption",          typeof(string));
             tdt.Columns.Add("RunBy",              typeof(string));
+            tdt.Columns.Add("SkipReason",         typeof(string));
+            tdt.Columns.Add("SkuMax",             typeof(int));
+            tdt.Columns.Add("RawSkuMax",          typeof(int));
+            tdt.Columns.Add("AvgOtsPercent",      typeof(decimal));
+            tdt.Columns.Add("AvgOtsMin",          typeof(decimal));
+            tdt.Columns.Add("AvgOtsMax",          typeof(decimal));
+            tdt.Columns.Add("InitialOtsPct",      typeof(decimal));
 
             foreach (var t in trace)
             {
@@ -1668,7 +1722,14 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                     (object?)t.LiveOtsPctBefore ?? DBNull.Value,
                     t.Cap, t.Soh, t.CurrentBeforeTake, t.RemainingBefore, t.Take,
                     t.RemainingAfter, t.RunningOtsQtyAfter, t.RunOption,
-                    (object?)user.Name ?? DBNull.Value);
+                    (object?)user.Name ?? DBNull.Value,
+                    (object?)t.SkipReason    ?? DBNull.Value,
+                    (object?)t.SkuMax        ?? DBNull.Value,
+                    (object?)t.RawSkuMax     ?? DBNull.Value,
+                    (object?)t.AvgOtsPercent ?? DBNull.Value,
+                    (object?)t.AvgOtsMin     ?? DBNull.Value,
+                    (object?)t.AvgOtsMax     ?? DBNull.Value,
+                    (object?)t.InitialOtsPct ?? DBNull.Value);
             }
 
             using var tbulk = new SqlBulkCopy(ct1)
