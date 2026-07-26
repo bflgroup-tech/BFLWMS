@@ -204,6 +204,22 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
     public async Task<(int RowsPersisted, List<string> Warnings)> GenerateAndPersistAsync(
         int month, int year, CancellationToken ct = default)
     {
+        // Precondition: Volume Group must have been (re-)generated today (GST).
+        // Enforces the daily refresh chain so OTS numbers don't ride on a stale
+        // StoreDivGrade snapshot.
+        var todayGst = DateTime.UtcNow.AddHours(4).Date;
+        await using (var chk = OpenOnPremBackup())
+        {
+            var vgToday = await chk.ExecuteScalarAsync<int>(new CommandDefinition(@"
+                SELECT COUNT(1) FROM dbo.StoreDivGrade WITH (NOLOCK)
+                 WHERE CAST(GeneratedTS AS DATE) = @dt",
+                new { dt = todayGst }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            if (vgToday == 0)
+                throw new InvalidOperationException(
+                    $"Volume Group has not been generated today ({todayGst:dd/MM/yyyy} GST). " +
+                    "Click 'Generate Volume Group' first, then re-run 'Generate' on OTS for PO Allocation.");
+        }
+
         var (rows, warnings) = await GenerateAsync(month, year, country: null, ct);
         if (rows.Count == 0) return (0, warnings);
 
@@ -307,13 +323,24 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                      WHERE SIMCountry IS NOT NULL AND LTRIM(RTRIM(SIMCountry)) <> ''
                        AND PBFullname IS NOT NULL AND LTRIM(RTRIM(PBFullname)) <> ''
                 )
+                ,
+                sdgLatest AS (
+                    -- Latest StoreDivGrade row per (StoreID, DivCode) at or before the
+                    -- picked Month/Year. Grade here supersedes LPM_EOM_Output.VolumeGroup
+                    -- (which the schema keeps for legacy consumers).
+                    SELECT sdg.StoreID, sdg.DivCode, sdg.Grade,
+                           ROW_NUMBER() OVER (PARTITION BY sdg.StoreID, sdg.DivCode
+                                              ORDER BY sdg.Year1 DESC, sdg.Month1 DESC) AS rn
+                      FROM LPMSIM.dbo.StoreDivGrade sdg WITH (NOLOCK)
+                     WHERE (sdg.Year1 * 100 + sdg.Month1) <= (@year * 100 + @month)
+                )
                 SELECT
                     e.Country,
                     e.StoreID,
                     sn.PBFullname AS StoreName,
                     e.DivCode,
                     dv.Division   AS Division,
-                    e.VolumeGroup,
+                    ISNULL(sdg.Grade, e.VolumeGroup) AS VolumeGroup,
                     e.PriorityRank,
                     e.TargetEOM   AS TgtEOM,
                     ISNULL(w.Weeks, 1) AS WeeksToInclude,
@@ -329,6 +356,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                   LEFT JOIN LPMSIM.dbo.Division dv WITH (NOLOCK) ON dv.DivCode = e.DivCode
                   LEFT JOIN storeNames sn ON sn.StoreID = e.StoreID AND sn.rn = 1
                   LEFT JOIN dbo.WmsCountryOtsWeeks w WITH (NOLOCK) ON w.SimCountry = e.Country
+                  LEFT JOIN sdgLatest sdg ON sdg.StoreID = e.StoreID AND sdg.DivCode = e.DivCode AND sdg.rn = 1
                  WHERE e.Month1 = @month AND e.Year1 = @year
                    AND e.Country <> 'Ex2Locations'
                    AND (@ct IS NULL OR e.Country = @ct)

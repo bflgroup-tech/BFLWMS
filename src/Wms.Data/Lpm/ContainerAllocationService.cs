@@ -229,6 +229,30 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                         : $"Allocation Countries includes ECOM but dbo.WmsManualAllocation has no row for ContNo={contno}, StoreID='ONLINE'. Upload ECOM's Manual Allocation sheet before running FillSKUMax+RoundRobin."));
                 if (!ecomRows) return new ContainerAllocationValidationResult(false, steps);
             }
+
+            // 9. Daily-OTS gate — for OTS-run based algorithms, the OTS PO
+            //    Allocation report must have been Generated today (GST).
+            //    Enforces the daily refresh chain: VG -> OTS -> Container
+            //    Allocation. Skipping any link means the container inherits
+            //    a stale snapshot.
+            if (runOption == RunOption.FillSKUMaxRoundRobin || runOption == RunOption.FillMinMinPlusOthers)
+            {
+                progress?.Report(new AllocationProgress(8, TOTAL, "Validating: OTS Generated today"));
+                var todayGst = DateTime.UtcNow.AddHours(4).Date;
+                await using var opb = OpenOnPremBackup();
+                var otsToday = await opb.ExecuteScalarAsync<int>(new CommandDefinition(
+                    @"SELECT COUNT(1) FROM dbo.WmsOtsPoAllocationRun WITH (NOLOCK)
+                       WHERE OTSDate = @dt",
+                    new { dt = todayGst }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+                var otsToday_ok = otsToday > 0;
+                steps.Add(new ValidationStep(
+                    "OTS for PO Allocation generated today",
+                    otsToday_ok,
+                    otsToday_ok
+                        ? null
+                        : $"OTS for PO Allocation has not been Generated today ({todayGst:dd/MM/yyyy} GST). Go to OTS for PO Allocation → Generate first, then re-run Process."));
+                if (!otsToday_ok) return new ContainerAllocationValidationResult(false, steps);
+            }
         }
 
         return new ContainerAllocationValidationResult(true, steps);

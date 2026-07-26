@@ -187,27 +187,26 @@
             <table class="aiwms-table aiwms-table-dense" style="font-size:11.5px">
                 <thead style="position:sticky; top:0; background:white; z-index:1">
                     <tr>
-                        @SortHeader("Country",         "Country",   "160px")
-                        @SortHeader("StoreID",         "StoreID",   "120px")
-                        @SortHeader("StoreName",       "Store Name","260px")
-                        @SortHeader("DivCode",         "Divcode",   null,  true)
-                        @SortHeader("Division",        "Division",  "220px")
-                        @SortHeader("VolumeGroup",     "Volume Group")
-                        @SortHeader("PriorityRank",    "Priority Ranking", null, true)
-                        @SortHeader("EOMMonth",        "EOM Month")
-                        @SortHeader("TgtEOM",          "Tgt EOM",  null, true)
-                        @SortHeader("PrevMonthEOM",    "Prev Month EOM", null, true)
-                        @SortHeader("WkReduction",     "Wk Reduction",   null, true)
-                        @SortHeader("CurrentEOW",      "Current EOW",    null, true)
-                        @SortHeader("SOHToday",        "SOH Today", null, true)
-                        @SortHeader("WeeksToInclude",  "No. of Weeks to include Sales", null, true)
-                        @SortHeader("WeekSales",       "Week Sales", null, true)
-                        @SortHeader("InTransit",       "InTransit", null, true)
-                        @SortHeader("Ex2DcSoh",        "Ex2 DC SOH", null, true)
-                        @SortHeader("CountingWIP",     "Counting WIP", null, true)
-                        @SortHeader("OtsQtyToday",     "OTS Qty Today", null, true)
-                        @SortHeader("OtsPercentToday", "OTS % Today", null, true)
-                        @SortHeader("OtsTodayRequired","OTS Today Required", null, true)
+                        @SortHeader("Country",         "Country",   "160px", title: "LPM_EOM_Output.Country")
+                        @SortHeader("StoreID",         "StoreID",   "120px", title: "LPM_EOM_Output.StoreID")
+                        @SortHeader("StoreName",       "Store Name","260px", title: "bfldata.DataSettings.PBFullname (LEFT JOIN on StoreID)")
+                        @SortHeader("DivCode",         "Divcode",   null,  true, title: "LPM_EOM_Output.DivCode")
+                        @SortHeader("Division",        "Division",  "220px", title: "LPMSIM.Division.Division (LEFT JOIN on DivCode)")
+                        @SortHeader("VolumeGroup",     "Volume Group", title: "Latest StoreDivGrade.Grade for (Store, Div) at or before this Month/Year; falls back to LPM_EOM_Output.VolumeGroup if never Generated")
+                        @SortHeader("EOMMonth",        "EOM Month", title: "Formatted MMM-yyyy of the picked (Month, Year)")
+                        @SortHeader("TgtEOM",          "Tgt EOM",  null, true, title: "LPM_EOM_Output.TargetEOM for the current Month/Year row")
+                        @SortHeader("PrevMonthEOM",    "Prev Month EOM", null, true, title: "SUM(LPM_EOM_Output.TargetEOM) for the PREVIOUS Month/Year, same (Store, Div); 0 if missing")
+                        @SortHeader("WkReduction",     "Wk Reduction",   null, true, title: "(PrevMonthEOM − TgtEOM) / weeksInCurrentMonth; 0 when PrevMonthEOM = 0")
+                        @SortHeader("CurrentEOW",      "Current EOW",    null, true, title: "PrevMonthEOM − (WkReduction × weeksElapsedSoFar); falls back to TgtEOM when PrevMonthEOM = 0")
+                        @SortHeader("SOHToday",        "SOH Today", null, true, title: "SUM(SOH) from racks.LPM_locstock for this (Store, Div)")
+                        @SortHeader("WeeksToInclude",  "No. of Weeks to include Sales", null, true, title: "WmsCountryOtsWeeks.Weeks for the store's Country (defaults to 1 when missing)")
+                        @SortHeader("WeekSales",       "Week Sales", null, true, title: "SUM(SalesTgtWk) over the next N weeks starting current wk (N = No. of Weeks column)")
+                        @SortHeader("InTransit",       "InTransit", null, true, title: "(Ex2SOH + boxsoh) / storeCount(country); UAE = 0")
+                        @SortHeader("Ex2DcSoh",        "Ex2 DC SOH", null, true, title: "r1whsoh / storeCount(country)")
+                        @SortHeader("CountingWIP",     "Counting WIP", null, true, title: "SUM(AllocatedQty) for approved-but-not-completed containers per (Store, Div)")
+                        @SortHeader("OtsQtyToday",     "OTS Qty Today", null, true, title: "CurrentEOW + WeekSales − SOH − InTransit − Ex2DcSoh − CountingWIP")
+                        @SortHeader("OtsPercentToday", "OTS % Today", null, true, title: "OtsQtyToday / CurrentEOW × 100; 0 when CurrentEOW ≤ 0")
+                        @SortHeader("OtsTodayRequired","OTS Today Required", null, true, title: "max(0, OtsQtyToday) — clipped to zero (negative OTS means over-stocked, no purchase needed)")
                     </tr>
                 </thead>
                 <tbody>
@@ -221,7 +220,6 @@
                             <td>@r.DivCode</td>
                             <td>@r.Division</td>
                             <td>@r.VolumeGroup</td>
-                            <td style="text-align:right">@r.PriorityRank</td>
                             <td>@r.EOMMonth</td>
                             <td style="text-align:right">@r.TgtEOM.ToString("N0")</td>
                             <td style="text-align:right">@r.PrevMonthEOM.ToString("N0")</td>
@@ -724,7 +722,7 @@
         var ws = wb.AddWorksheet("OTS");
         string[] headers =
         {
-            "Country","StoreID","Store Name","Divcode","Division","Volume Group","Priority Ranking",
+            "Country","StoreID","Store Name","Divcode","Division","Volume Group",
             "EOM Month","Tgt EOM","Prev Month EOM","Wk Reduction","Current EOW",
             "SOH Today","No. of Weeks to include Sales","Week Sales",
             "InTransit","Ex2 DC SOH","Counting WIP","OTS Qty Today","OTS % Today","OTS Today Required"
@@ -740,35 +738,34 @@
             ws.Cell(row, 4).Value  = r.DivCode;
             ws.Cell(row, 5).Value  = r.Division ?? "";
             ws.Cell(row, 6).Value  = r.VolumeGroup ?? "";
-            ws.Cell(row, 7).Value  = r.PriorityRank ?? 0;
-            ws.Cell(row, 8).Value  = r.EOMMonth;
-            ws.Cell(row, 9).Value  = r.TgtEOM;
-            ws.Cell(row,10).Value  = r.PrevMonthEOM;
-            ws.Cell(row,11).Value  = (int)Math.Round(r.WkReduction);
-            ws.Cell(row,12).Value  = r.CurrentEOW;
-            ws.Cell(row,13).Value  = r.SOHToday;
-            ws.Cell(row,14).Value  = r.WeeksToInclude;
-            ws.Cell(row,15).Value  = r.WeekSales;
-            ws.Cell(row,16).Value  = r.InTransit;
-            ws.Cell(row,17).Value  = r.Ex2DcSoh;
-            ws.Cell(row,18).Value  = r.CountingWIP;
-            ws.Cell(row,19).Value  = r.OtsQtyToday;
-            ws.Cell(row,20).Value  = (int)Math.Round(r.OtsPercentToday);
-            ws.Cell(row,21).Value  = req > 0 ? req : 0;
+            ws.Cell(row, 7).Value  = r.EOMMonth;
+            ws.Cell(row, 8).Value  = r.TgtEOM;
+            ws.Cell(row, 9).Value  = r.PrevMonthEOM;
+            ws.Cell(row,10).Value  = (int)Math.Round(r.WkReduction);
+            ws.Cell(row,11).Value  = r.CurrentEOW;
+            ws.Cell(row,12).Value  = r.SOHToday;
+            ws.Cell(row,13).Value  = r.WeeksToInclude;
+            ws.Cell(row,14).Value  = r.WeekSales;
+            ws.Cell(row,15).Value  = r.InTransit;
+            ws.Cell(row,16).Value  = r.Ex2DcSoh;
+            ws.Cell(row,17).Value  = r.CountingWIP;
+            ws.Cell(row,18).Value  = r.OtsQtyToday;
+            ws.Cell(row,19).Value  = (int)Math.Round(r.OtsPercentToday);
+            ws.Cell(row,20).Value  = req > 0 ? req : 0;
             row++;
         }
         // Totals row (column indices match the header layout above)
         ws.Cell(row, 1).Value = "Totals";
-        ws.Cell(row, 9).Value  = _totTgtEOM;
-        ws.Cell(row,10).Value  = SortedRows.Sum(r => r.PrevMonthEOM);
-        ws.Cell(row,12).Value  = SortedRows.Sum(r => r.CurrentEOW);
-        ws.Cell(row,13).Value  = _totSOH;
-        ws.Cell(row,15).Value  = _totWeekSales;
-        ws.Cell(row,16).Value  = _totInTransit;
-        ws.Cell(row,17).Value  = _totEx2;
-        ws.Cell(row,18).Value  = _totWIP;
-        ws.Cell(row,19).Value  = _totOtsQty;
-        ws.Cell(row,21).Value  = _totOtsRequired;
+        ws.Cell(row, 8).Value  = _totTgtEOM;
+        ws.Cell(row, 9).Value  = SortedRows.Sum(r => r.PrevMonthEOM);
+        ws.Cell(row,11).Value  = SortedRows.Sum(r => r.CurrentEOW);
+        ws.Cell(row,12).Value  = _totSOH;
+        ws.Cell(row,14).Value  = _totWeekSales;
+        ws.Cell(row,15).Value  = _totInTransit;
+        ws.Cell(row,16).Value  = _totEx2;
+        ws.Cell(row,17).Value  = _totWIP;
+        ws.Cell(row,18).Value  = _totOtsQty;
+        ws.Cell(row,20).Value  = _totOtsRequired;
         ws.Row(row).Style.Font.Bold = true;
         ws.Columns().AdjustToContents();
         using var ms = new MemoryStream();
@@ -796,15 +793,16 @@
         builder.CloseElement();
     };
 
-    private RenderFragment SortHeader(string key, string label, string? width = null, bool numeric = false) => builder =>
+    private RenderFragment SortHeader(string key, string label, string? width = null, bool numeric = false, string? title = null) => builder =>
     {
         var style = "cursor:pointer" + (width is null ? "" : $"; width:{width}");
         if (numeric) style += "; text-align:right";
         var arrow = _sortKey == key ? (_sortAsc ? " ▲" : " ▼") : "";
         builder.OpenElement(0, "th");
         builder.AddAttribute(1, "style", style);
-        builder.AddAttribute(2, "onclick", EventCallback.Factory.Create(this, () => ToggleSort(key)));
-        builder.AddContent(3, label + arrow);
+        if (!string.IsNullOrEmpty(title)) builder.AddAttribute(2, "title", title);
+        builder.AddAttribute(3, "onclick", EventCallback.Factory.Create(this, () => ToggleSort(key)));
+        builder.AddContent(4, label + arrow);
         builder.CloseElement();
     };
 
@@ -873,7 +871,6 @@
                 "DivCode"         => r => r.DivCode,
                 "Division"        => r => r.Division,
                 "VolumeGroup"     => r => VolumeGroupRank(r.VolumeGroup),
-                "PriorityRank"    => r => r.PriorityRank ?? int.MaxValue,
                 "EOMMonth"        => r => r.EOMMonth,
                 "TgtEOM"          => r => r.TgtEOM,
                 "PrevMonthEOM"    => r => r.PrevMonthEOM,
