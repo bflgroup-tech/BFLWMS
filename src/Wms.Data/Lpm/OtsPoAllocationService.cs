@@ -340,7 +340,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                     sn.PBFullname AS StoreName,
                     e.DivCode,
                     dv.Division   AS Division,
-                    ISNULL(sdg.Grade, e.VolumeGroup) AS VolumeGroup,
+                    sdg.Grade AS VolumeGroup,   -- source of truth: StoreDivGrade only; blank when never Generated
                     e.PriorityRank,
                     e.TargetEOM   AS TgtEOM,
                     ISNULL(w.Weeks, 1) AS WeeksToInclude,
