@@ -227,7 +227,7 @@
                             <td style="text-align:right">@r.CurrentEOW.ToString("N0")</td>
                             <td style="text-align:right">@r.SOHToday.ToString("N0")</td>
                             <td style="text-align:right">@r.WeeksToInclude</td>
-                            <td style="text-align:right">@r.WeekSales.ToString("N0")</td>
+                            <td style="text-align:right" title="@WeekSalesTooltip(r)">@r.WeekSales.ToString("N0")</td>
                             <td style="text-align:right">@r.InTransit.ToString("N0")</td>
                             <td style="text-align:right">@r.Ex2DcSoh.ToString("N0")</td>
                             <td style="text-align:right">@r.CountingWIP.ToString("N0")</td>
@@ -495,6 +495,22 @@
     // Column totals — recomputed whenever _rows changes.
     private int _totTgtEOM, _totSOH, _totWeekSales, _totInTransit, _totEx2, _totWIP, _totOtsQty, _totOtsRequired;
 
+    // Current fiscal week from LPM_OTS_Output (latest OTSDate.wk) — used by the
+    // Week Sales tooltip to show the exact wk range that was summed.
+    private int? _currentOtsWk;
+
+    /// <summary>Tooltip for a Week Sales cell:
+    /// "205 = SUM(SalesTgtWk wk 27..30) — Current wk 27, N=4".
+    /// Falls back to a formula-only string if the current fiscal wk isn't available.</summary>
+    private string WeekSalesTooltip(OtsPoAllocationRow r)
+    {
+        if (_currentOtsWk is not int wk || r.WeeksToInclude <= 0)
+            return $"{r.WeekSales:N0} = SUM(SalesTgtWk over next {Math.Max(1, r.WeeksToInclude)} week(s) starting current wk)";
+        var endWk = wk + r.WeeksToInclude - 1;
+        var rangeStr = r.WeeksToInclude == 1 ? $"wk {wk}" : $"wk {wk}..{endWk}";
+        return $"{r.WeekSales:N0} = SUM(SalesTgtWk {rangeStr}) — Current wk {wk}, N={r.WeeksToInclude}";
+    }
+
     private void RecomputeTotals()
     {
         _totTgtEOM      = _rows.Sum(r => r.TgtEOM);
@@ -547,6 +563,7 @@
         await Me.EnsureLoadedAsync();
         try
         {
+            _currentOtsWk = await Svc.GetCurrentOtsWkAsync();
             _countries = await Svc.GetCountriesAsync();
             _countries = Me.FilterCountries(_countries).ToList();
             // Non-admins with a restricted country set lose the BFLGroup ("see all countries")

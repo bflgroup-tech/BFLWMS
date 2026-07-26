@@ -137,6 +137,20 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         return issues;
     }
 
+    /// <summary>Current fiscal week anchor from LPM_OTS_Output — the same wk
+    /// the Week Sales sum starts at (via ROW_NUMBER OVER (ORDER BY OTSDate
+    /// DESC) inside GenerateAsync's WeekSales CTE). Nullable when the table
+    /// is empty. Used by the OTS page for the Week Sales tooltip.</summary>
+    public async Task<int?> GetCurrentOtsWkAsync(CancellationToken ct = default)
+    {
+        await using var c = OpenOnPremBackup();
+        return await c.ExecuteScalarAsync<int?>(new CommandDefinition(@"
+            SELECT TOP 1 wk FROM dbo.LPM_OTS_Output WITH (NOLOCK)
+             WHERE wk IS NOT NULL
+             ORDER BY OTSDate DESC, wk DESC",
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+    }
+
     /// <summary>Distinct OTSDate values already persisted for a (Month, Year).
     /// Used by the razor page's Rundate picker so operators can load prior days.</summary>
     public async Task<List<DateTime>> GetAvailableRunDatesAsync(int month, int year, CancellationToken ct = default)
