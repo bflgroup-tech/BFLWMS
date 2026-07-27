@@ -146,6 +146,11 @@ public class ShipmentStatusService(IOnPremConnectionResolver resolver)
 
         if (headerRows.Count == 0) return [];
 
+        // Kicked off now, awaited just before building rows, so it overlaps with the
+        // (usually slower) vTransferDetail chunk queries below instead of adding to
+        // the critical path.
+        var receivedBoxesTask = GetReceivedBoxesByGinAsync(country, headerRows.Select(h => h.GinNo), ct);
+
         var shopGroups = mappingRows
             .GroupBy(r => (r.DataName, r.CostCodeTo, r.LocCodeTo))
             .Where(g => !string.IsNullOrWhiteSpace(g.Key.DataName))
@@ -173,11 +178,14 @@ public class ShipmentStatusService(IOnPremConnectionResolver resolver)
             .GroupBy(r => r.GinNo)
             .ToDictionary(g => g.Key, g => (IEnumerable<string>)g.Select(r => r.TrfNo).Distinct().ToList());
 
+        var receivedBoxesByGin = await receivedBoxesTask;
+
         var result = new List<ShipmentStatusRow>();
         foreach (var h in headerRows)
         {
             var trfNos = trfNosByGin.TryGetValue(h.GinNo, out var list) ? list : [];
             var (division, department, brand) = RollUpTopN(trfNos, entriesByTrfNo);
+            var receivedBoxes = receivedBoxesByGin.GetValueOrDefault(h.GinNo, 0);
 
             result.Add(new ShipmentStatusRow(
                 Country:          country,
@@ -193,8 +201,8 @@ public class ShipmentStatusService(IOnPremConnectionResolver resolver)
                 BoxCount:         h.TransferCount,
                 ReceiptDt:        h.ReceiptDt,
                 SlaReceiptDays:   DayDiff(h.ReleasedOn, h.ReceiptDt),
-                ReceivedBoxes:    h.ReceivedBoxes,
-                BoxCountDiff:     h.TransferCount - h.ReceivedBoxes,
+                ReceivedBoxes:    receivedBoxes,
+                BoxCountDiff:     h.TransferCount - receivedBoxes,
                 Remarks:          h.Remarks ?? "",
                 Division:         division,
                 Department:       department,
@@ -222,6 +230,37 @@ public class ShipmentStatusService(IOnPremConnectionResolver resolver)
             GinMappingSql, new { from, to, country, inTransitFloor = InTransitFloor },
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         return rows.AsList();
+    }
+
+    private record VerifyGinCountRow(string GinNo, int ReceivedBoxes);
+
+    // Boxes verified as RECEIVED at the destination warehouse always live in the
+    // country's own primary catalog (e.g. BFLKSA for KSA) — resolved the same way
+    // WhBoxItemsSource does it (bfldata.dbo.DataSettings.SIMCountry), NOT the
+    // per-shop DataName used for transfer routing above. Confirmed live: a GIN
+    // routed through KSA's special export shop (EX2KSA/P2EXPORT) still verifies
+    // its boxes in BFLKSA..VerifyGin, not P2EXPORT..VerifyGin. The previous version
+    // of this query read bfldata..VerifyGin directly, which is a different/stale
+    // table that had rows for GINs still genuinely InTransit (no contreceiptExport
+    // row yet) — giving a nonsensical "received boxes on an InTransit shipment".
+    private async Task<Dictionary<string, int>> GetReceivedBoxesByGinAsync(
+        string country, IEnumerable<string> ginNos, CancellationToken ct)
+    {
+        var ginNoList = ginNos.Distinct().ToList();
+        if (ginNoList.Count == 0) return new(StringComparer.OrdinalIgnoreCase);
+
+        await using var conn = OpenOnPremBackup();
+        var dataName = await WhBoxItemsSource.ResolveDataNameAsync(conn, country, ct);
+        if (dataName is null) return new(StringComparer.OrdinalIgnoreCase);
+
+        var sql = $@"
+            SELECT CAST(GinNo AS VARCHAR(20)) AS GinNo, COUNT(TrfNo) AS ReceivedBoxes
+            FROM [{dataName}].dbo.VerifyGin WITH (NOLOCK)
+            WHERE Verified = 'Y' AND GinNo IN @ginNos
+            GROUP BY GinNo";
+        var rows = await conn.QueryAsync<VerifyGinCountRow>(new CommandDefinition(
+            sql, new { ginNos = ginNoList }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        return rows.ToDictionary(r => r.GinNo, r => r.ReceivedBoxes, StringComparer.OrdinalIgnoreCase);
     }
 
     private async Task<List<GroupQtyRow>> RunTransferDetailChunkAsync(
@@ -262,11 +301,13 @@ public class ShipmentStatusService(IOnPremConnectionResolver resolver)
 
     private record GinHeaderRow(
         string GinNo, DateTime ReleasedOn, DateTime? Eta, string ShipNo, int TotalQty, int TransferCount,
-        DateTime? EntryDate, string? Remarks, DateTime? ReceiptDt, int ReceivedBoxes);
+        DateTime? EntryDate, string? Remarks, DateTime? ReceiptDt);
 
     private record GinMappingRow(string GinNo, string TrfNo, string CostCodeTo, string LocCodeTo, string? DataName);
 
     // Same driver/filter as GinMappingSql below, aggregated to one row per GIN.
+    // ReceivedBoxes (destination box verification) is NOT sourced here — see
+    // GetReceivedBoxesByGinAsync below for why.
     private const string GinHeaderSql = @"
         SELECT
             ep.GINNo         AS GinNo,
@@ -277,24 +318,17 @@ public class ShipmentStatusService(IOnPremConnectionResolver resolver)
             ep.TransferCount AS TransferCount,
             MIN(gi.EntryDate) AS EntryDate,
             MAX(gi.Remarks)   AS Remarks,
-            cre.ReceiptDt    AS ReceiptDt,
-            ISNULL(vg.ReceivedBoxes,0) AS ReceivedBoxes
+            cre.ReceiptDt    AS ReceiptDt
         FROM USA.dbo.ExportPass ep WITH (NOLOCK)
         JOIN bfldata..vGoodsIssueplt gi WITH (NOLOCK) ON gi.SrNo = ep.GINNo
         JOIN bfldata.dbo.DataSettings ds WITH (NOLOCK) ON ds.ShopName = gi.ShopIssue
         LEFT JOIN bfldata..contreceiptExport cre WITH (NOLOCK) ON cre.GINNO = ep.GINNo
-        LEFT JOIN (
-            SELECT GINNO, COUNT(TrfNo) AS ReceivedBoxes
-            FROM bfldata..VerifyGin WITH (NOLOCK)
-            WHERE Verified = 'Y'
-            GROUP BY GINNO
-        ) vg ON vg.GINNO = ep.GINNo
         WHERE (@country IS NULL OR ds.Country = @country)
           AND (
                 (cre.ReceiptDt IS NOT NULL AND cre.ReceiptDt >= @from AND cre.ReceiptDt <= @to)
              OR (cre.ReceiptDt IS NULL AND ep.Trndate <= @to AND ep.Trndate >= @inTransitFloor)
               )
-        GROUP BY ep.GINNo, ep.Trndate, ep.ETADate, ep.Shipno, ep.TotalQty, ep.TransferCount, cre.ReceiptDt, vg.ReceivedBoxes";
+        GROUP BY ep.GINNo, ep.Trndate, ep.ETADate, ep.Shipno, ep.TotalQty, ep.TransferCount, cre.ReceiptDt";
 
     // Pallet-level GinNo/TrfNo/shop-key mapping — still needed at this granularity for
     // the vTransferDetail lookup, but only these 5 narrow columns (not Remarks/
