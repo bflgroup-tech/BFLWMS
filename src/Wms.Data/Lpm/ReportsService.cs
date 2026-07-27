@@ -620,6 +620,9 @@ public class ReportsService(IOnPremConnectionResolver resolver)
             catch { cs = null; }
             if (string.IsNullOrWhiteSpace(cs))
             {
+                // No per-country connection configured for this country at all, so there's
+                // no server to read its own bfldata.dbo.DailyCountCategoryTrf from either.
+                // Best-effort fallback: central OnPremBackup's copy (UAE-wide, not this country's).
                 await using var backupConn = OpenOnPremBackup();
                 var noScanTransferQty = await GetTransferQtyAsync(backupConn, uaeOnly: false, fromDate, toDateInclusive, ct);
                 return new ProductionCheckingResult(new(), new(), 0, noScanTransferQty);
@@ -833,7 +836,10 @@ DROP TABLE #Scans, #BatchKind, #ItemDiv;";
         var toDateExclusiveOnly = toDateInclusive.Date.AddDays(2);
 
         // Phase 1 — read raw scans from the country's server into a DataTable.
+        // Transfer Qty is read from the same server (bfldata.dbo.DailyCountCategoryTrf
+        // exists per-country, not just centrally), so it's fetched here too, via connStr.
         var scanTable = BuildScanDataTable();
+        long transferQty;
         await using (var countryConn = new SqlConnection(WithConnectTimeout(connStr)))
         {
             await countryConn.OpenAsync(ct);
@@ -857,6 +863,9 @@ DROP TABLE #Scans, #BatchKind, #ItemDiv;";
                 row["ProductionDay"] = countryRdr.GetDateTime(5);
                 scanTable.Rows.Add(row);
             }
+            await countryRdr.CloseAsync();
+
+            transferQty = await GetTransferQtyAsync(countryConn, uaeOnly: false, fromDate, toDateInclusive, ct);
         }
 
         // Phase 2 — open OnPremBackup, create #Scans, bulk-copy in, run enrichment.
@@ -866,10 +875,7 @@ DROP TABLE #Scans, #BatchKind, #ItemDiv;";
         await using var conn = OpenOnPremBackup();
 
         if (scanTable.Rows.Count == 0)
-        {
-            var emptyTransferQty = await GetTransferQtyAsync(conn, uaeOnly: false, fromDate, toDateInclusive, ct);
-            return new ProductionCheckingResult(rows, summary, 0, emptyTransferQty);
-        }
+            return new ProductionCheckingResult(rows, summary, 0, transferQty);
 
         await using (var createCmd = conn.CreateCommand())
         {
@@ -924,9 +930,6 @@ DROP TABLE #Scans, #BatchKind, #ItemDiv;";
                 overallStoreQty = rdr.IsDBNull(0) ? 0 : rdr.GetInt32(0);
         }
 
-        // Transfer Qty — no per-country breakdown exists, so this returns the
-        // UAE-wide (Warehouse filter dropped) total rather than a real per-country figure.
-        var transferQty = await GetTransferQtyAsync(conn, uaeOnly: false, fromDate, toDateInclusive, ct);
         return new ProductionCheckingResult(rows, summary, overallStoreQty, transferQty);
     }
 
