@@ -17,19 +17,31 @@
 
 <div class="aiwms-section" style="padding:10px 16px;">
     <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:flex-end;">
-        <div style="flex:0 0 120px;">
+        <div style="flex:0 0 150px;">
             <label class="aiwms-filter-label">COUNTRY</label>
-            <select @bind="_country" @bind:after="OnCountryChangedAsync" style="width:100%; padding:5px 7px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:12px; background:white">
-                @foreach (var c in _countries) { <option value="@c">@c</option> }
-            </select>
+            @if (_canSelectMultiple)
+            {
+                <select @bind="_country" @bind:after="OnCountryChangedAsync" style="width:100%; padding:5px 7px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:12px; background:white">
+                    <option value="@BflGroupValue">BFL Group</option>
+                    @foreach (var c in _countries) { <option value="@c">@c.ToUpperInvariant()</option> }
+                </select>
+            }
+            else
+            {
+                <input value="@(_lockedCountry.ToUpperInvariant())" disabled
+                       style="width:100%; padding:5px 7px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:12px; background:var(--bg-disabled, #f2f2f2);" />
+            }
         </div>
-        <div style="flex:1; min-width:160px; max-width:240px;">
-            <label class="aiwms-filter-label">STORE</label>
-            <select @bind="_store" style="width:100%; padding:5px 7px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:12px; background:white">
-                <option value="">(All stores)</option>
-                @foreach (var s in _stores) { <option value="@s">@s</option> }
-            </select>
-        </div>
+        @if (_country != BflGroupValue)
+        {
+            <div style="flex:1; min-width:160px; max-width:240px;">
+                <label class="aiwms-filter-label">STORE</label>
+                <select @bind="_store" style="width:100%; padding:5px 7px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:12px; background:white">
+                    <option value="">(All stores)</option>
+                    @foreach (var s in _stores) { <option value="@s">@s</option> }
+                </select>
+            </div>
+        }
         <div style="flex:0 0 130px;">
             <label class="aiwms-filter-label">DATE FROM</label>
             <input type="date" @bind="_dateFrom" @bind:format="yyyy-MM-dd" style="width:100%; padding:5px 7px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:12px; background:white" />
@@ -79,6 +91,39 @@
     }
 </div>
 
+@if (_summaries.Count > 0)
+{
+    <div class="aiwms-section" style="padding:0; overflow:hidden;">
+        <div style="padding:10px 16px; background:var(--bg-subtle, #f7f7f5); font-weight:700; font-size:13px; letter-spacing:0.02em;">
+            BY COUNTRY
+        </div>
+        <div style="padding:14px 16px; display:flex; gap:16px; flex-wrap:wrap;">
+            @foreach (var s in _summaries)
+            {
+                <div style="background:#f0f0f0; border-radius:8px; padding:10px 14px; width:260px; flex:0 0 auto;">
+                    <div style="text-align:center; font-size:11px; font-weight:700; color:#333333; text-transform:uppercase; letter-spacing:0.02em;">
+                        @s.Country.ToUpperInvariant()
+                    </div>
+                    <div style="display:flex; justify-content:center; gap:16px; margin-top:8px;">
+                        <div style="text-align:center;">
+                            <div style="font-size:11px; color:var(--text-secondary); white-space:nowrap;">Transfers</div>
+                            <div style="font-size:11px; font-weight:700; color:#333333;">@s.TransferCount.ToString("N0")</div>
+                        </div>
+                        <div style="text-align:center;">
+                            <div style="font-size:11px; color:var(--text-secondary); white-space:nowrap;">Transfer Qty</div>
+                            <div style="font-size:11px; font-weight:700; color:#333333;">@s.TransferQty.ToString("N0")</div>
+                        </div>
+                        <div style="text-align:center;">
+                            <div style="font-size:11px; color:var(--text-secondary); white-space:nowrap;">GIN Qty</div>
+                            <div style="font-size:11px; font-weight:700; color:#333333;">@s.GinQty.ToString("N0")</div>
+                        </div>
+                    </div>
+                </div>
+            }
+        </div>
+    </div>
+}
+
 @if (_rows.Count > 0)
 {
     <div class="aiwms-section">
@@ -124,8 +169,16 @@
     private List<string> _countries = new();
     private List<string> _stores    = new();
     private List<TransferHistoryRow> _rows = new();
+    private List<TransferSummary> _summaries = new();
 
-    private string   _country       = "KSA";
+    // Regular country-scoped users only ever see their own country (locked,
+    // matching the Shipment Status report). UAE-based staff and Admins get a
+    // country dropdown plus "BFL Group" (every country combined).
+    private const string BflGroupValue = "__BFLGROUP__";
+    private bool   _canSelectMultiple;
+    private string _lockedCountry = "";
+    private string _country       = "";
+
     private string   _store         = "";
     private DateTime _dateFrom       = DateTime.Today;
     private DateTime _dateTo         = DateTime.Today;
@@ -146,12 +199,24 @@
             await CurrentUser.EnsureLoadedAsync();
             _countries = await Svc.GetCountriesAsync();
 
-            if (!string.IsNullOrWhiteSpace(CurrentUser.Country) && _countries.Contains(CurrentUser.Country!))
-                _country = CurrentUser.Country!;
-            else if (_countries.Count > 0 && !_countries.Contains(_country))
-                _country = _countries[0];
+            _canSelectMultiple = CurrentUser.HasAllCountriesAccess ||
+                string.Equals(CurrentUser.Country, "UAE", StringComparison.OrdinalIgnoreCase);
 
-            await LoadStoresAsync();
+            if (!_canSelectMultiple)
+            {
+                _lockedCountry = CurrentUser.Country ?? "";
+                _country = _lockedCountry;
+            }
+            else if (!string.IsNullOrWhiteSpace(CurrentUser.Country) && _countries.Contains(CurrentUser.Country!))
+            {
+                _country = CurrentUser.Country!;
+            }
+            else if (_countries.Count > 0)
+            {
+                _country = _countries[0];
+            }
+
+            if (_country != BflGroupValue) await LoadStoresAsync();
         }
         catch (Exception ex) { ShowError($"Init failed: {ex.Message}"); }
     }
@@ -159,7 +224,8 @@
     private async Task OnCountryChangedAsync()
     {
         _store = "";
-        await LoadStoresAsync();
+        if (_country != BflGroupValue) await LoadStoresAsync();
+        else _stores = new();
     }
 
     private async Task LoadStoresAsync()
@@ -170,13 +236,32 @@
 
     private async Task LoadAsync()
     {
-        _loading = true; _message = ""; _rows.Clear();
+        _loading = true; _message = ""; _rows.Clear(); _summaries.Clear();
         await InvokeAsync(StateHasChanged);
         try
         {
+            List<string>? countries;
+            if (!_canSelectMultiple)
+            {
+                if (string.IsNullOrWhiteSpace(_lockedCountry))
+                {
+                    ShowError("Your account has no assigned country — contact an admin.");
+                    return;
+                }
+                countries = [_lockedCountry];
+            }
+            else if (_country == BflGroupValue)
+            {
+                countries = null; // every country
+            }
+            else
+            {
+                countries = [_country];
+            }
+
             var filter = new TransferHistoryFilter(
-                Country:       _country,
-                Store:         string.IsNullOrWhiteSpace(_store) ? null : _store,
+                Countries:     countries,
+                Store:         (countries?.Count == 1 && !string.IsNullOrWhiteSpace(_store)) ? _store : null,
                 DateFrom:      _dateFrom,
                 DateTo:        _dateTo,
                 WithoutPallet: _withoutPallet,
@@ -185,8 +270,18 @@
                 SearchBy:      _searchBy,
                 SearchValue:   string.IsNullOrWhiteSpace(_searchValue) ? null : _searchValue.Trim());
 
-            _rows = await Svc.GetTransferHistoryAsync(filter);
-            ShowInfo($"Loaded {_rows.Count} rows.");
+            var resultTask  = Svc.GetTransferHistoryAsync(filter);
+            var summaryTask = Svc.GetTransferSummaryAsync(countries, _dateFrom, _dateTo);
+            await Task.WhenAll(resultTask, summaryTask);
+
+            var result = resultTask.Result;
+            _rows       = result.Rows;
+            _summaries  = summaryTask.Result;
+
+            if (result.Warnings.Count > 0)
+                ShowError($"Loaded {_rows.Count} rows. Some countries failed: {string.Join("; ", result.Warnings)}");
+            else
+                ShowInfo($"Loaded {_rows.Count} rows.");
         }
         catch (Exception ex) { ShowError($"Load failed: {ex.Message}"); }
         finally { _loading = false; }
@@ -204,7 +299,8 @@
                           $",{Csv(r.Remarks)}");
 
         var b64      = Convert.ToBase64String(Encoding.UTF8.GetBytes(sb.ToString()));
-        var filename = $"TransferGinGrn_{_country}_{_dateFrom:yyyyMMdd}_{_dateTo:yyyyMMdd}.csv";
+        var country  = _country == BflGroupValue ? "BFLGroup" : (_canSelectMultiple ? _country : _lockedCountry);
+        var filename = $"TransferGinGrn_{country}_{_dateFrom:yyyyMMdd}_{_dateTo:yyyyMMdd}.csv";
         await JS.InvokeVoidAsync("eval",
             $"(function(){{var a=document.createElement('a');a.href='data:text/csv;base64,{b64}';" +
             $"a.download='{filename}';document.body.appendChild(a);a.click();document.body.removeChild(a);}})();");

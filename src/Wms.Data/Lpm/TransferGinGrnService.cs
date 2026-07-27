@@ -100,10 +100,42 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
 
     // ── Main query ────────────────────────────────────────────────────────────
 
-    public async Task<List<TransferHistoryRow>> GetTransferHistoryAsync(
+    /// <summary>
+    /// Countries: null/empty means every SIM country ("BFL Group") — each is
+    /// queried independently (concurrently) and a per-country failure is
+    /// collected as a warning rather than failing the whole request.
+    /// </summary>
+    public async Task<TransferHistoryResult> GetTransferHistoryAsync(
         TransferHistoryFilter f, CancellationToken ct = default)
     {
-        if (f.Country == UaeCountry)
+        var countries = f.Countries is { Count: > 0 } ? f.Countries : await GetCountriesAsync(ct);
+        var warnings  = new List<string>();
+
+        var tasks = countries.Select(async country =>
+        {
+            try { return await GetForCountryAsync(country, f, ct); }
+            catch (Exception ex)
+            {
+                lock (warnings) warnings.Add($"{country}: {ex.Message}");
+                return new List<TransferHistoryRow>();
+            }
+        });
+
+        var perCountry = await Task.WhenAll(tasks);
+        // SrNo is re-numbered here (not trusted from SQL) because each country's
+        // ROW_NUMBER() restarts at 1 — fine for a single country, meaningless once
+        // multiple countries are merged for "BFL Group".
+        var all = perCountry.SelectMany(r => r)
+            .OrderBy(r => r.TrfDate).ThenBy(r => r.TrfNo).ThenBy(r => r.GINNo)
+            .Select((r, i) => r with { SrNo = i + 1 })
+            .ToList();
+        return new TransferHistoryResult(all, warnings);
+    }
+
+    private async Task<List<TransferHistoryRow>> GetForCountryAsync(
+        string country, TransferHistoryFilter f, CancellationToken ct)
+    {
+        if (country == UaeCountry)
         {
             // UAE stores each have their own linked-server DataName on OnPremBackup.
             // GRNHeaderRF/TransferReverse live in those linked-server DBs, not in
@@ -125,7 +157,7 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
                         commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
                 all.AddRange(rows);
             }
-            return all.OrderBy(r => r.TrfDate).ThenBy(r => r.TrfNo).ToList();
+            return all;
         }
         else
         {
@@ -134,12 +166,12 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
             // The connection string may point to a different default DB, so we
             // resolve the real name from OnPremBackup first.
             await using var onprem = OpenOnPrem();
-            var dataName = await WhBoxItemsSource.ResolveDataNameAsync(onprem, f.Country, ct);
+            var dataName = await WhBoxItemsSource.ResolveDataNameAsync(onprem, country, ct);
             if (string.IsNullOrWhiteSpace(dataName))
                 throw new InvalidOperationException(
-                    $"No DataName found in BFLDATA.dbo.DataSettings for country '{f.Country}'.");
+                    $"No DataName found in BFLDATA.dbo.DataSettings for country '{country}'.");
 
-            var csb = new SqlConnectionStringBuilder(resolver.GetCountryConnectionString(f.Country))
+            var csb = new SqlConnectionStringBuilder(resolver.GetCountryConnectionString(country))
             {
                 InitialCatalog = dataName,
                 ConnectTimeout = ConnectTimeoutSeconds
@@ -152,6 +184,103 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
                 new CommandDefinition(sql, parms,
                     commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
             return rows.AsList();
+        }
+    }
+
+    // ── Summary cards (Transfer Count / Transfer Qty / GIN Qty per country) ────
+
+    private record CountQtyRow(int TransferCount, int? TransferQty);
+
+    // Per-country totals, scoped to Country + date range only (no Store/search/
+    // without-flags — these are top-of-page KPI cards, not tied to the detail
+    // table's extra filters). countries: null/empty = every SIM country.
+    public async Task<List<TransferSummary>> GetTransferSummaryAsync(
+        IReadOnlyCollection<string>? countries, DateTime dateFrom, DateTime dateTo, CancellationToken ct = default)
+    {
+        var list = countries is { Count: > 0 } ? countries.ToList() : await GetCountriesAsync(ct);
+        var from = dateFrom.Date;
+        var to   = dateTo.Date.AddDays(1).AddSeconds(-1);
+
+        var tasks = list.Select(async country =>
+        {
+            try { return await GetSummaryForCountryAsync(country, from, to, ct); }
+            catch { return new TransferSummary(country, 0, 0, 0); }
+        });
+        var results = await Task.WhenAll(tasks);
+        return results.OrderBy(s => s.Country).ToList();
+    }
+
+    // dataNameTable e.g. "[EX2KSA]..vTransferDetail" (UAE linked server) or
+    // "BFLDATA..vTransferDetail" (non-UAE country server's own sibling BFLDATA db).
+    // CostCodeTo/LocCodeTo '005'/'05' exclude the warehouse's own internal transfers.
+    private static string TransferSummarySql(string transferDetailTable) => $@"
+        SELECT COUNT(DISTINCT TrfNo) AS TransferCount, ISNULL(SUM(Quantity),0) AS TransferQty
+          FROM {transferDetailTable} WITH (NOLOCK)
+         WHERE TrfDate >= @from AND TrfDate <= @to
+           AND CostCodeTo <> '005' AND LocCodeTo <> '05'";
+
+    private async Task<TransferSummary> GetSummaryForCountryAsync(
+        string country, DateTime from, DateTime to, CancellationToken ct)
+    {
+        if (country == UaeCountry)
+        {
+            await using var onprem = OpenOnPrem();
+            var uaeDataNames = (await onprem.QueryAsync<string>(new CommandDefinition(@"
+                SELECT DISTINCT DataName
+                  FROM BFLDATA.dbo.DataSettings
+                 WHERE SIMCountry = 'UAE'
+                   AND DataName IS NOT NULL AND LTRIM(RTRIM(DataName)) <> ''",
+                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).AsList();
+
+            int transferCount = 0, transferQty = 0;
+            foreach (var dn in uaeDataNames)
+            {
+                var row = await onprem.QuerySingleAsync<CountQtyRow>(new CommandDefinition(
+                    TransferSummarySql($"[{dn}]..vTransferDetail"), new { from, to },
+                    commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+                transferCount += row.TransferCount;
+                transferQty   += row.TransferQty ?? 0;
+            }
+
+            // GIN pallets for UAE live centrally in BFLDATA.dbo — scoped to UAE via
+            // ShopIssue -> DataSettings.SIMCountry (same linkage ShipmentStatusService
+            // uses), since vGoodsIssueplt itself has no country column.
+            var ginQty = await onprem.ExecuteScalarAsync<int?>(new CommandDefinition(@"
+                SELECT ISNULL(SUM(c.Qty),0)
+                  FROM BFLDATA.dbo.vGoodsIssueplt c WITH (NOLOCK)
+                  JOIN BFLDATA.dbo.DataSettings ds WITH (NOLOCK) ON ds.ShopName = c.ShopIssue
+                 WHERE ds.SIMCountry = 'UAE' AND c.EntryDate >= @from AND c.EntryDate <= @to",
+                new { from, to }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+
+            return new TransferSummary(country, transferCount, transferQty, ginQty ?? 0);
+        }
+        else
+        {
+            await using var onprem = OpenOnPrem();
+            var dataName = await WhBoxItemsSource.ResolveDataNameAsync(onprem, country, ct);
+            if (string.IsNullOrWhiteSpace(dataName))
+                throw new InvalidOperationException(
+                    $"No DataName found in BFLDATA.dbo.DataSettings for country '{country}'.");
+
+            var csb = new SqlConnectionStringBuilder(resolver.GetCountryConnectionString(country))
+            {
+                InitialCatalog = dataName,
+                ConnectTimeout = ConnectTimeoutSeconds
+            };
+            await using var conn = new SqlConnection(csb.ConnectionString);
+            conn.Open();
+
+            var transferRow = await conn.QuerySingleAsync<CountQtyRow>(new CommandDefinition(
+                TransferSummarySql("BFLDATA..vTransferDetail"), new { from, to },
+                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+
+            var ginQty = await conn.ExecuteScalarAsync<int?>(new CommandDefinition(@"
+                SELECT ISNULL(SUM(Qty),0)
+                  FROM BFLDATA..vgoodsissueplt WITH (NOLOCK)
+                 WHERE EntryDate >= @from AND EntryDate <= @to",
+                new { from, to }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+
+            return new TransferSummary(country, transferRow.TransferCount, transferRow.TransferQty ?? 0, ginQty ?? 0);
         }
     }
 
