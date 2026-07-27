@@ -121,6 +121,60 @@
 
 @if (_rows.Count > 0 && _isBflGroupView)
 {
+    <div class="aiwms-section" style="padding:0; overflow:hidden;">
+        <div style="padding:10px 16px; background:var(--bg-subtle, #f7f7f5); font-weight:700; font-size:13px; letter-spacing:0.02em;">
+            BY COUNTRY
+        </div>
+        <div style="padding:14px 16px; display:flex; flex-direction:column; gap:16px;">
+            @foreach (var cts in CountryTypeSummaries)
+            {
+                <div>
+                    <div style="font-size:11px; font-weight:700; color:var(--text-secondary); text-transform:uppercase; margin-bottom:6px;">
+                        @cts.Country.ToUpperInvariant()
+                    </div>
+                    <div style="display:flex; gap:12px; flex-wrap:wrap;">
+                        @foreach (var t in cts.Types)
+                        {
+                            var (bg, text) = TypeColor(t.Type);
+                            <div style="background:@bg; border-radius:8px; padding:8px 10px; width:220px; flex:0 0 auto;">
+                                <div style="text-align:center; font-size:10px; font-weight:700; color:@text; text-transform:uppercase; letter-spacing:0.02em;">
+                                    @t.Title
+                                </div>
+                                <div style="display:flex; align-items:stretch; margin-top:6px;">
+                                    <div style="flex:1; text-align:center;">
+                                        <div style="font-size:10px; color:var(--text-secondary);">Delivered</div>
+                                        <div style="display:flex; justify-content:center; gap:10px; margin-top:4px;">
+                                            <div>
+                                                <div style="font-size:9px; color:var(--text-secondary); white-space:nowrap;">Ship Count</div>
+                                                <div style="font-size:12px; font-weight:700; color:@text;">@t.DeliveredCount.ToString("N0")</div>
+                                            </div>
+                                            <div>
+                                                <div style="font-size:9px; color:var(--text-secondary); white-space:nowrap;">Quantity</div>
+                                                <div style="font-size:12px; font-weight:700; color:@text;">@t.DeliveredQty.ToString("N0")</div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div style="flex:1; text-align:center; border-left:1px solid rgba(0,0,0,0.18); margin-left:8px; padding-left:8px;">
+                                        <div style="font-size:10px; color:var(--text-secondary);">Intransit</div>
+                                        <div style="display:flex; justify-content:center; gap:10px; margin-top:4px;">
+                                            <div>
+                                                <div style="font-size:9px; color:var(--text-secondary); white-space:nowrap;">Ship Count</div>
+                                                <div style="font-size:12px; font-weight:700; color:@text;">@t.IntransitCount.ToString("N0")</div>
+                                            </div>
+                                            <div>
+                                                <div style="font-size:9px; color:var(--text-secondary); white-space:nowrap;">Quantity</div>
+                                                <div style="font-size:12px; font-weight:700; color:@text;">@t.IntransitQty.ToString("N0")</div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        }
+                    </div>
+                </div>
+            }
+        </div>
+    </div>
     <div class="aiwms-section">
         <div style="overflow:auto; max-height:calc(100vh - 320px);">
         <table class="aiwms-table aiwms-table-dense" style="table-layout:fixed; width:100%; border-collapse:separate; border-spacing:0;">
@@ -339,6 +393,41 @@ else if (_rows.Count > 0 && !_isBflGroupView)
     private record SummaryRow(
         string Country, string Type, string Status, int ShipmentCount,
         int Quantity, int? BoxCount, int? ReceivedBoxes, int? BoxCountDiff);
+
+    // Three cards per country — one per Source Location (Type) — shown above the
+    // country x type x status breakdown for a quick per-country read.
+    private record TypeSummary(
+        string Type, string Title, int DeliveredCount, int DeliveredQty, int IntransitCount, int IntransitQty);
+
+    private static readonly (string Type, string Title)[] TypeCardOrder =
+    [
+        ("JAFZA", "JAFZA Shipment"),
+        ("International", "Int'l Shipment"),
+        ("LOCAL", "Local Shipment"),
+    ];
+
+    private List<(string Country, List<TypeSummary> Types)> CountryTypeSummaries =>
+        FilteredRows.Select(r => r.Country).Distinct().OrderBy(c => c)
+            .Select(country => (country, TypeCardOrder.Select(tc =>
+            {
+                var rows      = FilteredRows.Where(r => r.Country == country && r.Type == tc.Type).ToList();
+                var delivered = rows.Where(r => r.Status == "Delivered").ToList();
+                var intransit = rows.Where(r => r.Status == "InTransit").ToList();
+                return new TypeSummary(
+                    tc.Type, tc.Title,
+                    delivered.Count, delivered.Sum(r => r.TotalQty),
+                    intransit.Count, intransit.Sum(r => r.TotalQty));
+            }).ToList()))
+            .ToList();
+
+    // Consistent color per Source Location across every country's card row.
+    private static (string Bg, string Text) TypeColor(string type) => type switch
+    {
+        "JAFZA"         => ("#fde8f0", "#b3195c"),
+        "International" => ("#e3f9ef", "#0f9d67"),
+        "LOCAL"         => ("#e8f0fe", "#1a56db"),
+        _               => ("#f2f2f2", "#333333"),
+    };
 
     private List<SummaryRow> SummaryRows =>
         FilteredRows
