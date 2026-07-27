@@ -119,55 +119,89 @@
     }
 </div>
 
-@if (_rows.Count > 0 && _isBflGroupView)
+@if (_rows.Count > 0)
 {
     <div class="aiwms-section" style="padding:0; overflow:hidden;">
         <div style="padding:10px 16px; background:var(--bg-subtle, #f7f7f5); font-weight:700; font-size:13px; letter-spacing:0.02em;">
             BY COUNTRY
         </div>
-        <div style="padding:14px 16px; display:flex; flex-direction:column; gap:16px;">
-            @foreach (var cts in CountryTypeSummaries)
-            {
-                <div>
-                    <div style="font-size:11px; font-weight:700; color:var(--text-secondary); text-transform:uppercase; margin-bottom:6px;">
-                        @cts.Country.ToUpperInvariant()
+        <div style="padding:14px 16px; display:flex; gap:24px; align-items:flex-start;">
+            <div style="flex:1 1 auto; min-width:0; display:flex; flex-direction:column; gap:16px;">
+                @foreach (var cts in CountryTypeSummaries)
+                {
+                    <div>
+                        <div style="font-size:11px; font-weight:700; color:var(--text-secondary); text-transform:uppercase; margin-bottom:6px;">
+                            @cts.Country.ToUpperInvariant()
+                        </div>
+                        <div style="display:flex; gap:12px; flex-wrap:wrap;">
+                            @foreach (var t in cts.Types)
+                            {
+                                var (bg, text) = TypeColor(t.Type);
+                                <div style="background:@bg; border-radius:8px; padding:10px 14px; width:260px; flex:0 0 auto;">
+                                    <div style="text-align:center; font-size:11px; font-weight:700; color:@text; text-transform:uppercase; letter-spacing:0.02em;">
+                                        @t.Title
+                                    </div>
+                                    <div style="display:flex; align-items:stretch; margin-top:8px;">
+                                        <div style="flex:1; text-align:center;">
+                                            <div style="font-size:11px; color:var(--text-secondary);">Delivered</div>
+                                            <div style="display:flex; justify-content:center; gap:12px; margin-top:5px;">
+                                                <div>
+                                                    <div style="font-size:11px; color:var(--text-secondary); white-space:nowrap;">Ship Count</div>
+                                                    <div style="font-size:11px; font-weight:700; color:@text;">@t.DeliveredCount.ToString("N0")</div>
+                                                </div>
+                                                <div>
+                                                    <div style="font-size:11px; color:var(--text-secondary); white-space:nowrap;">Quantity</div>
+                                                    <div style="font-size:11px; font-weight:700; color:@text;">@t.DeliveredQty.ToString("N0")</div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div style="flex:1; text-align:center; border-left:1px solid rgba(0,0,0,0.18); margin-left:10px; padding-left:10px;">
+                                            <div style="font-size:11px; color:var(--text-secondary);">Intransit</div>
+                                            <div style="display:flex; justify-content:center; gap:12px; margin-top:5px;">
+                                                <div>
+                                                    <div style="font-size:11px; color:var(--text-secondary); white-space:nowrap;">Ship Count</div>
+                                                    <div style="font-size:11px; font-weight:700; color:@text;">@t.IntransitCount.ToString("N0")</div>
+                                                </div>
+                                                <div>
+                                                    <div style="font-size:11px; color:var(--text-secondary); white-space:nowrap;">Quantity</div>
+                                                    <div style="font-size:11px; font-weight:700; color:@text;">@t.IntransitQty.ToString("N0")</div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            }
+                        </div>
                     </div>
-                    <div style="display:flex; gap:12px; flex-wrap:wrap;">
-                        @foreach (var t in cts.Types)
+                }
+            </div>
+            @if (_isBflGroupView && CountryPieSlices.Count > 0)
+            {
+                <div style="flex:0 0 260px; text-align:center;">
+                    <div style="font-size:11px; font-weight:700; color:var(--text-secondary); text-transform:uppercase; margin-bottom:6px;">
+                        Quantity by Country (Delivered / Intransit)
+                    </div>
+                    <svg viewBox="0 0 200 200" width="220" height="220">
+                        @if (CountryPieSlices.Count == 1)
                         {
-                            var (bg, text) = TypeColor(t.Type);
-                            <div style="background:@bg; border-radius:8px; padding:8px 10px; width:220px; flex:0 0 auto;">
-                                <div style="text-align:center; font-size:10px; font-weight:700; color:@text; text-transform:uppercase; letter-spacing:0.02em;">
-                                    @t.Title
-                                </div>
-                                <div style="display:flex; align-items:stretch; margin-top:6px;">
-                                    <div style="flex:1; text-align:center;">
-                                        <div style="font-size:10px; color:var(--text-secondary);">Delivered</div>
-                                        <div style="display:flex; justify-content:center; gap:10px; margin-top:4px;">
-                                            <div>
-                                                <div style="font-size:9px; color:var(--text-secondary); white-space:nowrap;">Ship Count</div>
-                                                <div style="font-size:12px; font-weight:700; color:@text;">@t.DeliveredCount.ToString("N0")</div>
-                                            </div>
-                                            <div>
-                                                <div style="font-size:9px; color:var(--text-secondary); white-space:nowrap;">Quantity</div>
-                                                <div style="font-size:12px; font-weight:700; color:@text;">@t.DeliveredQty.ToString("N0")</div>
-                                            </div>
-                                        </div>
-                                    </div>
-                                    <div style="flex:1; text-align:center; border-left:1px solid rgba(0,0,0,0.18); margin-left:8px; padding-left:8px;">
-                                        <div style="font-size:10px; color:var(--text-secondary);">Intransit</div>
-                                        <div style="display:flex; justify-content:center; gap:10px; margin-top:4px;">
-                                            <div>
-                                                <div style="font-size:9px; color:var(--text-secondary); white-space:nowrap;">Ship Count</div>
-                                                <div style="font-size:12px; font-weight:700; color:@text;">@t.IntransitCount.ToString("N0")</div>
-                                            </div>
-                                            <div>
-                                                <div style="font-size:9px; color:var(--text-secondary); white-space:nowrap;">Quantity</div>
-                                                <div style="font-size:12px; font-weight:700; color:@text;">@t.IntransitQty.ToString("N0")</div>
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
+                            <circle cx="100" cy="100" r="90" fill="@CountryPieSlices[0].Color" />
+                        }
+                        else
+                        {
+                            @foreach (var slice in CountryPieSlices)
+                            {
+                                <path d="@slice.Path" fill="@slice.Color" />
+                            }
+                        }
+                    </svg>
+                    <div style="display:flex; flex-direction:column; gap:4px; margin-top:8px; text-align:left;">
+                        @foreach (var slice in CountryPieSlices)
+                        {
+                            <div style="display:flex; align-items:center; gap:6px; font-size:11px;">
+                                <span style="width:10px; height:10px; border-radius:2px; background:@slice.Color; flex:0 0 auto;"></span>
+                                <span style="flex:1;">@slice.Country.ToUpperInvariant() (@slice.Status)</span>
+                                <span style="font-weight:700;">@slice.Qty.ToString("N0")</span>
+                                <span style="color:var(--text-secondary); width:42px; text-align:right;">@slice.Percent.ToString("F1")%</span>
                             </div>
                         }
                     </div>
@@ -175,6 +209,10 @@
             }
         </div>
     </div>
+}
+
+@if (_rows.Count > 0 && _isBflGroupView)
+{
     <div class="aiwms-section">
         <div style="overflow:auto; max-height:calc(100vh - 320px);">
         <table class="aiwms-table aiwms-table-dense" style="table-layout:fixed; width:100%; border-collapse:separate; border-spacing:0;">
@@ -394,8 +432,10 @@ else if (_rows.Count > 0 && !_isBflGroupView)
         string Country, string Type, string Status, int ShipmentCount,
         int Quantity, int? BoxCount, int? ReceivedBoxes, int? BoxCountDiff);
 
-    // Three cards per country — one per Source Location (Type) — shown above the
-    // country x type x status breakdown for a quick per-country read.
+    // Four cards per country — one per Source Location (Type), plus a Total —
+    // shown above the country x type x status breakdown for a quick per-country
+    // read. Rendered for any country selection (not just "BFL Group"), scoped to
+    // whichever country(ies) are actually in FilteredRows.
     private record TypeSummary(
         string Type, string Title, int DeliveredCount, int DeliveredQty, int IntransitCount, int IntransitQty);
 
@@ -408,16 +448,26 @@ else if (_rows.Count > 0 && !_isBflGroupView)
 
     private List<(string Country, List<TypeSummary> Types)> CountryTypeSummaries =>
         FilteredRows.Select(r => r.Country).Distinct().OrderBy(c => c)
-            .Select(country => (country, TypeCardOrder.Select(tc =>
+            .Select(country =>
             {
-                var rows      = FilteredRows.Where(r => r.Country == country && r.Type == tc.Type).ToList();
-                var delivered = rows.Where(r => r.Status == "Delivered").ToList();
-                var intransit = rows.Where(r => r.Status == "InTransit").ToList();
-                return new TypeSummary(
-                    tc.Type, tc.Title,
-                    delivered.Count, delivered.Sum(r => r.TotalQty),
-                    intransit.Count, intransit.Sum(r => r.TotalQty));
-            }).ToList()))
+                var types = TypeCardOrder.Select(tc =>
+                {
+                    var rows      = FilteredRows.Where(r => r.Country == country && r.Type == tc.Type).ToList();
+                    var delivered = rows.Where(r => r.Status == "Delivered").ToList();
+                    var intransit = rows.Where(r => r.Status == "InTransit").ToList();
+                    return new TypeSummary(
+                        tc.Type, tc.Title,
+                        delivered.Count, delivered.Sum(r => r.TotalQty),
+                        intransit.Count, intransit.Sum(r => r.TotalQty));
+                }).ToList();
+
+                types.Add(new TypeSummary(
+                    "TOTAL", "Total",
+                    types.Sum(t => t.DeliveredCount), types.Sum(t => t.DeliveredQty),
+                    types.Sum(t => t.IntransitCount),  types.Sum(t => t.IntransitQty)));
+
+                return (country, types);
+            })
             .ToList();
 
     // Consistent color per Source Location across every country's card row.
@@ -426,8 +476,83 @@ else if (_rows.Count > 0 && !_isBflGroupView)
         "JAFZA"         => ("#fde8f0", "#b3195c"),
         "International" => ("#e3f9ef", "#0f9d67"),
         "LOCAL"         => ("#e8f0fe", "#1a56db"),
+        "TOTAL"         => ("#f0f0f0", "#333333"),
         _               => ("#f2f2f2", "#333333"),
     };
+
+    // Two slices per country — Delivered and Intransit quantity from that
+    // country's TOTAL card, kept separate — rendered as a pie to the right of
+    // the cards, BFL Group view only. Each country gets its own base color;
+    // its Intransit slice uses a lightened variant of the same color so the
+    // two slices for one country are visually grouped but still distinct.
+    private record PieSlice(string Country, string Status, decimal Qty, double Percent, string Color, string Path);
+
+    private static readonly string[] PieColors =
+    [
+        "#4C6EF5", "#F59F00", "#37B24D", "#E64980", "#15AABF", "#F76707", "#7048E8", "#2F9E44", "#E8590C", "#1098AD",
+    ];
+
+    private List<PieSlice> CountryPieSlices
+    {
+        get
+        {
+            var entries = CountryTypeSummaries
+                .SelectMany((cts, i) =>
+                {
+                    var total = cts.Types.First(t => t.Type == "TOTAL");
+                    var color = PieColors[i % PieColors.Length];
+                    return new[]
+                    {
+                        (cts.Country, Status: "Delivered", Qty: (decimal)total.DeliveredQty, Color: color),
+                        (cts.Country, Status: "Intransit", Qty: (decimal)total.IntransitQty, Color: Lighten(color, 0.5)),
+                    };
+                })
+                .Where(x => x.Qty > 0)
+                .ToList();
+
+            var grandTotal = entries.Sum(x => x.Qty);
+            if (grandTotal <= 0) return [];
+
+            const double cx = 100, cy = 100, r = 90;
+            var slices = new List<PieSlice>();
+            var cumulativeAngle = 0.0;
+
+            foreach (var entry in entries)
+            {
+                var percent    = (double)(entry.Qty / grandTotal) * 100;
+                var startAngle = cumulativeAngle;
+                var endAngle   = cumulativeAngle + percent / 100 * 360;
+                cumulativeAngle = endAngle;
+
+                var (x1, y1) = PointOnCircle(cx, cy, r, startAngle);
+                var (x2, y2) = PointOnCircle(cx, cy, r, endAngle);
+                var largeArc = endAngle - startAngle > 180 ? 1 : 0;
+                var path = $"M{cx},{cy} L{x1:F2},{y1:F2} A{r},{r} 0 {largeArc} 1 {x2:F2},{y2:F2} Z";
+
+                slices.Add(new PieSlice(entry.Country, entry.Status, entry.Qty, percent, entry.Color, path));
+            }
+            return slices;
+        }
+    }
+
+    // Blends a hex color toward white by `amount` (0 = unchanged, 1 = white).
+    private static string Lighten(string hex, double amount)
+    {
+        var r = Convert.ToInt32(hex.Substring(1, 2), 16);
+        var g = Convert.ToInt32(hex.Substring(3, 2), 16);
+        var b = Convert.ToInt32(hex.Substring(5, 2), 16);
+        r += (int)((255 - r) * amount);
+        g += (int)((255 - g) * amount);
+        b += (int)((255 - b) * amount);
+        return $"#{r:X2}{g:X2}{b:X2}";
+    }
+
+    // angleDeg measured clockwise from the top (12 o'clock), matching typical pie-chart convention.
+    private static (double X, double Y) PointOnCircle(double cx, double cy, double r, double angleDeg)
+    {
+        var rad = (angleDeg - 90) * Math.PI / 180;
+        return (cx + r * Math.Cos(rad), cy + r * Math.Sin(rad));
+    }
 
     private List<SummaryRow> SummaryRows =>
         FilteredRows
