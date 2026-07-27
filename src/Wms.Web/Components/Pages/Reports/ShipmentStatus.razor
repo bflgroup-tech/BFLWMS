@@ -1,0 +1,630 @@
+@page "/reports/shipment-status"
+@rendermode RenderMode.InteractiveServer
+@using System.Text
+@using Wms.Core
+@using Wms.Data.Lpm
+@attribute [Authorize(Policy = MenuKeys.RPT_SHIPMENT_STATUS)]
+@inject ShipmentStatusService Svc
+@inject ICurrentUser CurrentUser
+@inject Microsoft.JSInterop.IJSRuntime JS
+
+<PageTitle>WMS — Shipment Status</PageTitle>
+
+<div class="aiwms-page-header">
+    <h2>Shipment Status</h2>
+    <p>Containers received between the selected dates, plus any shipment still in transit as of Receipt Date To — released from UAE or local/international, received directly at destination. Sorted by Receipt Date (then Released Date while in transit).</p>
+</div>
+
+<div class="aiwms-section" style="padding:10px 16px;">
+    <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:flex-end;">
+        @if (_canSelectMultiple)
+        {
+            <div style="flex:0 0 220px; position:relative;">
+                <label class="aiwms-filter-label">COUNTRY</label>
+                <details @key="_dropdownResetKey" style="position:relative;">
+                    <summary style="cursor:pointer; padding:5px 7px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:12px; background:white; list-style:none; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
+                        @CountrySummaryText
+                    </summary>
+                    <div style="position:absolute; top:100%; left:0; z-index:20; background:white; border:1px solid var(--border-default); border-radius:var(--r-sm); padding:6px 10px; margin-top:2px; min-width:200px; box-shadow:0 2px 8px rgba(0,0,0,0.15);">
+                        <label style="display:block; font-size:12px; font-weight:700; white-space:nowrap; padding:2px 0;">
+                            <input type="checkbox" checked="@_selectedCountriesArray.Contains(BflGroupValue)"
+                                   @onchange="e => ToggleCountryCheckbox(BflGroupValue, (bool)e.Value!)" />
+                            BFL Group
+                        </label>
+                        @foreach (var c in _countries)
+                        {
+                            <label style="display:block; font-size:12px; white-space:nowrap; padding:2px 0;">
+                                <input type="checkbox" checked="@_selectedCountriesArray.Contains(c)"
+                                       @onchange="e => ToggleCountryCheckbox(c, (bool)e.Value!)" />
+                                @c.ToUpperInvariant()
+                            </label>
+                        }
+                    </div>
+                </details>
+            </div>
+        }
+        else
+        {
+            <div style="flex:0 0 160px;">
+                <label class="aiwms-filter-label">COUNTRY</label>
+                <input value="@(_lockedCountry.ToUpperInvariant())" disabled
+                       style="width:100%; padding:5px 7px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:12px; background:var(--bg-disabled, #f2f2f2);" />
+            </div>
+        }
+        <div style="flex:0 0 170px;">
+            <label class="aiwms-filter-label" style="white-space:nowrap;">RECEIPT DATE FROM</label>
+            <input type="date" @bind:get="EffectiveDateFromDisplay" @bind:set="v => SetIfPlausible(v, d => _dateFrom = d)" @bind:format="yyyy-MM-dd"
+                   disabled="@(_selectedWeekValues.Length > 0)"
+                   style="width:100%; padding:5px 7px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:12px; background:@(_selectedWeekValues.Length > 0 ? "var(--bg-disabled, #f2f2f2)" : "white")" />
+        </div>
+        <div style="flex:0 0 170px;">
+            <label class="aiwms-filter-label" style="white-space:nowrap;">RECEIPT DATE TO</label>
+            <input type="date" @bind:get="EffectiveDateToDisplay" @bind:set="v => SetIfPlausible(v, d => _dateTo = d)" @bind:format="yyyy-MM-dd"
+                   disabled="@(_selectedWeekValues.Length > 0)"
+                   style="width:100%; padding:5px 7px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:12px; background:@(_selectedWeekValues.Length > 0 ? "var(--bg-disabled, #f2f2f2)" : "white")" />
+        </div>
+        <div style="flex:0 0 130px;">
+            <label class="aiwms-filter-label">STATUS</label>
+            <select @bind="_statusFilter" style="width:100%; padding:5px 7px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:12px; background:white">
+                <option value="">All</option>
+                <option value="InTransit">InTransit</option>
+                <option value="Delivered">Delivered</option>
+            </select>
+        </div>
+        <div style="flex:0 0 150px;">
+            <label class="aiwms-filter-label" style="white-space:nowrap;">SOURCE LOCATION</label>
+            <select @bind="_typeFilter" style="width:100%; padding:5px 7px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:12px; background:white">
+                <option value="">All</option>
+                <option value="JAFZA">JAFZA</option>
+                <option value="LOCAL">LOCAL</option>
+                <option value="International">International</option>
+            </select>
+        </div>
+        <div style="flex:0 0 200px;">
+            <label class="aiwms-filter-label" style="white-space:nowrap;">WEEK — overrides dates</label>
+            <details @key="_dropdownResetKey" style="position:relative;">
+                <summary style="cursor:pointer; padding:5px 7px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:12px; background:white; list-style:none; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
+                    @WeekSummaryText
+                </summary>
+                <div style="position:absolute; top:100%; left:0; z-index:20; background:white; border:1px solid var(--border-default); border-radius:var(--r-sm); padding:6px 10px; margin-top:2px; min-width:160px; max-height:220px; overflow-y:auto; box-shadow:0 2px 8px rgba(0,0,0,0.15);">
+                    <label style="display:block; font-size:12px; font-weight:700; white-space:nowrap; padding:2px 0;">
+                        <input type="checkbox" checked="@AllWeeksSelected"
+                               @onchange="e => ToggleAllWeeks((bool)e.Value!)" />
+                        ALL
+                    </label>
+                    @foreach (var w in AvailableWeeks)
+                    {
+                        <label style="display:block; font-size:12px; white-space:nowrap; padding:2px 0;">
+                            <input type="checkbox" checked="@_selectedWeekValues.Contains(w.Key)"
+                                   @onchange="e => ToggleWeekCheckbox(w.Key, (bool)e.Value!)" />
+                            @w.Label
+                        </label>
+                    }
+                </div>
+            </details>
+        </div>
+        <div style="display:flex; gap:10px;">
+            <button class="aiwms-btn aiwms-btn-primary" @onclick="LoadAsync" disabled="@_loading">
+                @(_loading ? "Loading…" : "Load")
+            </button>
+            <button class="aiwms-btn aiwms-btn-secondary" @onclick="ExportCsvAsync" disabled="@(_loading || _rows.Count == 0)">
+                Export to Excel
+            </button>
+        </div>
+    </div>
+
+    @if (!string.IsNullOrEmpty(_message))
+    {
+        <div class="aiwms-alert @(_isError ? "error" : "info")" style="margin-top:12px">@_message</div>
+    }
+</div>
+
+@if (_rows.Count > 0 && _isBflGroupView)
+{
+    <div class="aiwms-section">
+        <div style="overflow:auto; max-height:calc(100vh - 320px);">
+        <table class="aiwms-table aiwms-table-dense" style="table-layout:fixed; width:100%; border-collapse:separate; border-spacing:0;">
+            <colgroup>
+                <col style="width:100px;" />
+                <col style="width:110px;" />
+                <col style="width:100px;" />
+                <col style="width:100px;" />
+                <col style="width:100px;" />
+                <col style="width:100px;" />
+                <col style="width:120px;" />
+                <col style="width:120px;" />
+            </colgroup>
+            <thead style="position:sticky; top:0; z-index:5; background:var(--bfl-black);">
+                <tr>
+                    <th>Source Location</th>
+                    <th>Target Location</th>
+                    <th>Status</th>
+                    <th style="text-align:right;">Shipments</th>
+                    <th style="text-align:right;">Quantity</th>
+                    <th style="text-align:right;">Box Count</th>
+                    <th style="text-align:right;">Received Boxes</th>
+                    <th style="text-align:right;">Box Variance</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var s in SummaryRows)
+                {
+                    <tr>
+                        <td>@s.Type</td>
+                        <td>@s.Country</td>
+                        <td>@s.Status</td>
+                        <td style="text-align:right;">@s.ShipmentCount.ToString("N0")</td>
+                        <td style="text-align:right;">@s.Quantity.ToString("N0")</td>
+                        <td style="text-align:right;">@(s.BoxCount?.ToString("N0") ?? "")</td>
+                        <td style="text-align:right;">@(s.ReceivedBoxes?.ToString("N0") ?? "")</td>
+                        <td style="text-align:right;">@(s.BoxCountDiff?.ToString("N0") ?? "")</td>
+                    </tr>
+                }
+            </tbody>
+            <tfoot>
+                <tr style="font-weight:600; border-top:2px solid var(--border-default);">
+                    <td>Total</td>
+                    <td></td>
+                    <td></td>
+                    <td style="text-align:right;">@SummaryRows.Sum(s => s.ShipmentCount).ToString("N0")</td>
+                    <td style="text-align:right;">@SummaryRows.Sum(s => s.Quantity).ToString("N0")</td>
+                    <td style="text-align:right;">@((SummaryRows.Sum(s => s.BoxCount) ?? 0).ToString("N0"))</td>
+                    <td style="text-align:right;">@((SummaryRows.Sum(s => s.ReceivedBoxes) ?? 0).ToString("N0"))</td>
+                    <td style="text-align:right;">@((SummaryRows.Sum(s => s.BoxCountDiff) ?? 0).ToString("N0"))</td>
+                </tr>
+            </tfoot>
+        </table>
+        </div>
+    </div>
+}
+else if (_rows.Count > 0 && !_isBflGroupView)
+{
+    <div class="aiwms-section">
+        <div style="overflow:auto; max-height:calc(100vh - 320px);">
+        <table class="aiwms-table aiwms-table-dense" style="table-layout:fixed; width:100%; min-width:1800px; border-collapse:separate; border-spacing:0;">
+            <colgroup>
+                <col style="width:100px;" />
+                <col style="width:90px;" />
+                <col style="width:80px;" />
+                <col style="width:80px;" />
+                <col style="width:80px;" />
+                <col style="width:95px;" />
+                <col style="width:95px;" />
+                <col style="width:90px;" />
+                <col style="width:80px;" />
+                <col style="width:95px;" />
+                <col style="width:80px;" />
+                <col style="width:80px;" />
+                <col style="width:90px;" />
+                <col style="width:90px;" />
+                <col style="width:95px;" />
+                <col style="width:90px;" />
+                <col style="width:150px;" />
+                <col style="width:160px;" />
+                <col style="width:160px;" />
+                <col style="width:160px;" />
+            </colgroup>
+            <thead style="position:sticky; top:0; z-index:5; background:var(--bfl-black);">
+                <tr>
+                    <th>Source Location</th>
+                    <th>Target Location</th>
+                    <th style="text-align:right;">Ship No.</th>
+                    <th>Status</th>
+                    <th>GINNO</th>
+                    <th>GINDate</th>
+                    <th>Released On</th>
+                    <th style="text-align:right;">SLA (Ship. Load)</th>
+                    <th>ETA</th>
+                    <th style="text-align:right;">Quantity</th>
+                    <th style="text-align:right;">Box Count</th>
+                    <th>ReceiptDt</th>
+                    <th style="text-align:right;">SLA (Ship Rec.)</th>
+                    <th style="text-align:right;">Intransit SLA</th>
+                    <th style="text-align:right;">ReceivedBoxes</th>
+                    <th style="text-align:right;">Box Variance</th>
+                    <th>Remarks</th>
+                    <th>Division</th>
+                    <th>Department</th>
+                    <th>Brand</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var r in FilteredRows)
+                {
+                    <tr>
+                        <td>@r.Type</td>
+                        <td>@r.Country</td>
+                        <td style="text-align:right;">@r.ShipNo</td>
+                        <td>@r.Status</td>
+                        <td>@r.GinNo</td>
+                        <td>@(r.GinDate?.ToString("dd/MM/yyyy") ?? "")</td>
+                        <td>@(r.ReleasedOn?.ToString("dd/MM/yyyy") ?? "")</td>
+                        <td style="text-align:right;">@r.SlaShippingDays</td>
+                        <td>@(r.Eta?.ToString("dd/MM/yyyy") ?? "")</td>
+                        <td style="text-align:right;">@r.TotalQty.ToString("N0")</td>
+                        <td style="text-align:right;">@(r.BoxCount?.ToString("N0") ?? "")</td>
+                        <td>@(r.ReceiptDt?.ToString("dd/MM/yyyy") ?? "")</td>
+                        <td style="text-align:right;">@r.SlaReceiptDays</td>
+                        <td style="text-align:right;">@IntransitSla(r)</td>
+                        <td style="text-align:right;">@(r.ReceivedBoxes?.ToString("N0") ?? "")</td>
+                        <td style="text-align:right;">@(r.BoxCountDiff?.ToString("N0") ?? "")</td>
+                        <td>@r.Remarks</td>
+                        <td style="word-break:break-word; white-space:normal;">@r.Division</td>
+                        <td style="word-break:break-word; white-space:normal;">@r.Department</td>
+                        <td style="word-break:break-word; white-space:normal;">@r.Brand</td>
+                    </tr>
+                }
+            </tbody>
+            <tfoot>
+                <tr style="font-weight:600; border-top:2px solid var(--border-default);">
+                    <td>Total</td>
+                    <td></td>
+                    <td></td>
+                    <td></td>
+                    <td></td>
+                    <td></td>
+                    <td></td>
+                    <td></td>
+                    <td></td>
+                    <td style="text-align:right;">@FilteredRows.Sum(r => r.TotalQty).ToString("N0")</td>
+                    <td style="text-align:right;">@((FilteredRows.Sum(r => r.BoxCount) ?? 0).ToString("N0"))</td>
+                    <td></td>
+                    <td></td>
+                    <td></td>
+                    <td style="text-align:right;">@((FilteredRows.Sum(r => r.ReceivedBoxes) ?? 0).ToString("N0"))</td>
+                    <td style="text-align:right;">@((FilteredRows.Sum(r => r.BoxCountDiff) ?? 0).ToString("N0"))</td>
+                    <td></td>
+                    <td></td>
+                    <td></td>
+                    <td></td>
+                </tr>
+            </tfoot>
+        </table>
+        </div>
+    </div>
+}
+
+@code {
+    private List<ShipmentStatusRow> _rows = new();
+    private List<string> _countries = new();
+
+    // Bumped on every Load — the Country/Week <details> dropdowns key off this, so
+    // changing it forces Blazor to discard and recreate those elements, which resets
+    // their native open/closed state back to closed (there's no supported way to
+    // force-collapse an already-open <details> other than replacing the element).
+    private int _dropdownResetKey;
+
+    // Regular country-scoped users only ever see their own country. UAE-based staff
+    // (HQ, shipping to everyone) and Admins get a true multi-select plus "BFL Group",
+    // modeled as a magic option inside the same <select multiple> — picking it clears
+    // any other selection, and vice versa (see OnCountriesChanged).
+    private const string BflGroupValue = "__BFLGROUP__";
+    private bool _canSelectMultiple;
+    private string _lockedCountry = "";
+    private string[] _selectedCountriesArray = [BflGroupValue];
+
+    private string _statusFilter = ""; // "" = All
+    private string _typeFilter   = ""; // "" = All
+
+    // ISO calendar week (Mon-Sun, ISOWeek handles year-boundary weeks correctly) of
+    // ReceiptDt. Once any week is checked, it REPLACES the Receipt Date range for the
+    // server query (LoadAsync computes a from/to spanning the selected week(s) and
+    // ignores _dateFrom/_dateTo — the date inputs are disabled to make that obvious);
+    // exact-week narrowing (including non-contiguous selections) still happens
+    // client-side in FilteredRows. InTransit rows (no ReceiptDt) always pass through
+    // regardless of week selection.
+    private string[] _selectedWeekValues = [];
+
+    private DateTime _dateFrom = DateTime.Today;
+    private DateTime _dateTo   = DateTime.Today;
+
+    // What the (disabled) date inputs actually display once week(s) are selected —
+    // the span those weeks cover — so it's obvious what date range is really being
+    // queried, instead of just showing whatever _dateFrom/_dateTo were left at.
+    private DateTime EffectiveDateFromDisplay =>
+        _selectedWeekValues.Length > 0 ? _selectedWeekValues.Select(ParseWeekRange).Min(r => r.Start) : _dateFrom;
+
+    private DateTime EffectiveDateToDisplay =>
+        _selectedWeekValues.Length > 0 ? _selectedWeekValues.Select(ParseWeekRange).Max(r => r.End) : _dateTo;
+
+    private bool   _loading;
+    private string _message = "";
+    private bool   _isError;
+
+    // Set by LoadAsync to whether that load used "BFL Group" (all countries) — the
+    // per-shipment detail table only makes sense scoped to one or a few countries, so
+    // a BFL Group load shows a Country x Type x Status rollup instead.
+    private bool _isBflGroupView;
+
+    private record SummaryRow(
+        string Country, string Type, string Status, int ShipmentCount,
+        int Quantity, int? BoxCount, int? ReceivedBoxes, int? BoxCountDiff);
+
+    private List<SummaryRow> SummaryRows =>
+        FilteredRows
+            .GroupBy(r => (r.Country, r.Type, r.Status))
+            .Select(g => new SummaryRow(
+                g.Key.Country, g.Key.Type, g.Key.Status,
+                g.Count(),
+                g.Sum(r => r.TotalQty),
+                g.Any(r => r.BoxCount.HasValue)      ? g.Sum(r => r.BoxCount ?? 0)      : null,
+                g.Any(r => r.ReceivedBoxes.HasValue)  ? g.Sum(r => r.ReceivedBoxes ?? 0) : null,
+                g.Any(r => r.BoxCountDiff.HasValue)    ? g.Sum(r => r.BoxCountDiff ?? 0)  : null))
+            .OrderBy(s => s.Type).ThenBy(s => s.Country).ThenBy(s => s.Status)
+            .ToList();
+
+    // Business "week of year" (not ISO — there's no standard for this). Weeks stay
+    // Monday-Sunday and numbering is continuous for the whole year — it does NOT
+    // reset at month boundaries, so a week can span across two months (e.g. 2026:
+    // Jan 1 is a Thursday, so Week 1 = Jan 1-4, Week 2 = Jan 5-11, ... Week 5 =
+    // Jan 26-Feb 1, Week 6 = Feb 2-8, ...). Only Week 1 is short (whenever Jan 1
+    // isn't a Monday); every week after that is a full 7 days until the year ends.
+    private static int DaysInFirstWeek(int year)
+    {
+        // ISO day-of-week position of Jan 1 (Monday=1 .. Sunday=7); days remaining
+        // through that week's Sunday = 8 - position (Jan 1 on a Monday = full week).
+        var jan1 = new DateTime(year, 1, 1);
+        var isoDow = jan1.DayOfWeek == DayOfWeek.Sunday ? 7 : (int)jan1.DayOfWeek;
+        return 8 - isoDow;
+    }
+
+    private static int WeekOfYear(DateTime d)
+    {
+        var daysInFirstWeek = DaysInFirstWeek(d.Year);
+        return d.DayOfYear <= daysInFirstWeek ? 1 : 1 + ((d.DayOfYear - daysInFirstWeek - 1) / 7) + 1;
+    }
+
+    private static (DateTime Start, DateTime End) WeekRangeFor(int year, int week)
+    {
+        var daysInFirstWeek = DaysInFirstWeek(year);
+        var lastDayOfYear   = new DateTime(year, 12, 31).DayOfYear;
+        var startDoy = week == 1 ? 1 : daysInFirstWeek + (week - 2) * 7 + 1;
+        startDoy = Math.Min(startDoy, lastDayOfYear);
+        var endDoy = week == 1 ? Math.Min(daysInFirstWeek, lastDayOfYear) : Math.Min(startDoy + 6, lastDayOfYear);
+        var jan1 = new DateTime(year, 1, 1);
+        return (jan1.AddDays(startDoy - 1), jan1.AddDays(endDoy - 1));
+    }
+
+    private List<(string Key, string Label)> AvailableWeeks
+    {
+        get
+        {
+            var today   = DateTime.Today;
+            var maxWeek = WeekOfYear(today);
+            var list = new List<(string Key, string Label)>();
+            for (var w = 1; w <= maxWeek; w++)
+            {
+                var (start, end) = WeekRangeFor(today.Year, w);
+                list.Add(($"{today.Year}-{w}", $"Week {w} ({start:dd/MM} - {end:dd/MM})"));
+            }
+            return list;
+        }
+    }
+
+    private static (string Key, string Label) WeekKeyAndLabel(DateTime d)
+    {
+        var week = WeekOfYear(d);
+        var (start, end) = WeekRangeFor(d.Year, week);
+        return ($"{d.Year}-{week}", $"Week {week} ({start:dd/MM} - {end:dd/MM})");
+    }
+
+    // "{year}-{week}" -> the start..end day span of that week-of-year.
+    private static (DateTime Start, DateTime End) ParseWeekRange(string key)
+    {
+        var parts = key.Split('-');
+        return WeekRangeFor(int.Parse(parts[0]), int.Parse(parts[1]));
+    }
+
+    private void ToggleWeekCheckbox(string key, bool isChecked)
+    {
+        var current = _selectedWeekValues.ToList();
+        if (isChecked) { if (!current.Contains(key)) current.Add(key); }
+        else current.Remove(key);
+        _selectedWeekValues = current.ToArray();
+    }
+
+    // Checking "ALL" selects every available week (so the effective date range shown
+    // in Receipt Date From/To spans Week 1's start through today, same as "all weeks
+    // to date"). Unchecking it clears back to no selection (falls back to the manual
+    // Receipt Date range instead).
+    private void ToggleAllWeeks(bool isChecked)
+    {
+        _selectedWeekValues = isChecked ? AvailableWeeks.Select(w => w.Key).ToArray() : [];
+    }
+
+    private bool AllWeeksSelected =>
+        _selectedWeekValues.Length > 0 && AvailableWeeks.All(w => _selectedWeekValues.Contains(w.Key));
+
+    private string WeekSummaryText =>
+        _selectedWeekValues.Length switch
+        {
+            0 => "None (use date range)",
+            _ when AllWeeksSelected => "All weeks",
+            1 => AvailableWeeks.FirstOrDefault(w => w.Key == _selectedWeekValues[0]).Label ?? _selectedWeekValues[0],
+            _ => $"{_selectedWeekValues.Length} weeks selected"
+        };
+
+    private IEnumerable<ShipmentStatusRow> FilteredRows =>
+        _rows.Where(r => (_statusFilter == "" || r.Status == _statusFilter)
+                       && (_typeFilter   == "" || r.Type   == _typeFilter)
+                       && (_selectedWeekValues.Length == 0
+                           || !r.ReceiptDt.HasValue
+                           || _selectedWeekValues.Contains(WeekKeyAndLabel(r.ReceiptDt.Value).Key)));
+
+    // <input type="date"> fires intermediate change events while the user is still
+    // typing a segment (day/month/year) — Blazor parses those partial values as
+    // DateTime.MinValue (0001-01-01) and would otherwise overwrite the field before
+    // typing finishes. Ignore anything implausible rather than committing it.
+    private static void SetIfPlausible(DateTime v, Action<DateTime> apply)
+    {
+        if (v.Year > 1900) apply(v);
+    }
+
+    // Total transit time (SLA Ship. Load + SLA Ship Rec.) — blank until both legs
+    // are known, i.e. until the shipment has actually been received.
+    private static string IntransitSla(ShipmentStatusRow r) =>
+        r.SlaShippingDays.HasValue && r.SlaReceiptDays.HasValue
+            ? (r.SlaShippingDays.Value + r.SlaReceiptDays.Value).ToString()
+            : "";
+
+    // Enforce BFL Group vs. specific-countries mutual exclusivity based on which side
+    // was already selected before this change (whichever wasn't picked before is the
+    // new pick, so that side wins and the other is cleared).
+    private void OnCountriesChanged(string[] newSelection)
+    {
+        var bflNow = newSelection.Contains(BflGroupValue);
+        var others = newSelection.Where(v => v != BflGroupValue).ToArray();
+
+        if (bflNow && others.Length > 0)
+        {
+            var bflWasSelected = _selectedCountriesArray.Contains(BflGroupValue);
+            _selectedCountriesArray = bflWasSelected ? others : [BflGroupValue];
+        }
+        else
+        {
+            _selectedCountriesArray = newSelection;
+        }
+    }
+
+    private void ToggleCountryCheckbox(string value, bool isChecked)
+    {
+        var current = _selectedCountriesArray.ToList();
+        if (isChecked) { if (!current.Contains(value)) current.Add(value); }
+        else current.Remove(value);
+        OnCountriesChanged(current.ToArray());
+    }
+
+    private string CountrySummaryText =>
+        _selectedCountriesArray.Contains(BflGroupValue) ? "BFL Group"
+        : _selectedCountriesArray.Length == 0 ? "Select country…"
+        : string.Join(", ", _selectedCountriesArray.Select(c => c.ToUpperInvariant()));
+
+    protected override async Task OnInitializedAsync()
+    {
+        await CurrentUser.EnsureLoadedAsync();
+        _countries = await Svc.GetCountriesAsync();
+
+        _canSelectMultiple = CurrentUser.HasAllCountriesAccess ||
+            string.Equals(CurrentUser.Country, "UAE", StringComparison.OrdinalIgnoreCase);
+
+        if (!_canSelectMultiple)
+            _lockedCountry = CurrentUser.Country ?? "";
+    }
+
+    private async Task LoadAsync()
+    {
+        _loading = true; _message = ""; _rows.Clear();
+        _dropdownResetKey++; // collapse the Country/Week dropdowns back to closed
+        await InvokeAsync(StateHasChanged);
+        try
+        {
+            List<string>? countries;
+            if (!_canSelectMultiple)
+            {
+                _isBflGroupView = false;
+                if (string.IsNullOrWhiteSpace(_lockedCountry))
+                {
+                    ShowError("Your account has no assigned country — contact an admin.");
+                    return;
+                }
+                countries = [_lockedCountry];
+            }
+            else if (_selectedCountriesArray.Contains(BflGroupValue))
+            {
+                countries = null; // all countries
+                _isBflGroupView = true;
+            }
+            else if (_selectedCountriesArray.Length == 0)
+            {
+                ShowError("Select at least one country, or BFL Group.");
+                return;
+            }
+            else
+            {
+                countries = _selectedCountriesArray.ToList();
+                _isBflGroupView = false;
+            }
+
+            // Once week(s) are selected, they replace the Receipt Date range entirely:
+            // query the superset span covering every selected week, then let
+            // FilteredRows narrow to the exact week(s) client-side (handles
+            // non-contiguous selections correctly).
+            DateTime effectiveFrom, effectiveTo;
+            if (_selectedWeekValues.Length > 0)
+            {
+                var ranges = _selectedWeekValues.Select(ParseWeekRange).ToList();
+                effectiveFrom = ranges.Min(r => r.Start);
+                effectiveTo   = ranges.Max(r => r.End);
+            }
+            else
+            {
+                effectiveFrom = _dateFrom;
+                effectiveTo   = _dateTo;
+            }
+
+            var filter = new ShipmentStatusFilter(
+                Countries: countries,
+                DateFrom:  effectiveFrom,
+                DateTo:    effectiveTo);
+
+            var result = await Svc.GetShipmentStatusAsync(filter);
+            _rows = result.Rows;
+
+            if (result.Warnings.Count > 0)
+                ShowError($"Loaded {_rows.Count} rows. Some countries failed: {string.Join("; ", result.Warnings)}");
+            else
+                ShowInfo($"Loaded {_rows.Count} rows.");
+        }
+        catch (Exception ex) { ShowError($"Load failed: {ex.Message}"); }
+        finally { _loading = false; }
+    }
+
+    private async Task ExportCsvAsync()
+    {
+        var sb = new StringBuilder();
+        if (_isBflGroupView)
+        {
+            var summary = SummaryRows;
+            sb.AppendLine("Source Location,Target Location,Status,Shipments,Quantity,Box Count,Received Boxes,Box Variance");
+            foreach (var s in summary)
+                sb.AppendLine($"{Csv(s.Type)},{Csv(s.Country)},{Csv(s.Status)},{s.ShipmentCount},{s.Quantity},{s.BoxCount},{s.ReceivedBoxes},{s.BoxCountDiff}");
+            sb.AppendLine($"Total,,,{summary.Sum(s => s.ShipmentCount)},{summary.Sum(s => s.Quantity)},{summary.Sum(s => s.BoxCount)},{summary.Sum(s => s.ReceivedBoxes)},{summary.Sum(s => s.BoxCountDiff)}");
+        }
+        else
+        {
+            var rows = FilteredRows.ToList();
+            sb.AppendLine("Source Location,Target Location,Ship No.,Status,GINNO,GINDate,Released On,SLA (Ship. Load),ETA,Quantity,Box Count,ReceiptDt,SLA (Ship Rec.),Intransit SLA,ReceivedBoxes,Box Variance,Remarks,Division,Department,Brand");
+            foreach (var r in rows)
+                sb.AppendLine($"{Csv(r.Type)},{Csv(r.Country)},{Csv(r.ShipNo)},{Csv(r.Status)},{Csv(r.GinNo)}," +
+                              $"{(r.GinDate.HasValue ? r.GinDate.Value.ToString("yyyy-MM-dd") : "")}," +
+                              $"{(r.ReleasedOn.HasValue ? r.ReleasedOn.Value.ToString("yyyy-MM-dd") : "")}," +
+                              $"{r.SlaShippingDays}," +
+                              $"{(r.Eta.HasValue ? r.Eta.Value.ToString("yyyy-MM-dd") : "")}," +
+                              $"{r.TotalQty},{r.BoxCount}," +
+                              $"{(r.ReceiptDt.HasValue ? r.ReceiptDt.Value.ToString("yyyy-MM-dd") : "")}," +
+                              $"{r.SlaReceiptDays},{IntransitSla(r)},{r.ReceivedBoxes},{r.BoxCountDiff}," +
+                              $"{Csv(r.Remarks)},{Csv(r.Division)},{Csv(r.Department)},{Csv(r.Brand)}");
+            sb.AppendLine($"Total,,,,,,,,,{rows.Sum(r => r.TotalQty)},{rows.Sum(r => r.BoxCount)},,,,{rows.Sum(r => r.ReceivedBoxes)},{rows.Sum(r => r.BoxCountDiff)},,,,");
+        }
+
+        var b64      = Convert.ToBase64String(Encoding.UTF8.GetBytes(sb.ToString()));
+        var country  = _selectedCountriesArray.Contains(BflGroupValue) ? "BFLGroup"
+                     : _canSelectMultiple ? string.Join("-", _selectedCountriesArray)
+                     : _lockedCountry;
+        var filename = $"ShipmentStatus_{country}_{_dateFrom:yyyyMMdd}_{_dateTo:yyyyMMdd}.csv";
+        await JS.InvokeVoidAsync("eval",
+            $"(function(){{var a=document.createElement('a');a.href='data:text/csv;base64,{b64}';" +
+            $"a.download='{filename}';document.body.appendChild(a);a.click();document.body.removeChild(a);}})();");
+    }
+
+    private static string Csv(string? s)
+    {
+        if (s is null) return "";
+        return (s.Contains(',') || s.Contains('"') || s.Contains('\n'))
+            ? "\"" + s.Replace("\"", "\"\"") + "\""
+            : s;
+    }
+
+    private void ShowError(string msg) { _message = msg; _isError = true; }
+    private void ShowInfo(string msg)  { _message = msg; _isError = false; }
+}

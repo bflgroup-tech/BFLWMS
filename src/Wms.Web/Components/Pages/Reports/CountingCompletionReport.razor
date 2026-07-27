@@ -3,8 +3,10 @@
 @using Wms.Core
 @using Wms.Data.Lpm
 @using ClosedXML.Excel
+@using MudBlazor
 @attribute [Authorize(Policy = MenuKeys.RPT_COUNTING_COMPLETION)]
 @inject ReportsService Svc
+@inject CountingCompletionTodayService TodaySvc
 @inject IJSRuntime JS
 
 <PageTitle>WMS - Counting Completion Report</PageTitle>
@@ -26,35 +28,35 @@
         <label style="display:flex; align-items:center; gap:4px; cursor:pointer">
             <input type="radio" name="rpt" value="Detailed" checked="@(_view == "Detailed")" @onchange="@(() => SetView("Detailed"))" /> Detailed
         </label>
+        <span style="width:1px; height:20px; background:var(--border-default)"></span>
+        <label style="display:flex; align-items:center; gap:4px; cursor:pointer">
+            <input type="checkbox" checked="@_isToday" @onchange="@(e => ToggleToday((bool)e.Value!))" /> <b>Today</b>&nbsp;<span style="font-weight:400; color:var(--text-secondary)">(live data from today's counting — ignores date range / Cont No)</span>
+        </label>
     </div>
 
     <div style="display:grid; grid-template-columns: 1.2fr 1fr 1fr 1fr auto; gap:12px; align-items:end;">
         <div>
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COUNTRY (select any)</label>
-            <div style="display:flex; flex-direction:column; gap:4px; max-height:120px; overflow-y:auto; border:1px solid var(--border-default); border-radius:var(--r-sm); padding:8px 10px; background:white;">
-                @foreach (var c in _countries)
-                {
-                    <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:13px">
-                        <input type="checkbox" checked="@_selectedCountries.Contains(c)" @onchange="@(e => ToggleCountry(c, (bool)e.Value!))" />
-                        @DisplayCountry(c)
-                    </label>
-                }
-            </div>
+            <MudSelect T="string" Dense="true" MultiSelection="true" SelectAll="true" Placeholder="All"
+                       Variant="Variant.Outlined" Margin="Margin.Dense"
+                       SelectedValues="_selectedCountries" SelectedValuesChanged="@(v => _selectedCountries = v.ToHashSet())">
+                @foreach (var c in _countries) { <MudSelectItem T="string" Value="@c">@DisplayCountry(c)</MudSelectItem> }
+            </MudSelect>
         </div>
         <div>
-            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COMPLETION FROM @(HasContNoFilter ? "" : "*")</label>
-            <input type="date" @bind="_from" @bind:format="yyyy-MM-dd" max="@DateTime.Today.ToString("yyyy-MM-dd")" disabled="@HasContNoFilter" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COMPLETION FROM @(HasContNoFilter || _isToday ? "" : "*")</label>
+            <input type="date" @bind="_from" @bind:format="yyyy-MM-dd" max="@DateTime.Today.ToString("yyyy-MM-dd")" disabled="@(HasContNoFilter || _isToday)" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
         </div>
         <div>
-            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COMPLETION TO @(HasContNoFilter ? "" : "*")</label>
-            <input type="date" @bind="_to" @bind:format="yyyy-MM-dd" max="@DateTime.Today.ToString("yyyy-MM-dd")" disabled="@HasContNoFilter" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COMPLETION TO @(HasContNoFilter || _isToday ? "" : "*")</label>
+            <input type="date" @bind="_to" @bind:format="yyyy-MM-dd" max="@DateTime.Today.ToString("yyyy-MM-dd")" disabled="@(HasContNoFilter || _isToday)" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
         </div>
         <div>
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">CONTAINER NO (searches all dates)</label>
-            <input @bind="_contNoFilter" @bind:event="oninput" placeholder="e.g. KWLOC7172" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
+            <input @bind="_contNoFilter" @bind:event="oninput" placeholder="e.g. KWLOC7172" disabled="@_isToday" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
         </div>
         <div style="display:flex; gap:8px">
-            <button class="aiwms-btn aiwms-btn-primary" @onclick="LoadAsync" disabled="@(_loading || (!HasContNoFilter && _from > _to))">@(_loading ? "Loading..." : "Load")</button>
+            <button class="aiwms-btn aiwms-btn-primary" @onclick="LoadAsync" disabled="@(_loading || (!_isToday && !HasContNoFilter && _from > _to))">@(_loading ? "Loading..." : "Load")</button>
             <button class="aiwms-btn aiwms-btn-secondary" @onclick="ExportExcelAsync" disabled="@(_exporting || CurrentRowCount == 0)">@(_exporting ? "Exporting..." : "Export Excel")</button>
         </div>
     </div>
@@ -65,7 +67,238 @@
     }
 </div>
 
-@if (_view == "Summary" && _summaryRows.Count > 0)
+@if (_isToday)
+{
+    @if (_view == "Summary" && _todaySummaryRows.Count > 0)
+    {
+        <div class="aiwms-section">
+            <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:12px;">
+                <div style="background:var(--surface-1, #f7f7f5); border-radius:var(--r-sm); padding:12px 16px;">
+                    <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">Total Containers</div>
+                    <div style="font-size:1.4rem; font-weight:800">@FilteredTodaySummaryRows().Count.ToString("N0")</div>
+                </div>
+                <div style="background:var(--surface-1, #f7f7f5); border-radius:var(--r-sm); padding:12px 16px;">
+                    <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">Total PO Count</div>
+                    <div style="font-size:1.4rem; font-weight:800">@TotalTodayPoCount().ToString("N0")</div>
+                </div>
+                <div style="background:var(--surface-1, #f7f7f5); border-radius:var(--r-sm); padding:12px 16px;">
+                    <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">Total Counted Qty</div>
+                    <div style="font-size:1.4rem; font-weight:800">@FilteredTodaySummaryRows().Sum(r => r.CountedQty).ToString("N0")</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="aiwms-section">
+            <div style="display:flex; gap:12px; align-items:end; margin-bottom:14px; flex-wrap:wrap">
+                <div style="flex:1; min-width:240px">
+                    <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">SEARCH (CONT NO / PO NO / DIVISION / BRAND / PALLETTYPE / TYPE NAME)</label>
+                    <input @bind="_search" @bind:event="oninput" placeholder="Type to filter..." style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
+                </div>
+            </div>
+
+            <div class="aiwms-card-header">Summary (Today) - @FilteredTodaySummaryRows().Count row(s)</div>
+            <div style="overflow-x:auto">
+            <table class="aiwms-table aiwms-table-dense" style="table-layout:fixed; width:100%">
+                <colgroup>
+                    <col style="width:70px" />
+                    <col style="width:110px" />
+                    <col style="width:100px" />
+                    <col style="width:140px" />
+                    <col style="width:200px" />
+                    <col style="width:180px" />
+                    <col style="width:220px" />
+                    <col style="width:160px" />
+                    <col style="width:200px" />
+                </colgroup>
+                <thead>
+                    <tr>
+                        <th>Country</th>
+                        <th>Cont No</th>
+                        <th style="text-align:center">Counted Qty</th>
+                        <th>LPM Dates</th>
+                        <th>Divisions</th>
+                        <th>PO Numbers</th>
+                        <th>Brands</th>
+                        <th>PalletTypes</th>
+                        <th>Type Names</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var r in FilteredTodaySummaryRows())
+                    {
+                        <tr>
+                            <td>@DisplayCountry(r.Country)</td>
+                            <td style="font-family:var(--font-mono)"><b>@r.ContNo</b></td>
+                            <td style="text-align:center">@r.CountedQty.ToString("N0")</td>
+                            <td style="word-break:break-word">@r.LpmDates</td>
+                            <td style="word-break:break-word">@r.Divisions</td>
+                            <td style="word-break:break-word">@r.OraPoNos</td>
+                            <td style="word-break:break-word">@r.Brands</td>
+                            <td style="word-break:break-word">@r.PalletTypes</td>
+                            <td style="word-break:break-word">@r.TypeNames</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+            </div>
+        </div>
+    }
+    else if (_view == "Allocation" && _todayAllocRows.Count > 0)
+    {
+        <div class="aiwms-section">
+            <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:12px;">
+                <div style="background:var(--surface-1, #f7f7f5); border-radius:var(--r-sm); padding:12px 16px;">
+                    <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">Total Containers</div>
+                    <div style="font-size:1.4rem; font-weight:800">@FilteredTodayAllocRows().Select(r => r.ContNo).Distinct(StringComparer.OrdinalIgnoreCase).Count().ToString("N0")</div>
+                </div>
+                <div style="background:var(--surface-1, #f7f7f5); border-radius:var(--r-sm); padding:12px 16px;">
+                    <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">Box Categories</div>
+                    <div style="font-size:1.4rem; font-weight:800">@FilteredTodayAllocRows().Select(r => r.ResultType).Distinct(StringComparer.OrdinalIgnoreCase).Count().ToString("N0")</div>
+                </div>
+                <div style="background:var(--surface-1, #f7f7f5); border-radius:var(--r-sm); padding:12px 16px;">
+                    <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">Total Build Qty</div>
+                    <div style="font-size:1.4rem; font-weight:800">@FilteredTodayAllocRows().Sum(r => r.BuildQty).ToString("N0")</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="aiwms-section">
+            <div style="display:flex; gap:12px; align-items:end; margin-bottom:14px; flex-wrap:wrap">
+                <div style="flex:1; min-width:240px">
+                    <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">SEARCH (CONT NO / BOX CATEGORY / TYPE NAME / DIVISION / BRAND)</label>
+                    <input @bind="_search" @bind:event="oninput" placeholder="Type to filter..." style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
+                </div>
+            </div>
+
+            <div class="aiwms-card-header">Allocation-wise (Today) - @FilteredTodayAllocRows().Count row(s)</div>
+            <div style="overflow-x:auto">
+            <table class="aiwms-table aiwms-table-dense" style="table-layout:fixed; width:100%">
+                <colgroup>
+                    <col style="width:70px" />
+                    <col style="width:110px" />
+                    <col style="width:100px" />
+                    <col style="width:160px" />
+                    <col style="width:100px" />
+                    <col style="width:140px" />
+                    <col style="width:180px" />
+                    <col style="width:160px" />
+                    <col style="width:200px" />
+                </colgroup>
+                <thead>
+                    <tr>
+                        <th>Country</th>
+                        <th>Cont No</th>
+                        <th>Box Category</th>
+                        <th>Type Name</th>
+                        <th style="text-align:center">Build Qty</th>
+                        <th>LPM Dates</th>
+                        <th>Divisions</th>
+                        <th>PO Numbers</th>
+                        <th>Brands</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var r in FilteredTodayAllocRows())
+                    {
+                        <tr>
+                            <td>@DisplayCountry(r.Country)</td>
+                            <td style="font-family:var(--font-mono)"><b>@r.ContNo</b></td>
+                            <td style="word-break:break-word">@r.ResultType</td>
+                            <td style="word-break:break-word">@r.TypeName</td>
+                            <td style="text-align:center">@r.BuildQty.ToString("N0")</td>
+                            <td style="word-break:break-word">@r.LpmDates</td>
+                            <td style="word-break:break-word">@r.Divisions</td>
+                            <td style="word-break:break-word">@r.OraPoNos</td>
+                            <td style="word-break:break-word">@r.Brands</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+            </div>
+        </div>
+    }
+    else if (_view == "Detailed" && _todayDetailRows.Count > 0)
+    {
+        <div class="aiwms-section">
+            <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:12px;">
+                <div style="background:var(--surface-1, #f7f7f5); border-radius:var(--r-sm); padding:12px 16px;">
+                    <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">Total Containers</div>
+                    <div style="font-size:1.4rem; font-weight:800">@FilteredTodayDetailRows().Select(r => r.ContNo).Distinct(StringComparer.OrdinalIgnoreCase).Count().ToString("N0")</div>
+                </div>
+                <div style="background:var(--surface-1, #f7f7f5); border-radius:var(--r-sm); padding:12px 16px;">
+                    <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">Total Items</div>
+                    <div style="font-size:1.4rem; font-weight:800">@FilteredTodayDetailRows().Count.ToString("N0")</div>
+                </div>
+                <div style="background:var(--surface-1, #f7f7f5); border-radius:var(--r-sm); padding:12px 16px;">
+                    <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">Total Qty</div>
+                    <div style="font-size:1.4rem; font-weight:800">@FilteredTodayDetailRows().Sum(r => r.Qty).ToString("N0")</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="aiwms-section">
+            <div style="display:flex; gap:12px; align-items:end; margin-bottom:14px; flex-wrap:wrap">
+                <div style="flex:1; min-width:240px">
+                    <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">SEARCH (CONT NO / PALLETTYPE / TYPE NAME / ITEM CODE / ITEM NAME / DIVISION / BRAND)</label>
+                    <input @bind="_search" @bind:event="oninput" placeholder="Type to filter..." style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
+                </div>
+            </div>
+
+            <div class="aiwms-card-header">Item-wise (Today) - @FilteredTodayDetailRows().Count row(s)</div>
+            <div style="overflow-x:auto">
+            <table class="aiwms-table aiwms-table-dense" style="table-layout:fixed; width:100%">
+                <colgroup>
+                    <col style="width:70px" />
+                    <col style="width:110px" />
+                    <col style="width:100px" />
+                    <col style="width:140px" />
+                    <col style="width:130px" />
+                    <col style="width:260px" />
+                    <col style="width:80px" />
+                    <col style="width:110px" />
+                    <col style="width:150px" />
+                    <col style="width:130px" />
+                    <col style="width:150px" />
+                </colgroup>
+                <thead>
+                    <tr>
+                        <th>Country</th>
+                        <th>Cont No</th>
+                        <th>PalletType</th>
+                        <th>Type Name</th>
+                        <th>Item Code</th>
+                        <th>Item Name</th>
+                        <th style="text-align:center">Qty</th>
+                        <th>LPM Date</th>
+                        <th>Division</th>
+                        <th>PO No</th>
+                        <th>Brand</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var r in FilteredTodayDetailRows())
+                    {
+                        <tr>
+                            <td>@DisplayCountry(r.Country)</td>
+                            <td style="font-family:var(--font-mono)"><b>@r.ContNo</b></td>
+                            <td style="word-break:break-word">@r.PalletType</td>
+                            <td style="word-break:break-word">@r.TypeName</td>
+                            <td style="font-family:var(--font-mono)">@r.ItemCode</td>
+                            <td style="word-break:break-word">@r.ItemName</td>
+                            <td style="text-align:center">@r.Qty.ToString("N0")</td>
+                            <td>@FmtDate(r.LpmDt)</td>
+                            <td style="word-break:break-word">@r.Division</td>
+                            <td style="word-break:break-word">@r.OraPoNo</td>
+                            <td style="word-break:break-word">@r.Brand</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+            </div>
+        </div>
+    }
+}
+else if (_view == "Summary" && _summaryRows.Count > 0)
 {
     <div class="aiwms-section">
         <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:12px;">
@@ -164,7 +397,7 @@ else if (_view == "Allocation" && _allocRows.Count > 0)
     <div class="aiwms-section">
         <div style="display:flex; gap:12px; align-items:end; margin-bottom:14px; flex-wrap:wrap">
             <div style="flex:1; min-width:240px">
-                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">SEARCH (CONT NO / PO NO / BOX CATEGORY / DIVISION / BRAND)</label>
+                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">SEARCH (CONT NO / PO NO / BOX CATEGORY / TYPE NAME / DIVISION / BRAND)</label>
                 <input @bind="_search" @bind:event="oninput" placeholder="Type to filter..." style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
             </div>
         </div>
@@ -180,6 +413,7 @@ else if (_view == "Allocation" && _allocRows.Count > 0)
                 <col style="width:130px" />
                 <col style="width:130px" />
                 <col style="width:110px" />
+                <col style="width:150px" />
                 <col style="width:100px" />
                 <col style="width:140px" />
                 <col style="width:200px" />
@@ -194,6 +428,7 @@ else if (_view == "Allocation" && _allocRows.Count > 0)
                     <th>Counting Completion Date</th>
                     <th>Cont-Purchase Date</th>
                     <th>Box Category</th>
+                    <th>Type Name</th>
                     <th style="text-align:center">Build Qty</th>
                     <th>LPM Months</th>
                     <th>Divisions</th>
@@ -211,6 +446,7 @@ else if (_view == "Allocation" && _allocRows.Count > 0)
                         <td>@FmtDate(r.CountingCompletionDate)</td>
                         <td>@FmtDate(r.PurchaseDate)</td>
                         <td style="word-break:break-word">@r.PalletType</td>
+                        <td style="word-break:break-word">@r.TypeName</td>
                         <td style="text-align:center">@r.BuildQty.ToString("N0")</td>
                         <td style="word-break:break-word">@r.LpmMonths</td>
                         <td style="word-break:break-word">@r.Divisions</td>
@@ -244,7 +480,7 @@ else if (_view == "Detailed" && _detailRows.Count > 0)
     <div class="aiwms-section">
         <div style="display:flex; gap:12px; align-items:end; margin-bottom:14px; flex-wrap:wrap">
             <div style="flex:1; min-width:240px">
-                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">SEARCH (CONT NO / BOX CATEGORY / ITEM CODE / ITEM NAME / DIVISION / BRAND)</label>
+                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">SEARCH (CONT NO / PALLETTYPE / TYPE NAME / ITEM CODE / ITEM NAME / DIVISION / BRAND)</label>
                 <input @bind="_search" @bind:event="oninput" placeholder="Type to filter..." style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
             </div>
         </div>
@@ -257,6 +493,7 @@ else if (_view == "Detailed" && _detailRows.Count > 0)
                 <col style="width:110px" />
                 <col style="width:130px" />
                 <col style="width:110px" />
+                <col style="width:140px" />
                 <col style="width:130px" />
                 <col style="width:260px" />
                 <col style="width:80px" />
@@ -269,7 +506,8 @@ else if (_view == "Detailed" && _detailRows.Count > 0)
                     <th>Country</th>
                     <th>Cont No</th>
                     <th>Cont-Purchase Date</th>
-                    <th>Box Category</th>
+                    <th>PalletType</th>
+                    <th>Type Name</th>
                     <th>Item Code</th>
                     <th>Item Name</th>
                     <th style="text-align:center">Qty</th>
@@ -286,6 +524,7 @@ else if (_view == "Detailed" && _detailRows.Count > 0)
                         <td style="font-family:var(--font-mono)"><b>@r.ContNo</b></td>
                         <td>@FmtDate(r.PurchaseDate)</td>
                         <td style="word-break:break-word">@r.PalletType</td>
+                        <td style="word-break:break-word">@r.TypeName</td>
                         <td style="font-family:var(--font-mono)">@r.ItemCode</td>
                         <td style="word-break:break-word">@r.ItemName</td>
                         <td style="text-align:center">@r.Qty.ToString("N0")</td>
@@ -307,6 +546,7 @@ else if (_view == "Detailed" && _detailRows.Count > 0)
     private DateTime _from = DateTime.Today.AddDays(-1);
     private DateTime _to   = DateTime.Today;
     private string _contNoFilter = "";
+    private bool _isToday;
     private bool _loading;
     private bool _exporting;
     private string _message = "";
@@ -315,15 +555,24 @@ else if (_view == "Detailed" && _detailRows.Count > 0)
     private List<CountingCompletionSummaryRow> _summaryRows = new();
     private List<CountingAllocationRow>        _allocRows   = new();
     private List<CountingCompletionDetailRow>  _detailRows  = new();
+    private List<CountingCompletionTodaySummaryRow>    _todaySummaryRows = new();
+    private List<CountingCompletionTodayAllocationRow> _todayAllocRows   = new();
+    private List<CountingCompletionTodayDetailRow>     _todayDetailRows  = new();
 
-    private int CurrentRowCount => _view switch
+    private int CurrentRowCount => (_isToday, _view) switch
     {
-        "Summary" => _summaryRows.Count,
-        "Allocation" => _allocRows.Count,
-        _ => _detailRows.Count
+        (true,  "Summary")    => _todaySummaryRows.Count,
+        (true,  "Allocation") => _todayAllocRows.Count,
+        (true,  _)            => _todayDetailRows.Count,
+        (false, "Summary")    => _summaryRows.Count,
+        (false, "Allocation") => _allocRows.Count,
+        _                     => _detailRows.Count
     };
 
     private bool HasContNoFilter => !string.IsNullOrWhiteSpace(_contNoFilter);
+
+    private List<string> EffectiveCountries =>
+        _selectedCountries.Count > 0 ? _selectedCountries.ToList() : _countries;
 
     protected override async Task OnInitializedAsync()
     {
@@ -336,30 +585,48 @@ else if (_view == "Detailed" && _detailRows.Count > 0)
         catch { /* fall back to empty list if the lookup fails */ }
     }
 
-    private void ToggleCountry(string country, bool isChecked)
+    private async Task ToggleToday(bool isToday)
     {
-        if (isChecked) _selectedCountries.Add(country);
-        else _selectedCountries.Remove(country);
+        _isToday = isToday;
+        await LoadAsync();
     }
 
-    // Switching Report type re-runs the same Container No search automatically
-    // (cheap, single-container lookup) — no need to click Load again, same as
-    // the Production Summary Report's Summary/Detailed toggle. A plain
-    // country + date-range search still requires an explicit Load, since
-    // Detailed can return tens of thousands of rows for a wide search.
+    // Switching Report type re-runs the same search automatically — no need
+    // to click Load again, same as the Production Summary Report's
+    // Summary/Detailed toggle and the Jafza report's Today mode.
     private async Task SetView(string view)
     {
         _view = view;
-        if (HasContNoFilter) await LoadAsync();
+        if (_isToday || HasContNoFilter || _from <= _to) await LoadAsync();
     }
 
     private async Task LoadAsync()
     {
         _loading = true; _message = ""; _isError = false;
         _summaryRows = new(); _allocRows = new(); _detailRows = new();
+        _todaySummaryRows = new(); _todayAllocRows = new(); _todayDetailRows = new();
         try
         {
-            if (_view == "Summary")
+            if (_isToday)
+            {
+                var countries = EffectiveCountries;
+                if (_view == "Summary")
+                {
+                    _todaySummaryRows = await TodaySvc.GetSummaryAsync(countries);
+                    if (_todaySummaryRows.Count == 0) _message = "No rows counted today for the selected countries.";
+                }
+                else if (_view == "Allocation")
+                {
+                    _todayAllocRows = await TodaySvc.GetAllocationAsync(countries);
+                    if (_todayAllocRows.Count == 0) _message = "No rows counted today for the selected countries.";
+                }
+                else
+                {
+                    _todayDetailRows = await TodaySvc.GetDetailAsync(countries);
+                    if (_todayDetailRows.Count == 0) _message = "No rows counted today for the selected countries.";
+                }
+            }
+            else if (_view == "Summary")
             {
                 _summaryRows = await Svc.GetCountingCompletionSummaryAsync(_selectedCountries, _from, _to, _contNoFilter);
                 if (_summaryRows.Count == 0) _message = "No rows for the selected filters.";
@@ -388,7 +655,84 @@ else if (_view == "Detailed" && _detailRows.Count > 0)
             using var wb = new XLWorkbook();
             string name;
 
-            if (_view == "Summary")
+            if (_isToday)
+            {
+                if (_view == "Summary")
+                {
+                    var ws = wb.AddWorksheet("Counting Completion (Today)");
+                    string[] headers = { "Country", "Cont No", "Counted Qty", "LPM Dates", "Divisions", "PO Numbers", "Brands", "PalletTypes", "Type Names" };
+                    for (int i = 0; i < headers.Length; i++) ws.Cell(1, i + 1).Value = headers[i];
+                    ws.Row(1).Style.Font.Bold = true;
+
+                    int row = 2;
+                    foreach (var r in FilteredTodaySummaryRows())
+                    {
+                        ws.Cell(row, 1).Value = DisplayCountry(r.Country);
+                        ws.Cell(row, 2).Value = r.ContNo;
+                        ws.Cell(row, 3).Value = r.CountedQty;
+                        ws.Cell(row, 4).Value = r.LpmDates;
+                        ws.Cell(row, 5).Value = r.Divisions;
+                        ws.Cell(row, 6).Value = r.OraPoNos;
+                        ws.Cell(row, 7).Value = r.Brands;
+                        ws.Cell(row, 8).Value = r.PalletTypes;
+                        ws.Cell(row, 9).Value = r.TypeNames;
+                        row++;
+                    }
+                    ws.Columns().AdjustToContents();
+                    name = $"counting-completion-today-summary-{DateTime.Today:yyyyMMdd}.xlsx";
+                }
+                else if (_view == "Allocation")
+                {
+                    var ws = wb.AddWorksheet("Allocation-wise (Today)");
+                    string[] headers = { "Country", "Cont No", "Box Category", "Type Name", "Build Qty", "LPM Dates", "Divisions", "PO Numbers", "Brands" };
+                    for (int i = 0; i < headers.Length; i++) ws.Cell(1, i + 1).Value = headers[i];
+                    ws.Row(1).Style.Font.Bold = true;
+
+                    int row = 2;
+                    foreach (var r in FilteredTodayAllocRows())
+                    {
+                        ws.Cell(row, 1).Value = DisplayCountry(r.Country);
+                        ws.Cell(row, 2).Value = r.ContNo;
+                        ws.Cell(row, 3).Value = r.ResultType;
+                        ws.Cell(row, 4).Value = r.TypeName;
+                        ws.Cell(row, 5).Value = r.BuildQty;
+                        ws.Cell(row, 6).Value = r.LpmDates;
+                        ws.Cell(row, 7).Value = r.Divisions;
+                        ws.Cell(row, 8).Value = r.OraPoNos;
+                        ws.Cell(row, 9).Value = r.Brands;
+                        row++;
+                    }
+                    ws.Columns().AdjustToContents();
+                    name = $"counting-completion-today-allocation-wise-{DateTime.Today:yyyyMMdd}.xlsx";
+                }
+                else
+                {
+                    var ws = wb.AddWorksheet("Item-wise (Today)");
+                    string[] headers = { "Country", "Cont No", "PalletType", "Type Name", "Item Code", "Item Name", "Qty", "LPM Date", "Division", "PO No", "Brand" };
+                    for (int i = 0; i < headers.Length; i++) ws.Cell(1, i + 1).Value = headers[i];
+                    ws.Row(1).Style.Font.Bold = true;
+
+                    int row = 2;
+                    foreach (var r in FilteredTodayDetailRows())
+                    {
+                        ws.Cell(row, 1).Value  = DisplayCountry(r.Country);
+                        ws.Cell(row, 2).Value  = r.ContNo;
+                        ws.Cell(row, 3).Value  = r.PalletType;
+                        ws.Cell(row, 4).Value  = r.TypeName;
+                        ws.Cell(row, 5).Value  = r.ItemCode;
+                        ws.Cell(row, 6).Value  = r.ItemName;
+                        ws.Cell(row, 7).Value  = r.Qty;
+                        ws.Cell(row, 8).Value  = FmtDate(r.LpmDt);
+                        ws.Cell(row, 9).Value  = r.Division;
+                        ws.Cell(row, 10).Value = r.OraPoNo;
+                        ws.Cell(row, 11).Value = r.Brand;
+                        row++;
+                    }
+                    ws.Columns().AdjustToContents();
+                    name = $"counting-completion-today-item-wise-{DateTime.Today:yyyyMMdd}.xlsx";
+                }
+            }
+            else if (_view == "Summary")
             {
                 var ws = wb.AddWorksheet("Counting Completion");
                 string[] headers =
@@ -423,7 +767,7 @@ else if (_view == "Detailed" && _detailRows.Count > 0)
                 string[] headers =
                 {
                     "Country", "Cont No", "PO No", "Counting Start Date", "Counting Completion Date",
-                    "Cont-Purchase Date", "Box Category", "Build Qty", "LPM Months", "Divisions", "Brands"
+                    "Cont-Purchase Date", "Box Category", "Type Name", "Build Qty", "LPM Months", "Divisions", "Brands"
                 };
                 for (int i = 0; i < headers.Length; i++) ws.Cell(1, i + 1).Value = headers[i];
                 ws.Row(1).Style.Font.Bold = true;
@@ -438,10 +782,11 @@ else if (_view == "Detailed" && _detailRows.Count > 0)
                     ws.Cell(row, 5).Value  = FmtDate(r.CountingCompletionDate);
                     ws.Cell(row, 6).Value  = FmtDate(r.PurchaseDate);
                     ws.Cell(row, 7).Value  = r.PalletType;
-                    ws.Cell(row, 8).Value  = r.BuildQty;
-                    ws.Cell(row, 9).Value  = r.LpmMonths;
-                    ws.Cell(row, 10).Value = r.Divisions;
-                    ws.Cell(row, 11).Value = r.Brands;
+                    ws.Cell(row, 8).Value  = r.TypeName;
+                    ws.Cell(row, 9).Value  = r.BuildQty;
+                    ws.Cell(row, 10).Value = r.LpmMonths;
+                    ws.Cell(row, 11).Value = r.Divisions;
+                    ws.Cell(row, 12).Value = r.Brands;
                     row++;
                 }
                 ws.Columns().AdjustToContents();
@@ -452,7 +797,7 @@ else if (_view == "Detailed" && _detailRows.Count > 0)
                 var ws = wb.AddWorksheet("Item-wise");
                 string[] headers =
                 {
-                    "Country", "Cont No", "Cont-Purchase Date", "Box Category", "Item Code", "Item Name",
+                    "Country", "Cont No", "Cont-Purchase Date", "PalletType", "Type Name", "Item Code", "Item Name",
                     "Qty", "LPM Months", "Division", "Brand"
                 };
                 for (int i = 0; i < headers.Length; i++) ws.Cell(1, i + 1).Value = headers[i];
@@ -465,12 +810,13 @@ else if (_view == "Detailed" && _detailRows.Count > 0)
                     ws.Cell(row, 2).Value  = r.ContNo;
                     ws.Cell(row, 3).Value  = FmtDate(r.PurchaseDate);
                     ws.Cell(row, 4).Value  = r.PalletType;
-                    ws.Cell(row, 5).Value  = r.ItemCode;
-                    ws.Cell(row, 6).Value  = r.ItemName;
-                    ws.Cell(row, 7).Value  = r.Qty;
-                    ws.Cell(row, 8).Value  = r.LpmMonths;
-                    ws.Cell(row, 9).Value  = r.Division;
-                    ws.Cell(row, 10).Value = r.Brand;
+                    ws.Cell(row, 5).Value  = r.TypeName;
+                    ws.Cell(row, 6).Value  = r.ItemCode;
+                    ws.Cell(row, 7).Value  = r.ItemName;
+                    ws.Cell(row, 8).Value  = r.Qty;
+                    ws.Cell(row, 9).Value  = r.LpmMonths;
+                    ws.Cell(row, 10).Value = r.Division;
+                    ws.Cell(row, 11).Value = r.Brand;
                     row++;
                 }
                 ws.Columns().AdjustToContents();
@@ -505,6 +851,7 @@ else if (_view == "Detailed" && _detailRows.Count > 0)
             Matches(r.ContNo, term) ||
             Matches(r.PONo, term) ||
             Matches(r.PalletType, term) ||
+            Matches(r.TypeName, term) ||
             Matches(r.Divisions, term) ||
             Matches(r.Brands, term)).ToList();
     }
@@ -516,9 +863,51 @@ else if (_view == "Detailed" && _detailRows.Count > 0)
         return _detailRows.Where(r =>
             Matches(r.ContNo, term) ||
             Matches(r.PalletType, term) ||
+            Matches(r.TypeName, term) ||
             Matches(r.ItemCode, term) ||
             Matches(r.ItemName, term) ||
             Matches(r.Division, term) ||
+            Matches(r.Brand, term)).ToList();
+    }
+
+    private List<CountingCompletionTodaySummaryRow> FilteredTodaySummaryRows()
+    {
+        if (string.IsNullOrWhiteSpace(_search)) return _todaySummaryRows;
+        var term = _search.Trim();
+        return _todaySummaryRows.Where(r =>
+            Matches(r.ContNo, term) ||
+            Matches(r.OraPoNos, term) ||
+            Matches(r.Divisions, term) ||
+            Matches(r.Brands, term) ||
+            Matches(r.PalletTypes, term) ||
+            Matches(r.TypeNames, term)).ToList();
+    }
+
+    private List<CountingCompletionTodayAllocationRow> FilteredTodayAllocRows()
+    {
+        if (string.IsNullOrWhiteSpace(_search)) return _todayAllocRows;
+        var term = _search.Trim();
+        return _todayAllocRows.Where(r =>
+            Matches(r.ContNo, term) ||
+            Matches(r.ResultType, term) ||
+            Matches(r.TypeName, term) ||
+            Matches(r.OraPoNos, term) ||
+            Matches(r.Divisions, term) ||
+            Matches(r.Brands, term)).ToList();
+    }
+
+    private List<CountingCompletionTodayDetailRow> FilteredTodayDetailRows()
+    {
+        if (string.IsNullOrWhiteSpace(_search)) return _todayDetailRows;
+        var term = _search.Trim();
+        return _todayDetailRows.Where(r =>
+            Matches(r.ContNo, term) ||
+            Matches(r.PalletType, term) ||
+            Matches(r.TypeName, term) ||
+            Matches(r.ItemCode, term) ||
+            Matches(r.ItemName, term) ||
+            Matches(r.Division, term) ||
+            Matches(r.OraPoNo, term) ||
             Matches(r.Brand, term)).ToList();
     }
 
@@ -529,6 +918,14 @@ else if (_view == "Detailed" && _detailRows.Count > 0)
     {
         return FilteredSummaryRows()
             .SelectMany(r => (r.PONo ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Count();
+    }
+
+    private int TotalTodayPoCount()
+    {
+        return FilteredTodaySummaryRows()
+            .SelectMany(r => (r.OraPoNos ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .Count();
     }

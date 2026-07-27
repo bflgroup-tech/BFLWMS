@@ -5,10 +5,10 @@
 @attribute [Authorize(Policy = MenuKeys.RPT_PENDING_PURCHASE)]
 @inject CountingReportsService Svc
 
-<PageTitle>WMS — Pending Purchase (GRN) Status</PageTitle>
+<PageTitle>WMS — Pending Goods Receipt</PageTitle>
 
 <div class="aiwms-page-header">
-    <h2>Pending Purchase (GRN) Status</h2>
+    <h2>Pending Goods Receipt</h2>
     <p>Containers counted (<code>bfldata.dbo.BuildingCompletion</code>) from <b>01/01/2026</b> onwards whose GRN row has not yet landed in <code>usa.dbo.usapurchase</code>. Ageing = days since counting.</p>
 </div>
 
@@ -31,6 +31,7 @@
                 <tr>
                     <th>ContNo</th>
                     <th>Counting Date</th>
+                    <th>Time</th>
                     <th style="text-align:center">Counted Qty</th>
                     <th style="text-align:center">Ageing Days</th>
                     <th style="padding-left:40px">Divisions</th>
@@ -42,6 +43,7 @@
                     <tr>
                         <td style="font-family:var(--font-mono)"><b>@r.ContNo</b></td>
                         <td>@r.CountingDate.ToString("dd/MM/yyyy")</td>
+                        <td>@r.TrnTime</td>
                         <td style="text-align:center">@r.CountedQty.ToString("N0")</td>
                         <td style="text-align:center"><b>@r.AgeingDays</b></td>
                         <td style="word-break:break-word; padding-left:40px">@r.Divisions</td>

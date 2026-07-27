@@ -84,7 +84,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
     /// never generated. Used by the razor page to show "last generated" info.</summary>
     public async Task<DateTime?> GetLastGeneratedTsAsync(int month, int year, CancellationToken ct = default)
     {
-        await using var c = OpenWms();
+        await using var c = OpenOnPremBackup();
         return await c.ExecuteScalarAsync<DateTime?>(new CommandDefinition(@"
             SELECT MAX(RunTS) FROM dbo.WmsOtsPoAllocationRun WITH (NOLOCK)
              WHERE [Year] = @year AND [Month] = @month",
@@ -137,11 +137,43 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         return issues;
     }
 
+    /// <summary>Current fiscal week anchor from LPM_OTS_Output (latest OTSDate).
+    /// This is TODAY's fiscal wk, which OTS Week Sales anchors on — the sum
+    /// is (wk, wk+1, ..., wk+N-1) starting from this anchor. Nullable when
+    /// LPM_OTS_Output has no wk data. Falls back to MIN(wk) from
+    /// lpm_salestgtwk_stores if unavailable.
+    /// Used by the OTS page for the Week Sales header + cell tooltips so the
+    /// wk shown matches the wk the algorithm actually summed. month/year
+    /// params kept for API compat; only the fallback path uses them.</summary>
+    public async Task<int?> GetCurrentOtsWkAsync(int? month = null, int? year = null, CancellationToken ct = default)
+    {
+        await using var c = OpenOnPremBackup();
+        // Preferred source: today's fiscal wk from LPM_OTS_Output.
+        var wk = await c.ExecuteScalarAsync<int?>(new CommandDefinition(@"
+            SELECT TOP 1 wk FROM dbo.LPM_OTS_Output WITH (NOLOCK)
+             WHERE wk IS NOT NULL
+             ORDER BY OTSDate DESC, wk DESC",
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        if (wk is int v && v > 0) return v;
+
+        // Fallback: earliest wk in lpm_salestgtwk_stores for the picked month.
+        return await c.ExecuteScalarAsync<int?>(new CommandDefinition(@"
+            SELECT MIN(s.wk)
+              FROM dbo.lpm_salestgtwk_stores s WITH (NOLOCK)
+              JOIN dbo.LPM_EOM_Output e WITH (NOLOCK)
+                ON e.StoreID = s.StoreID AND e.DivCode = s.DivCode
+             WHERE (@m IS NULL OR e.Month1 = @m)
+               AND (@y IS NULL OR e.Year1  = @y)
+               AND s.wk IS NOT NULL",
+            new { m = month, y = year },
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+    }
+
     /// <summary>Distinct OTSDate values already persisted for a (Month, Year).
     /// Used by the razor page's Rundate picker so operators can load prior days.</summary>
     public async Task<List<DateTime>> GetAvailableRunDatesAsync(int month, int year, CancellationToken ct = default)
     {
-        await using var c = OpenWms();
+        await using var c = OpenOnPremBackup();
         var rows = await c.QueryAsync<DateTime>(new CommandDefinition(@"
             SELECT DISTINCT OTSDate FROM dbo.WmsOtsPoAllocationRun WITH (NOLOCK)
              WHERE [Year] = @year AND [Month] = @month
@@ -178,7 +210,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                {dateClause}
                {divClause}
              ORDER BY Country, StoreID, DivCode";
-        await using var c = OpenWms();
+        await using var c = OpenOnPremBackup();
         var rows = await c.QueryAsync<PersistedRow>(new CommandDefinition(
             sql, new { month, year, ct = filter, divs = divisions?.ToArray(), dt = otsDate?.Date },
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
@@ -204,13 +236,29 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
     public async Task<(int RowsPersisted, List<string> Warnings)> GenerateAndPersistAsync(
         int month, int year, CancellationToken ct = default)
     {
+        // Precondition: Volume Group must have been (re-)generated today (GST).
+        // Enforces the daily refresh chain so OTS numbers don't ride on a stale
+        // StoreDivGrade snapshot.
+        var todayGst = DateTime.UtcNow.AddHours(4).Date;
+        await using (var chk = OpenOnPremBackup())
+        {
+            var vgToday = await chk.ExecuteScalarAsync<int>(new CommandDefinition(@"
+                SELECT COUNT(1) FROM dbo.StoreDivGrade WITH (NOLOCK)
+                 WHERE CAST(GeneratedTS AS DATE) = @dt",
+                new { dt = todayGst }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            if (vgToday == 0)
+                throw new InvalidOperationException(
+                    $"Volume Group has not been generated today ({todayGst:dd/MM/yyyy} GST). " +
+                    "Click 'Generate Volume Group' first, then re-run 'Generate' on OTS for PO Allocation.");
+        }
+
         var (rows, warnings) = await GenerateAsync(month, year, country: null, ct);
         if (rows.Count == 0) return (0, warnings);
 
         var nowGst   = DateTime.UtcNow.AddHours(4);
         var otsDate  = nowGst.Date;   // today (GST), no time
 
-        await using var c = OpenWms();
+        await using var c = OpenOnPremBackup();
         await using var tx = (SqlTransaction)await c.BeginTransactionAsync(ct);
         try
         {
@@ -307,13 +355,24 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                      WHERE SIMCountry IS NOT NULL AND LTRIM(RTRIM(SIMCountry)) <> ''
                        AND PBFullname IS NOT NULL AND LTRIM(RTRIM(PBFullname)) <> ''
                 )
+                ,
+                sdgLatest AS (
+                    -- Latest StoreDivGrade row per (StoreID, DivCode) at or before the
+                    -- picked Month/Year. Grade here supersedes LPM_EOM_Output.VolumeGroup
+                    -- (which the schema keeps for legacy consumers).
+                    SELECT sdg.StoreID, sdg.DivCode, sdg.Grade,
+                           ROW_NUMBER() OVER (PARTITION BY sdg.StoreID, sdg.DivCode
+                                              ORDER BY sdg.Year1 DESC, sdg.Month1 DESC) AS rn
+                      FROM LPMSIM.dbo.StoreDivGrade sdg WITH (NOLOCK)
+                     WHERE (sdg.Year1 * 100 + sdg.Month1) <= (@year * 100 + @month)
+                )
                 SELECT
                     e.Country,
                     e.StoreID,
                     sn.PBFullname AS StoreName,
                     e.DivCode,
                     dv.Division   AS Division,
-                    e.VolumeGroup,
+                    sdg.Grade AS VolumeGroup,   -- source of truth: StoreDivGrade only; blank when never Generated
                     e.PriorityRank,
                     e.TargetEOM   AS TgtEOM,
                     ISNULL(w.Weeks, 1) AS WeeksToInclude,
@@ -329,6 +388,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                   LEFT JOIN LPMSIM.dbo.Division dv WITH (NOLOCK) ON dv.DivCode = e.DivCode
                   LEFT JOIN storeNames sn ON sn.StoreID = e.StoreID AND sn.rn = 1
                   LEFT JOIN dbo.WmsCountryOtsWeeks w WITH (NOLOCK) ON w.SimCountry = e.Country
+                  LEFT JOIN sdgLatest sdg ON sdg.StoreID = e.StoreID AND sdg.DivCode = e.DivCode AND sdg.rn = 1
                  WHERE e.Month1 = @month AND e.Year1 = @year
                    AND e.Country <> 'Ex2Locations'
                    AND (@ct IS NULL OR e.Country = @ct)
@@ -388,9 +448,29 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         }, () => new Dictionary<(string, int), (int, int)>());
 
         // 4) Week Sales per (StoreID, DivCode) summed over next N weeks from currentWk.
-        var weekSalesTask = SafeAsync(warnings, "Week Sales (lpm_salestgtwk_stores)", async () =>
+        //    lpm_salestgtwk_stores gives per-store weekly sales; MFP OUTBOUND holds
+        //    the authoritative country-division total. We use lpm's per-store share
+        //    but scale to MFP's total so country-x-div sums exactly match MFP.
+        //
+        //      final ws (per store) = existing ws * (mfpTotal / countryDivExisting)
+        //
+        //    MFP grain is (territory, division, week, year) - no StoreID - so the
+        //    scaling preserves the per-store shape and makes MFP the source of
+        //    truth at country-x-div level. LPM_MfpTerritoryMap maps MFP's territory
+        //    code ('ae', 'sa', ...) to the SIMCountry we already use.
+        var weekSalesTask = SafeAsync(warnings, "Week Sales (lpm_salestgtwk_stores x BFL_MFP_OUTBOUND_T1)", async () =>
         {
             await using var c = OpenOnPremBackup();
+
+            // Anchor at today's fiscal wk from LPM_OTS_Output (matches what the
+            // tooltip + downstream code call "current wk"). If unavailable, fall
+            // back to the first wk found in lpm_salestgtwk_stores for the month.
+            var currentWk = await c.ExecuteScalarAsync<int?>(new CommandDefinition(@"
+                SELECT TOP 1 wk FROM dbo.LPM_OTS_Output WITH (NOLOCK)
+                 WHERE wk IS NOT NULL
+                 ORDER BY OTSDate DESC, wk DESC",
+                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+
             var rows = await c.QueryAsync<(string StoreID, int DivCode, string Country, int Wk, int Sales)>(new CommandDefinition(@"
                 SELECT s.StoreID, s.DivCode, e.Country, s.wk AS Wk, ISNULL(s.SalesTgtWk, 0) AS Sales
                   FROM dbo.lpm_salestgtwk_stores s WITH (NOLOCK)
@@ -400,8 +480,20 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                    AND (@ct IS NULL OR e.Country = @ct)",
                 new { month, year, ct = filter },
                 commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-            var minWk = rows.Any() ? rows.Min(r => r.Wk) : 0;
-            return rows
+            // Anchor = current fiscal wk from LPM_OTS_Output; fall back to
+            // MIN(wk) in the pulled rows if LPM_OTS_Output has no data.
+            var minWk = currentWk is int cw && cw > 0
+                ? cw
+                : (rows.Any() ? rows.Min(r => r.Wk) : 0);
+            var maxWkPerCountry = rows.Any()
+                ? rows.GroupBy(r => r.Country).ToDictionary(
+                    g => g.Key,
+                    g => minWk + (weeksByCountry.TryGetValue(g.Key, out var w) ? w : 1) - 1)
+                : new Dictionary<string, int>();
+
+            // Per-store WeekSales — sum wk in [minWk, minWk + N) using
+            // lpm_salestgtwk_stores as the per-store shape.
+            var existing = rows
                 .GroupBy(r => (r.StoreID, r.DivCode))
                 .ToDictionary(g => g.Key, g =>
                 {
@@ -409,6 +501,106 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                     var n = weeksByCountry.TryGetValue(cty, out var w) ? w : 1;
                     return g.Where(x => x.Wk >= minWk && x.Wk < minWk + n).Sum(x => x.Sales);
                 });
+
+            if (minWk == 0 || !rows.Any()) return existing;
+
+            // Pull MFP totals for the wk range and rescale existing per-store values.
+            var globalMaxWk = maxWkPerCountry.Values.DefaultIfEmpty(minWk).Max();
+            var mfpRows = await c.QueryAsync<(string Country, int DivCode, int Wk, decimal Planned)>(new CommandDefinition(@"
+                SELECT tm.SIMCountry AS Country, m.division AS DivCode, m.week AS Wk,
+                       SUM(ISNULL(m.planned_sls, 0)) AS Planned
+                  FROM dbo.BFL_MFP_OUTBOUND_T1 m WITH (NOLOCK)
+                  JOIN dbo.LPM_MfpTerritoryMap tm WITH (NOLOCK)
+                       ON tm.Territory = m.territory AND tm.IsActive = 1
+                 WHERE m.[year] = @year
+                   AND m.week BETWEEN @minWk AND @maxWk
+                 GROUP BY tm.SIMCountry, m.division, m.week",
+                new { year, minWk, maxWk = globalMaxWk },
+                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+
+            // Sum MFP planned_sls for the wk range per country (respecting per-country N).
+            var mfpTotals = mfpRows
+                .Where(r => maxWkPerCountry.TryGetValue(r.Country, out var mx) ? r.Wk <= mx : true)
+                .GroupBy(r => (r.Country, r.DivCode))
+                .ToDictionary(g => g.Key, g => g.Sum(x => x.Planned));
+
+            // Country-x-DivCode existing sums, drive the ratio for each store.
+            var existingByCountryDiv = new Dictionary<(string, int), int>();
+            foreach (var kv in existing)
+            {
+                var (storeId, div) = kv.Key;
+                var cty = rows.First(r => r.StoreID == storeId && r.DivCode == div).Country;
+                var key = (cty, div);
+                existingByCountryDiv[key] = existingByCountryDiv.GetValueOrDefault(key, 0) + kv.Value;
+            }
+
+            // Rescale so country-x-div sums match MFP totals exactly (largest-remainder).
+            // Per-store Math.Round drifted the sum by ~0.03% (78/285k on UAE wk 29);
+            // floor+distribute-remainder eliminates that drift and makes each
+            // (country, div) sum equal Math.Round(mfpTotal).
+            var storeCountryDiv = existing.Keys
+                .ToDictionary(k => k, k => rows.First(r => r.StoreID == k.StoreID && r.DivCode == k.DivCode).Country);
+            var byCountryDiv = existing
+                .GroupBy(kv => (Cty: storeCountryDiv[kv.Key], Div: kv.Key.DivCode))
+                .ToDictionary(g => g.Key, g => g.ToList());
+
+            var scaled = new Dictionary<(string StoreID, int DivCode), int>(existing.Count);
+            foreach (var group in byCountryDiv)
+            {
+                var (cty, div) = group.Key;
+                var members = group.Value;
+
+                if (!mfpTotals.TryGetValue((cty, div), out var mfp) || mfp <= 0)
+                {
+                    // MFP has no data for this country-x-div -> keep existing values.
+                    foreach (var kv in members) scaled[kv.Key] = kv.Value;
+                    continue;
+                }
+
+                var existingCd = existingByCountryDiv.GetValueOrDefault((cty, div), 0);
+                if (existingCd <= 0)
+                {
+                    // No lpm share to distribute against -> keep existing (usually 0).
+                    foreach (var kv in members) scaled[kv.Key] = kv.Value;
+                    continue;
+                }
+
+                var target = (int)Math.Round((double)mfp);
+                var scale = (double)mfp / existingCd;
+
+                // Floor per store; track fractional remainders for the largest-remainder pass.
+                var floors = new int[members.Count];
+                var remainders = new double[members.Count];
+                var floorSum = 0;
+                for (var i = 0; i < members.Count; i++)
+                {
+                    var raw = members[i].Value * scale;
+                    floors[i] = (int)Math.Floor(raw);
+                    remainders[i] = raw - floors[i];
+                    floorSum += floors[i];
+                }
+
+                // Distribute the difference (target - floorSum) one unit at a time
+                // to the stores with the largest remainders (or smallest if diff is negative).
+                var diff = target - floorSum;
+                if (diff != 0)
+                {
+                    var order = Enumerable.Range(0, members.Count)
+                        .OrderByDescending(i => diff > 0 ? remainders[i] : -remainders[i])
+                        .ToArray();
+                    var step = diff > 0 ? 1 : -1;
+                    var remaining = Math.Abs(diff);
+                    for (var j = 0; j < order.Length && remaining > 0; j++)
+                    {
+                        floors[order[j]] += step;
+                        remaining--;
+                    }
+                }
+
+                for (var i = 0; i < members.Count; i++)
+                    scaled[members[i].Key] = floors[i];
+            }
+            return scaled;
         }, () => new Dictionary<(string, int), int>());
 
         // 5) Store count per country from LPM_EOM_Output.
@@ -513,6 +705,43 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
             ? Math.Min(weeksInMonth, runDay.Day / 7)
             : weeksInMonth;    // for past/future months, treat as fully-elapsed
         var results = new List<OtsPoAllocationRow>(baseRows.Count);
+        // Largest-remainder allocation for InTransit + Ex2 DC SOH so per-row
+        // amounts sum exactly to the (Country, Div) totals from LPM_Ex2ItemSOH
+        // (no integer-division loss). Prior code did `total / country_storeCount`
+        // per row, which lost up to N-1 units per (Country, Div) pair; across
+        // ~7 countries x ~15 divs the ribbon under-counted by ~0.1%.
+        //
+        // Divisor is now the count of rows in this (Country, Div) that actually
+        // exist in baseRows (i.e. have EOM data for the picked Month/Year) so
+        // the leftover is guaranteed to reach a real store. UAE is skipped for
+        // InTransit per prior spec.
+        var perRowInTransit = new Dictionary<(string Country, string StoreID, int DivCode), int>();
+        var perRowEx2Dc     = new Dictionary<(string Country, string StoreID, int DivCode), int>();
+        foreach (var group in baseRows.GroupBy(b => ((b.Country ?? "").Trim().ToUpperInvariant(), b.DivCode)))
+        {
+            var (cKey, divCode) = group.Key;
+            if (!ex2ByKey.TryGetValue(group.Key, out var totals)) continue;
+            var (inTransitTotal, ex2DcTotal) = totals;
+            var isUae = string.Equals(cKey, "UAE", StringComparison.OrdinalIgnoreCase);
+            var effectiveInTransit = isUae ? 0 : inTransitTotal;
+            var storesInGroup = group.ToList();
+            var n = storesInGroup.Count;
+            if (n == 0) continue;
+            // Sort deterministically so leftover units land consistently.
+            storesInGroup.Sort((a, b) => string.CompareOrdinal(a.StoreID, b.StoreID));
+            var itFloor = effectiveInTransit / n;
+            var itRem   = effectiveInTransit % n;
+            var e2Floor = ex2DcTotal        / n;
+            var e2Rem   = ex2DcTotal        % n;
+            for (int i = 0; i < n; i++)
+            {
+                var s = storesInGroup[i];
+                var key = (s.Country, s.StoreID, s.DivCode);
+                perRowInTransit[key] = itFloor + (i < itRem ? 1 : 0);
+                perRowEx2Dc[key]     = e2Floor + (i < e2Rem ? 1 : 0);
+            }
+        }
+
         foreach (var r in baseRows)
         {
             // SOH lookup — ECOM special-case sums SOH across the Online (UAE)
@@ -529,19 +758,9 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
             {
                 soh = sohByKey.TryGetValue((r.StoreID.Trim().ToUpperInvariant(), r.DivCode), out var s) ? s : 0;
             }
-            var ws     = weekSalesByKey.TryGetValue((r.StoreID, r.DivCode), out var w) ? w : 0;
-            var stores = storeCountByCountry.TryGetValue(r.Country, out var sc) ? sc : 0;
-            int inTransit = 0, ex2dc = 0;
-            var isUAE = string.Equals(r.Country, "UAE", StringComparison.OrdinalIgnoreCase);
-            var cKey  = (r.Country ?? "").Trim().ToUpperInvariant();
-            if (!isUAE
-                && ex2ByKey.TryGetValue((cKey, r.DivCode), out var e)
-                && stores > 0)
-            {
-                var (inTransitTotal, ex2DcTotal) = e;
-                inTransit = inTransitTotal / stores;
-                ex2dc     = ex2DcTotal    / stores;
-            }
+            var ws        = weekSalesByKey.TryGetValue((r.StoreID, r.DivCode), out var w) ? w : 0;
+            var inTransit = perRowInTransit.TryGetValue((r.Country, r.StoreID, r.DivCode), out var itPer) ? itPer : 0;
+            var ex2dc     = perRowEx2Dc.TryGetValue((r.Country, r.StoreID, r.DivCode), out var e2Per) ? e2Per : 0;
             var wip = wipByKey.TryGetValue((r.Country, r.StoreID, r.DivCode), out var v) ? v : 0;
 
             decimal wkReduction;
@@ -681,33 +900,30 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         var anchorKey = aY * 100 + aW;
 
         // 1c) Refresh MonthlyWeightage on every LPM_Weekly_SalesAmt row from
-        //     LPM_MonthlyWeight for the picked RunMonth so the stored value
-        //     stays a single-source recon check for the current Generate run.
-        //     Rows in periods without a configured (RunMonth, PeriodMonth)
-        //     rule get MonthlyWeightage = NULL and drop out of the SUM below.
-        //     Country filter locks to 'UAE' since that's the sole country
-        //     populated in the current config; change here if per-country
-        //     rules land later. UpdatedTS is stamped in GST.
+        //     LPM_WeeklyWeights (per-week WeightPct, keyed by (Country, Year, Week))
+        //     so the stored value stays a single-source recon check for the current
+        //     Generate run. Rows without a matching (Year, Week) config row get
+        //     MonthlyWeightage = NULL and drop out of the SUM below. Country
+        //     filter locks to 'UAE' — the sole country populated in the current
+        //     config; extend here if per-country rules land later. UpdatedTS
+        //     stamped in GST.
         await c.ExecuteAsync(new CommandDefinition(@"
             UPDATE ws
-               SET MonthlyWeightage = mw.WeightPct,
+               SET MonthlyWeightage = ww.WeightPct,
                    UpdatedTS = DATEADD(hour, 4, SYSUTCDATETIME())
               FROM dbo.LPM_Weekly_SalesAmt ws
-              LEFT JOIN dbo.LPM_MonthlyWeight mw WITH (NOLOCK)
-                     ON mw.Country     = 'UAE'
-                    AND mw.RunYear     = @runYear
-                    AND mw.RunMonth    = @runMonth
-                    AND mw.PeriodYear  = ws.Year1
-                    AND mw.PeriodMonth = ws.Month1",
-            new { runYear = year, runMonth = month },
+              LEFT JOIN dbo.LPM_WeeklyWeights ww WITH (NOLOCK)
+                     ON ww.Country = 'UAE'
+                    AND ww.Year1   = ws.Year1
+                    AND ww.Week    = ws.Week",
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
 
         // 1d) Per (StoreID, DivCode), sum SalesAmt * MonthlyWeightage over
         //     the up-to-12 most recent LPM_Weekly_SalesAmt rows at/before the
-        //     anchor. MonthlyWeightage is now the RunMonth->PeriodMonth
-        //     WeightPct (populated by 1c above), so this straight product
-        //     gives 0.25 x AprilTotal + 0.30 x MayTotal + 0.45 x JuneTotal
-        //     etc. for a July run.
+        //     anchor. MonthlyWeightage is now the per-week WeightPct from
+        //     LPM_WeeklyWeights (populated by 1c above). Since 12 weeks of
+        //     weights are configured to sum to 1.0, this SUM directly yields
+        //     the weighted-average monthly sales.
         //
         //     Sort key is (Year1 DESC, Week DESC) to match wk being a
         //     fiscal-year-resetting week number. Stores with fewer than 12
