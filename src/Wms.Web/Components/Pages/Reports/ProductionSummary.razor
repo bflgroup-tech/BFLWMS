@@ -26,7 +26,7 @@
         <div class="psr-country-select">
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COUNTRY (select any) *</label>
             <details id="psr-country-dropdown" style="position:relative;">
-                <summary style="display:flex; align-items:center; justify-content:space-between; gap:8px; width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white; cursor:pointer; user-select:none;">
+                <summary style="display:flex; align-items:center; justify-content:space-between; gap:8px; width:100%; height:36px; box-sizing:border-box; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white; cursor:pointer; user-select:none;">
                     <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">@CountrySelectionLabel</span>
                     <span style="color:var(--text-secondary); font-size:10px; flex-shrink:0;">&#9660;</span>
                 </summary>
@@ -47,14 +47,14 @@
         </div>
         <div>
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">FROM</label>
-            <input type="date" @bind="_from" @bind:format="yyyy-MM-dd" max="@DateTime.Today.ToString("yyyy-MM-dd")" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
+            <input type="date" @bind="_from" @bind:format="yyyy-MM-dd" max="@DateTime.Today.ToString("yyyy-MM-dd")" style="width:100%; height:36px; box-sizing:border-box; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
         </div>
         <div>
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">TO</label>
-            <input type="date" @bind="_to" @bind:format="yyyy-MM-dd" max="@DateTime.Today.ToString("yyyy-MM-dd")" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
+            <input type="date" @bind="_to" @bind:format="yyyy-MM-dd" max="@DateTime.Today.ToString("yyyy-MM-dd")" style="width:100%; height:36px; box-sizing:border-box; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
         </div>
-        <button class="aiwms-btn aiwms-btn-primary" @onclick="LoadAsync" disabled="@(_loading || !CanLoad)">@(_loading ? "Loadingâ€¦" : "Load")</button>
-        <button class="aiwms-btn aiwms-btn-secondary" @onclick="ExportCsvAsync" disabled="@(!HasAnyVisibleRows || _loading)">Export to Excel</button>
+        <button class="aiwms-btn aiwms-btn-primary" style="height:36px; box-sizing:border-box" @onclick="LoadAsync" disabled="@(_loading || !CanLoad)">@(_loading ? "Loadingâ€¦" : "Load")</button>
+        <button class="aiwms-btn aiwms-btn-secondary" style="height:36px; box-sizing:border-box" @onclick="ExportCsvAsync" disabled="@(!HasAnyVisibleRows || _loading)">Export to Excel</button>
     </div>
 
     @if (!string.IsNullOrEmpty(_message))
@@ -399,11 +399,11 @@ else if (_loadedOnce && VisibleRows().Count == 0)
                 _transferQtyByCountry[country] = result.TransferQty;
             }
             _loadedOnce = true;
-            var baseMsg = $"Loaded {_rows.Count} detailed rows, {_summary.Count} summary rows across {countries.Count} countr{(countries.Count == 1 ? "y" : "ies")}.";
             var unconfigured = countries.Where(c => !_configuredCountries.Contains(c)).ToList();
-            ShowInfo(unconfigured.Count == 0
-                ? baseMsg
-                : $"{baseMsg} Note: {string.Join(", ", unconfigured)} {(unconfigured.Count == 1 ? "has" : "have")} no DB connection configured, so {(unconfigured.Count == 1 ? "it" : "they")} will always show 0 rows here.");
+            if (unconfigured.Count > 0)
+            {
+                ShowInfo($"Note: {string.Join(", ", unconfigured)} {(unconfigured.Count == 1 ? "has" : "have")} no DB connection configured, so {(unconfigured.Count == 1 ? "it" : "they")} will always show 0 rows here.");
+            }
         }
         catch (Exception ex) { ShowError($"Load failed: {ex.Message}"); }
         finally { _loading = false; _loadingMsg = null; }
