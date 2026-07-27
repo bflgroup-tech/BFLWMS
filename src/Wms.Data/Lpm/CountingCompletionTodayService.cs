@@ -28,6 +28,13 @@ namespace Wms.Data.Lpm;
 /// UPC/ResultType across all countries' raw rows and joined in memory —
 /// simpler and safer than bulk-copying every country's rows into a shared
 /// temp table for a same-day data volume this small.
+///
+/// Connection reuse: opening a fresh connection to the on-prem server has
+/// real latency from Azure App Service (TCP+TLS+login), so UAE's raw fetch
+/// and the enrichment queries all share ONE OnPremBackupDB connection
+/// (opened once per report call) instead of one connection per query, and
+/// the two enrichment lookups run as a single QueryMultipleAsync batch
+/// instead of two round trips.
 /// </summary>
 public class CountingCompletionTodayService(IOnPremConnectionResolver resolver)
 {
@@ -53,36 +60,54 @@ public class CountingCompletionTodayService(IOnPremConnectionResolver resolver)
 
     private record CountryRow(string Country, RawRow Row);
 
-    private async Task<List<CountryRow>> FetchRawAsync(IReadOnlyList<string> countries, CancellationToken ct)
+    private async Task<List<CountryRow>> FetchRawAsync(
+        IReadOnlyList<string> countries, SqlConnection onPremBackup, CancellationToken ct)
     {
         var today = DateTime.UtcNow.AddHours(4).Date;
         var all = new List<CountryRow>();
 
         foreach (var country in countries)
         {
-            string? connStr;
+            // MALAYSIA's connection string is configured but its server doesn't have
+            // the Online database this report needs — excluded for now until that's
+            // sorted out, rather than surfacing a raw SQL error to the user.
+            if (string.Equals(country, "MALAYSIA", StringComparison.OrdinalIgnoreCase)) continue;
+
             if (string.Equals(country, "UAE", StringComparison.OrdinalIgnoreCase))
             {
-                connStr = resolver.GetOnPremBackupConnectionString();
+                // Reuse the shared connection — UAE's data and the enrichment lookups
+                // both live on OnPremBackupDB, so there's no need for a second connection.
+                var rows = await onPremBackup.QueryAsync<RawRow>(new CommandDefinition(
+                    RawQuerySql, new { today }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+                all.AddRange(rows.Select(r => new CountryRow(country, r)));
+                continue;
             }
-            else
-            {
-                try { connStr = resolver.GetCountryConnectionString(country); }
-                catch { connStr = null; }
-            }
+
+            string? connStr;
+            try { connStr = resolver.GetCountryConnectionString(country); }
+            catch { connStr = null; }
             if (string.IsNullOrWhiteSpace(connStr)) continue; // not configured — skip silently
 
-            await using var conn = new SqlConnection(connStr);
-            await conn.OpenAsync(ct);
-            var rows = await conn.QueryAsync<RawRow>(new CommandDefinition(
-                RawQuerySql, new { today }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-            all.AddRange(rows.Select(r => new CountryRow(country, r)));
+            try
+            {
+                await using var conn = new SqlConnection(connStr);
+                await conn.OpenAsync(ct);
+                var rows = await conn.QueryAsync<RawRow>(new CommandDefinition(
+                    RawQuerySql, new { today }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+                all.AddRange(rows.Select(r => new CountryRow(country, r)));
+            }
+            catch
+            {
+                // That country's server is reachable but doesn't have what this query
+                // needs (e.g. no Online database) — skip it rather than failing the
+                // whole report for every other selected country.
+            }
         }
         return all;
     }
 
     private async Task<(Dictionary<string, string?> brandByUpc, Dictionary<string, string?> typeNameByResultType)>
-        EnrichAsync(IReadOnlyList<CountryRow> raw, CancellationToken ct)
+        EnrichAsync(IReadOnlyList<CountryRow> raw, SqlConnection onPremBackup, CancellationToken ct)
     {
         var brandByUpc = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
         var typeNameByResultType = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
@@ -91,31 +116,43 @@ public class CountingCompletionTodayService(IOnPremConnectionResolver resolver)
         var resultTypes = raw.Select(r => r.Row.ResultType).Where(r => !string.IsNullOrWhiteSpace(r)).Distinct().ToArray();
         if (upcs.Length == 0 && resultTypes.Length == 0) return (brandByUpc, typeNameByResultType);
 
-        await using var c = new SqlConnection(resolver.GetOnPremBackupConnectionString());
-        await c.OpenAsync(ct);
+        // Single round trip for both lookups instead of two sequential QueryAsync calls.
+        await using var multi = await onPremBackup.QueryMultipleAsync(new CommandDefinition(@"
+            SELECT UPC, Vendor = MAX(Vendor)
+              FROM USA.dbo.UPCBarCodes WITH (NOLOCK)
+             WHERE @hasUpcs = 1 AND UPC IN @upcs
+             GROUP BY UPC;
 
-        if (upcs.Length > 0)
-        {
-            var brandRows = await c.QueryAsync<(string UPC, string? Vendor)>(new CommandDefinition(@"
-                SELECT UPC, Vendor = MAX(Vendor)
-                  FROM USA.dbo.UPCBarCodes WITH (NOLOCK)
-                 WHERE UPC IN @upcs
-                 GROUP BY UPC",
-                new { upcs }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-            foreach (var r in brandRows) brandByUpc[r.UPC] = r.Vendor;
-        }
+            SELECT PalletType, TypeName
+              FROM BFLDATA.dbo.PalletType WITH (NOLOCK)
+             WHERE @hasTypes = 1 AND PalletType IN @resultTypes;",
+            new
+            {
+                hasUpcs = upcs.Length > 0 ? 1 : 0,
+                upcs = upcs.Length > 0 ? upcs : new[] { "" },
+                hasTypes = resultTypes.Length > 0 ? 1 : 0,
+                resultTypes = resultTypes.Length > 0 ? resultTypes : new[] { "" }
+            },
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
 
-        if (resultTypes.Length > 0)
-        {
-            var typeRows = await c.QueryAsync<(string PalletType, string? TypeName)>(new CommandDefinition(@"
-                SELECT PalletType, TypeName
-                  FROM BFLDATA.dbo.PalletType WITH (NOLOCK)
-                 WHERE PalletType IN @resultTypes",
-                new { resultTypes }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-            foreach (var r in typeRows) typeNameByResultType[r.PalletType] = r.TypeName;
-        }
+        var brandRows = await multi.ReadAsync<(string UPC, string? Vendor)>();
+        foreach (var r in brandRows) brandByUpc[r.UPC] = r.Vendor;
+
+        var typeRows = await multi.ReadAsync<(string PalletType, string? TypeName)>();
+        foreach (var r in typeRows) typeNameByResultType[r.PalletType] = r.TypeName;
 
         return (brandByUpc, typeNameByResultType);
+    }
+
+    private async Task<(List<CountryRow> raw, Dictionary<string, string?> brandByUpc, Dictionary<string, string?> typeNameByResultType)>
+        FetchAndEnrichAsync(IReadOnlyList<string> countries, CancellationToken ct)
+    {
+        await using var onPremBackup = new SqlConnection(resolver.GetOnPremBackupConnectionString());
+        await onPremBackup.OpenAsync(ct);
+
+        var raw = await FetchRawAsync(countries, onPremBackup, ct);
+        var (brandByUpc, typeNameByResultType) = await EnrichAsync(raw, onPremBackup, ct);
+        return (raw, brandByUpc, typeNameByResultType);
     }
 
     private static string? CommaJoin(IEnumerable<string?> values) =>
@@ -127,8 +164,7 @@ public class CountingCompletionTodayService(IOnPremConnectionResolver resolver)
     public async Task<List<CountingCompletionTodaySummaryRow>> GetSummaryAsync(
         IReadOnlyList<string> countries, CancellationToken ct = default)
     {
-        var raw = await FetchRawAsync(countries, ct);
-        var (brandByUpc, typeNameByResultType) = await EnrichAsync(raw, ct);
+        var (raw, brandByUpc, typeNameByResultType) = await FetchAndEnrichAsync(countries, ct);
 
         return raw
             .GroupBy(r => (r.Country, r.Row.ContNo))
@@ -149,8 +185,7 @@ public class CountingCompletionTodayService(IOnPremConnectionResolver resolver)
     public async Task<List<CountingCompletionTodayAllocationRow>> GetAllocationAsync(
         IReadOnlyList<string> countries, CancellationToken ct = default)
     {
-        var raw = await FetchRawAsync(countries, ct);
-        var (brandByUpc, typeNameByResultType) = await EnrichAsync(raw, ct);
+        var (raw, brandByUpc, typeNameByResultType) = await FetchAndEnrichAsync(countries, ct);
 
         return raw
             .GroupBy(r => (r.Country, r.Row.ContNo, ResultType: r.Row.ResultType ?? "(none)"))
@@ -171,8 +206,7 @@ public class CountingCompletionTodayService(IOnPremConnectionResolver resolver)
     public async Task<List<CountingCompletionTodayDetailRow>> GetDetailAsync(
         IReadOnlyList<string> countries, CancellationToken ct = default)
     {
-        var raw = await FetchRawAsync(countries, ct);
-        var (brandByUpc, typeNameByResultType) = await EnrichAsync(raw, ct);
+        var (raw, brandByUpc, typeNameByResultType) = await FetchAndEnrichAsync(countries, ct);
 
         return raw
             .GroupBy(r => (Country: r.Country, ContNo: r.Row.ContNo, UPC: r.Row.UPC))

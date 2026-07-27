@@ -85,12 +85,12 @@ public class Program
         builder.Services.AddScoped<CountingCompletionTodayService>();
         builder.Services.AddScoped<WarehouseBoxesService>();
         builder.Services.AddScoped<TransferGinGrnService>();
-        builder.Services.AddScoped<ContainerReceiptService>();
-        builder.Services.AddScoped<InTransitReportService>();
+        builder.Services.AddScoped<ShipmentStatusService>();
         builder.Services.AddScoped<SyncDataCountService>();
         builder.Services.AddScoped<MissingExcessSnapshotService>();
         builder.Services.AddScoped<CountingReportsService>();
         builder.Services.AddScoped<JafzaDivisionProductionService>();
+        builder.Services.AddScoped<JafzaRoboProductionService>();
         builder.Services.AddScoped<OtsPoAllocationService>();
 
         // Robotics chute-mapping/status APIs used by the Chute Mapping page.
@@ -100,6 +100,8 @@ public class Program
         builder.Services.AddHostedService<Wms.Web.Hosting.NightlyBatchService>();
         builder.Services.AddHostedService<Wms.Web.Hosting.ToteMasterScheduledService>();
         builder.Services.AddHostedService<Wms.Web.Hosting.BoxesToWmsProdScheduledService>();
+        builder.Services.AddHostedService<Wms.Web.Hosting.PendingGoodsReceiptEmailScheduledService>();
+        builder.Services.AddScoped<Wms.Data.Notifications.PendingGoodsReceiptEmailService>();
 
         // WMS DbContext — Azure SQL via AAD (Managed Identity in App Service,
         // AAD Default locally via `az login`). NO password in code.

@@ -1,0 +1,109 @@
+@page "/admin/pending-goods-receipt-email"
+@rendermode RenderMode.InteractiveServer
+@using Wms.Core
+@using Wms.Data.Notifications
+@attribute [Authorize(Policy = MenuKeys.ADMIN_PENDING_GOODS_RECEIPT_EMAIL)]
+@inject PendingGoodsReceiptEmailService Svc
+@inject ICurrentUser Me
+
+<PageTitle>WMS — Pending Goods Receipt Email</PageTitle>
+
+<div class="aiwms-page-header">
+    <h2>Pending Goods Receipt — Email Notification</h2>
+    <p>The background service checks this row every minute; when armed and <b>IntervalHours</b> has elapsed since the last send, it queries the Pending Goods Receipt report and mails the HTML table to the recipients. Empty runs are skipped silently.</p>
+</div>
+
+<div class="aiwms-section">
+    @if (_loading)
+    {
+        <p>Loading…</p>
+    }
+    else
+    {
+        <div style="display:grid; grid-template-columns: 200px 1fr; gap:12px; align-items:start; max-width:900px">
+            <label style="padding-top:8px"><b>Recipients</b></label>
+            <textarea @bind="_recipients" rows="3" placeholder="user1@bflgroup.ae, user2@bflgroup.ae"
+                      style="padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; font-family:var(--font-mono)"></textarea>
+
+            <label style="padding-top:8px"><b>Interval (hours)</b></label>
+            <input type="number" min="1" max="24" @bind="_intervalHours"
+                   style="width:120px; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px" />
+
+            <label style="padding-top:8px"><b>Active</b></label>
+            <label style="display:inline-flex; align-items:center; gap:8px; padding-top:8px">
+                <input type="checkbox" @bind="_isActive" /> Arm the scheduled sender
+            </label>
+
+            <div></div>
+            <div style="display:flex; gap:8px; margin-top:8px">
+                <button class="aiwms-btn aiwms-btn-primary" @onclick="SaveAsync" disabled="@_saving">
+                    @(_saving ? "Saving…" : "Save")
+                </button>
+                <button class="aiwms-btn aiwms-btn-secondary" @onclick="LoadAsync" disabled="@_saving">Reload</button>
+            </div>
+        </div>
+
+        @if (!string.IsNullOrEmpty(_message))
+        {
+            <div class="aiwms-alert @(_isError ? "error" : "info")" style="margin-top:12px; max-width:900px">@_message</div>
+        }
+
+        @if (_conf != null)
+        {
+            <div class="aiwms-section" style="margin-top:16px; max-width:900px">
+                <div class="aiwms-card-header">Last run</div>
+                <table class="aiwms-table aiwms-table-dense">
+                    <tbody>
+                        <tr><td style="width:200px"><b>When</b></td><td>@(_conf.LastRunTS?.ToString("dd/MM/yyyy HH:mm:ss") ?? "— never —")</td></tr>
+                        <tr><td><b>Status</b></td><td>@(_conf.LastRunStatus ?? "")</td></tr>
+                        <tr><td><b>Containers in email</b></td><td>@(_conf.LastSentCount?.ToString("N0") ?? "")</td></tr>
+                        <tr><td><b>Last edit</b></td><td>@_conf.UpdatedTS.ToString("dd/MM/yyyy HH:mm") by @_conf.UpdatedBy</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        }
+    }
+</div>
+
+@code {
+    private bool _loading = true;
+    private bool _saving;
+    private string _message = "";
+    private bool _isError;
+
+    private PendingGoodsReceiptEmailConfig? _conf;
+    private string _recipients = "";
+    private int _intervalHours = 1;
+    private bool _isActive;
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        _loading = true; _message = ""; _isError = false;
+        try
+        {
+            _conf = await Svc.GetAsync();
+            _recipients    = _conf?.Recipients ?? "";
+            _intervalHours = _conf?.IntervalHours ?? 1;
+            _isActive      = _conf?.IsActive ?? false;
+        }
+        catch (Exception ex) { _message = $"Load failed: {ex.Message}"; _isError = true; }
+        finally { _loading = false; }
+    }
+
+    private async Task SaveAsync()
+    {
+        _saving = true; _message = ""; _isError = false;
+        try
+        {
+            var interval = Math.Clamp(_intervalHours, 1, 24);
+            await Me.EnsureLoadedAsync();
+            await Svc.SaveAsync(_recipients?.Trim() ?? "", interval, _isActive, Me.Name ?? "", CancellationToken.None);
+            _message = "Saved. The background service will pick up the new config within a minute.";
+            await LoadAsync();
+        }
+        catch (Exception ex) { _message = $"Save failed: {ex.Message}"; _isError = true; }
+        finally { _saving = false; }
+    }
+}

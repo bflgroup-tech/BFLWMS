@@ -31,13 +31,13 @@ public static class MenuKeys
     public const string RPT_COUNTING_COMPLETION   = "RPT_COUNTING_COMPLETION";
     public const string RPT_JAFZA_DIVISION_PROD   = "RPT_JAFZA_DIVISION_PROD";
     public const string RPT_SYNC_DATA_COUNT       = "RPT_SYNC_DATA_COUNT";
-    public const string RPT_CONTAINER_RECEIPT     = "RPT_CONTAINER_RECEIPT";
-    public const string RPT_IN_TRANSIT            = "RPT_IN_TRANSIT";
+    public const string RPT_SHIPMENT_STATUS       = "RPT_SHIPMENT_STATUS";
 
     public const string ADMIN_USERS               = "ADMIN_USERS";
     public const string ADMIN_WH_MASTER           = "ADMIN_WH_MASTER";
     public const string ADMIN_AUDIT_LOG           = "ADMIN_AUDIT_LOG";
     public const string ADMIN_NIGHTLY_BATCHES     = "ADMIN_NIGHTLY_BATCHES";
+    public const string ADMIN_PENDING_GOODS_RECEIPT_EMAIL = "ADMIN_PENDING_GOODS_RECEIPT_EMAIL";
 
     /// <summary>One catalogue entry per menu item.</summary>
     /// <param name="Category">
@@ -76,7 +76,7 @@ public static class MenuKeys
 
         new MenuEntry(LPM_PRODUCTION,        "Production to Stores","LPM Production",            "production/lpm",            new[] { Roles.Admin, Roles.WHAssociate, Roles.WHSupervisor, Roles.WHManager }),
 
-        new MenuEntry(RPT_PENDING_PURCHASE,  "Reports",             "Pending Purchase (GRN) Status",  "reports/pending-purchase",         new[] { Roles.Admin, Roles.Reports, Roles.WHManager, Roles.WHSupervisor }),
+        new MenuEntry(RPT_PENDING_PURCHASE,  "Reports",             "Pending Goods Receipt",          "reports/pending-purchase",         new[] { Roles.Admin, Roles.Reports, Roles.WHManager, Roles.WHSupervisor }),
         new MenuEntry(RPT_MISSING_EXCESS,    "Reports",             "Missing / Excess Items from Production", "reports/missing-excess",   new[] { Roles.Admin, Roles.Reports }),
         new MenuEntry(RPT_NON_LPM_WH_STOCK,  "Reports",             "Non-LPM WH Stock Report",   "reports/non-lpm-wh-stock",  new[] { Roles.Admin, Roles.Reports }),
         new MenuEntry(RPT_LPM_WH_STOCK,      "Reports",             "LPM WH Stock Report",       "reports/lpm-wh-stock",      new[] { Roles.Admin, Roles.Reports }),
@@ -84,15 +84,15 @@ public static class MenuKeys
         new MenuEntry(RPT_WAREHOUSE_BOXES,   "Reports",             "Warehouse Boxes",           "reports/warehouse-boxes",   new[] { Roles.Admin, Roles.Reports }),
         new MenuEntry(RPT_TRANSFER_GIN_GRN,  "Reports",             "Transfer/GIN/GRN History",  "reports/transfer-gin-grn",  new[] { Roles.Admin, Roles.Reports }),
         new MenuEntry(RPT_COUNTING_COMPLETION,"Reports",            "Counting Completion Report","reports/counting-completion",new[] { Roles.Admin, Roles.Reports }),
-        new MenuEntry(RPT_JAFZA_DIVISION_PROD,"Reports",            "Jafza Manual Production",  "reports/jafza-division-production",new[] { Roles.Admin, Roles.Reports }),
-        new MenuEntry(RPT_IN_TRANSIT,        "Reports",             "In-Transit Report",         "reports/in-transit",        new[] { Roles.Admin, Roles.Reports }, "Inbound"),
-        new MenuEntry(RPT_CONTAINER_RECEIPT, "Reports",             "Container Receipt Report",  "reports/container-receipt", new[] { Roles.Admin, Roles.Reports }, "Inbound"),
+        new MenuEntry(RPT_JAFZA_DIVISION_PROD,"Reports",            "Jafza Manual/Robo Production",  "reports/jafza-division-production",new[] { Roles.Admin, Roles.Reports }),
+        new MenuEntry(RPT_SHIPMENT_STATUS,   "Reports",             "Shipment Status",           "reports/shipment-status",  new[] { Roles.Admin, Roles.Reports }, "Inbound"),
         new MenuEntry(RPT_SYNC_DATA_COUNT,   "IT",                 "Sync Data Count",           "reports/sync-data-count",   new[] { Roles.Admin, Roles.Reports }),
 
         new MenuEntry(ADMIN_USERS,           "Admin",               "Users & Roles",             "admin/users",               new[] { Roles.Admin }),
         new MenuEntry(ADMIN_WH_MASTER,       "Admin",               "WH Master",                 "admin/wh-master",           new[] { Roles.Admin }),
         new MenuEntry(ADMIN_AUDIT_LOG,       "Admin",               "Audit Log",                 "admin/audit",               new[] { Roles.Admin }),
         new MenuEntry(ADMIN_NIGHTLY_BATCHES, "Admin",               "Nightly Batches Status",    "admin/nightly-batches",     new[] { Roles.Admin }),
+        new MenuEntry(ADMIN_PENDING_GOODS_RECEIPT_EMAIL, "Admin",   "Pending Goods Receipt Email","admin/pending-goods-receipt-email", new[] { Roles.Admin }),
     };
 
     /// <summary>Claim type emitted per granted menu by WmsClaimsTransformer.</summary>

@@ -35,9 +35,8 @@
         <div>
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">RUN OPTION</label>
             <select @bind="_runOption" @bind:after="OnRunOptionChangedAsync" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-family:var(--font-body); font-size:13px; background:white;">
-                <option value="FillSKUMax">Fill SKUMax</option>
-                <option value="RoundRobin">Round Robin</option>
-                <option value="FillSKUMaxRoundRobin">Fill SKUMax + Round Robin</option>
+                <option value="FillSKUMaxRoundRobin">Fill Min-Max plus Others (Ratio)</option>
+                <option value="FillMinMinPlusOthers">Fill Min-Min plus others</option>
             </select>
         </div>
         <div>
@@ -82,11 +81,15 @@
         <label style="display:flex; align-items:center; gap:6px; font-size:12px; cursor:pointer">
             <input type="checkbox" @bind="_validate" /> Validate before Process
         </label>
-        @if (_runOption == "FillSKUMaxRoundRobin")
+        @if (_runOption == "FillSKUMaxRoundRobin" || _runOption == "FillMinMinPlusOthers")
         {
             <label style="display:flex; align-items:center; gap:6px; font-size:12px; cursor:pointer"
                    title="When ticked, ECOM's Manual Allocation qty (StoreID='ONLINE') is allocated first per item; remaining qty distributes to other countries via the normal Pass 1-4 rules.">
                 <input type="checkbox" @bind="_ecomManualPriority" /> Follow ECOM Manual Allocation on priority
+            </label>
+            <label style="display:flex; align-items:center; gap:6px; font-size:12px; cursor:pointer"
+                   title="When ticked, every Pass touch (1b/2/3/4) is written to LPMSIM.dbo.WmsAllocationTrace. Prior rows for this ContNo are cleared on each run. Use only for debugging — adds ~1 row per (store, pass, item).">
+                <input type="checkbox" @bind="_traceEnabled" /> Trace Allocation
             </label>
         }
         @{
@@ -94,6 +97,7 @@
             {
                 "RoundRobin"           => (_status?.RoundRobinRows ?? 0),
                 "FillSKUMaxRoundRobin" => (_status?.FillSKUMaxRoundRobinRows ?? 0),
+                "FillMinMinPlusOthers" => (_status?.FillMinMinPlusOthersRows ?? 0),
                 _                      => (_status?.FillSkuMaxRows ?? 0),
             };
         }
@@ -516,9 +520,10 @@
     private string _country = "";
     private string _warehouse = "";
     private string _contno = "";
-    private string _runOption = "FillSKUMaxRoundRobin";
+    private string _runOption = "FillMinMinPlusOthers";
     private bool _validate = true;
     private bool _ecomManualPriority = false;
+    private bool _traceEnabled = false;
     private long _totalPoQty;
     private List<BlockedItemRow> _blocked = new();
     private bool _showBlocked;
@@ -713,12 +718,14 @@
             {
                 "RoundRobin"           => RunOption.RoundRobin,
                 "FillSKUMaxRoundRobin" => RunOption.FillSKUMaxRoundRobin,
+                "FillMinMinPlusOthers" => RunOption.FillMinMinPlusOthers,
                 _                      => RunOption.FillSKUMax,
             };
             var existing = ro switch
             {
                 RunOption.RoundRobin           => _status?.RoundRobinRows ?? 0,
                 RunOption.FillSKUMaxRoundRobin => _status?.FillSKUMaxRoundRobinRows ?? 0,
+                RunOption.FillMinMinPlusOthers => _status?.FillMinMinPlusOthersRows ?? 0,
                 _                              => _status?.FillSkuMaxRows ?? 0,
             };
             if (existing > 0)
@@ -741,6 +748,7 @@
                 if ((_status?.FillSkuMaxRows            ?? 0) > 0 && ro != RunOption.FillSKUMax)           others.Add($"FillSKUMax ({_status!.FillSkuMaxRows})");
                 if ((_status?.RoundRobinRows            ?? 0) > 0 && ro != RunOption.RoundRobin)           others.Add($"RoundRobin ({_status!.RoundRobinRows})");
                 if ((_status?.FillSKUMaxRoundRobinRows  ?? 0) > 0 && ro != RunOption.FillSKUMaxRoundRobin) others.Add($"FillSKUMaxRoundRobin ({_status!.FillSKUMaxRoundRobinRows})");
+                if ((_status?.FillMinMinPlusOthersRows  ?? 0) > 0 && ro != RunOption.FillMinMinPlusOthers) others.Add($"FillMinMinPlusOthers ({_status!.FillMinMinPlusOthersRows})");
                 ShowError($"Container {_contno} was already processed with a different Run Option ({string.Join(", ", others)}). Only one process per container is allowed — delete that first before running {_runOption}.");
                 return;
             }
@@ -761,7 +769,7 @@
             var allocCsv = string.Join(",", _allocCountries);
             {
                 var sw = System.Diagnostics.Stopwatch.StartNew();
-                var procResult = await Svc.ProcessAllocationAsync(_contno, progress, ro, _allocCountries, _ecomManualPriority);
+                var procResult = await Svc.ProcessAllocationAsync(_contno, progress, ro, _allocCountries, _ecomManualPriority, _traceEnabled);
                 algoMs = sw.ElapsedMilliseconds;
                 _allocation = procResult.Allocations;
                 _blocked    = procResult.Blocked;
@@ -799,12 +807,14 @@
         {
             "RoundRobin"           => RunOption.RoundRobin,
             "FillSKUMaxRoundRobin" => RunOption.FillSKUMaxRoundRobin,
+            "FillMinMinPlusOthers" => RunOption.FillMinMinPlusOthers,
             _                      => RunOption.FillSKUMax,
         };
         var rowsForRo = ro switch
         {
             RunOption.RoundRobin           => (_status?.RoundRobinRows ?? 0),
             RunOption.FillSKUMaxRoundRobin => (_status?.FillSKUMaxRoundRobinRows ?? 0),
+            RunOption.FillMinMinPlusOthers => (_status?.FillMinMinPlusOthersRows ?? 0),
             _                              => (_status?.FillSkuMaxRows ?? 0),
         };
         if (rowsForRo == 0) return;
@@ -845,6 +855,7 @@
         {
             "RoundRobin"           => RunOption.RoundRobin,
             "FillSKUMaxRoundRobin" => RunOption.FillSKUMaxRoundRobin,
+            "FillMinMinPlusOthers" => RunOption.FillMinMinPlusOthers,
             _                      => RunOption.FillSKUMax,
         };
         var ok = await JS.InvokeAsync<bool>("confirm",

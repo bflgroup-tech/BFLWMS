@@ -29,6 +29,7 @@ public class CountingReportsService(IOnPremConnectionResolver resolver)
         var rows = await opb.QueryAsync<PendingPurchaseRow>(new CommandDefinition(@"
             SELECT bc.ContNo,
                    CAST(bc.Trndate AS DATE) AS CountingDate,
+                   CONVERT(VARCHAR(8), bc.TrnTime, 108) AS TrnTime,
                    ISNULL(bc.BuildingQty, 0) AS CountedQty,
                    DATEDIFF(day, bc.Trndate,
                             CAST(DATEADD(hour, 4, SYSUTCDATETIME()) AS DATE)) AS AgeingDays,
