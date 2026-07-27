@@ -602,7 +602,10 @@ public class ReportsService(IOnPremConnectionResolver resolver)
     /// Reads usa.dbo.amechecking scans against LPMSIM.dbo.LPMSIM_Batch country filter
     /// + Sources-derived Kind, joins Datareporting for Division, and returns three
     /// result sets: detailed rows / summary rows / overall store qty. Transfer Qty
-    /// is fetched separately from bfldata.dbo.DailyCountCategoryTrf (UAE only).
+    /// is fetched separately from bfldata.dbo.DailyCountCategoryTrf; see
+    /// GetTransferQtyAsync for the UAE-only Warehouse filter and its caveat for
+    /// non-UAE countries (no Country column exists, so the figure returned is the
+    /// UAE-wide total, not that country's own).
     /// </summary>
     public async Task<ProductionCheckingResult> GetProductionCheckingAsync(
         string country, DateTime fromDate, DateTime toDateInclusive, CancellationToken ct = default)
@@ -615,9 +618,13 @@ public class ReportsService(IOnPremConnectionResolver resolver)
             string? cs;
             try { cs = resolver.GetCountryConnectionString(country); }
             catch { cs = null; }
-            return string.IsNullOrWhiteSpace(cs)
-                ? new ProductionCheckingResult(new(), new(), 0, 0)
-                : await GetProductionCheckingViaConnStringAsync(country, cs, fromDate, toDateInclusive, ct);
+            if (string.IsNullOrWhiteSpace(cs))
+            {
+                await using var backupConn = OpenOnPremBackup();
+                var noScanTransferQty = await GetTransferQtyAsync(backupConn, uaeOnly: false, fromDate, toDateInclusive, ct);
+                return new ProductionCheckingResult(new(), new(), 0, noScanTransferQty);
+            }
+            return await GetProductionCheckingViaConnStringAsync(country, cs, fromDate, toDateInclusive, ct);
         }
 
         // Production day = WH-shift window [D 06:00 GST, D+1 06:00 GST). Scans
@@ -781,28 +788,36 @@ DROP TABLE #Scans, #BatchKind, #ItemDiv;";
             }
         }
 
-        // Transfer Qty — separate query, UAE-only, bfldata source.
-        long transferQty = 0;
-        await using (var cmd = conn.CreateCommand())
-        {
-            cmd.CommandText = @"
-                SELECT ISNULL(SUM(
-                         ISNULL(HR0A,0)+ISNULL(HR1A,0)+ISNULL(HR2A,0)+ISNULL(HR3A,0)+ISNULL(HR4A,0)+
-                         ISNULL(HR5A,0)+ISNULL(HR6A,0)+ISNULL(HR7A,0)+ISNULL(HR8A,0)+ISNULL(HR9A,0)+
-                         ISNULL(HR10A,0)+ISNULL(HR11A,0)+ISNULL(HR12A,0)+ISNULL(HR13A,0)+ISNULL(HR14A,0)+
-                         ISNULL(HR15A,0)+ISNULL(HR16A,0)+ISNULL(HR17A,0)+ISNULL(HR18A,0)+ISNULL(HR19A,0)+
-                         ISNULL(HR20A,0)+ISNULL(HR21A,0)+ISNULL(HR22A,0)), 0) AS TransferQty
-                  FROM bfldata.dbo.DailyCountCategoryTrf WITH (NOLOCK)
-                 WHERE Warehouse = 'TECHNO'
-                   AND TrnDate BETWEEN @from AND @to;";
-            cmd.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@from", fromDate.Date));
-            cmd.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@to",   toDateInclusive.Date));
-            cmd.CommandTimeout = 60;
-            var v = await cmd.ExecuteScalarAsync(ct);
-            if (v is not null && v is not DBNull) transferQty = Convert.ToInt64(v);
-        }
+        // Transfer Qty — separate query, bfldata source. UAE keeps the Warehouse='TECHNO'
+        // filter; other countries have no Warehouse/Country breakdown in this table, so
+        // the filter is dropped and the raw (UAE-wide) total is returned instead.
+        var transferQty = await GetTransferQtyAsync(conn, uaeOnly: true, fromDate, toDateInclusive, ct);
 
         return new ProductionCheckingResult(rows, summary, overallStoreQty, transferQty);
+    }
+
+    // bfldata.dbo.DailyCountCategoryTrf has no Country column — only a UAE-warehouse
+    // breakdown (JAFZA/TECHNO/YOTO). uaeOnly=true keeps the Warehouse='TECHNO' filter;
+    // uaeOnly=false drops it, so the total returned is the UAE-wide figure, not a
+    // per-country one.
+    private async Task<long> GetTransferQtyAsync(
+        SqlConnection conn, bool uaeOnly, DateTime fromDate, DateTime toDateInclusive, CancellationToken ct)
+    {
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = $@"
+            SELECT ISNULL(SUM(
+                     ISNULL(HR0A,0)+ISNULL(HR1A,0)+ISNULL(HR2A,0)+ISNULL(HR3A,0)+ISNULL(HR4A,0)+
+                     ISNULL(HR5A,0)+ISNULL(HR6A,0)+ISNULL(HR7A,0)+ISNULL(HR8A,0)+ISNULL(HR9A,0)+
+                     ISNULL(HR10A,0)+ISNULL(HR11A,0)+ISNULL(HR12A,0)+ISNULL(HR13A,0)+ISNULL(HR14A,0)+
+                     ISNULL(HR15A,0)+ISNULL(HR16A,0)+ISNULL(HR17A,0)+ISNULL(HR18A,0)+ISNULL(HR19A,0)+
+                     ISNULL(HR20A,0)+ISNULL(HR21A,0)+ISNULL(HR22A,0)), 0) AS TransferQty
+              FROM bfldata.dbo.DailyCountCategoryTrf WITH (NOLOCK)
+             WHERE {(uaeOnly ? "Warehouse = 'TECHNO' AND " : "")}TrnDate BETWEEN @from AND @to;";
+        cmd.Parameters.Add(new SqlParameter("@from", fromDate.Date));
+        cmd.Parameters.Add(new SqlParameter("@to",   toDateInclusive.Date));
+        cmd.CommandTimeout = 60;
+        var v = await cmd.ExecuteScalarAsync(ct);
+        return v is not null && v is not DBNull ? Convert.ToInt64(v) : 0;
     }
 
     // ---------------- Non-UAE Production Checking (verbatim port of LPMSIM 1.14.268) ----------------
@@ -844,14 +859,17 @@ DROP TABLE #Scans, #BatchKind, #ItemDiv;";
             }
         }
 
-        if (scanTable.Rows.Count == 0)
-            return new ProductionCheckingResult(new(), new(), 0, 0);
-
         // Phase 2 — open OnPremBackup, create #Scans, bulk-copy in, run enrichment.
         var rows    = new List<ProductionCheckingRow>();
         var summary = new List<ProductionCheckingSummaryRow>();
         int overallStoreQty = 0;
         await using var conn = OpenOnPremBackup();
+
+        if (scanTable.Rows.Count == 0)
+        {
+            var emptyTransferQty = await GetTransferQtyAsync(conn, uaeOnly: false, fromDate, toDateInclusive, ct);
+            return new ProductionCheckingResult(rows, summary, 0, emptyTransferQty);
+        }
 
         await using (var createCmd = conn.CreateCommand())
         {
@@ -906,8 +924,10 @@ DROP TABLE #Scans, #BatchKind, #ItemDiv;";
                 overallStoreQty = rdr.IsDBNull(0) ? 0 : rdr.GetInt32(0);
         }
 
-        // Transfer Qty is UAE-only on LPMSIM — non-UAE returns 0.
-        return new ProductionCheckingResult(rows, summary, overallStoreQty, 0);
+        // Transfer Qty — no per-country breakdown exists, so this returns the
+        // UAE-wide (Warehouse filter dropped) total rather than a real per-country figure.
+        var transferQty = await GetTransferQtyAsync(conn, uaeOnly: false, fromDate, toDateInclusive, ct);
+        return new ProductionCheckingResult(rows, summary, overallStoreQty, transferQty);
     }
 
     private static DataTable BuildScanDataTable()
