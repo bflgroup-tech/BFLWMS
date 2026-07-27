@@ -1450,7 +1450,8 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                         // ================ FillMinMinPlusOthers passes ================
                         // Pass 1b: fill every A..H store up to (MinMin - SOH), positive OTS only, grade asc + OTS desc.
                         // Pass 2 : top positive-OTS stores up from current alloc to their OTS-driven tier cap (- SOH).
-                        // Pass 3 : negative-OTS stores get up to (MinMax - SOH).
+                        // Pass 3 : negative-OTS stores get up to (MinMin - SOH). Conservative
+                        //          — over-stocked stores get only the safety floor.
                         // Pass 4 : if remaining < 10% of PoQty -> distribute to A/B/C proportional to MinMax.
                         //          else -> flag the item in dbo.WmsPlanningFlag, drop remaining, move on.
                         static bool IsGradeAtoH(string? vg)
@@ -1536,7 +1537,10 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                             }
                         }
 
-                        // ---------- Pass 3: negative-OTS stores up to Min-Max (- SOH) ----------
+                        // ---------- Pass 3: negative-OTS stores up to Min-Min (- SOH) ----------
+                        // Over-stocked stores are treated conservatively — cap them at the
+                        // MinMin safety floor rather than MinMax, so leftover units keep
+                        // flowing to healthier stores or fall to Pass 4 for review.
                         if (remaining > 0)
                         {
                             var pass3Stores = SortByGroupThenOts(eligible.Where(r => LiveOtsPct(r) < 0)).ToList();
@@ -1544,18 +1548,18 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                             {
                                 if (remaining <= 0) break;
                                 var r = pass3Stores[i];
-                                var cap = MinMaxCapFor(r);
+                                var cap = MinMinCapFor(r);
                                 var current = allocs.TryGetValue(r.StoreID, out var row) ? row.AllocQty : 0;
                                 var remBefore = remaining;
                                 var take = Math.Min(cap - current, remaining);
                                 if (take <= 0)
                                 {
-                                    RecordTrace(3, i, r, "MinMax", cap, current, remBefore, 0, skipReason: "CapReached");
+                                    RecordTrace(3, i, r, "MinMin", cap, current, remBefore, 0, skipReason: "CapReached");
                                     continue;
                                 }
-                                allocs[r.StoreID] = BumpRow(row, r, take, 0, pass: 3, tierNameOverride: "MinMax");
+                                allocs[r.StoreID] = BumpRow(row, r, take, 0, pass: 3, tierNameOverride: "MinMin");
                                 remaining -= take;
-                                RecordTrace(3, i, r, "MinMax", cap, current, remBefore, take);
+                                RecordTrace(3, i, r, "MinMin", cap, current, remBefore, take);
                             }
                         }
 
