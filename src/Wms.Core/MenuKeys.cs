@@ -82,7 +82,7 @@ public static class MenuKeys
         new MenuEntry(RPT_LPM_WH_STOCK,      "Reports",             "LPM WH Stock Report",       "reports/lpm-wh-stock",      new[] { Roles.Admin, Roles.Reports }),
         new MenuEntry(RPT_PRODUCTION_SUMMARY,"Reports",             "Production Summary Report", "reports/production-summary",new[] { Roles.Admin, Roles.Reports }),
         new MenuEntry(RPT_WAREHOUSE_BOXES,   "Reports",             "Warehouse Boxes",           "reports/warehouse-boxes",   new[] { Roles.Admin, Roles.Reports }),
-        new MenuEntry(RPT_TRANSFER_GIN_GRN,  "Reports",             "Transfer/GIN/GRN History",  "reports/transfer-gin-grn",  new[] { Roles.Admin, Roles.Reports }),
+        new MenuEntry(RPT_TRANSFER_GIN_GRN,  "Reports",             "Transfer/GIN/GRN History",  "reports/transfer-gin-grn",  new[] { Roles.Admin, Roles.Reports }, "Outbound"),
         new MenuEntry(RPT_COUNTING_COMPLETION,"Reports",            "Counting Completion Report","reports/counting-completion",new[] { Roles.Admin, Roles.Reports }),
         new MenuEntry(RPT_JAFZA_DIVISION_PROD,"Reports",            "Jafza Manual/Robo Production",  "reports/jafza-division-production",new[] { Roles.Admin, Roles.Reports }),
         new MenuEntry(RPT_SHIPMENT_STATUS,   "Reports",             "Shipment Status",           "reports/shipment-status",  new[] { Roles.Admin, Roles.Reports }, "Inbound"),
