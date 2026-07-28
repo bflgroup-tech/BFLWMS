@@ -339,6 +339,8 @@ public class ReportsService(IOnPremConnectionResolver resolver)
             IF OBJECT_ID('tempdb..#CADateBoxes') IS NOT NULL DROP TABLE #CADateBoxes;
             IF OBJECT_ID('tempdb..#CARaw')       IS NOT NULL DROP TABLE #CARaw;
             IF OBJECT_ID('tempdb..#CAUpcs')      IS NOT NULL DROP TABLE #CAUpcs;
+            IF OBJECT_ID('tempdb..#CADetUae')    IS NOT NULL DROP TABLE #CADetUae;
+            IF OBJECT_ID('tempdb..#CADetOther')  IS NOT NULL DROP TABLE #CADetOther;
             IF OBJECT_ID('tempdb..#CADet')       IS NOT NULL DROP TABLE #CADet;
             IF OBJECT_ID('tempdb..#CAPurchase')  IS NOT NULL DROP TABLE #CAPurchase;
             IF OBJECT_ID('tempdb..#CALpm')       IS NOT NULL DROP TABLE #CALpm;
@@ -360,24 +362,13 @@ public class ReportsService(IOnPremConnectionResolver resolver)
 
             CREATE CLUSTERED INDEX IX_CABase ON #CABase (Country, ContNo);
 
-            -- Per explicit request: sourced from USA.dbo.UPCBoxDet (BoxNo is
-            -- ContNo + '-' + sequence) + USA.dbo.UPCBoxHead (PalletType/LPMDT) +
-            -- USA.dbo.UPCBarCodes (Brand via UPC), not BFLDATA.dbo.BuildingCompletionDet.
-            -- Optimized in 3 steps rather than one big multi-join (a naive version of
-            -- this took 23s for just 14 containers):
-            --   1. Filter UPCBoxHead by TrnDate FIRST using its IX_TrDate index — this
-            --      is the container's whole box history otherwise (BoxNo has no
-            --      container-scoped date filter), and deriving ContNo from BoxNo here
-            --      turns the container match into a cheap equi-join instead of a
-            --      LIKE-prefix join.
-            --   2. Join to UPCBoxDet on exact BoxNo (its PK) — fast on its own (~1.5s
-            --      for ~11k rows in testing).
-            --   3. Dedupe UPCs into their own indexed temp table BEFORE joining to
-            --      UPCBarCodes for Brand — joining that many raw (duplicated) UPC rows
-            --      directly against UPCBarCodes was the actual bottleneck (17s+ of the
-            --      23s), same lesson as the Today-mode UPC enrichment fix earlier.
-            -- Net effect verified: ~23s -> ~2.5s for the same 14 containers.
-            SELECT DISTINCT ContNo INTO #CAConts FROM #CABase;
+            -- Hybrid: UAE uses USA.dbo.UPCBoxDet/UPCBoxHead/UPCBarCodes (per explicit
+            -- request, optimized — see history), every other country uses the
+            -- original BFLDATA.dbo.BuildingCompletionDet. UPCBoxDet doesn't have box
+            -- data for every container (e.g. KSA's SAINT5900/SAINT7243 had zero rows
+            -- there despite being valid, counted containers), so non-UAE stays on the
+            -- source that actually covers it.
+            SELECT DISTINCT ContNo INTO #CAConts FROM #CABase WHERE Country = 'UAE';
             CREATE UNIQUE CLUSTERED INDEX IX_CAConts ON #CAConts (ContNo);
 
             SELECT h.BoxNo, h.PalletType, h.LPMDt, h.OraPoNo,
@@ -401,11 +392,21 @@ public class ReportsService(IOnPremConnectionResolver resolver)
             CREATE UNIQUE CLUSTERED INDEX IX_CAUpcs ON #CAUpcs (UPC);
 
             SELECT r.ContNo, r.Pallettype, r.CheckedQty, r.LPMDT, bc2.Vendor AS Brand
-              INTO #CADet
+              INTO #CADetUae
               FROM #CARaw r
               LEFT JOIN #CAUpcs u ON u.UPC = r.UPC
               LEFT JOIN USA.dbo.UPCBarCodes bc2 WITH (NOLOCK) ON bc2.UPC = u.UPC;
 
+            SELECT det.ContNo, det.Pallettype, det.CheckedQty, det.LPMDT, det.Brand
+              INTO #CADetOther
+              FROM BFLDATA.dbo.BuildingCompletionDet det WITH (NOLOCK)
+             WHERE det.ContNo IN (SELECT DISTINCT ContNo FROM #CABase WHERE Country <> 'UAE');
+
+            SELECT * INTO #CADet FROM (
+                SELECT * FROM #CADetUae
+                UNION ALL
+                SELECT * FROM #CADetOther
+            ) x;
             CREATE CLUSTERED INDEX IX_CADet ON #CADet (ContNo, Pallettype);
 
             SELECT up.ContNo, PurchaseDate = MIN(up.Trndate)
@@ -485,13 +486,15 @@ public class ReportsService(IOnPremConnectionResolver resolver)
             HAVING SUM(ISNULL(d.CheckedQty, 0)) > 0
              ORDER BY b.Country, b.ContNo;
 
-            DROP TABLE #CABase, #CAConts, #CADateBoxes, #CARaw, #CAUpcs, #CADet, #CAPurchase, #CALpm, #CADiv, #CABrand, #CAWh;",
+            DROP TABLE #CABase, #CAConts, #CADateBoxes, #CARaw, #CAUpcs, #CADetUae, #CADetOther, #CADet, #CAPurchase, #CALpm, #CADiv, #CABrand, #CAWh;",
             new { countries = countryList, noCountryFilter = noCountryFilter ? 1 : 0, contNoFilter, warehouseFilter,
                   from = fromDate.Date, toExclusive = toDate.Date.AddDays(1) },
-            // TrnDate-first filtering (see comment above) brought this back down to
-            // ~2.5s for a typical range, but 120s (vs the 60s default) leaves headroom
-            // for wider date ranges than tested.
-            commandTimeout: 120, cancellationToken: ct));
+            // TrnDate-first filtering (see comment above) brought the 14-container
+            // case down to ~2.5s, but the UAE branch's final Brand join still scales
+            // with distinct UPC count — verified ~39s for a full 30-day UAE range
+            // (~494k rows, ~98k distinct UPCs). 300s leaves real headroom for wider
+            // ranges than tested rather than risk a client-side timeout/hang.
+            commandTimeout: 300, cancellationToken: ct));
         return rows.AsList();
     }
 
