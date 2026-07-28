@@ -43,6 +43,21 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
         return c;
     }
 
+    // The country connection string's default DB may not be the country's actual
+    // DB name (e.g. "bflksa") — dataName is resolved from OnPremBackup first
+    // (see WhBoxItemsSource.ResolveDataNameAsync) and forced here via InitialCatalog.
+    private SqlConnection OpenCountryWithDataName(string country, string dataName)
+    {
+        var b = new SqlConnectionStringBuilder(resolver.GetCountryConnectionString(country))
+        {
+            InitialCatalog = dataName,
+            ConnectTimeout = ConnectTimeoutSeconds
+        };
+        var c = new SqlConnection(b.ConnectionString);
+        c.Open();
+        return c;
+    }
+
     // ── Dropdowns ────────────────────────────────────────────────────────────
 
     /// <summary>
@@ -433,6 +448,87 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
                 new { store, from, to }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
 
             return new TransferSummary(store, transferRow.TransferCount, transferRow.TransferQty ?? 0, gin.GinCount, gin.GinQty ?? 0);
+        }
+    }
+
+    private record StoreCode(string ShopName, string CostCodeTo, string LocCodeTo);
+
+    private static async Task<TransferSummary> GetOneStoreSummaryAsync(
+        SqlConnection conn, string shopName, string transferDetailTable, string ginTable,
+        string costCodeTo, string locCodeTo, DateTime from, DateTime to, CancellationToken ct)
+    {
+        var transferRow = await conn.QuerySingleAsync<CountQtyRow>(new CommandDefinition(
+            StoreTransferSummarySql(transferDetailTable),
+            new { from, to, costCodeTo, locCodeTo },
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+
+        var gin = await conn.QuerySingleAsync<GinCountQtyRow>(new CommandDefinition($@"
+            SELECT COUNT(DISTINCT SrNo) AS GinCount, ISNULL(SUM(Qty),0) AS GinQty
+              FROM {ginTable} WITH (NOLOCK)
+             WHERE ShopIssue = @shopName AND EntryDate >= @from AND EntryDate <= @to",
+            new { shopName, from, to }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+
+        return new TransferSummary(shopName, transferRow.TransferCount, transferRow.TransferQty ?? 0, gin.GinCount, gin.GinQty ?? 0);
+    }
+
+    /// <summary>
+    /// Per-STORE breakdown within a single country — same shape as
+    /// GetTransferSummaryAsync's per-country breakdown, just one level down.
+    /// Shown when a single country is selected with "(All stores)".
+    /// </summary>
+    public async Task<List<TransferSummary>> GetStoreSummariesAsync(
+        string country, DateTime dateFrom, DateTime dateTo, CancellationToken ct = default)
+    {
+        var from = dateFrom.Date;
+        var to   = dateTo.Date.AddDays(1).AddSeconds(-1);
+
+        if (country == UaeCountry)
+        {
+            List<UaeStoreRow> stores;
+            await using (var onprem = OpenOnPrem())
+            {
+                stores = await GetUaeStoresAsync(onprem, store: null, ct);
+            }
+
+            var tasks = stores.Select(async s =>
+            {
+                await using var conn = OpenOnPrem();
+                return await GetOneStoreSummaryAsync(
+                    conn, s.ShopName, $"[{s.DataName}]..vTransferDetail", "BFLDATA.dbo.vGoodsIssueplt",
+                    s.CostCodeTo, s.LocCodeTo, from, to, ct);
+            });
+            var results = await Task.WhenAll(tasks);
+            return results.OrderBy(r => r.Country).ToList();
+        }
+        else
+        {
+            string dataName;
+            await using (var onprem = OpenOnPrem())
+            {
+                dataName = await WhBoxItemsSource.ResolveDataNameAsync(onprem, country, ct)
+                    ?? throw new InvalidOperationException(
+                        $"No DataName found in BFLDATA.dbo.DataSettings for country '{country}'.");
+            }
+
+            List<StoreCode> stores;
+            await using (var listConn = OpenCountryWithDataName(country, dataName))
+            {
+                stores = (await listConn.QueryAsync<StoreCode>(new CommandDefinition(@"
+                    SELECT ShopName, CostCodeTo, LocCodeTo
+                      FROM BFLDATA..DataSettings
+                     WHERE ShopName IS NOT NULL AND ShopName <> '' AND Concept <> 'Warehouse'",
+                    commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).AsList();
+            }
+
+            var tasks = stores.Select(async s =>
+            {
+                await using var conn = OpenCountryWithDataName(country, dataName);
+                return await GetOneStoreSummaryAsync(
+                    conn, s.ShopName, "vTransferDetail", "BFLDATA..vgoodsissueplt",
+                    s.CostCodeTo, s.LocCodeTo, from, to, ct);
+            });
+            var results = await Task.WhenAll(tasks);
+            return results.OrderBy(r => r.Country).ToList();
         }
     }
 
