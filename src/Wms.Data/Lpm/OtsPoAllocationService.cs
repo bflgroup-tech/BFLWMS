@@ -681,15 +681,18 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         //                 weeks count). Unchanged from prior spec.
         var eomLabel   = new DateTime(year, month, 1).ToString("MMM-yyyy");
         var daysInMonth = DateTime.DaysInMonth(year, month);
-        var weeksInMonth = await SafeAsync(warnings, "weeksInMonth (lpm_salestgtwk_stores)", async () =>
+        // Count distinct fiscal weeks that fall inside the picked (Month, Year)
+        // directly from BFL_MFP_OUTBOUND_T1. MFP already carries (month, year, week)
+        // at the row grain, so DISTINCT(week) filtered by the picked month/year
+        // gives the exact number of fiscal weeks in that month (~4-5), not the
+        // full-history window the old lpm_salestgtwk_stores join was returning.
+        var weeksInMonth = await SafeAsync(warnings, "weeksInMonth (BFL_MFP_OUTBOUND_T1)", async () =>
         {
             await using var c = OpenOnPremBackup();
             var v = await c.ExecuteScalarAsync<int?>(new CommandDefinition(@"
-                SELECT COUNT(DISTINCT s.wk)
-                  FROM dbo.lpm_salestgtwk_stores s WITH (NOLOCK)
-                  JOIN dbo.LPM_EOM_Output e WITH (NOLOCK)
-                    ON e.StoreID = s.StoreID AND e.DivCode = s.DivCode
-                 WHERE e.Month1 = @month AND e.Year1 = @year",
+                SELECT COUNT(DISTINCT week)
+                  FROM dbo.BFL_MFP_OUTBOUND_T1 WITH (NOLOCK)
+                 WHERE month = @month AND year = @year",
                 new { month, year },
                 commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
             return v ?? 0;
