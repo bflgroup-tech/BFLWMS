@@ -1589,6 +1589,32 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                                         },
                                         commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
                                 }
+                                // Also record a synthetic "Flagged" trace row so SUM(Take)
+                                // across the trace for (ContNo, Itemcode) still reconciles
+                                // to line.Qty. Direct append (not RecordTrace) because
+                                // there is no real store: StoreID = "Flagged", Cap = Take
+                                // = the dropped remainder, SkipReason = "Flagged".
+                                if (trace is not null)
+                                {
+                                    trace.Add(new AllocationTraceRow(
+                                        ContNo: line.ContNo, Itemcode: line.ItemCode, StoreID: "Flagged",
+                                        DivCode: divCode, Pass: 4, SortRank: 0,
+                                        VolumeGroup: null, TierName: "Flagged",
+                                        LiveOtsPctBefore: null,
+                                        Cap: remaining, Soh: 0,
+                                        CurrentBeforeTake: 0,
+                                        RemainingBefore: remaining,
+                                        Take: remaining,
+                                        RemainingAfter: 0,
+                                        RunningOtsQtyAfter: 0,
+                                        RunOption: runOption.ToString(),
+                                        SkipReason: "Flagged",
+                                        DefaultSkuMax: null, RawSkuMax: null, RatioSkuMax: null,
+                                        AvgOtsPercent: avgOtsDecimal,
+                                        AvgOtsMin: avgOtsMinDecimal,
+                                        AvgOtsMax: avgOtsMaxDecimal,
+                                        InitialOtsPct: null));
+                                }
                                 remaining = 0;   // drop; move on to next item
                             }
                             else
