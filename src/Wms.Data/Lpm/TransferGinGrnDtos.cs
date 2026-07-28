@@ -15,7 +15,7 @@ public record TransferHistoryRow(
 );
 
 public record TransferHistoryFilter(
-    string    Country,
+    List<string>? Countries,   // null/empty = every SIM country ("BFL Group")
     string?   Store,
     DateTime  DateFrom,
     DateTime  DateTo,
@@ -25,3 +25,10 @@ public record TransferHistoryFilter(
     string    SearchBy,    // "TrfNo" | "PalletNo" | "GIN" | "GRN"
     string?   SearchValue
 );
+
+public record TransferHistoryResult(List<TransferHistoryRow> Rows, List<string> Warnings);
+
+/// <summary>Transfer/Transfer Qty/GIN Count/GIN Qty totals for one country, for the summary cards.</summary>
+public record TransferSummary(string Country, int TransferCount, int TransferQty, int GinCount, int GinQty);
+
+public record TransferSummaryResult(List<TransferSummary> Summaries, List<string> Warnings);

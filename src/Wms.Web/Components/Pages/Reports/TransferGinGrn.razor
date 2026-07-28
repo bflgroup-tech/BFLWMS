@@ -17,19 +17,31 @@
 
 <div class="aiwms-section" style="padding:10px 16px;">
     <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:flex-end;">
-        <div style="flex:0 0 120px;">
+        <div style="flex:0 0 150px;">
             <label class="aiwms-filter-label">COUNTRY</label>
-            <select @bind="_country" @bind:after="OnCountryChangedAsync" style="width:100%; padding:5px 7px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:12px; background:white">
-                @foreach (var c in _countries) { <option value="@c">@c</option> }
-            </select>
+            @if (_canSelectMultiple)
+            {
+                <select @bind="_country" @bind:after="OnCountryChangedAsync" style="width:100%; padding:5px 7px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:12px; background:white">
+                    <option value="@BflGroupValue">BFL Group</option>
+                    @foreach (var c in _countries) { <option value="@c">@c.ToUpperInvariant()</option> }
+                </select>
+            }
+            else
+            {
+                <input value="@(_lockedCountry.ToUpperInvariant())" disabled
+                       style="width:100%; padding:5px 7px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:12px; background:var(--bg-disabled, #f2f2f2);" />
+            }
         </div>
-        <div style="flex:1; min-width:160px; max-width:240px;">
-            <label class="aiwms-filter-label">STORE</label>
-            <select @bind="_store" style="width:100%; padding:5px 7px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:12px; background:white">
-                <option value="">(All stores)</option>
-                @foreach (var s in _stores) { <option value="@s">@s</option> }
-            </select>
-        </div>
+        @if (_country != BflGroupValue)
+        {
+            <div style="flex:1; min-width:160px; max-width:240px;">
+                <label class="aiwms-filter-label">STORE</label>
+                <select @bind="_store" style="width:100%; padding:5px 7px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:12px; background:white">
+                    <option value="">(All stores)</option>
+                    @foreach (var s in _stores) { <option value="@s">@s</option> }
+                </select>
+            </div>
+        }
         <div style="flex:0 0 130px;">
             <label class="aiwms-filter-label">DATE FROM</label>
             <input type="date" @bind="_dateFrom" @bind:format="yyyy-MM-dd" style="width:100%; padding:5px 7px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:12px; background:white" />
@@ -38,33 +50,43 @@
             <label class="aiwms-filter-label">DATE TO</label>
             <input type="date" @bind="_dateTo" @bind:format="yyyy-MM-dd" style="width:100%; padding:5px 7px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:12px; background:white" />
         </div>
-        <div style="display:flex; gap:10px; align-self:flex-end; padding-bottom:3px; border-left:2px solid var(--border-default); padding-left:10px;">
-            <label style="display:flex; align-items:center; gap:4px; font-size:11px; cursor:pointer; white-space:nowrap;"><input type="checkbox" @bind="_withoutPallet" /> No Pallet</label>
-            <label style="display:flex; align-items:center; gap:4px; font-size:11px; cursor:pointer; white-space:nowrap;"><input type="checkbox" @bind="_withoutGin" /> No GIN</label>
-            <label style="display:flex; align-items:center; gap:4px; font-size:11px; cursor:pointer; white-space:nowrap;"><input type="checkbox" @bind="_withoutGrn" /> No GRN</label>
+        <div style="flex:0 0 160px;">
+            <label class="aiwms-filter-label">VIEW</label>
+            <select @bind="_viewMode" style="width:100%; padding:5px 7px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:12px; background:white">
+                <option value="Detailed">Detailed</option>
+                <option value="Summary">Summary</option>
+            </select>
         </div>
-        <div style="border-left:2px solid var(--border-default); padding-left:10px; display:flex; gap:8px; align-items:flex-end;">
-            <div style="flex:0 0 130px;">
-                <label class="aiwms-filter-label">SEARCH BY</label>
-                <select @bind="_searchBy" style="width:100%; padding:5px 7px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:12px; background:white">
-                    <option value="TrfNo">Transfer No</option>
-                    <option value="PalletNo">Pallet No</option>
-                    <option value="GIN">GIN</option>
-                    <option value="GRN">GRN</option>
-                </select>
+        @if (_viewMode == "Detailed")
+        {
+            <div style="display:flex; gap:10px; align-self:flex-end; padding-bottom:3px; border-left:2px solid var(--border-default); padding-left:10px;">
+                <label style="display:flex; align-items:center; gap:4px; font-size:11px; cursor:pointer; white-space:nowrap;"><input type="checkbox" @bind="_withoutPallet" /> No Pallet</label>
+                <label style="display:flex; align-items:center; gap:4px; font-size:11px; cursor:pointer; white-space:nowrap;"><input type="checkbox" @bind="_withoutGin" /> No GIN</label>
+                <label style="display:flex; align-items:center; gap:4px; font-size:11px; cursor:pointer; white-space:nowrap;"><input type="checkbox" @bind="_withoutGrn" /> No GRN</label>
             </div>
-            <div style="flex:0 0 160px;">
-                <label class="aiwms-filter-label">VALUE <span style="font-weight:normal;opacity:.6;">(ignores dates)</span></label>
-                <input @bind="_searchValue" placeholder="contains…" style="width:100%; padding:5px 7px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:12px; background:white;" />
+            <div style="border-left:2px solid var(--border-default); padding-left:10px; display:flex; gap:8px; align-items:flex-end;">
+                <div style="flex:0 0 130px;">
+                    <label class="aiwms-filter-label">SEARCH BY</label>
+                    <select @bind="_searchBy" style="width:100%; padding:5px 7px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:12px; background:white">
+                        <option value="TrfNo">Transfer No</option>
+                        <option value="PalletNo">Pallet No</option>
+                        <option value="GIN">GIN</option>
+                        <option value="GRN">GRN</option>
+                    </select>
+                </div>
+                <div style="flex:0 0 160px;">
+                    <label class="aiwms-filter-label">VALUE <span style="font-weight:normal;opacity:.6;">(ignores dates)</span></label>
+                    <input @bind="_searchValue" placeholder="contains…" style="width:100%; padding:5px 7px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:12px; background:white;" />
+                </div>
             </div>
-        </div>
+        }
     </div>
 
     <div style="display:flex; gap:10px; margin-top:10px">
         <button class="aiwms-btn aiwms-btn-primary" @onclick="LoadAsync" disabled="@_loading">
             @(_loading ? "Loading…" : "Load")
         </button>
-        <button class="aiwms-btn aiwms-btn-secondary" @onclick="ExportCsvAsync" disabled="@(_loading || _rows.Count == 0)">
+        <button class="aiwms-btn aiwms-btn-secondary" @onclick="ExportCsvAsync" disabled="@(_loading || _rows.Count == 0 || _viewMode != "Detailed")">
             Export to Excel
         </button>
         @if (_rows.Count > 0)
@@ -79,7 +101,148 @@
     }
 </div>
 
-@if (_rows.Count > 0)
+@if (_summaries.Count > 0 || _storeSummary is not null)
+{
+    <div class="aiwms-section" style="padding:0; overflow:hidden;">
+        @if (_summaries.Count > 0)
+        {
+            <div style="padding:10px 16px; background:var(--bg-subtle, #f7f7f5); font-weight:700; font-size:13px; letter-spacing:0.02em;">
+                BY COUNTRY
+            </div>
+            <div style="padding:14px 16px; display:flex; gap:16px; flex-wrap:wrap;">
+                @foreach (var s in _summaries)
+                {
+                    @SummaryCard(s, "#f0f0f0")
+                }
+            </div>
+        }
+        @{ var storeSummary = _storeSummary; }
+        @if (storeSummary is not null)
+        {
+            <div style="padding:10px 16px; background:var(--bg-subtle, #f7f7f5); font-weight:700; font-size:13px; letter-spacing:0.02em; @(_summaries.Count > 0 ? "border-top:1px solid var(--border-default);" : "")">
+                BY STORE
+            </div>
+            <div style="padding:14px 16px; display:flex; gap:16px; flex-wrap:wrap;">
+                @SummaryCard(storeSummary, "#e8f0fe")
+            </div>
+        }
+    </div>
+}
+
+@if (_isBflGroupView && _summaries.Count > 0)
+{
+    <div class="aiwms-section" style="padding:0; overflow:hidden;">
+        <div style="padding:10px 16px; background:var(--bg-subtle, #f7f7f5); font-weight:700; font-size:13px; letter-spacing:0.02em;">
+            SUMMARY
+        </div>
+        <div style="overflow:auto;">
+        <table class="aiwms-table aiwms-table-dense" style="width:100%;">
+            <thead>
+                <tr>
+                    <th>Country</th>
+                    <th style="text-align:right;">Transfers</th>
+                    <th style="text-align:right;">Transfer Qty</th>
+                    <th style="text-align:right;">GIN Count</th>
+                    <th style="text-align:right;">GIN Qty</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var s in _summaries)
+                {
+                    <tr>
+                        <td>@s.Country.ToUpperInvariant()</td>
+                        <td style="text-align:right;">@s.TransferCount.ToString("N0")</td>
+                        <td style="text-align:right;">@s.TransferQty.ToString("N0")</td>
+                        <td style="text-align:right;">@s.GinCount.ToString("N0")</td>
+                        <td style="text-align:right;">@s.GinQty.ToString("N0")</td>
+                    </tr>
+                }
+            </tbody>
+            <tfoot>
+                <tr style="font-weight:600; border-top:2px solid var(--border-default);">
+                    <td>Total</td>
+                    <td style="text-align:right;">@_summaries.Sum(s => s.TransferCount).ToString("N0")</td>
+                    <td style="text-align:right;">@_summaries.Sum(s => s.TransferQty).ToString("N0")</td>
+                    <td style="text-align:right;">@_summaries.Sum(s => s.GinCount).ToString("N0")</td>
+                    <td style="text-align:right;">@_summaries.Sum(s => s.GinQty).ToString("N0")</td>
+                </tr>
+            </tfoot>
+        </table>
+        </div>
+
+        <div style="padding:10px 16px; background:var(--bg-subtle, #f7f7f5); font-weight:700; font-size:13px; letter-spacing:0.02em; border-top:1px solid var(--border-default);">
+            PER COUNTRY BREAKDOWN
+        </div>
+        <div style="padding:14px 16px; display:flex; gap:12px; flex-wrap:wrap;">
+            <div style="display:flex; gap:14px; align-items:center; font-size:11px; width:100%; margin-bottom:4px;">
+                @foreach (var (label, color) in PieMetricColors)
+                {
+                    <div style="display:flex; align-items:center; gap:5px;">
+                        <span style="width:10px; height:10px; border-radius:2px; background:@color; flex:0 0 auto;"></span>
+                        <span>@label</span>
+                    </div>
+                }
+            </div>
+            @foreach (var s in _summaries)
+            {
+                var slices = PieSlicesFor(s);
+                <div style="width:180px; text-align:center;">
+                    <div style="font-size:11px; font-weight:700; color:var(--text-secondary); text-transform:uppercase; margin-bottom:6px;">
+                        @s.Country.ToUpperInvariant()
+                    </div>
+                    @if (slices.Count == 0)
+                    {
+                        <div style="font-size:11px; color:var(--text-secondary); padding:20px 0;">No data</div>
+                    }
+                    else
+                    {
+                        <svg viewBox="0 0 200 200" width="150" height="150">
+                            @if (slices.Count == 1)
+                            {
+                                <circle cx="100" cy="100" r="90" fill="@slices[0].Color" />
+                            }
+                            else
+                            {
+                                @foreach (var slice in slices)
+                                {
+                                    <path d="@slice.Path" fill="@slice.Color" />
+                                }
+                            }
+                        </svg>
+                    }
+                </div>
+            }
+        </div>
+    </div>
+}
+
+@code {
+    private RenderFragment SummaryCard(TransferSummary s, string bg) => @<div style="background:@bg; border-radius:8px; padding:10px 14px; width:260px; flex:0 0 auto;">
+        <div style="text-align:center; font-size:11px; font-weight:700; color:#333333; text-transform:uppercase; letter-spacing:0.02em;">
+            @s.Country.ToUpperInvariant()
+        </div>
+        <div style="display:flex; justify-content:center; gap:16px; margin-top:8px;">
+            <div style="text-align:center;">
+                <div style="font-size:11px; color:var(--text-secondary); white-space:nowrap;">Transfers</div>
+                <div style="font-size:11px; font-weight:700; color:#333333;">@s.TransferCount.ToString("N0")</div>
+            </div>
+            <div style="text-align:center;">
+                <div style="font-size:11px; color:var(--text-secondary); white-space:nowrap;">Transfer Qty</div>
+                <div style="font-size:11px; font-weight:700; color:#333333;">@s.TransferQty.ToString("N0")</div>
+            </div>
+            <div style="text-align:center;">
+                <div style="font-size:11px; color:var(--text-secondary); white-space:nowrap;">GIN Count</div>
+                <div style="font-size:11px; font-weight:700; color:#333333;">@s.GinCount.ToString("N0")</div>
+            </div>
+            <div style="text-align:center;">
+                <div style="font-size:11px; color:var(--text-secondary); white-space:nowrap;">GIN Qty</div>
+                <div style="font-size:11px; font-weight:700; color:#333333;">@s.GinQty.ToString("N0")</div>
+            </div>
+        </div>
+    </div>;
+}
+
+@if (_viewMode == "Detailed" && _rows.Count > 0)
 {
     <div class="aiwms-section">
         <table class="aiwms-table aiwms-table-dense">
@@ -124,11 +287,22 @@
     private List<string> _countries = new();
     private List<string> _stores    = new();
     private List<TransferHistoryRow> _rows = new();
+    private List<TransferSummary> _summaries = new();
+    private TransferSummary? _storeSummary;
+    private bool _isBflGroupView;
 
-    private string   _country       = "KSA";
+    // Regular country-scoped users only ever see their own country (locked,
+    // matching the Shipment Status report). UAE-based staff and Admins get a
+    // country dropdown plus "BFL Group" (every country combined).
+    private const string BflGroupValue = "__BFLGROUP__";
+    private bool   _canSelectMultiple;
+    private string _lockedCountry = "";
+    private string _country       = "";
+
     private string   _store         = "";
     private DateTime _dateFrom       = DateTime.Today;
     private DateTime _dateTo         = DateTime.Today;
+    private string   _viewMode      = "Detailed"; // "Detailed" | "Summary"
     private bool     _withoutPallet;
     private bool     _withoutGin;
     private bool     _withoutGrn;
@@ -139,6 +313,61 @@
     private string _message = "";
     private bool   _isError;
 
+    // Consistent color per metric across every country's pie + one shared legend.
+    private static readonly (string Label, string Color)[] PieMetricColors =
+    [
+        ("Transfers",    "#4C6EF5"),
+        ("Transfer Qty", "#F59F00"),
+        ("GIN Count",    "#37B24D"),
+        ("GIN Qty",      "#E64980"),
+    ];
+
+    private record PieSlice(string Label, decimal Value, double Percent, string Color, string Path);
+
+    // 4 slices per country — Transfers/Transfer Qty/GIN Count/GIN Qty as a share
+    // of that country's own total across those 4 (heterogeneous units, so the
+    // pie shows relative weight within one country's card, not a cross-country
+    // comparison).
+    private static List<PieSlice> PieSlicesFor(TransferSummary s)
+    {
+        var values = new (string Label, decimal Value, string Color)[]
+        {
+            (PieMetricColors[0].Label, s.TransferCount, PieMetricColors[0].Color),
+            (PieMetricColors[1].Label, s.TransferQty,   PieMetricColors[1].Color),
+            (PieMetricColors[2].Label, s.GinCount,      PieMetricColors[2].Color),
+            (PieMetricColors[3].Label, s.GinQty,        PieMetricColors[3].Color),
+        }.Where(v => v.Value > 0).ToList();
+
+        var total = values.Sum(v => v.Value);
+        if (total <= 0) return [];
+
+        const double cx = 100, cy = 100, r = 90;
+        var slices = new List<PieSlice>();
+        var cumulativeAngle = 0.0;
+
+        foreach (var v in values)
+        {
+            var percent    = (double)(v.Value / total) * 100;
+            var startAngle = cumulativeAngle;
+            var endAngle   = cumulativeAngle + percent / 100 * 360;
+            cumulativeAngle = endAngle;
+
+            var (x1, y1) = PointOnCircle(cx, cy, r, startAngle);
+            var (x2, y2) = PointOnCircle(cx, cy, r, endAngle);
+            var largeArc = endAngle - startAngle > 180 ? 1 : 0;
+            var path = $"M{cx},{cy} L{x1:F2},{y1:F2} A{r},{r} 0 {largeArc} 1 {x2:F2},{y2:F2} Z";
+
+            slices.Add(new PieSlice(v.Label, v.Value, percent, v.Color, path));
+        }
+        return slices;
+    }
+
+    private static (double X, double Y) PointOnCircle(double cx, double cy, double r, double angleDeg)
+    {
+        var rad = (angleDeg - 90) * Math.PI / 180;
+        return (cx + r * Math.Cos(rad), cy + r * Math.Sin(rad));
+    }
+
     protected override async Task OnInitializedAsync()
     {
         try
@@ -146,12 +375,24 @@
             await CurrentUser.EnsureLoadedAsync();
             _countries = await Svc.GetCountriesAsync();
 
-            if (!string.IsNullOrWhiteSpace(CurrentUser.Country) && _countries.Contains(CurrentUser.Country!))
-                _country = CurrentUser.Country!;
-            else if (_countries.Count > 0 && !_countries.Contains(_country))
-                _country = _countries[0];
+            _canSelectMultiple = CurrentUser.HasAllCountriesAccess ||
+                string.Equals(CurrentUser.Country, "UAE", StringComparison.OrdinalIgnoreCase);
 
-            await LoadStoresAsync();
+            if (!_canSelectMultiple)
+            {
+                _lockedCountry = CurrentUser.Country ?? "";
+                _country = _lockedCountry;
+            }
+            else if (!string.IsNullOrWhiteSpace(CurrentUser.Country) && _countries.Contains(CurrentUser.Country!))
+            {
+                _country = CurrentUser.Country!;
+            }
+            else if (_countries.Count > 0)
+            {
+                _country = _countries[0];
+            }
+
+            if (_country != BflGroupValue) await LoadStoresAsync();
         }
         catch (Exception ex) { ShowError($"Init failed: {ex.Message}"); }
     }
@@ -159,7 +400,8 @@
     private async Task OnCountryChangedAsync()
     {
         _store = "";
-        await LoadStoresAsync();
+        if (_country != BflGroupValue) await LoadStoresAsync();
+        else _stores = new();
     }
 
     private async Task LoadStoresAsync()
@@ -170,13 +412,38 @@
 
     private async Task LoadAsync()
     {
-        _loading = true; _message = ""; _rows.Clear();
+        _loading = true; _message = ""; _rows.Clear(); _summaries.Clear(); _storeSummary = null;
         await InvokeAsync(StateHasChanged);
         try
         {
+            List<string>? countries;
+            if (!_canSelectMultiple)
+            {
+                _isBflGroupView = false;
+                if (string.IsNullOrWhiteSpace(_lockedCountry))
+                {
+                    ShowError("Your account has no assigned country — contact an admin.");
+                    return;
+                }
+                countries = [_lockedCountry];
+            }
+            else if (_country == BflGroupValue)
+            {
+                countries = null; // every country
+                _isBflGroupView = true;
+            }
+            else
+            {
+                countries = [_country];
+                _isBflGroupView = false;
+            }
+
+            var singleCountry = countries?.Count == 1 ? countries[0] : null;
+            var storeFilter   = singleCountry is not null && !string.IsNullOrWhiteSpace(_store) ? _store : null;
+
             var filter = new TransferHistoryFilter(
-                Country:       _country,
-                Store:         string.IsNullOrWhiteSpace(_store) ? null : _store,
+                Countries:     countries,
+                Store:         storeFilter,
                 DateFrom:      _dateFrom,
                 DateTo:        _dateTo,
                 WithoutPallet: _withoutPallet,
@@ -185,8 +452,24 @@
                 SearchBy:      _searchBy,
                 SearchValue:   string.IsNullOrWhiteSpace(_searchValue) ? null : _searchValue.Trim());
 
-            _rows = await Svc.GetTransferHistoryAsync(filter);
-            ShowInfo($"Loaded {_rows.Count} rows.");
+            var resultTask      = Svc.GetTransferHistoryAsync(filter);
+            var summaryTask     = Svc.GetTransferSummaryAsync(countries, _dateFrom, _dateTo);
+            var storeSummaryTask = storeFilter is not null && singleCountry is not null
+                ? Svc.GetStoreSummaryAsync(singleCountry, storeFilter, _dateFrom, _dateTo)
+                : Task.FromResult<TransferSummary?>(null);
+            await Task.WhenAll(resultTask, summaryTask, storeSummaryTask);
+
+            var result  = resultTask.Result;
+            var summary = summaryTask.Result;
+            _rows          = result.Rows;
+            _summaries     = summary.Summaries;
+            _storeSummary  = storeSummaryTask.Result;
+
+            var allWarnings = result.Warnings.Concat(summary.Warnings).ToList();
+            if (allWarnings.Count > 0)
+                ShowError($"Loaded {_rows.Count} rows. Some countries failed: {string.Join("; ", allWarnings)}");
+            else
+                ShowInfo($"Loaded {_rows.Count} rows.");
         }
         catch (Exception ex) { ShowError($"Load failed: {ex.Message}"); }
         finally { _loading = false; }
@@ -204,7 +487,8 @@
                           $",{Csv(r.Remarks)}");
 
         var b64      = Convert.ToBase64String(Encoding.UTF8.GetBytes(sb.ToString()));
-        var filename = $"TransferGinGrn_{_country}_{_dateFrom:yyyyMMdd}_{_dateTo:yyyyMMdd}.csv";
+        var country  = _country == BflGroupValue ? "BFLGroup" : (_canSelectMultiple ? _country : _lockedCountry);
+        var filename = $"TransferGinGrn_{country}_{_dateFrom:yyyyMMdd}_{_dateTo:yyyyMMdd}.csv";
         await JS.InvokeVoidAsync("eval",
             $"(function(){{var a=document.createElement('a');a.href='data:text/csv;base64,{b64}';" +
             $"a.download='{filename}';document.body.appendChild(a);a.click();document.body.removeChild(a);}})();");
