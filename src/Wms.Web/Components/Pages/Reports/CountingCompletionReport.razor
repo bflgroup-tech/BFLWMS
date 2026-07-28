@@ -34,7 +34,7 @@
         </label>
     </div>
 
-    <div style="display:grid; grid-template-columns: 1.2fr 1fr 1fr 1fr auto; gap:12px; align-items:end;">
+    <div style="display:grid; grid-template-columns: 1.2fr 1fr 1fr 1fr 1fr auto; gap:12px; align-items:end;">
         <div>
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COUNTRY (select any)</label>
             <MudSelect T="string" Dense="true" MultiSelection="true" SelectAll="true" Placeholder="All"
@@ -54,6 +54,14 @@
         <div>
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">CONTAINER NO (searches all dates)</label>
             <input @bind="_contNoFilter" @bind:event="oninput" placeholder="e.g. KWLOC7172" disabled="@_isToday" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
+        </div>
+        <div>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">WAREHOUSE (UAE only)</label>
+            <select @bind="_warehouseFilter" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white">
+                <option value="">All</option>
+                <option value="JAFZA">JAFZA</option>
+                <option value="TECHNO">TECHNO</option>
+            </select>
         </div>
         <div style="display:flex; gap:8px">
             <button class="aiwms-btn aiwms-btn-primary" @onclick="LoadAsync" disabled="@(_loading || (!_isToday && !HasContNoFilter && _from > _to))">@(_loading ? "Loading..." : "Load")</button>
@@ -102,6 +110,7 @@
                 <colgroup>
                     <col style="width:70px" />
                     <col style="width:110px" />
+                    <col style="width:90px" />
                     <col style="width:100px" />
                     <col style="width:140px" />
                     <col style="width:200px" />
@@ -114,6 +123,7 @@
                     <tr>
                         <th>Country</th>
                         <th>Cont No</th>
+                        <th>Warehouse</th>
                         <th style="text-align:center">Counted Qty</th>
                         <th>LPM Dates</th>
                         <th>Divisions</th>
@@ -129,6 +139,7 @@
                         <tr>
                             <td>@DisplayCountry(r.Country)</td>
                             <td style="font-family:var(--font-mono)"><b>@r.ContNo</b></td>
+                            <td>@r.Warehouse</td>
                             <td style="text-align:center">@r.CountedQty.ToString("N0")</td>
                             <td style="word-break:break-word">@r.LpmDates</td>
                             <td style="word-break:break-word">@r.Divisions</td>
@@ -176,6 +187,7 @@
                 <colgroup>
                     <col style="width:70px" />
                     <col style="width:110px" />
+                    <col style="width:90px" />
                     <col style="width:100px" />
                     <col style="width:160px" />
                     <col style="width:100px" />
@@ -188,6 +200,7 @@
                     <tr>
                         <th>Country</th>
                         <th>Cont No</th>
+                        <th>Warehouse</th>
                         <th>Box Category</th>
                         <th>Type Name</th>
                         <th style="text-align:center">Build Qty</th>
@@ -203,6 +216,7 @@
                         <tr>
                             <td>@DisplayCountry(r.Country)</td>
                             <td style="font-family:var(--font-mono)"><b>@r.ContNo</b></td>
+                            <td>@r.Warehouse</td>
                             <td style="word-break:break-word">@r.ResultType</td>
                             <td style="word-break:break-word">@r.TypeName</td>
                             <td style="text-align:center">@r.BuildQty.ToString("N0")</td>
@@ -250,6 +264,7 @@
                 <colgroup>
                     <col style="width:70px" />
                     <col style="width:110px" />
+                    <col style="width:90px" />
                     <col style="width:100px" />
                     <col style="width:140px" />
                     <col style="width:130px" />
@@ -264,6 +279,7 @@
                     <tr>
                         <th>Country</th>
                         <th>Cont No</th>
+                        <th>Warehouse</th>
                         <th>PalletType</th>
                         <th>Type Name</th>
                         <th>Item Code</th>
@@ -281,6 +297,7 @@
                         <tr>
                             <td>@DisplayCountry(r.Country)</td>
                             <td style="font-family:var(--font-mono)"><b>@r.ContNo</b></td>
+                            <td>@r.Warehouse</td>
                             <td style="word-break:break-word">@r.PalletType</td>
                             <td style="word-break:break-word">@r.TypeName</td>
                             <td style="font-family:var(--font-mono)">@r.ItemCode</td>
@@ -331,6 +348,7 @@ else if (_view == "Summary" && _summaryRows.Count > 0)
             <colgroup>
                 <col style="width:70px" />
                 <col style="width:110px" />
+                <col style="width:90px" />
                 <col style="width:160px" />
                 <col style="width:130px" />
                 <col style="width:130px" />
@@ -344,6 +362,7 @@ else if (_view == "Summary" && _summaryRows.Count > 0)
                 <tr>
                     <th>Country</th>
                     <th>Cont No</th>
+                    <th>Warehouse</th>
                     <th>PO No</th>
                     <th>Counting Start Date</th>
                     <th>Counting Completion Date</th>
@@ -360,6 +379,7 @@ else if (_view == "Summary" && _summaryRows.Count > 0)
                     <tr>
                         <td>@DisplayCountry(r.Country)</td>
                         <td style="font-family:var(--font-mono)"><b>@r.ContNo</b></td>
+                        <td>@r.Warehouse</td>
                         <td style="word-break:break-word">@r.PONo</td>
                         <td>@FmtDate(r.CountingStartDate)</td>
                         <td>@FmtDate(r.CountingCompletionDate)</td>
@@ -408,6 +428,7 @@ else if (_view == "Allocation" && _allocRows.Count > 0)
             <colgroup>
                 <col style="width:70px" />
                 <col style="width:110px" />
+                <col style="width:90px" />
                 <col style="width:110px" />
                 <col style="width:130px" />
                 <col style="width:130px" />
@@ -423,6 +444,7 @@ else if (_view == "Allocation" && _allocRows.Count > 0)
                 <tr>
                     <th>Country</th>
                     <th>Cont No</th>
+                    <th>Warehouse</th>
                     <th>PO No</th>
                     <th>Counting Start Date</th>
                     <th>Counting Completion Date</th>
@@ -441,6 +463,7 @@ else if (_view == "Allocation" && _allocRows.Count > 0)
                     <tr>
                         <td>@DisplayCountry(r.Country)</td>
                         <td style="font-family:var(--font-mono)"><b>@r.ContNo</b></td>
+                        <td>@r.Warehouse</td>
                         <td style="word-break:break-word">@r.PONo</td>
                         <td>@FmtDate(r.CountingStartDate)</td>
                         <td>@FmtDate(r.CountingCompletionDate)</td>
@@ -491,6 +514,7 @@ else if (_view == "Detailed" && _detailRows.Count > 0)
             <colgroup>
                 <col style="width:70px" />
                 <col style="width:110px" />
+                <col style="width:90px" />
                 <col style="width:130px" />
                 <col style="width:110px" />
                 <col style="width:140px" />
@@ -505,6 +529,7 @@ else if (_view == "Detailed" && _detailRows.Count > 0)
                 <tr>
                     <th>Country</th>
                     <th>Cont No</th>
+                    <th>Warehouse</th>
                     <th>Cont-Purchase Date</th>
                     <th>PalletType</th>
                     <th>Type Name</th>
@@ -522,6 +547,7 @@ else if (_view == "Detailed" && _detailRows.Count > 0)
                     <tr>
                         <td>@DisplayCountry(r.Country)</td>
                         <td style="font-family:var(--font-mono)"><b>@r.ContNo</b></td>
+                        <td>@r.Warehouse</td>
                         <td>@FmtDate(r.PurchaseDate)</td>
                         <td style="word-break:break-word">@r.PalletType</td>
                         <td style="word-break:break-word">@r.TypeName</td>
@@ -546,6 +572,7 @@ else if (_view == "Detailed" && _detailRows.Count > 0)
     private DateTime _from = DateTime.Today.AddDays(-1);
     private DateTime _to   = DateTime.Today;
     private string _contNoFilter = "";
+    private string _warehouseFilter = "";
     private bool _isToday;
     private bool _loading;
     private bool _exporting;
@@ -614,33 +641,33 @@ else if (_view == "Detailed" && _detailRows.Count > 0)
                 var countries = EffectiveCountries;
                 if (_view == "Summary")
                 {
-                    _todaySummaryRows = await TodaySvc.GetSummaryAsync(countries);
+                    _todaySummaryRows = await TodaySvc.GetSummaryAsync(countries, _warehouseFilter);
                     if (_todaySummaryRows.Count == 0) _message = "No rows counted today for the selected countries.";
                 }
                 else if (_view == "Allocation")
                 {
-                    _todayAllocRows = await TodaySvc.GetAllocationAsync(countries);
+                    _todayAllocRows = await TodaySvc.GetAllocationAsync(countries, _warehouseFilter);
                     if (_todayAllocRows.Count == 0) _message = "No rows counted today for the selected countries.";
                 }
                 else
                 {
-                    _todayDetailRows = await TodaySvc.GetDetailAsync(countries);
+                    _todayDetailRows = await TodaySvc.GetDetailAsync(countries, _warehouseFilter);
                     if (_todayDetailRows.Count == 0) _message = "No rows counted today for the selected countries.";
                 }
             }
             else if (_view == "Summary")
             {
-                _summaryRows = await Svc.GetCountingCompletionSummaryAsync(_selectedCountries, _from, _to, _contNoFilter);
+                _summaryRows = await Svc.GetCountingCompletionSummaryAsync(_selectedCountries, _from, _to, _contNoFilter, _warehouseFilter);
                 if (_summaryRows.Count == 0) _message = "No rows for the selected filters.";
             }
             else if (_view == "Allocation")
             {
-                _allocRows = await Svc.GetCountingAllocationAsync(_selectedCountries, _from, _to, _contNoFilter);
+                _allocRows = await Svc.GetCountingAllocationAsync(_selectedCountries, _from, _to, _contNoFilter, _warehouseFilter);
                 if (_allocRows.Count == 0) _message = "No rows for the selected filters.";
             }
             else
             {
-                _detailRows = await Svc.GetCountingDetailAsync(_selectedCountries, _from, _to, _contNoFilter);
+                _detailRows = await Svc.GetCountingDetailAsync(_selectedCountries, _from, _to, _contNoFilter, _warehouseFilter);
                 if (_detailRows.Count == 0) _message = "No rows for the selected filters.";
             }
         }
@@ -662,7 +689,7 @@ else if (_view == "Detailed" && _detailRows.Count > 0)
                 if (_view == "Summary")
                 {
                     var ws = wb.AddWorksheet("Counting Completion (Today)");
-                    string[] headers = { "Country", "Cont No", "Counted Qty", "LPM Dates", "Divisions", "PO Numbers", "Brands", "PalletTypes", "Type Names" };
+                    string[] headers = { "Country", "Cont No", "Warehouse", "Counted Qty", "LPM Dates", "Divisions", "PO Numbers", "Brands", "PalletTypes", "Type Names" };
                     for (int i = 0; i < headers.Length; i++) ws.Cell(1, i + 1).Value = headers[i];
                     ws.Row(1).Style.Font.Bold = true;
 
@@ -671,13 +698,14 @@ else if (_view == "Detailed" && _detailRows.Count > 0)
                     {
                         ws.Cell(row, 1).Value = DisplayCountry(r.Country);
                         ws.Cell(row, 2).Value = r.ContNo;
-                        ws.Cell(row, 3).Value = r.CountedQty;
-                        ws.Cell(row, 4).Value = r.LpmDates;
-                        ws.Cell(row, 5).Value = r.Divisions;
-                        ws.Cell(row, 6).Value = r.OraPoNos;
-                        ws.Cell(row, 7).Value = r.Brands;
-                        ws.Cell(row, 8).Value = r.PalletTypes;
-                        ws.Cell(row, 9).Value = r.TypeNames;
+                        ws.Cell(row, 3).Value = r.Warehouse;
+                        ws.Cell(row, 4).Value = r.CountedQty;
+                        ws.Cell(row, 5).Value = r.LpmDates;
+                        ws.Cell(row, 6).Value = r.Divisions;
+                        ws.Cell(row, 7).Value = r.OraPoNos;
+                        ws.Cell(row, 8).Value = r.Brands;
+                        ws.Cell(row, 9).Value = r.PalletTypes;
+                        ws.Cell(row, 10).Value = r.TypeNames;
                         row++;
                     }
                     ws.Columns().AdjustToContents();
@@ -686,7 +714,7 @@ else if (_view == "Detailed" && _detailRows.Count > 0)
                 else if (_view == "Allocation")
                 {
                     var ws = wb.AddWorksheet("Allocation-wise (Today)");
-                    string[] headers = { "Country", "Cont No", "Box Category", "Type Name", "Build Qty", "LPM Dates", "Divisions", "PO Numbers", "Brands" };
+                    string[] headers = { "Country", "Cont No", "Warehouse", "Box Category", "Type Name", "Build Qty", "LPM Dates", "Divisions", "PO Numbers", "Brands" };
                     for (int i = 0; i < headers.Length; i++) ws.Cell(1, i + 1).Value = headers[i];
                     ws.Row(1).Style.Font.Bold = true;
 
@@ -695,13 +723,14 @@ else if (_view == "Detailed" && _detailRows.Count > 0)
                     {
                         ws.Cell(row, 1).Value = DisplayCountry(r.Country);
                         ws.Cell(row, 2).Value = r.ContNo;
-                        ws.Cell(row, 3).Value = r.ResultType;
-                        ws.Cell(row, 4).Value = r.TypeName;
-                        ws.Cell(row, 5).Value = r.BuildQty;
-                        ws.Cell(row, 6).Value = r.LpmDates;
-                        ws.Cell(row, 7).Value = r.Divisions;
-                        ws.Cell(row, 8).Value = r.OraPoNos;
-                        ws.Cell(row, 9).Value = r.Brands;
+                        ws.Cell(row, 3).Value = r.Warehouse;
+                        ws.Cell(row, 4).Value = r.ResultType;
+                        ws.Cell(row, 5).Value = r.TypeName;
+                        ws.Cell(row, 6).Value = r.BuildQty;
+                        ws.Cell(row, 7).Value = r.LpmDates;
+                        ws.Cell(row, 8).Value = r.Divisions;
+                        ws.Cell(row, 9).Value = r.OraPoNos;
+                        ws.Cell(row, 10).Value = r.Brands;
                         row++;
                     }
                     ws.Columns().AdjustToContents();
@@ -710,7 +739,7 @@ else if (_view == "Detailed" && _detailRows.Count > 0)
                 else
                 {
                     var ws = wb.AddWorksheet("Item-wise (Today)");
-                    string[] headers = { "Country", "Cont No", "PalletType", "Type Name", "Item Code", "Item Name", "Qty", "LPM Date", "Division", "PO No", "Brand" };
+                    string[] headers = { "Country", "Cont No", "Warehouse", "PalletType", "Type Name", "Item Code", "Item Name", "Qty", "LPM Date", "Division", "PO No", "Brand" };
                     for (int i = 0; i < headers.Length; i++) ws.Cell(1, i + 1).Value = headers[i];
                     ws.Row(1).Style.Font.Bold = true;
 
@@ -719,15 +748,16 @@ else if (_view == "Detailed" && _detailRows.Count > 0)
                     {
                         ws.Cell(row, 1).Value  = DisplayCountry(r.Country);
                         ws.Cell(row, 2).Value  = r.ContNo;
-                        ws.Cell(row, 3).Value  = r.PalletType;
-                        ws.Cell(row, 4).Value  = r.TypeName;
-                        ws.Cell(row, 5).Value  = r.ItemCode;
-                        ws.Cell(row, 6).Value  = r.ItemName;
-                        ws.Cell(row, 7).Value  = r.Qty;
-                        ws.Cell(row, 8).Value  = FmtDate(r.LpmDt);
-                        ws.Cell(row, 9).Value  = r.Division;
-                        ws.Cell(row, 10).Value = r.OraPoNo;
-                        ws.Cell(row, 11).Value = r.Brand;
+                        ws.Cell(row, 3).Value  = r.Warehouse;
+                        ws.Cell(row, 4).Value  = r.PalletType;
+                        ws.Cell(row, 5).Value  = r.TypeName;
+                        ws.Cell(row, 6).Value  = r.ItemCode;
+                        ws.Cell(row, 7).Value  = r.ItemName;
+                        ws.Cell(row, 8).Value  = r.Qty;
+                        ws.Cell(row, 9).Value  = FmtDate(r.LpmDt);
+                        ws.Cell(row, 10).Value = r.Division;
+                        ws.Cell(row, 11).Value = r.OraPoNo;
+                        ws.Cell(row, 12).Value = r.Brand;
                         row++;
                     }
                     ws.Columns().AdjustToContents();
@@ -739,7 +769,7 @@ else if (_view == "Detailed" && _detailRows.Count > 0)
                 var ws = wb.AddWorksheet("Counting Completion");
                 string[] headers =
                 {
-                    "Country", "Cont No", "PO No", "Counting Start Date", "Counting Completion Date",
+                    "Country", "Cont No", "Warehouse", "PO No", "Counting Start Date", "Counting Completion Date",
                     "Cont-Purchase Date", "Counted Qty", "LPM Months", "Divisions", "Brands"
                 };
                 for (int i = 0; i < headers.Length; i++) ws.Cell(1, i + 1).Value = headers[i];
@@ -750,14 +780,15 @@ else if (_view == "Detailed" && _detailRows.Count > 0)
                 {
                     ws.Cell(row, 1).Value  = DisplayCountry(r.Country);
                     ws.Cell(row, 2).Value  = r.ContNo;
-                    ws.Cell(row, 3).Value  = r.PONo;
-                    ws.Cell(row, 4).Value  = FmtDate(r.CountingStartDate);
-                    ws.Cell(row, 5).Value  = FmtDate(r.CountingCompletionDate);
-                    ws.Cell(row, 6).Value  = FmtDate(r.PurchaseDate);
-                    ws.Cell(row, 7).Value  = r.CountedQty;
-                    ws.Cell(row, 8).Value  = r.LpmMonths;
-                    ws.Cell(row, 9).Value  = r.Divisions;
-                    ws.Cell(row, 10).Value = r.Brands;
+                    ws.Cell(row, 3).Value  = r.Warehouse;
+                    ws.Cell(row, 4).Value  = r.PONo;
+                    ws.Cell(row, 5).Value  = FmtDate(r.CountingStartDate);
+                    ws.Cell(row, 6).Value  = FmtDate(r.CountingCompletionDate);
+                    ws.Cell(row, 7).Value  = FmtDate(r.PurchaseDate);
+                    ws.Cell(row, 8).Value  = r.CountedQty;
+                    ws.Cell(row, 9).Value  = r.LpmMonths;
+                    ws.Cell(row, 10).Value = r.Divisions;
+                    ws.Cell(row, 11).Value = r.Brands;
                     row++;
                 }
                 ws.Columns().AdjustToContents();
@@ -768,7 +799,7 @@ else if (_view == "Detailed" && _detailRows.Count > 0)
                 var ws = wb.AddWorksheet("Allocation-wise");
                 string[] headers =
                 {
-                    "Country", "Cont No", "PO No", "Counting Start Date", "Counting Completion Date",
+                    "Country", "Cont No", "Warehouse", "PO No", "Counting Start Date", "Counting Completion Date",
                     "Cont-Purchase Date", "Box Category", "Type Name", "Build Qty", "LPM Months", "Divisions", "Brands"
                 };
                 for (int i = 0; i < headers.Length; i++) ws.Cell(1, i + 1).Value = headers[i];
@@ -779,16 +810,17 @@ else if (_view == "Detailed" && _detailRows.Count > 0)
                 {
                     ws.Cell(row, 1).Value  = DisplayCountry(r.Country);
                     ws.Cell(row, 2).Value  = r.ContNo;
-                    ws.Cell(row, 3).Value  = r.PONo;
-                    ws.Cell(row, 4).Value  = FmtDate(r.CountingStartDate);
-                    ws.Cell(row, 5).Value  = FmtDate(r.CountingCompletionDate);
-                    ws.Cell(row, 6).Value  = FmtDate(r.PurchaseDate);
-                    ws.Cell(row, 7).Value  = r.PalletType;
-                    ws.Cell(row, 8).Value  = r.TypeName;
-                    ws.Cell(row, 9).Value  = r.BuildQty;
-                    ws.Cell(row, 10).Value = r.LpmMonths;
-                    ws.Cell(row, 11).Value = r.Divisions;
-                    ws.Cell(row, 12).Value = r.Brands;
+                    ws.Cell(row, 3).Value  = r.Warehouse;
+                    ws.Cell(row, 4).Value  = r.PONo;
+                    ws.Cell(row, 5).Value  = FmtDate(r.CountingStartDate);
+                    ws.Cell(row, 6).Value  = FmtDate(r.CountingCompletionDate);
+                    ws.Cell(row, 7).Value  = FmtDate(r.PurchaseDate);
+                    ws.Cell(row, 8).Value  = r.PalletType;
+                    ws.Cell(row, 9).Value  = r.TypeName;
+                    ws.Cell(row, 10).Value = r.BuildQty;
+                    ws.Cell(row, 11).Value = r.LpmMonths;
+                    ws.Cell(row, 12).Value = r.Divisions;
+                    ws.Cell(row, 13).Value = r.Brands;
                     row++;
                 }
                 ws.Columns().AdjustToContents();
@@ -799,7 +831,7 @@ else if (_view == "Detailed" && _detailRows.Count > 0)
                 var ws = wb.AddWorksheet("Item-wise");
                 string[] headers =
                 {
-                    "Country", "Cont No", "Cont-Purchase Date", "PalletType", "Type Name", "Item Code", "Item Name",
+                    "Country", "Cont No", "Warehouse", "Cont-Purchase Date", "PalletType", "Type Name", "Item Code", "Item Name",
                     "Qty", "LPM Months", "Division", "Brand"
                 };
                 for (int i = 0; i < headers.Length; i++) ws.Cell(1, i + 1).Value = headers[i];
@@ -810,15 +842,16 @@ else if (_view == "Detailed" && _detailRows.Count > 0)
                 {
                     ws.Cell(row, 1).Value  = DisplayCountry(r.Country);
                     ws.Cell(row, 2).Value  = r.ContNo;
-                    ws.Cell(row, 3).Value  = FmtDate(r.PurchaseDate);
-                    ws.Cell(row, 4).Value  = r.PalletType;
-                    ws.Cell(row, 5).Value  = r.TypeName;
-                    ws.Cell(row, 6).Value  = r.ItemCode;
-                    ws.Cell(row, 7).Value  = r.ItemName;
-                    ws.Cell(row, 8).Value  = r.Qty;
-                    ws.Cell(row, 9).Value  = r.LpmMonths;
-                    ws.Cell(row, 10).Value = r.Division;
-                    ws.Cell(row, 11).Value = r.Brand;
+                    ws.Cell(row, 3).Value  = r.Warehouse;
+                    ws.Cell(row, 4).Value  = FmtDate(r.PurchaseDate);
+                    ws.Cell(row, 5).Value  = r.PalletType;
+                    ws.Cell(row, 6).Value  = r.TypeName;
+                    ws.Cell(row, 7).Value  = r.ItemCode;
+                    ws.Cell(row, 8).Value  = r.ItemName;
+                    ws.Cell(row, 9).Value  = r.Qty;
+                    ws.Cell(row, 10).Value = r.LpmMonths;
+                    ws.Cell(row, 11).Value = r.Division;
+                    ws.Cell(row, 12).Value = r.Brand;
                     row++;
                 }
                 ws.Columns().AdjustToContents();

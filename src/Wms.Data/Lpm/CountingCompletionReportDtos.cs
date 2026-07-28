@@ -15,7 +15,8 @@ public record CountingCompletionSummaryRow(
     int       CountedQty,
     string?   LpmMonths,
     string?   Divisions,
-    string?   Brands);
+    string?   Brands,
+    string?   Warehouse);
 
 /// <summary>
 /// Counting Completion Report — Detailed. One row per (Country, ContNo,
@@ -36,7 +37,8 @@ public record CountingCompletionDetailRow(
     int       Qty,
     string?   LpmMonths,
     string?   Division,
-    string?   Brand);
+    string?   Brand,
+    string?   Warehouse);
 
 /// <summary>
 /// Counting Completion Report — Detailed / Allocation-wise. Same shape as
@@ -57,4 +59,5 @@ public record CountingAllocationRow(
     int       BuildQty,
     string?   LpmMonths,
     string?   Divisions,
-    string?   Brands);
+    string?   Brands,
+    string?   Warehouse);
