@@ -1642,41 +1642,34 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                                 var totalMinMax = top3.Sum(x => x.MinMax);
                                 if (top3.Count > 0 && totalMinMax > 0)
                                 {
-                                    // Largest-remainder distribution:
-                                    //   RatioShare(i) = RawSkuMax(i) * origRemaining / totalMinMax    (float)
-                                    //   floor share for each; residual = origRemaining - sum(floors);
-                                    //   distribute +1 to the top-residual stores by fractional part.
-                                    // No last-takes-all. RatioSkuMax = the pure floor share (audit)
-                                    // so operators can see who was raised by the residual bump when
-                                    // Take > RatioSkuMax.
+                                    // ROUND-based distribution (per operator spec):
+                                    //   RatioShare(i) = ROUND(RawSkuMax(i) * origRemaining / totalMinMax)
+                                    // Any 1-2 unit leftover from rounding (either +ve or -ve) is added
+                                    // to the first store in the sort — which is the top-grade store
+                                    // (A > B > C) with the highest LiveOts among positive-OTS A/B/C.
+                                    // SUM(Take) still equals origRemaining exactly.
                                     var origRemaining = remaining;
-                                    var floorShares = new int[top3.Count];
-                                    var fractions   = new double[top3.Count];
-                                    var floorSum    = 0;
+                                    var roundShares = new int[top3.Count];
+                                    var shareSum = 0;
                                     for (int i = 0; i < top3.Count; i++)
                                     {
                                         var raw = (double)origRemaining * top3[i].MinMax / totalMinMax;
-                                        floorShares[i] = (int)Math.Floor(raw);
-                                        fractions[i]   = raw - floorShares[i];
-                                        floorSum      += floorShares[i];
+                                        roundShares[i] = (int)Math.Round(raw, MidpointRounding.AwayFromZero);
+                                        shareSum += roundShares[i];
                                     }
-                                    var takeShares = (int[])floorShares.Clone();
-                                    var deficit = origRemaining - floorSum;
-                                    if (deficit > 0)
+                                    var takeShares = (int[])roundShares.Clone();
+                                    var leftover = origRemaining - shareSum;   // may be +ve or -ve
+                                    if (leftover != 0 && takeShares.Length > 0)
                                     {
-                                        var order = Enumerable.Range(0, top3.Count)
-                                            .OrderByDescending(idx => fractions[idx])
-                                            .ThenBy(idx => idx)   // stable tiebreak
-                                            .ToArray();
-                                        for (int j = 0; j < deficit && j < order.Length; j++)
-                                            takeShares[order[j]] += 1;
+                                        takeShares[0] += leftover;
+                                        if (takeShares[0] < 0) takeShares[0] = 0;   // guard against pathological negatives
                                     }
 
                                     for (int i = 0; i < top3.Count; i++)
                                     {
                                         var (r, minMax) = top3[i];
-                                        var ratioShare  = floorShares[i];  // pure ratio floor (audit)
-                                        var take        = takeShares[i];   // ratio + possible +1 from residual
+                                        var ratioShare  = roundShares[i];  // pure ROUND ratio (audit)
+                                        var take        = takeShares[i];   // ratio + leftover on i==0
                                         var current = allocs.TryGetValue(r.StoreID, out var row) ? row.AllocQty : 0;
                                         var remBefore = remaining;
                                         if (take <= 0)
