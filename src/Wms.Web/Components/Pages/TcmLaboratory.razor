@@ -58,23 +58,23 @@
             </div>
         </div>
 
-        <div style="flex-shrink:0; width:260px; border:1px solid var(--border); border-radius:4px; overflow:hidden">
+        <div style="flex-shrink:0; width:320px; border:1px solid var(--border); border-radius:4px; overflow:hidden">
             <table class="aiwms-table" style="width:100%; margin:0">
                 <thead>
                     <tr><th colspan="2">Profit Margin</th></tr>
                 </thead>
                 <tbody>
                     <tr>
-                        <td>Supplier Cost</td>
-                        <td><input class="aiwms-input" type="number" step="0.0001" @bind="SupplierCostText" style="text-align:right" /></td>
+                        <td style="white-space:nowrap">Supplier Cost</td>
+                        <td><input class="aiwms-input" type="number" step="0.0001" @bind="SupplierCostText" style="width:75px; text-align:right" /></td>
                     </tr>
                     <tr>
-                        <td>FC rate for Cost</td>
-                        <td><input class="aiwms-input" type="number" step="0.0001" @bind="FcRateForCostText" style="text-align:right" /></td>
+                        <td style="white-space:nowrap">FC rate for Cost</td>
+                        <td><input class="aiwms-input" type="number" step="0.0001" @bind="FcRateForCostText" style="width:75px; text-align:right" /></td>
                     </tr>
                     <tr>
-                        <td>Additional Expenses %</td>
-                        <td><input class="aiwms-input" type="number" step="0.0001" @bind="AdditionalExpensesPctText" style="text-align:right" /></td>
+                        <td style="white-space:nowrap">Additional Expenses %</td>
+                        <td><input class="aiwms-input" type="number" step="0.0001" @bind="AdditionalExpensesPctText" style="width:75px; text-align:right" /></td>
                     </tr>
                 </tbody>
             </table>
