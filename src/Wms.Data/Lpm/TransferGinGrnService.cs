@@ -56,6 +56,7 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
             SELECT DISTINCT SIMCountry
               FROM BFLDATA.dbo.DataSettings
              WHERE SIMCountry IS NOT NULL AND LTRIM(RTRIM(SIMCountry)) <> ''
+               AND SIMCountry NOT IN ('ECOM')
                AND DataName   IS NOT NULL AND LTRIM(RTRIM(DataName))   <> ''
              ORDER BY SIMCountry",
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
@@ -260,8 +261,11 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
         return row ?? new WarehouseCode();
     }
 
-    // dataNameTable e.g. "[EX2KSA]..vTransferDetail" (UAE linked server) or
-    // "BFLDATA..vTransferDetail" (non-UAE country server's own sibling BFLDATA db).
+    // dataNameTable e.g. "[EX2KSA]..vTransferDetail" (UAE linked server) or just
+    // "vTransferDetail" (non-UAE: lives in the country's own dataName database,
+    // same as transferheader — NOT in the sibling "BFLDATA" db that vGoodsIssue/
+    // vGoodsIssueplt/DataSettings live in; confirmed via a direct query against
+    // bflksa..vTransferDetail).
     // whCostCodeTo/whLocCodeTo exclude the warehouse's own internal transfers —
     // null (no DataSettings Warehouse row found) means don't filter.
     private static string TransferSummarySql(string transferDetailTable) => $@"
@@ -341,7 +345,7 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
             var wh = await ResolveWarehouseCodeAsync(conn, "BFLDATA..DataSettings", simCountry: null, ct);
 
             var transferRow = await conn.QuerySingleAsync<CountQtyRow>(new CommandDefinition(
-                TransferSummarySql("BFLDATA..vTransferDetail"),
+                TransferSummarySql("vTransferDetail"),
                 new { from, to, whCostCodeTo = wh.CostCodeTo, whLocCodeTo = wh.LocCodeTo },
                 commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
 
@@ -418,7 +422,7 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
             if (storeCode is null) return null;
 
             var transferRow = await conn.QuerySingleAsync<CountQtyRow>(new CommandDefinition(
-                StoreTransferSummarySql("BFLDATA..vTransferDetail"),
+                StoreTransferSummarySql("vTransferDetail"),
                 new { from, to, costCodeTo = storeCode.CostCodeTo, locCodeTo = storeCode.LocCodeTo },
                 commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
 
