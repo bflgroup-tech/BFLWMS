@@ -199,8 +199,10 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         var dateClause = otsDate.HasValue ? "AND OTSDate = @dt" : "";
         var sql = $@"
             SELECT Country, StoreID, StoreName, DivCode, Division, VolumeGroup, PriorityRank,
+                   TgtEOMMonth,
                    TgtEOM, SOHToday, WeeksToInclude, WeekSales, InTransit, Ex2DcSoh,
                    CountingWIP, OtsQtyToday, OtsPercentToday,
+                   PrevEOMMonth,
                    ISNULL(PrevMonthEOM, 0) AS PrevMonthEOM,
                    ISNULL(WkReduction,  0) AS WkReduction,
                    ISNULL(CurrentEOW,   TgtEOM) AS CurrentEOW
@@ -218,10 +220,12 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
             Country: r.Country, StoreID: r.StoreID, StoreName: r.StoreName,
             DivCode: r.DivCode, Division: r.Division, VolumeGroup: r.VolumeGroup,
             PriorityRank: r.PriorityRank, EOMMonth: eomLabel,
+            TgtEOMMonth: r.TgtEOMMonth,
             TgtEOM: r.TgtEOM, SOHToday: r.SOHToday, WeeksToInclude: r.WeeksToInclude,
             WeekSales: r.WeekSales, InTransit: r.InTransit, Ex2DcSoh: r.Ex2DcSoh,
             CountingWIP: r.CountingWIP, OtsQtyToday: r.OtsQtyToday,
             OtsPercentToday: (double)r.OtsPercentToday,
+            PrevEOMMonth: r.PrevEOMMonth,
             PrevMonthEOM: r.PrevMonthEOM,
             WkReduction: r.WkReduction,
             CurrentEOW: r.CurrentEOW)).ToList();
@@ -281,6 +285,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
             dt.Columns.Add("Division",        typeof(string));
             dt.Columns.Add("VolumeGroup",     typeof(string));
             dt.Columns.Add("PriorityRank",    typeof(int));
+            dt.Columns.Add("TgtEOMMonth",     typeof(string));
             dt.Columns.Add("TgtEOM",          typeof(int));
             dt.Columns.Add("SOHToday",        typeof(int));
             dt.Columns.Add("WeeksToInclude",  typeof(int));
@@ -290,6 +295,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
             dt.Columns.Add("CountingWIP",     typeof(int));
             dt.Columns.Add("OtsQtyToday",     typeof(int));
             dt.Columns.Add("OtsPercentToday", typeof(decimal));
+            dt.Columns.Add("PrevEOMMonth",    typeof(string));
             dt.Columns.Add("PrevMonthEOM",    typeof(int));
             dt.Columns.Add("WkReduction",     typeof(decimal));
             dt.Columns.Add("CurrentEOW",      typeof(int));
@@ -303,9 +309,11 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                     r.DivCode, (object?)r.Division ?? DBNull.Value,
                     (object?)r.VolumeGroup ?? DBNull.Value,
                     (object?)r.PriorityRank ?? DBNull.Value,
+                    (object?)r.TgtEOMMonth ?? DBNull.Value,
                     r.TgtEOM, r.SOHToday, r.WeeksToInclude, r.WeekSales,
                     r.InTransit, r.Ex2DcSoh, r.CountingWIP, r.OtsQtyToday,
                     (decimal)r.OtsPercentToday,
+                    (object?)r.PrevEOMMonth ?? DBNull.Value,
                     r.PrevMonthEOM, r.WkReduction, r.CurrentEOW);
             }
 
@@ -406,6 +414,87 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         // there's no shared state. Warnings.Add is guarded by a lock inside
         // SafeAsync.
         var weeksByCountry = baseRows.GroupBy(b => b.Country).ToDictionary(g => g.Key, g => g.First().WeeksToInclude);
+
+        // PER-COUNTRY TARGET EOM MONTH
+        // Each country's "last week of sales" (currentWk + N - 1) can fall into
+        // a calendar month AFTER the picked month. E.g. Qatar N=3, currentWk=30
+        // -> weeks 30/31/32; wk 32 lies in August, so TgtEOM must be read from
+        // August's LPM_EOM_Output row, not July's. PrevMonthEOM follows TgtEOM's
+        // month - 1. Falls back to picked (month, year) when the country has no
+        // WmsCountryOtsWeeks config or MFP has no calendar entry for lastWk.
+        {
+            await using var c = OpenOnPremBackup();
+            var currentWk = (await c.ExecuteScalarAsync<int?>(new CommandDefinition(@"
+                SELECT TOP 1 wk FROM dbo.LPM_OTS_Output WITH (NOLOCK)
+                 WHERE wk IS NOT NULL
+                 ORDER BY OTSDate DESC, wk DESC",
+                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))) ?? 0;
+
+            var fiscalCal = (await c.QueryAsync<(int Year, int Month, int Week)>(new CommandDefinition(@"
+                SELECT DISTINCT [year] AS [Year], [month] AS [Month], [week] AS [Week]
+                  FROM dbo.BFL_MFP_OUTBOUND_T1 WITH (NOLOCK)",
+                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
+                .GroupBy(r => (r.Year, r.Week))
+                .ToDictionary(g => g.Key, g => (g.First().Month, g.First().Year));
+
+            var pickedLabel     = new DateTime(year, month, 1).ToString("MMM-yyyy");
+            var pickedPrevMonth = month == 1 ? 12 : month - 1;
+            var pickedPrevYear  = month == 1 ? year - 1 : year;
+            var pickedPrevLabel = new DateTime(pickedPrevYear, pickedPrevMonth, 1).ToString("MMM-yyyy");
+
+            // Per country -> (TgtMonth, TgtYear, PrevMonth, PrevYear, TgtLabel, PrevLabel)
+            var targetByCountry = new Dictionary<string, (int TgtMonth, int TgtYear, int PrevMonth, int PrevYear, string TgtLabel, string PrevLabel)>(StringComparer.OrdinalIgnoreCase);
+            foreach (var (cty, n) in weeksByCountry)
+            {
+                var lastWk = currentWk + n - 1;
+                int tgtM, tgtY;
+                if (currentWk > 0 && fiscalCal.TryGetValue((year, lastWk), out var mm))
+                {
+                    tgtM = mm.Month; tgtY = mm.Year;
+                }
+                else if (currentWk > 0 && fiscalCal.TryGetValue((year + 1, lastWk - 52), out var mmn))
+                {
+                    tgtM = mmn.Month; tgtY = mmn.Year;
+                }
+                else
+                {
+                    tgtM = month; tgtY = year;
+                }
+                var prevM = tgtM == 1 ? 12 : tgtM - 1;
+                var prevY = tgtM == 1 ? tgtY - 1 : tgtY;
+                targetByCountry[cty] = (
+                    tgtM, tgtY, prevM, prevY,
+                    new DateTime(tgtY, tgtM, 1).ToString("MMM-yyyy"),
+                    new DateTime(prevY, prevM, 1).ToString("MMM-yyyy"));
+            }
+
+            // Fetch EOM lookup once for all rows in the needed range (all countries
+            // if filter is null, else just the picked country).
+            var eomLookup = (await c.QueryAsync<(string StoreID, int DivCode, int Month1, int Year1, int TargetEOM)>(new CommandDefinition(@"
+                SELECT StoreID, DivCode, Month1, Year1, ISNULL(TargetEOM, 0) AS TargetEOM
+                  FROM dbo.LPM_EOM_Output WITH (NOLOCK)
+                 WHERE (@ct IS NULL OR Country = @ct)",
+                new { ct = filter },
+                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
+                .GroupBy(r => (r.StoreID, r.DivCode, r.Month1, r.Year1))
+                .ToDictionary(g => g.Key, g => g.Sum(x => x.TargetEOM));
+
+            foreach (var row in baseRows)
+            {
+                if (targetByCountry.TryGetValue(row.Country, out var t))
+                {
+                    row.TgtEOMMonth  = t.TgtLabel;
+                    row.TgtEOM       = eomLookup.TryGetValue((row.StoreID, row.DivCode, t.TgtMonth, t.TgtYear), out var teom) ? teom : row.TgtEOM;
+                    row.PrevEOMMonth = t.PrevLabel;
+                    row.PrevMonthEOM = eomLookup.TryGetValue((row.StoreID, row.DivCode, t.PrevMonth, t.PrevYear), out var peom) ? peom : row.PrevMonthEOM;
+                }
+                else
+                {
+                    row.TgtEOMMonth  = pickedLabel;
+                    row.PrevEOMMonth = pickedPrevLabel;
+                }
+            }
+        }
 
         // 2) SOH Today per (StoreID, DivCode) from Racks.dbo.LPM_Locstock.
         //    StoreID keys are upper-cased so the ECom special-case below can
@@ -790,6 +879,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                 VolumeGroup:     r.VolumeGroup,
                 PriorityRank:    r.PriorityRank,
                 EOMMonth:        eomLabel,
+                TgtEOMMonth:     r.TgtEOMMonth,
                 TgtEOM:          r.TgtEOM,
                 SOHToday:        soh,
                 WeeksToInclude:  r.WeeksToInclude,
@@ -799,6 +889,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                 CountingWIP:     wip,
                 OtsQtyToday:     otsQty,
                 OtsPercentToday: otsPct,
+                PrevEOMMonth:    r.PrevEOMMonth,
                 PrevMonthEOM:    r.PrevMonthEOM,
                 WkReduction:     wkReduction,
                 CurrentEOW:      currentEOW));
@@ -826,8 +917,10 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         public string?  Division       { get; set; }
         public string?  VolumeGroup    { get; set; }
         public int?     PriorityRank   { get; set; }
+        public string?  TgtEOMMonth    { get; set; }
         public int      TgtEOM         { get; set; }
         public int      WeeksToInclude { get; set; }
+        public string?  PrevEOMMonth   { get; set; }
         public int      PrevMonthEOM   { get; set; }
     }
 
@@ -840,6 +933,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         public string?  Division        { get; set; }
         public string?  VolumeGroup     { get; set; }
         public int?     PriorityRank    { get; set; }
+        public string?  TgtEOMMonth     { get; set; }
         public int      TgtEOM          { get; set; }
         public int      SOHToday        { get; set; }
         public int      WeeksToInclude  { get; set; }
@@ -849,6 +943,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         public int      CountingWIP     { get; set; }
         public int      OtsQtyToday     { get; set; }
         public decimal  OtsPercentToday { get; set; }
+        public string?  PrevEOMMonth    { get; set; }
         public int      PrevMonthEOM    { get; set; }
         public decimal  WkReduction     { get; set; }
         public int      CurrentEOW      { get; set; }
