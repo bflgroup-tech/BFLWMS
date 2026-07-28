@@ -200,12 +200,12 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         var sql = $@"
             SELECT Country, StoreID, StoreName, DivCode, Division, VolumeGroup, PriorityRank,
                    TgtEOMMonth,
-                   TgtEOM, SOHToday, WeeksToInclude, WeekSales, InTransit, Ex2DcSoh,
+                   TgtEOM, SOHToday, NoOfLeadWeeks, WeekSales, InTransit, Ex2DcSoh,
                    CountingWIP, OtsQtyToday, OtsPercentToday,
                    PrevEOMMonth,
-                   ISNULL(PrevMonthEOM, 0) AS PrevMonthEOM,
-                   ISNULL(WkReduction,  0) AS WkReduction,
-                   ISNULL(CurrentEOW,   TgtEOM) AS CurrentEOW
+                   ISNULL(PrevMonthEOM,    0) AS PrevMonthEOM,
+                   ISNULL(WeekAdjustment,  0) AS WeekAdjustment,
+                   ISNULL(CurrentEOW, TgtEOM) AS CurrentEOW
               FROM dbo.WmsOtsPoAllocationRun WITH (NOLOCK)
              WHERE [Year] = @year AND [Month] = @month
                AND (@ct IS NULL OR Country = @ct)
@@ -221,13 +221,13 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
             DivCode: r.DivCode, Division: r.Division, VolumeGroup: r.VolumeGroup,
             PriorityRank: r.PriorityRank, EOMMonth: eomLabel,
             TgtEOMMonth: r.TgtEOMMonth,
-            TgtEOM: r.TgtEOM, SOHToday: r.SOHToday, WeeksToInclude: r.WeeksToInclude,
+            TgtEOM: r.TgtEOM, SOHToday: r.SOHToday, NoOfLeadWeeks: r.NoOfLeadWeeks,
             WeekSales: r.WeekSales, InTransit: r.InTransit, Ex2DcSoh: r.Ex2DcSoh,
             CountingWIP: r.CountingWIP, OtsQtyToday: r.OtsQtyToday,
             OtsPercentToday: (double)r.OtsPercentToday,
             PrevEOMMonth: r.PrevEOMMonth,
             PrevMonthEOM: r.PrevMonthEOM,
-            WkReduction: r.WkReduction,
+            WeekAdjustment: r.WeekAdjustment,
             CurrentEOW: r.CurrentEOW)).ToList();
     }
 
@@ -288,7 +288,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
             dt.Columns.Add("TgtEOMMonth",     typeof(string));
             dt.Columns.Add("TgtEOM",          typeof(int));
             dt.Columns.Add("SOHToday",        typeof(int));
-            dt.Columns.Add("WeeksToInclude",  typeof(int));
+            dt.Columns.Add("NoOfLeadWeeks",   typeof(int));
             dt.Columns.Add("WeekSales",       typeof(int));
             dt.Columns.Add("InTransit",       typeof(int));
             dt.Columns.Add("Ex2DcSoh",        typeof(int));
@@ -297,7 +297,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
             dt.Columns.Add("OtsPercentToday", typeof(decimal));
             dt.Columns.Add("PrevEOMMonth",    typeof(string));
             dt.Columns.Add("PrevMonthEOM",    typeof(int));
-            dt.Columns.Add("WkReduction",     typeof(decimal));
+            dt.Columns.Add("WeekAdjustment",  typeof(decimal));
             dt.Columns.Add("CurrentEOW",      typeof(int));
 
             var who = user.Name ?? "";
@@ -310,11 +310,11 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                     (object?)r.VolumeGroup ?? DBNull.Value,
                     (object?)r.PriorityRank ?? DBNull.Value,
                     (object?)r.TgtEOMMonth ?? DBNull.Value,
-                    r.TgtEOM, r.SOHToday, r.WeeksToInclude, r.WeekSales,
+                    r.TgtEOM, r.SOHToday, r.NoOfLeadWeeks, r.WeekSales,
                     r.InTransit, r.Ex2DcSoh, r.CountingWIP, r.OtsQtyToday,
                     (decimal)r.OtsPercentToday,
                     (object?)r.PrevEOMMonth ?? DBNull.Value,
-                    r.PrevMonthEOM, r.WkReduction, r.CurrentEOW);
+                    r.PrevMonthEOM, r.WeekAdjustment, r.CurrentEOW);
             }
 
             using var bulk = new SqlBulkCopy(c, SqlBulkCopyOptions.Default, tx)
@@ -383,7 +383,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                     sdg.Grade AS VolumeGroup,   -- source of truth: StoreDivGrade only; blank when never Generated
                     e.PriorityRank,
                     e.TargetEOM   AS TgtEOM,
-                    ISNULL(w.Weeks, 1) AS WeeksToInclude,
+                    ISNULL(w.Weeks, 1) AS NoOfLeadWeeks,
                     ISNULL((
                         SELECT SUM(prev.TargetEOM)
                           FROM dbo.LPM_EOM_Output prev WITH (NOLOCK)
@@ -413,7 +413,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         // Satellites 2-6 run concurrently — each opens its own connection so
         // there's no shared state. Warnings.Add is guarded by a lock inside
         // SafeAsync.
-        var weeksByCountry = baseRows.GroupBy(b => b.Country).ToDictionary(g => g.Key, g => g.First().WeeksToInclude);
+        var weeksByCountry = baseRows.GroupBy(b => b.Country).ToDictionary(g => g.Key, g => g.First().NoOfLeadWeeks);
 
         // PER-COUNTRY TARGET EOM MONTH
         // Each country's "last week of sales" (currentWk + N - 1) can fall into
@@ -422,6 +422,12 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         // August's LPM_EOM_Output row, not July's. PrevMonthEOM follows TgtEOM's
         // month - 1. Falls back to picked (month, year) when the country has no
         // WmsCountryOtsWeeks config or MFP has no calendar entry for lastWk.
+        //
+        // weeksInPrevMonthByCountry drives the WeekAdjustment denominator
+        // downstream — its value is #weeks in the country's PrevEOMMonth (not
+        // the picked month) so the per-week walk from PrevMonthEOM to TgtEOM
+        // is calibrated to the correct calendar month.
+        var weeksInPrevMonthByCountry = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         {
             await using var c = OpenOnPremBackup();
             var currentWk = (await c.ExecuteScalarAsync<int?>(new CommandDefinition(@"
@@ -493,6 +499,19 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                     row.TgtEOMMonth  = pickedLabel;
                     row.PrevEOMMonth = pickedPrevLabel;
                 }
+            }
+
+            // Populate weeksInPrevMonthByCountry: count DISTINCT week per (month, year)
+            // in the fiscal calendar (BFL_MFP_OUTBOUND_T1 derived), keyed by the
+            // country's PREV EOM month. Used downstream as the WeekAdjustment
+            // denominator so the per-week walk uses the correct calendar month's
+            // week count.
+            var weeksByMonthYear = fiscalCal.Values
+                .GroupBy(mm => (mm.Month, mm.Year))
+                .ToDictionary(g => g.Key, g => g.Count());
+            foreach (var (cty, t) in targetByCountry)
+            {
+                weeksInPrevMonthByCountry[cty] = weeksByMonthYear.TryGetValue((t.PrevMonth, t.PrevYear), out var w) ? w : 0;
             }
         }
 
@@ -855,17 +874,25 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
             var ex2dc     = perRowEx2Dc.TryGetValue((r.Country, r.StoreID, r.DivCode), out var e2Per) ? e2Per : 0;
             var wip = wipByKey.TryGetValue((r.Country, r.StoreID, r.DivCode), out var v) ? v : 0;
 
-            decimal wkReduction;
+            // WeekAdjustment = per-week walk rate from PrevMonthEOM toward TgtEOM,
+            // sized to the # weeks in the PREV EOM month (per country). Positive
+            // when scaling up (Tgt > Prev), negative when winding down.
+            // CurrentEOW = PrevMonthEOM + WeekAdjustment × NoOfLeadWeeks — the
+            // interpolation projects forward by the country's lead-weeks value.
+            var wpm = weeksInPrevMonthByCountry.TryGetValue(r.Country, out var wp) && wp > 0
+                ? wp
+                : (weeksInMonth > 0 ? weeksInMonth : 0);
+            decimal weekAdjustment;
             int currentEOW;
-            if (r.PrevMonthEOM > 0 && weeksInMonth > 0)
+            if (r.PrevMonthEOM > 0 && wpm > 0)
             {
-                wkReduction = (decimal)(r.PrevMonthEOM - r.TgtEOM) / weeksInMonth;
-                currentEOW  = (int)Math.Round(r.PrevMonthEOM - wkReduction * weeksElapsed);
+                weekAdjustment = (decimal)(r.TgtEOM - r.PrevMonthEOM) / wpm;
+                currentEOW     = (int)Math.Round(r.PrevMonthEOM + weekAdjustment * r.NoOfLeadWeeks);
             }
             else
             {
-                wkReduction = 0m;
-                currentEOW  = r.TgtEOM;   // fall back to today's behaviour
+                weekAdjustment = 0m;
+                currentEOW     = r.TgtEOM;   // fall back when no previous history
             }
 
             var otsQty = currentEOW + ws - soh - inTransit - ex2dc - wip;
@@ -882,7 +909,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                 TgtEOMMonth:     r.TgtEOMMonth,
                 TgtEOM:          r.TgtEOM,
                 SOHToday:        soh,
-                WeeksToInclude:  r.WeeksToInclude,
+                NoOfLeadWeeks:   r.NoOfLeadWeeks,
                 WeekSales:       ws,
                 InTransit:       inTransit,
                 Ex2DcSoh:        ex2dc,
@@ -891,7 +918,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                 OtsPercentToday: otsPct,
                 PrevEOMMonth:    r.PrevEOMMonth,
                 PrevMonthEOM:    r.PrevMonthEOM,
-                WkReduction:     wkReduction,
+                WeekAdjustment:  weekAdjustment,
                 CurrentEOW:      currentEOW));
         }
         return (results, warnings);
@@ -919,7 +946,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         public int?     PriorityRank   { get; set; }
         public string?  TgtEOMMonth    { get; set; }
         public int      TgtEOM         { get; set; }
-        public int      WeeksToInclude { get; set; }
+        public int      NoOfLeadWeeks  { get; set; }
         public string?  PrevEOMMonth   { get; set; }
         public int      PrevMonthEOM   { get; set; }
     }
@@ -936,7 +963,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         public string?  TgtEOMMonth     { get; set; }
         public int      TgtEOM          { get; set; }
         public int      SOHToday        { get; set; }
-        public int      WeeksToInclude  { get; set; }
+        public int      NoOfLeadWeeks   { get; set; }
         public int      WeekSales       { get; set; }
         public int      InTransit       { get; set; }
         public int      Ex2DcSoh        { get; set; }
@@ -945,7 +972,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         public decimal  OtsPercentToday { get; set; }
         public string?  PrevEOMMonth    { get; set; }
         public int      PrevMonthEOM    { get; set; }
-        public decimal  WkReduction     { get; set; }
+        public decimal  WeekAdjustment  { get; set; }
         public int      CurrentEOW      { get; set; }
     }
 
