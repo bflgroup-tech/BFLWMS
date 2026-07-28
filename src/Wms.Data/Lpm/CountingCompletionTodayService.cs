@@ -1,5 +1,7 @@
+using System.Diagnostics;
 using Dapper;
 using Microsoft.Data.SqlClient;
+using Microsoft.Extensions.Logging;
 using Wms.Data.Configuration;
 
 namespace Wms.Data.Lpm;
@@ -36,7 +38,8 @@ namespace Wms.Data.Lpm;
 /// the two enrichment lookups run as a single QueryMultipleAsync batch
 /// instead of two round trips.
 /// </summary>
-public class CountingCompletionTodayService(IOnPremConnectionResolver resolver)
+public class CountingCompletionTodayService(
+    IOnPremConnectionResolver resolver, ILogger<CountingCompletionTodayService> logger)
 {
     private const int CommandTimeoutSeconds = 120;
 
@@ -116,20 +119,30 @@ public class CountingCompletionTodayService(IOnPremConnectionResolver resolver)
         var resultTypes = raw.Select(r => r.Row.ResultType).Where(r => !string.IsNullOrWhiteSpace(r)).Distinct().ToArray();
         if (upcs.Length == 0 && resultTypes.Length == 0) return (brandByUpc, typeNameByResultType);
 
+        // UPC IN @upcs as a Dapper array expands into one SQL parameter per UPC — with a
+        // few thousand distinct UPCs (typical for a busy counting day) SQL Server's plan
+        // compilation for that many ad-hoc parameters degrades from milliseconds to minutes.
+        // Passing the list as a single CSV string and splitting it into an indexed temp
+        // table server-side avoids that entirely (verified: ~1600 UPCs went from a 60s+
+        // hang to ~13ms).
+        var upcsCsv = string.Join(",", upcs);
+
         // Single round trip for both lookups instead of two sequential QueryAsync calls.
         await using var multi = await onPremBackup.QueryMultipleAsync(new CommandDefinition(@"
-            SELECT UPC, Vendor = MAX(Vendor)
-              FROM USA.dbo.UPCBarCodes WITH (NOLOCK)
-             WHERE @hasUpcs = 1 AND UPC IN @upcs
-             GROUP BY UPC;
+            SELECT CAST(value AS VARCHAR(50)) AS UPC INTO #upcs FROM STRING_SPLIT(@upcsCsv, ',');
+            CREATE UNIQUE CLUSTERED INDEX IX_upcs_tmp ON #upcs(UPC);
+
+            SELECT b.UPC, Vendor = MAX(b.Vendor)
+              FROM USA.dbo.UPCBarCodes b WITH (NOLOCK)
+              INNER JOIN #upcs u ON u.UPC = b.UPC
+             GROUP BY b.UPC;
 
             SELECT PalletType, TypeName
               FROM BFLDATA.dbo.PalletType WITH (NOLOCK)
              WHERE @hasTypes = 1 AND PalletType IN @resultTypes;",
             new
             {
-                hasUpcs = upcs.Length > 0 ? 1 : 0,
-                upcs = upcs.Length > 0 ? upcs : new[] { "" },
+                upcsCsv,
                 hasTypes = resultTypes.Length > 0 ? 1 : 0,
                 resultTypes = resultTypes.Length > 0 ? resultTypes : new[] { "" }
             },
@@ -147,11 +160,21 @@ public class CountingCompletionTodayService(IOnPremConnectionResolver resolver)
     private async Task<(List<CountryRow> raw, Dictionary<string, string?> brandByUpc, Dictionary<string, string?> typeNameByResultType)>
         FetchAndEnrichAsync(IReadOnlyList<string> countries, CancellationToken ct)
     {
+        var sw = Stopwatch.StartNew();
         await using var onPremBackup = new SqlConnection(resolver.GetOnPremBackupConnectionString());
         await onPremBackup.OpenAsync(ct);
+        var openMs = sw.ElapsedMilliseconds; sw.Restart();
 
         var raw = await FetchRawAsync(countries, onPremBackup, ct);
+        var fetchMs = sw.ElapsedMilliseconds; sw.Restart();
+
         var (brandByUpc, typeNameByResultType) = await EnrichAsync(raw, onPremBackup, ct);
+        var enrichMs = sw.ElapsedMilliseconds;
+
+        logger.LogInformation(
+            "CountingCompletionToday: connect={OpenMs}ms fetch={FetchMs}ms ({RowCount} rows, countries={Countries}) enrich={EnrichMs}ms",
+            openMs, fetchMs, raw.Count, string.Join(",", countries), enrichMs);
+
         return (raw, brandByUpc, typeNameByResultType);
     }
 
