@@ -1642,27 +1642,53 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                                 var totalMinMax = top3.Sum(x => x.MinMax);
                                 if (top3.Count > 0 && totalMinMax > 0)
                                 {
-                                    var assigned = 0;
-                                    for (int i = 0; i < top3.Count && remaining > 0; i++)
+                                    // Largest-remainder distribution:
+                                    //   RatioShare(i) = RawSkuMax(i) * origRemaining / totalMinMax    (float)
+                                    //   floor share for each; residual = origRemaining - sum(floors);
+                                    //   distribute +1 to the top-residual stores by fractional part.
+                                    // No last-takes-all. RatioSkuMax = the pure floor share (audit)
+                                    // so operators can see who was raised by the residual bump when
+                                    // Take > RatioSkuMax.
+                                    var origRemaining = remaining;
+                                    var floorShares = new int[top3.Count];
+                                    var fractions   = new double[top3.Count];
+                                    var floorSum    = 0;
+                                    for (int i = 0; i < top3.Count; i++)
+                                    {
+                                        var raw = (double)origRemaining * top3[i].MinMax / totalMinMax;
+                                        floorShares[i] = (int)Math.Floor(raw);
+                                        fractions[i]   = raw - floorShares[i];
+                                        floorSum      += floorShares[i];
+                                    }
+                                    var takeShares = (int[])floorShares.Clone();
+                                    var deficit = origRemaining - floorSum;
+                                    if (deficit > 0)
+                                    {
+                                        var order = Enumerable.Range(0, top3.Count)
+                                            .OrderByDescending(idx => fractions[idx])
+                                            .ThenBy(idx => idx)   // stable tiebreak
+                                            .ToArray();
+                                        for (int j = 0; j < deficit && j < order.Length; j++)
+                                            takeShares[order[j]] += 1;
+                                    }
+
+                                    for (int i = 0; i < top3.Count; i++)
                                     {
                                         var (r, minMax) = top3[i];
-                                        var share = i == top3.Count - 1
-                                            ? remaining
-                                            : (int)Math.Floor((double)remaining * minMax / totalMinMax);
+                                        var ratioShare  = floorShares[i];  // pure ratio floor (audit)
+                                        var take        = takeShares[i];   // ratio + possible +1 from residual
                                         var current = allocs.TryGetValue(r.StoreID, out var row) ? row.AllocQty : 0;
                                         var remBefore = remaining;
-                                        if (share <= 0)
+                                        if (take <= 0)
                                         {
-                                            RecordTrace(4, i, r, "MinMax", minMax, current, remBefore, 0, skipReason: "ShareZero", ratioSkuMaxOverride: totalMinMax);
+                                            RecordTrace(4, i, r, "MinMax", minMax, current, remBefore, 0, skipReason: "ShareZero", ratioSkuMaxOverride: ratioShare);
                                             continue;
                                         }
-                                        allocs[r.StoreID] = BumpRow(row, r, share, 0, pass: 4, tierNameOverride: "MinMax")
-                                            with { RatioSkuMax = totalMinMax };
-                                        remaining -= share;
-                                        assigned += share;
-                                        RecordTrace(4, i, r, "MinMax", minMax, current, remBefore, share, ratioSkuMaxOverride: totalMinMax);
+                                        allocs[r.StoreID] = BumpRow(row, r, take, 0, pass: 4, tierNameOverride: "MinMax")
+                                            with { RatioSkuMax = ratioShare };
+                                        remaining -= take;
+                                        RecordTrace(4, i, r, "MinMax", minMax, current, remBefore, take, ratioSkuMaxOverride: ratioShare);
                                     }
-                                    _ = assigned;
                                 }
                             }
                         }
