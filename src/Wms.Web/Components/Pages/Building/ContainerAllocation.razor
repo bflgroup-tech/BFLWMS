@@ -119,13 +119,14 @@
         <button class="aiwms-btn aiwms-btn-secondary" @onclick="() => _showBlocked = !_showBlocked" disabled="@_busy">@(_showBlocked ? "Hide" : "Blocked Items") (@_blocked.Count)</button>
         @{
             var pfCount = _status?.PlanningFlagsCount ?? 0;
+            var pfQty   = _status?.PlanningFlagsTotalQty ?? 0;
         }
         <button class="aiwms-btn aiwms-btn-secondary"
                 style="@(pfCount > 0 ? "background:#fef3c7; border-color:#f59e0b; color:#92400e; font-weight:600" : "")"
                 @onclick="TogglePlanningFlagsAsync"
                 disabled="@(_busy || pfCount == 0)"
-                title="@(pfCount > 0 ? $"{pfCount} item(s) flagged for planner review — Pass 4 dropped these because residual was ≥10% of PO qty" : "No planning flags for this container")">
-            @(_showPlanningFlags ? "Hide" : "Planning Flags") (@pfCount)
+                title="@(pfCount > 0 ? $"{pfCount} item(s) · {pfQty:N0} qty flagged for planner review — Pass 4 dropped these because residual was ≥10% of PO qty" : "No planning flags for this container")">
+            @(_showPlanningFlags ? "Hide" : "Planning Flags") (@pfCount · @pfQty.ToString("N0") qty)
         </button>
     </div>
 

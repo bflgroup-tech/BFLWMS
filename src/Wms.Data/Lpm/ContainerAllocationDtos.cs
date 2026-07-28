@@ -105,7 +105,8 @@ public record AllocationStatus(
     int  FillSKUMaxRoundRobinRows = 0,
     int  AzureAllocRows           = 0,   // dbo.WMS_ContAllocationData row count on Azure — > 0 means the container has been synced and Delete should be blocked at UI level
     int  FillMinMinPlusOthersRows = 0,
-    int  PlanningFlagsCount       = 0);  // WmsPlanningFlag rows for this ContNo — Pass 4 items where >=10% remained undistributed
+    int  PlanningFlagsCount       = 0,   // WmsPlanningFlag rows for this ContNo — Pass 4 items where >=10% remained undistributed
+    int  PlanningFlagsTotalQty    = 0);  // SUM(RemainingQty) of those flag rows — units dropped by Pass 4
 
 /// <summary>How to distribute qty across eligible stores.
 /// FillSKUMax and RoundRobin are kept for run-history compatibility but are
