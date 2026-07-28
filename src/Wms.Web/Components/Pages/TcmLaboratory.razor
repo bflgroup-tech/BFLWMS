@@ -10,63 +10,72 @@
     <p>Import a TCM Excel file for lab processing.</p>
 </div>
 
-<div class="aiwms-section">
-    <div class="aiwms-card-header">TCM Import</div>
+<div style="display:flex; gap:12px; align-items:flex-start">
+    <div class="aiwms-section" style="flex:1">
+        <div class="aiwms-card-header">TCM Import</div>
 
-    <div style="display:grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap:10px">
-        <div>
-            <label class="aiwms-input-lbl">CONTAINER NO *</label>
-            <input class="aiwms-input" @bind="_containerNo" placeholder="e.g. 7781" />
+        <div style="display:grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap:10px">
+            <div>
+                <label class="aiwms-input-lbl">CONTAINER NO *</label>
+                <input class="aiwms-input" @bind="_containerNo" placeholder="e.g. 7781" />
+            </div>
+            <div>
+                <label class="aiwms-input-lbl">REF. NO *</label>
+                <input class="aiwms-input" @bind="_refNo" placeholder="e.g. JFS" />
+            </div>
+            <div>
+                <label class="aiwms-input-lbl">LAB TYPE *</label>
+                <select class="aiwms-input" @bind="_labType">
+                    <option value="">(pick)</option>
+                    <option value="Phases">Phases</option>
+                    <option value="CartonQty">Carton Qty</option>
+                    <option value="TempLoad">Temp Load</option>
+                </select>
+            </div>
+            <div>
+                <label class="aiwms-input-lbl">PHASE %</label>
+                <input class="aiwms-input" type="number" step="0.0001" @bind="_phasePct" />
+            </div>
         </div>
-        <div>
-            <label class="aiwms-input-lbl">REF. NO *</label>
-            <input class="aiwms-input" @bind="_refNo" placeholder="e.g. JFS" />
+
+        <div style="margin-top:14px">
+            <label class="aiwms-input-lbl">EXCEL FILE *</label>
+            <div style="display:flex; align-items:center; gap:10px">
+                <label class="aiwms-btn aiwms-btn-secondary" style="white-space:nowrap; cursor:pointer; margin:0">
+                    Choose File
+                    <InputFile OnChange="OnExcelFileSelected" accept=".xlsx" style="display:none" />
+                </label>
+                <span style="font-size:12px; color:var(--text-muted)">
+                    @(string.IsNullOrEmpty(_uploadedExcelFileName) ? "No file selected." : _uploadedExcelFileName)
+                </span>
+            </div>
         </div>
-        <div>
-            <label class="aiwms-input-lbl">LAB TYPE *</label>
-            <select class="aiwms-input" @bind="_labType">
-                <option value="">(pick)</option>
-                <option value="Phases">Phases</option>
-                <option value="CartonQty">Carton Qty</option>
-                <option value="TempLoad">Temp Load</option>
-            </select>
-        </div>
-        <div>
-            <label class="aiwms-input-lbl">PHASE %</label>
-            <input class="aiwms-input" type="number" step="0.0001" @bind="_phasePct" />
+
+        <div style="margin-top:16px">
+            <button class="aiwms-btn aiwms-btn-primary" disabled title="Coming soon">Import Data</button>
         </div>
     </div>
 
-    <div style="display:grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap:10px; margin-top:10px">
-        <div>
-            <label class="aiwms-input-lbl">SUPPLIER COST</label>
-            <input class="aiwms-input" type="number" step="0.0001" @bind="_supplierCost" />
-        </div>
-        <div>
-            <label class="aiwms-input-lbl">FC RATE FOR COST</label>
-            <input class="aiwms-input" type="number" step="0.01" @bind="_fcRateForCost" />
-        </div>
-        <div>
-            <label class="aiwms-input-lbl">ADDITIONAL EXPENSES %</label>
-            <input class="aiwms-input" type="number" step="0.001" @bind="_additionalExpensesPct" />
-        </div>
-    </div>
-
-    <div style="margin-top:14px">
-        <label class="aiwms-input-lbl">EXCEL FILE *</label>
-        <div style="display:flex; align-items:center; gap:10px">
-            <label class="aiwms-btn aiwms-btn-secondary" style="white-space:nowrap; cursor:pointer; margin:0">
-                Choose File
-                <InputFile OnChange="OnExcelFileSelected" accept=".xlsx" style="display:none" />
-            </label>
-            <span style="font-size:12px; color:var(--text-muted)">
-                @(string.IsNullOrEmpty(_uploadedExcelFileName) ? "No file selected." : _uploadedExcelFileName)
-            </span>
-        </div>
-    </div>
-
-    <div style="margin-top:16px">
-        <button class="aiwms-btn aiwms-btn-primary" disabled title="Coming soon">Import Data</button>
+    <div class="aiwms-section" style="flex-shrink:0; width:280px; padding:0">
+        <table class="aiwms-table" style="width:100%">
+            <thead>
+                <tr><th colspan="2">Profit Margin</th></tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>Supplier Cost</td>
+                    <td><input class="aiwms-input" type="number" step="0.0001" @bind="_supplierCost" style="text-align:right" /></td>
+                </tr>
+                <tr>
+                    <td>FC rate for Cost</td>
+                    <td><input class="aiwms-input" type="number" step="0.01" @bind="_fcRateForCost" style="text-align:right" /></td>
+                </tr>
+                <tr>
+                    <td>Additional Expenses %</td>
+                    <td><input class="aiwms-input" type="number" step="0.001" @bind="_additionalExpensesPct" style="text-align:right" /></td>
+                </tr>
+            </tbody>
+        </table>
     </div>
 </div>
 
