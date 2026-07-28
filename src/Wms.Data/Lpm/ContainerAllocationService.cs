@@ -2276,6 +2276,12 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
             DELETE FROM LPMSIM.dbo.WMS_ContAllocationDraftHeader  WHERE Country = @ct AND ContNo = @c;",
             new { ct = genCountry, c = contno }, commandTimeout: 120, cancellationToken: ct));
 
+        // Planning flags key on ContNo (not GenCountry/BatchNo) — clear them
+        // too so a re-Process starts from a clean flag set.
+        await c.ExecuteAsync(new CommandDefinition(
+            "DELETE FROM LPMSIM.dbo.WmsPlanningFlag WHERE ContNo = @c",
+            new { c = contno }, commandTimeout: 120, cancellationToken: ct));
+
         _ = roTag; // silence unused-warning while keeping the runOption param on the signature
         return detailDeleted;
     }
@@ -2336,8 +2342,27 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
             azureRows = exists == 1 ? 1 : 0;
         }
 
+        // Planning flags: count Pass 4 items dropped this container (>=10% residual).
+        var pfCount = await c.ExecuteScalarAsync<int>(new CommandDefinition(
+            "SELECT COUNT(*) FROM LPMSIM.dbo.WmsPlanningFlag WITH (NOLOCK) WHERE ContNo = @c",
+            new { c = contno }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+
         return new AllocationStatus(hasDraft, hasFinal, draftRows, f.Total, f.Max1, d.RunOption,
-                                     f.Fsm, f.Rr, f.Frr, azureRows, f.Fmm);
+                                     f.Fsm, f.Rr, f.Frr, azureRows, f.Fmm, pfCount);
+    }
+
+    /// <summary>Load Planning Flag rows for a container — the FMMPO Pass 4
+    /// items whose residual was ≥10% of PO qty and got dropped for planner review.</summary>
+    public async Task<List<PlanningFlagRow>> LoadPlanningFlagsAsync(string contno, CancellationToken ct = default)
+    {
+        await using var c = OpenOnPremBackup();
+        var rows = await c.QueryAsync<PlanningFlagRow>(new CommandDefinition(@"
+            SELECT FlaggedTS, ContNo, PONo, ItemCode, DivCode, PoQty, RemainingQty, RunOption, FlaggedBy
+              FROM LPMSIM.dbo.WmsPlanningFlag WITH (NOLOCK)
+             WHERE ContNo = @c
+             ORDER BY FlaggedTS DESC, ItemCode",
+            new { c = contno }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        return rows.AsList();
     }
 
     // ===================== Confirm & Save (Draft -> WMS_ContAllocationData) =====================
