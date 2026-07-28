@@ -1269,7 +1269,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                     // ticked "Trace Allocation" on the razor page. No-ops otherwise.
                     void RecordTrace(int pass, int sortRank, OtsRunLookupRow r, string tierName,
                                      int cap, int currentBefore, int remainingBefore, int take,
-                                     string? skipReason = null)
+                                     string? skipReason = null, int? ratioSkuMaxOverride = null)
                     {
                         if (trace is null) return;
                         var soh = itemSohByStore.GetValueOrDefault(
@@ -1296,10 +1296,14 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                             }
                         }
                         var defaultSkuMax = Math.Max(0, rawTier - soh);
-                        // Pass 4 uses `cap` as the ratio numerator (FSMRR: OTS picker cap,
-                        // FMMPO: raw MinMax) — stamp it explicitly so trace rows are readable
-                        // without knowing the algorithm's internal convention. NULL for other passes.
-                        int? ratioSkuMax = pass == 4 ? cap : (int?)null;
+                        // RatioSkuMax on Pass 4 rows carries the ratio DENOMINATOR — the sum
+                        // of all eligible stores' raw SKU-max contributions for this item.
+                        // Each store's share = RawSkuMax / RatioSkuMax * RemainingBefore, so
+                        // stamping the denominator makes the share verifiable from the row.
+                        // FMMPO passes the total via override; FSMRR falls back to `cap` (its
+                        // per-store tier cap, matching prior behaviour there). NULL for
+                        // passes 1b / 2 / 3 — no ratio.
+                        int? ratioSkuMax = pass == 4 ? (ratioSkuMaxOverride ?? cap) : (int?)null;
                         trace.Add(new AllocationTraceRow(
                             ContNo: line.ContNo, Itemcode: line.ItemCode, StoreID: r.StoreID,
                             DivCode: divCode, Pass: pass, SortRank: sortRank,
@@ -1649,14 +1653,14 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                                         var remBefore = remaining;
                                         if (share <= 0)
                                         {
-                                            RecordTrace(4, i, r, "MinMax", minMax, current, remBefore, 0, skipReason: "ShareZero");
+                                            RecordTrace(4, i, r, "MinMax", minMax, current, remBefore, 0, skipReason: "ShareZero", ratioSkuMaxOverride: totalMinMax);
                                             continue;
                                         }
                                         allocs[r.StoreID] = BumpRow(row, r, share, 0, pass: 4, tierNameOverride: "MinMax")
-                                            with { RatioSkuMax = minMax };
+                                            with { RatioSkuMax = totalMinMax };
                                         remaining -= share;
                                         assigned += share;
-                                        RecordTrace(4, i, r, "MinMax", minMax, current, remBefore, share);
+                                        RecordTrace(4, i, r, "MinMax", minMax, current, remBefore, share, ratioSkuMaxOverride: totalMinMax);
                                     }
                                     _ = assigned;
                                 }
