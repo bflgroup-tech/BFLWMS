@@ -15,7 +15,7 @@
 
     <div style="display:flex; gap:16px; align-items:flex-start">
         <div style="flex:1">
-            <div style="display:grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap:10px">
+            <div style="display:grid; grid-template-columns: repeat(4, 160px); gap:10px">
                 <div>
                     <label class="aiwms-input-lbl">CONTAINER NO *</label>
                     <input class="aiwms-input" @bind="_containerNo" placeholder="e.g. 7781" />
@@ -58,7 +58,7 @@
             </div>
         </div>
 
-        <div style="flex-shrink:0; width:350px; border:1px solid var(--border); border-radius:4px; overflow:hidden">
+        <div style="flex-shrink:0; width:420px; border:1px solid var(--border); border-radius:4px; overflow:hidden">
             <table class="aiwms-table" style="width:100%; margin:0">
                 <thead>
                     <tr><th colspan="2">Profit Margin</th></tr>
@@ -66,15 +66,15 @@
                 <tbody>
                     <tr>
                         <td style="white-space:nowrap">Supplier Cost</td>
-                        <td><input class="aiwms-input" type="number" step="0.0001" @bind="SupplierCostText" style="width:100px; text-align:right; font-weight:700" /></td>
+                        <td><input class="aiwms-input" type="number" step="0.0001" @bind="SupplierCostText" style="width:150px; text-align:right; font-weight:700; font-size:15px" /></td>
                     </tr>
                     <tr>
                         <td style="white-space:nowrap">FC rate for Cost</td>
-                        <td><input class="aiwms-input" type="number" step="0.0001" @bind="FcRateForCostText" style="width:100px; text-align:right; font-weight:700" /></td>
+                        <td><input class="aiwms-input" type="number" step="0.0001" @bind="FcRateForCostText" style="width:150px; text-align:right; font-weight:700; font-size:15px" /></td>
                     </tr>
                     <tr>
                         <td style="white-space:nowrap">Additional Expenses %</td>
-                        <td><input class="aiwms-input" type="number" step="0.0001" @bind="AdditionalExpensesPctText" style="width:100px; text-align:right; font-weight:700" /></td>
+                        <td><input class="aiwms-input" type="number" step="0.0001" @bind="AdditionalExpensesPctText" style="width:150px; text-align:right; font-weight:700; font-size:15px" /></td>
                     </tr>
                 </tbody>
             </table>
