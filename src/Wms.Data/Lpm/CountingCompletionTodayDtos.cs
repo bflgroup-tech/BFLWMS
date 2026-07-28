@@ -15,7 +15,8 @@ public record CountingCompletionTodaySummaryRow(
     string? OraPoNos,
     string? Brands,
     string? PalletTypes,
-    string? TypeNames);
+    string? TypeNames,
+    string? Warehouse);
 
 /// <summary>
 /// Counting Completion Report — "Today" mode, Allocation-wise. Same shape as
@@ -33,7 +34,8 @@ public record CountingCompletionTodayAllocationRow(
     string? LpmDates,
     string? Divisions,
     string? OraPoNos,
-    string? Brands);
+    string? Brands,
+    string? Warehouse);
 
 /// <summary>
 /// Counting Completion Report — "Today" mode, Detailed. One row per
@@ -51,4 +53,5 @@ public record CountingCompletionTodayDetailRow(
     string?   OraPoNo,
     string?   Brand,
     string?   PalletType,
-    string?   TypeName);
+    string?   TypeName,
+    string?   Warehouse);
