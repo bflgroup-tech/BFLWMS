@@ -97,29 +97,49 @@ public class JafzaRoboProductionService(IOnPremConnectionResolver resolver)
 
         await using var c = OpenOnPremBackup();
 
+        // ItemCode IN @codes as a Dapper array expands into one SQL parameter per
+        // item — a busy multi-day Robo pairing window easily exceeds SQL Server's
+        // hard 2100-parameter limit ("The incoming request has too many parameters").
+        // Same fix as the Counting Completion Today-mode UPC enrichment: pass the
+        // list as a single CSV string, split it into an indexed temp table server-
+        // side, then join.
+        var itemCodesCsv = string.Join(",", itemCodes);
         var groupRows = await c.QueryAsync<(string Itemcode, string? GroupCode)>(new CommandDefinition(@"
-            SELECT Itemcode, GroupCode = MAX(GroupCode)
-              FROM USA.dbo.UPCBarCodes
-             WHERE Itemcode IN @codes
-             GROUP BY Itemcode",
-            new { codes = itemCodes }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            SELECT CAST(value AS VARCHAR(50)) AS ItemCode INTO #jrItems FROM STRING_SPLIT(@itemCodesCsv, ',');
+            CREATE UNIQUE CLUSTERED INDEX IX_jrItems_tmp ON #jrItems(ItemCode);
+
+            SELECT b.Itemcode, GroupCode = MAX(b.GroupCode)
+              FROM USA.dbo.UPCBarCodes b
+              INNER JOIN #jrItems i ON i.ItemCode = b.Itemcode
+             GROUP BY b.Itemcode;",
+            new { itemCodesCsv }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         foreach (var r in groupRows) groupByItem[r.Itemcode] = r.GroupCode;
 
         var groupCodes = groupByItem.Values.Where(g => !string.IsNullOrWhiteSpace(g)).Distinct().ToArray()!;
         if (groupCodes.Length > 0)
         {
+            // GroupCode counts are bounded by distinct ItemCodes and are typically far
+            // smaller, but use the same CSV pattern for safety rather than assuming a
+            // ceiling.
+            var groupCodesCsv = string.Join(",", groupCodes);
             var divRows = await c.QueryAsync<(string GroupCode, string? DivisionY)>(new CommandDefinition(@"
-                SELECT DISTINCT GroupCode, DivisionY
-                  FROM USA.dbo.USAPriority
-                 WHERE GroupCode IN @codes",
-                new { codes = groupCodes }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+                SELECT CAST(value AS VARCHAR(50)) AS GroupCode INTO #jrGroups FROM STRING_SPLIT(@groupCodesCsv, ',');
+                CREATE UNIQUE CLUSTERED INDEX IX_jrGroups_tmp ON #jrGroups(GroupCode);
+
+                SELECT DISTINCT p.GroupCode, p.DivisionY
+                  FROM USA.dbo.USAPriority p
+                  INNER JOIN #jrGroups g ON g.GroupCode = p.GroupCode;",
+                new { groupCodesCsv }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
             foreach (var r in divRows) divByGroup[r.GroupCode] = r.DivisionY;
 
             var nameRows = await c.QueryAsync<(string GroupCode, string? Description)>(new CommandDefinition(@"
-                SELECT GroupCode, Description
-                  FROM hodata.dbo.itemgroup
-                 WHERE GroupCode IN @codes",
-                new { codes = groupCodes }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+                SELECT CAST(value AS VARCHAR(50)) AS GroupCode INTO #jrGroupNames FROM STRING_SPLIT(@groupCodesCsv, ',');
+                CREATE UNIQUE CLUSTERED INDEX IX_jrGroupNames_tmp ON #jrGroupNames(GroupCode);
+
+                SELECT ig.GroupCode, ig.Description
+                  FROM hodata.dbo.itemgroup ig
+                  INNER JOIN #jrGroupNames g ON g.GroupCode = ig.GroupCode;",
+                new { groupCodesCsv }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
             foreach (var r in nameRows) groupNameByGroup[r.GroupCode] = r.Description;
         }
 
