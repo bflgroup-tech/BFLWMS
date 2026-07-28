@@ -145,6 +145,7 @@ public record AllocationTraceRow(
     // Pass 2 -> OTS picker's tier, Pass 4 -> MinMax). One tier concept per row.
     int?     DefaultSkuMax  = null, // RawSkuMax - Soh (never negative)
     int?     RawSkuMax      = null, // Raw tier value for this row's TierName
+    int?     RatioSkuMax    = null, // Pass 4 only — store's SkuMax contribution to the ratio numerator
     decimal? AvgOtsPercent  = null,
     decimal? AvgOtsMin      = null,
     decimal? AvgOtsMax      = null,
