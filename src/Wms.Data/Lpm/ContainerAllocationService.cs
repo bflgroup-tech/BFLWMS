@@ -1296,6 +1296,10 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                             }
                         }
                         var defaultSkuMax = Math.Max(0, rawTier - soh);
+                        // Pass 4 uses `cap` as the ratio numerator (FSMRR: OTS picker cap,
+                        // FMMPO: raw MinMax) — stamp it explicitly so trace rows are readable
+                        // without knowing the algorithm's internal convention. NULL for other passes.
+                        int? ratioSkuMax = pass == 4 ? cap : (int?)null;
                         trace.Add(new AllocationTraceRow(
                             ContNo: line.ContNo, Itemcode: line.ItemCode, StoreID: r.StoreID,
                             DivCode: divCode, Pass: pass, SortRank: sortRank,
@@ -1311,6 +1315,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                             SkipReason: skipReason,
                             DefaultSkuMax: defaultSkuMax,
                             RawSkuMax: rawTier,
+                            RatioSkuMax: ratioSkuMax,
                             AvgOtsPercent: avgOtsDecimal,
                             AvgOtsMin: avgOtsMinDecimal,
                             AvgOtsMax: avgOtsMaxDecimal,
@@ -1410,7 +1415,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                         // Passes 1-3 allocations via runningOtsQty). Distribute the
                         // leftover proportionally to each store's cap so bigger stores
                         // absorb bigger overflow shares. Cap-0 stores get nothing.
-                        // Store's Pass4RatioCap column captures the denominator so
+                        // Store's RatioSkuMax column captures the numerator so
                         // operators can verify take_i = round(remaining * cap_i / SUM).
                         if (remaining > 0)
                         {
@@ -1437,7 +1442,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                                         continue;
                                     }
                                     var newRow = BumpRow(existingRow, r, take, 0, pass: 4)
-                                        with { Pass4RatioCap = cap };
+                                        with { RatioSkuMax = cap };
                                     allocs[r.StoreID] = newRow;
                                     remaining -= take;
                                     RecordTrace(4, i, r, SkuMaxRawAndCapFor(r).TierName, cap, current, remBefore, take);
@@ -1613,7 +1618,8 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                                             RecordTrace(4, i, r, "MinMax", minMax, current, remBefore, 0, skipReason: "ShareZero");
                                             continue;
                                         }
-                                        allocs[r.StoreID] = BumpRow(row, r, share, 0, pass: 4, tierNameOverride: "MinMax");
+                                        allocs[r.StoreID] = BumpRow(row, r, share, 0, pass: 4, tierNameOverride: "MinMax")
+                                            with { RatioSkuMax = minMax };
                                         remaining -= share;
                                         assigned += share;
                                         RecordTrace(4, i, r, "MinMax", minMax, current, remBefore, share);
@@ -1730,6 +1736,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
             tdt.Columns.Add("SkipReason",         typeof(string));
             tdt.Columns.Add("DefaultSkuMax",      typeof(int));
             tdt.Columns.Add("RawSkuMax",          typeof(int));
+            tdt.Columns.Add("RatioSkuMax",        typeof(int));
             tdt.Columns.Add("AvgOtsPercent",      typeof(decimal));
             tdt.Columns.Add("AvgOtsMin",          typeof(decimal));
             tdt.Columns.Add("AvgOtsMax",          typeof(decimal));
@@ -1748,6 +1755,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                     (object?)t.SkipReason     ?? DBNull.Value,
                     (object?)t.DefaultSkuMax  ?? DBNull.Value,
                     (object?)t.RawSkuMax      ?? DBNull.Value,
+                    (object?)t.RatioSkuMax    ?? DBNull.Value,
                     (object?)t.AvgOtsPercent  ?? DBNull.Value,
                     (object?)t.AvgOtsMin      ?? DBNull.Value,
                     (object?)t.AvgOtsMax      ?? DBNull.Value,
@@ -2066,7 +2074,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         dt.Columns.Add("Pass2Qty",         typeof(int));
         dt.Columns.Add("Pass3Qty",         typeof(int));
         dt.Columns.Add("Pass4Qty",         typeof(int));
-        dt.Columns.Add("Pass4RatioCap",    typeof(int));
+        dt.Columns.Add("RatioSkuMax",      typeof(int));
         dt.Columns.Add("AvgOtsPercent",    typeof(decimal));
         dt.Columns.Add("SkuMaxBand",       typeof(string));
         dt.Columns.Add("AvgOtsMin",        typeof(decimal));
@@ -2113,7 +2121,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                 (object?)r.Pass2Qty ?? DBNull.Value,
                 (object?)r.Pass3Qty ?? DBNull.Value,
                 (object?)r.Pass4Qty ?? DBNull.Value,
-                (object?)r.Pass4RatioCap ?? DBNull.Value,
+                (object?)r.RatioSkuMax ?? DBNull.Value,
                 (object?)r.AvgOtsPercent ?? DBNull.Value,
                 (object?)r.SkuMaxBand ?? DBNull.Value,
                 (object?)r.AvgOtsMin ?? DBNull.Value,
@@ -2504,10 +2512,10 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                                        int? POQty, int? AllocatedQty, int? Phase2Qty, int? SkuMax, int? DivCode, string? StoreID, string? Country, string? GroupCode, string? Division,
                                        string? Remarks, DateTime? LPMDt, double? OTS, int? PriorityRank, int? MnwToday,
                                        int? Pass1Qty, int? Pass2Qty, int? Pass3Qty, int? Pass4Qty, decimal? AvgOtsPercent,
-                                       int? OtsQtyToday, int? TgtEOM, int? RawSkuMax)>(new CommandDefinition($@"
+                                       int? OtsQtyToday, int? TgtEOM, int? RawSkuMax, int? RatioSkuMax)>(new CommandDefinition($@"
             SELECT d.ContNo, d.ORAPONo, d.Itemcode, d.Itemname, d.Brand, d.POQty, d.AllocatedQty, d.Phase2Qty, d.SkuMax, d.DivCode, d.StoreID, d.Country,
                    d.GroupCode, d.Division, d.Remarks, d.LPMDt, d.OTS, d.PriorityRank, d.MnwToday,
-                   d.Pass1Qty, d.Pass2Qty, d.Pass3Qty, d.Pass4Qty, d.AvgOtsPercent, d.OtsQtyToday, d.TgtEOM, d.RawSkuMax
+                   d.Pass1Qty, d.Pass2Qty, d.Pass3Qty, d.Pass4Qty, d.AvgOtsPercent, d.OtsQtyToday, d.TgtEOM, d.RawSkuMax, d.RatioSkuMax
               FROM LPMSIM.dbo.WMS_ContAllocationData d WITH (NOLOCK)
               {joinAndWhereSql}
              ORDER BY d.IdNo",
@@ -2606,7 +2614,8 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                 AvgOtsPercent: r.AvgOtsPercent,
                 OtsQtyToday: r.OtsQtyToday,
                 TgtEOM: r.TgtEOM,
-                RawSkuMax: r.RawSkuMax);
+                RawSkuMax: r.RawSkuMax,
+                RatioSkuMax: r.RatioSkuMax);
         }).ToList();
     }
 

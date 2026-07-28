@@ -585,23 +585,25 @@ else if (_view == "Detailed" && _detailRows.Count > 0)
         catch { /* fall back to empty list if the lookup fails */ }
     }
 
-    private async Task ToggleToday(bool isToday)
+    private void ToggleToday(bool isToday)
     {
         _isToday = isToday;
-        await LoadAsync();
     }
 
     // Switching Report type re-runs the same search automatically — no need
-    // to click Load again, same as the Production Summary Report's
-    // Summary/Detailed toggle and the Jafza report's Today mode.
+    // to click Load again — but only once a report has already been loaded
+    // via the Load button; before that, nothing should load on its own.
     private async Task SetView(string view)
     {
         _view = view;
-        if (_isToday || HasContNoFilter || _from <= _to) await LoadAsync();
+        if (_hasLoadedOnce && (_isToday || HasContNoFilter || _from <= _to)) await LoadAsync();
     }
+
+    private bool _hasLoadedOnce;
 
     private async Task LoadAsync()
     {
+        _hasLoadedOnce = true;
         _loading = true; _message = ""; _isError = false;
         _summaryRows = new(); _allocRows = new(); _detailRows = new();
         _todaySummaryRows = new(); _todayAllocRows = new(); _todayDetailRows = new();
