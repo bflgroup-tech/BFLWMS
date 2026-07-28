@@ -1457,7 +1457,9 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                         // Pass 2 : top positive-OTS stores up from current alloc to their OTS-driven tier cap (- SOH).
                         // Pass 3 : negative-OTS stores get up to (MinMin - SOH). Conservative
                         //          — over-stocked stores get only the safety floor.
-                        // Pass 4 : if remaining < 10% of PoQty -> distribute to A/B/C proportional to MinMax.
+                        // Pass 4 : if remaining < 10% of PoQty -> distribute across A/B/C
+                        //          stores with LiveOts > 0, proportional to raw MinMax
+                        //          (share = MinMax / SUM(MinMax) * remaining, no per-store cap).
                         //          else -> flag the item in dbo.WmsPlanningFlag, drop remaining, move on.
                         static bool IsGradeAtoH(string? vg)
                         {
@@ -1619,9 +1621,15 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                             }
                             else
                             {
-                                // Distribute proportionally to A/B/C stores by MinMax.
+                                // Distribute proportionally to A/B/C stores by raw MinMax.
+                                // Filter: VG in {A, B, C} AND LiveOts > 0. Sort: VG asc, then
+                                // LiveOts (refreshed) desc — so the last-store-takes-residual
+                                // tiebreak lands on the strongest positive-OTS store in the
+                                // lowest grade included. Ratio uses raw MinMax as the weight;
+                                // each store's share is take-as-is (no per-store cap).
                                 var top3 = eligible
                                     .Where(r => VolumeGroupRank(r.VolumeGroup) is 1 or 2 or 3)  // A, B, C from LPM_VolumeGroupRange.SortOrder
+                                    .Where(r => LiveOtsPct(r) > 0)                              // positive-OTS stores only
                                     .Select(r => (Row: r, MinMax: RawMinMaxFor(r)))
                                     .Where(x => x.MinMax > 0)
                                     .OrderBy(x => VolumeGroupRank(x.Row.VolumeGroup))
@@ -2342,13 +2350,16 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
             azureRows = exists == 1 ? 1 : 0;
         }
 
-        // Planning flags: count Pass 4 items dropped this container (>=10% residual).
-        var pfCount = await c.ExecuteScalarAsync<int>(new CommandDefinition(
-            "SELECT COUNT(*) FROM LPMSIM.dbo.WmsPlanningFlag WITH (NOLOCK) WHERE ContNo = @c",
+        // Planning flags: count Pass 4 items dropped this container (>=10% residual)
+        // and sum the RemainingQty so the UI can show "N items · Q qty" on the button.
+        var pf = await c.QueryFirstAsync<(int Cnt, int TotalQty)>(new CommandDefinition(@"
+            SELECT COUNT(*) AS Cnt, ISNULL(SUM(RemainingQty), 0) AS TotalQty
+              FROM LPMSIM.dbo.WmsPlanningFlag WITH (NOLOCK)
+             WHERE ContNo = @c",
             new { c = contno }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
 
         return new AllocationStatus(hasDraft, hasFinal, draftRows, f.Total, f.Max1, d.RunOption,
-                                     f.Fsm, f.Rr, f.Frr, azureRows, f.Fmm, pfCount);
+                                     f.Fsm, f.Rr, f.Frr, azureRows, f.Fmm, pf.Cnt, pf.TotalQty);
     }
 
     /// <summary>Load Planning Flag rows for a container — the FMMPO Pass 4
