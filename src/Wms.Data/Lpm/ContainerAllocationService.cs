@@ -1632,8 +1632,8 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                                 // lowest grade included. Ratio uses raw MinMax as the weight;
                                 // each store's share is take-as-is (no per-store cap).
                                 var top3 = eligible
-                                    .Where(r => VolumeGroupRank(r.VolumeGroup) is 1 or 2 or 3)  // A, B, C from LPM_VolumeGroupRange.SortOrder
-                                    .Where(r => LiveOtsPct(r) > 0)                              // positive-OTS stores only
+                                    .Where(r => (r.VolumeGroup?.Trim().ToUpperInvariant()) is "A" or "B" or "C")  // A, B, C by letter (decoupled from SortOrder config so an S=Special row between B and C can't shove C out of the top-3 rank)
+                                    .Where(r => LiveOtsPct(r) > 0)                                                // positive-OTS stores only
                                     .Select(r => (Row: r, MinMax: RawMinMaxFor(r)))
                                     .Where(x => x.MinMax > 0)
                                     .OrderBy(x => VolumeGroupRank(x.Row.VolumeGroup))
