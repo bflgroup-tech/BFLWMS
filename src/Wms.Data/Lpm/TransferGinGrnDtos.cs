@@ -28,5 +28,7 @@ public record TransferHistoryFilter(
 
 public record TransferHistoryResult(List<TransferHistoryRow> Rows, List<string> Warnings);
 
-/// <summary>Transfer/Transfer Qty/GIN Qty totals for one country, for the summary cards.</summary>
-public record TransferSummary(string Country, int TransferCount, int TransferQty, int GinQty);
+/// <summary>Transfer/Transfer Qty/GIN Count/GIN Qty totals for one country, for the summary cards.</summary>
+public record TransferSummary(string Country, int TransferCount, int TransferQty, int GinCount, int GinQty);
+
+public record TransferSummaryResult(List<TransferSummary> Summaries, List<string> Warnings);
