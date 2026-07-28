@@ -66,15 +66,15 @@
                 <tbody>
                     <tr>
                         <td>Supplier Cost</td>
-                        <td><input class="aiwms-input" type="number" step="0.0001" @bind="_supplierCost" style="text-align:right" /></td>
+                        <td><input class="aiwms-input" type="number" step="0.0001" @bind="SupplierCostText" style="text-align:right" /></td>
                     </tr>
                     <tr>
                         <td>FC rate for Cost</td>
-                        <td><input class="aiwms-input" type="number" step="0.0001" @bind="_fcRateForCost" style="text-align:right" /></td>
+                        <td><input class="aiwms-input" type="number" step="0.0001" @bind="FcRateForCostText" style="text-align:right" /></td>
                     </tr>
                     <tr>
                         <td>Additional Expenses %</td>
-                        <td><input class="aiwms-input" type="number" step="0.0001" @bind="_additionalExpensesPct" style="text-align:right" /></td>
+                        <td><input class="aiwms-input" type="number" step="0.0001" @bind="AdditionalExpensesPctText" style="text-align:right" /></td>
                     </tr>
                 </tbody>
             </table>
@@ -87,10 +87,31 @@
     private string _refNo = "";
     private string _labType = "";
     private decimal? _phasePct;
-    private decimal? _supplierCost = 0.0000m;
-    private decimal? _fcRateForCost = 5.0000m;
-    private decimal? _additionalExpensesPct = 0.0000m;
+    private decimal _supplierCost = 0.0000m;
+    private decimal _fcRateForCost = 5.0000m;
+    private decimal _additionalExpensesPct = 0.0000m;
     private string _uploadedExcelFileName = "";
+
+    // Bound instead of the raw decimal fields so the field always redisplays
+    // 4 decimal places on blur (decimal.ToString() drops trailing zeros the
+    // browser's number input would otherwise strip after a user edit).
+    private string SupplierCostText
+    {
+        get => _supplierCost.ToString("F4");
+        set { if (decimal.TryParse(value, out var v)) _supplierCost = v; }
+    }
+
+    private string FcRateForCostText
+    {
+        get => _fcRateForCost.ToString("F4");
+        set { if (decimal.TryParse(value, out var v)) _fcRateForCost = v; }
+    }
+
+    private string AdditionalExpensesPctText
+    {
+        get => _additionalExpensesPct.ToString("F4");
+        set { if (decimal.TryParse(value, out var v)) _additionalExpensesPct = v; }
+    }
 
     private void OnExcelFileSelected(InputFileChangeEventArgs e)
     {
