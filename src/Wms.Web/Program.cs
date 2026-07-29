@@ -101,6 +101,7 @@ public class Program
         builder.Services.AddHostedService<Wms.Web.Hosting.ToteMasterScheduledService>();
         builder.Services.AddHostedService<Wms.Web.Hosting.BoxesToWmsProdScheduledService>();
         builder.Services.AddHostedService<Wms.Web.Hosting.PendingGoodsReceiptEmailScheduledService>();
+        builder.Services.AddScoped<Wms.Web.Hosting.PendingGoodsReceiptEmailSender>();
         builder.Services.AddScoped<Wms.Data.Notifications.PendingGoodsReceiptEmailService>();
 
         // WMS DbContext — Azure SQL via AAD (Managed Identity in App Service,
