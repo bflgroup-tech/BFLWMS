@@ -410,6 +410,7 @@ else if (_loadedOnce && VisibleRows().Count == 0)
         try
         {
             var countries = _selectedCountries.ToList();
+            var merchNeedErrors = new List<string>();
             for (int i = 0; i < countries.Count; i++)
             {
                 var country = countries[i];
@@ -432,14 +433,20 @@ else if (_loadedOnce && VisibleRows().Count == 0)
                 // countries in one table) — independent of the per-country scan connection
                 // above, so fetch it even for countries with no scan connection configured.
                 try { _merchNeedByCountry[country] = await Svc.GetMerchNeedAsync(country); }
-                catch { _merchNeedByCountry[country] = new MerchNeedRow(0, 0, 0); }
+                catch (Exception mnEx) { merchNeedErrors.Add($"{country}: {mnEx.Message}"); _merchNeedByCountry[country] = new MerchNeedRow(0, 0, 0); }
             }
             _loadedOnce = true;
             var unconfigured = countries.Where(c => !_configuredCountries.Contains(c)).ToList();
+            var notes = new List<string>();
             if (unconfigured.Count > 0)
             {
-                ShowInfo($"Note: {string.Join(", ", unconfigured)} {(unconfigured.Count == 1 ? "has" : "have")} no DB connection configured, so {(unconfigured.Count == 1 ? "it" : "they")} will always show 0 rows here.");
+                notes.Add($"{string.Join(", ", unconfigured)} {(unconfigured.Count == 1 ? "has" : "have")} no DB connection configured, so {(unconfigured.Count == 1 ? "it" : "they")} will always show 0 rows here.");
             }
+            if (merchNeedErrors.Count > 0)
+            {
+                notes.Add($"Merch Need lookup failed for: {string.Join(" | ", merchNeedErrors)}");
+            }
+            if (notes.Count > 0) ShowInfo("Note: " + string.Join(" ", notes));
         }
         catch (Exception ex) { ShowError($"Load failed: {ex.Message}"); }
         finally { _loading = false; _loadingMsg = null; }
