@@ -32,3 +32,11 @@ public sealed record MerchNeedRow(
     long MerchNeedMonth,
     long MerchNeedWeek,
     long MerchNeedDay);
+
+/// <summary>Merch Need (Month/Week/Day), broken down per Division, for a country's current calendar month.</summary>
+public sealed record MerchNeedDivisionRow(
+    int  DivCode,
+    string Division,
+    long MerchNeedMonth,
+    long MerchNeedWeek,
+    long MerchNeedDay);

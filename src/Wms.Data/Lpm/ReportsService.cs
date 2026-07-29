@@ -164,14 +164,35 @@ public class ReportsService(IOnPremConnectionResolver resolver)
     public async Task<MerchNeedRow> GetMerchNeedAsync(string country, CancellationToken ct = default)
     {
         await using var c = OpenOnPremBackup();
+        // MerchNeedMonth/Week/Day are int columns on LPM_EOM_Output; cast the sums to bigint
+        // so Dapper's record-constructor matching lines up with MerchNeedRow's long properties
+        // (it requires an exact type match here, not just an implicit widening conversion).
         var row = await c.QuerySingleOrDefaultAsync<MerchNeedRow>(new CommandDefinition(@"
-            SELECT MerchNeedMonth = ISNULL(SUM(MerchNeedMonth), 0),
-                   MerchNeedWeek  = ISNULL(SUM(MerchNeedWeek), 0),
-                   MerchNeedDay   = ISNULL(SUM(MerchNeedDay), 0)
+            SELECT MerchNeedMonth = CAST(ISNULL(SUM(MerchNeedMonth), 0) AS BIGINT),
+                   MerchNeedWeek  = CAST(ISNULL(SUM(MerchNeedWeek), 0) AS BIGINT),
+                   MerchNeedDay   = CAST(ISNULL(SUM(MerchNeedDay), 0) AS BIGINT)
               FROM LPMSIM.dbo.LPM_EOM_Output
              WHERE year1 = YEAR(GETDATE()) AND month1 = MONTH(GETDATE()) AND Country = @country",
             new { country }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         return row ?? new MerchNeedRow(0, 0, 0);
+    }
+
+    /// <summary>Merch Need (Month/Week/Day) per Division for a country's current calendar month,
+    /// joining LPM_EOM_Output.DivCode to LPMSIM.dbo.Division for the human name.</summary>
+    public async Task<List<MerchNeedDivisionRow>> GetMerchNeedByDivisionAsync(string country, CancellationToken ct = default)
+    {
+        await using var c = OpenOnPremBackup();
+        var rows = await c.QueryAsync<MerchNeedDivisionRow>(new CommandDefinition(@"
+            SELECT a.DivCode, b.Division,
+                   MerchNeedMonth = CAST(ISNULL(SUM(a.MerchNeedMonth), 0) AS BIGINT),
+                   MerchNeedWeek  = CAST(ISNULL(SUM(a.MerchNeedWeek), 0) AS BIGINT),
+                   MerchNeedDay   = CAST(ISNULL(SUM(a.MerchNeedDay), 0) AS BIGINT)
+              FROM LPMSIM.dbo.LPM_EOM_Output a
+              JOIN LPMSIM.dbo.Division b ON a.DivCode = b.DivCode
+             WHERE a.year1 = YEAR(GETDATE()) AND a.month1 = MONTH(GETDATE()) AND a.Country = @country
+             GROUP BY a.DivCode, b.Division",
+            new { country }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        return rows.AsList();
     }
 
     // ===================== Counting Completion Report (Summary) =====================

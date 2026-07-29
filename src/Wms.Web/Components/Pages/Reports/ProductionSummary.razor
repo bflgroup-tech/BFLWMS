@@ -139,20 +139,24 @@ else if (VisibleRows().Count > 0)
             var multiCountry = _selectedCountries.Count > 1;
             var pivot = visibleSummary
                 .GroupBy(s => new { s.Country, s.ProductionDay, s.Division })
-                .Select(g => new DivisionPivotRow(
-                    g.Key.Country,
-                    g.Key.ProductionDay,
-                    g.Key.Division,
-                    g.Where(x => x.Kind == "LPM").Sum(x => x.TotalScanned),
-                    g.Where(x => x.Kind == "Non-LPM").Sum(x => x.TotalScanned),
-                    g.Where(x => x.Kind == "Mixed").Sum(x => x.TotalScanned),
-                    g.Where(x => x.Kind == "Unknown").Sum(x => x.TotalScanned),
-                    g.Sum(x => x.TotalScanned),
-                    g.Sum(x => x.StoreQty),
-                    g.Sum(x => x.UaeStoreQty),
-                    g.Sum(x => x.OmanStoreQty),
-                    g.Sum(x => x.Ex2StoreQty),
-                    0, 0, 0))
+                .Select(g =>
+                {
+                    var mn = MerchNeedFor(g.Key.Country, g.Key.Division);
+                    return new DivisionPivotRow(
+                        g.Key.Country,
+                        g.Key.ProductionDay,
+                        g.Key.Division,
+                        g.Where(x => x.Kind == "LPM").Sum(x => x.TotalScanned),
+                        g.Where(x => x.Kind == "Non-LPM").Sum(x => x.TotalScanned),
+                        g.Where(x => x.Kind == "Mixed").Sum(x => x.TotalScanned),
+                        g.Where(x => x.Kind == "Unknown").Sum(x => x.TotalScanned),
+                        g.Sum(x => x.TotalScanned),
+                        g.Sum(x => x.StoreQty),
+                        g.Sum(x => x.UaeStoreQty),
+                        g.Sum(x => x.OmanStoreQty),
+                        g.Sum(x => x.Ex2StoreQty),
+                        mn.Month, mn.Week, mn.Day);
+                })
                 .OrderByDescending(x => x.ProductionDay)
                 .ThenBy(x => x.Country)
                 .ThenBy(x => x.Division)
@@ -356,6 +360,17 @@ else if (_loadedOnce && VisibleRows().Count == 0)
     private long _transferQty;
     private Dictionary<string, long> _transferQtyByCountry = new(StringComparer.OrdinalIgnoreCase);
     private Dictionary<string, MerchNeedRow> _merchNeedByCountry = new(StringComparer.OrdinalIgnoreCase);
+    private Dictionary<string, List<MerchNeedDivisionRow>> _merchNeedByCountryDivision = new(StringComparer.OrdinalIgnoreCase);
+
+    private (long Month, long Week, long Day) MerchNeedFor(string country, string division)
+    {
+        if (_merchNeedByCountryDivision.TryGetValue(country, out var list))
+        {
+            var match = list.FirstOrDefault(d => string.Equals(d.Division, division, StringComparison.OrdinalIgnoreCase));
+            if (match is not null) return (match.MerchNeedMonth, match.MerchNeedWeek, match.MerchNeedDay);
+        }
+        return (0, 0, 0);
+    }
 
     private bool CanLoad => _selectedCountries.Count > 0 && _from <= _to;
 
@@ -390,7 +405,6 @@ else if (_loadedOnce && VisibleRows().Count == 0)
         string Country, DateTime ProductionDay, string Division,
         long Lpm, long NonLpm, long Mixed, long Unknown,
         long ScannedQty, int StoresQty, int UaeQty, int OmanQty, int Ex2Qty,
-        // TODO: placeholders until the calculation logic is provided.
         long MerchNeedMonth, long MerchNeedWeek, long MerchNeedDay);
 
     // Current WH production day in GST (UTC+4). If "now" is before 06:00 GST,
@@ -405,11 +419,12 @@ else if (_loadedOnce && VisibleRows().Count == 0)
     {
         if (!CanLoad) return;
         _loading = true; _message = ""; _loadedOnce = false;
-        _rows.Clear(); _summary.Clear(); _overallStoreQty = 0; _transferQty = 0; _transferQtyByCountry.Clear(); _merchNeedByCountry.Clear();
+        _rows.Clear(); _summary.Clear(); _overallStoreQty = 0; _transferQty = 0; _transferQtyByCountry.Clear(); _merchNeedByCountry.Clear(); _merchNeedByCountryDivision.Clear();
         await InvokeAsync(StateHasChanged);
         try
         {
             var countries = _selectedCountries.ToList();
+            var merchNeedErrors = new List<string>();
             for (int i = 0; i < countries.Count; i++)
             {
                 var country = countries[i];
@@ -432,14 +447,23 @@ else if (_loadedOnce && VisibleRows().Count == 0)
                 // countries in one table) — independent of the per-country scan connection
                 // above, so fetch it even for countries with no scan connection configured.
                 try { _merchNeedByCountry[country] = await Svc.GetMerchNeedAsync(country); }
-                catch { _merchNeedByCountry[country] = new MerchNeedRow(0, 0, 0); }
+                catch (Exception mnEx) { merchNeedErrors.Add($"{country}: {mnEx.Message}"); _merchNeedByCountry[country] = new MerchNeedRow(0, 0, 0); }
+
+                try { _merchNeedByCountryDivision[country] = await Svc.GetMerchNeedByDivisionAsync(country); }
+                catch (Exception mnEx) { merchNeedErrors.Add($"{country} (by division): {mnEx.Message}"); _merchNeedByCountryDivision[country] = new(); }
             }
             _loadedOnce = true;
             var unconfigured = countries.Where(c => !_configuredCountries.Contains(c)).ToList();
+            var notes = new List<string>();
             if (unconfigured.Count > 0)
             {
-                ShowInfo($"Note: {string.Join(", ", unconfigured)} {(unconfigured.Count == 1 ? "has" : "have")} no DB connection configured, so {(unconfigured.Count == 1 ? "it" : "they")} will always show 0 rows here.");
+                notes.Add($"{string.Join(", ", unconfigured)} {(unconfigured.Count == 1 ? "has" : "have")} no DB connection configured, so {(unconfigured.Count == 1 ? "it" : "they")} will always show 0 rows here.");
             }
+            if (merchNeedErrors.Count > 0)
+            {
+                notes.Add($"Merch Need lookup failed for: {string.Join(" | ", merchNeedErrors)}");
+            }
+            if (notes.Count > 0) ShowInfo("Note: " + string.Join(" ", notes));
         }
         catch (Exception ex) { ShowError($"Load failed: {ex.Message}"); }
         finally { _loading = false; _loadingMsg = null; }
@@ -456,15 +480,19 @@ else if (_loadedOnce && VisibleRows().Count == 0)
         {
             var pivot = visibleSummary
                 .GroupBy(s => new { s.Country, s.ProductionDay, s.Division })
-                .Select(g => new DivisionPivotRow(
-                    g.Key.Country, g.Key.ProductionDay, g.Key.Division,
-                    g.Where(x => x.Kind == "LPM").Sum(x => x.TotalScanned),
-                    g.Where(x => x.Kind == "Non-LPM").Sum(x => x.TotalScanned),
-                    g.Where(x => x.Kind == "Mixed").Sum(x => x.TotalScanned),
-                    g.Where(x => x.Kind == "Unknown").Sum(x => x.TotalScanned),
-                    g.Sum(x => x.TotalScanned), g.Sum(x => x.StoreQty),
-                    g.Sum(x => x.UaeStoreQty), g.Sum(x => x.OmanStoreQty), g.Sum(x => x.Ex2StoreQty),
-                    0, 0, 0))
+                .Select(g =>
+                {
+                    var mn = MerchNeedFor(g.Key.Country, g.Key.Division);
+                    return new DivisionPivotRow(
+                        g.Key.Country, g.Key.ProductionDay, g.Key.Division,
+                        g.Where(x => x.Kind == "LPM").Sum(x => x.TotalScanned),
+                        g.Where(x => x.Kind == "Non-LPM").Sum(x => x.TotalScanned),
+                        g.Where(x => x.Kind == "Mixed").Sum(x => x.TotalScanned),
+                        g.Where(x => x.Kind == "Unknown").Sum(x => x.TotalScanned),
+                        g.Sum(x => x.TotalScanned), g.Sum(x => x.StoreQty),
+                        g.Sum(x => x.UaeStoreQty), g.Sum(x => x.OmanStoreQty), g.Sum(x => x.Ex2StoreQty),
+                        mn.Month, mn.Week, mn.Day);
+                })
                 .OrderByDescending(x => x.ProductionDay).ThenBy(x => x.Country).ThenBy(x => x.Division).ToList();
             var isUae = _selectedCountries.Contains("UAE");
             if (multiCountry) sb.Append("Country,");
