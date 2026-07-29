@@ -466,10 +466,14 @@
             // "(All stores)" — mirrors the BFL Group per-country breakdown one level down.
             var singleCountryAllStores = !_isBflGroupView && storeFilter is null && singleCountry is not null;
 
-            // Country-level summary only matters for BFL Group's "BY COUNTRY" cards —
-            // a single country selection shows store-level data instead, so skip
-            // this query entirely rather than fetching a result nothing displays.
-            var resultTask      = Svc.GetTransferHistoryAsync(filter);
+            // Summary view never shows the detail table — skip the expensive
+            // per-shop, per-transfer query entirely rather than fetching rows
+            // nothing displays. Country-level summary only matters for BFL
+            // Group's "BY COUNTRY" cards — a single country selection shows
+            // store-level data instead, so skip that query too when unused.
+            var resultTask      = _viewMode == "Detailed"
+                ? Svc.GetTransferHistoryAsync(filter)
+                : Task.FromResult(new TransferHistoryResult(new List<TransferHistoryRow>(), new List<string>()));
             var summaryTask     = _isBflGroupView
                 ? Svc.GetTransferSummaryAsync(countries, _dateFrom, _dateTo)
                 : Task.FromResult(new TransferSummaryResult(new List<TransferSummary>(), new List<string>()));
@@ -489,10 +493,11 @@
             _storeSummaries = storeSummariesTask.Result;
 
             var allWarnings = result.Warnings.Concat(summary.Warnings).ToList();
+            var loadedMsg   = _viewMode == "Detailed" ? $"Loaded {_rows.Count} rows." : "Summary loaded.";
             if (allWarnings.Count > 0)
-                ShowError($"Loaded {_rows.Count} rows. Some countries failed: {string.Join("; ", allWarnings)}");
+                ShowError($"{loadedMsg} Some countries failed: {string.Join("; ", allWarnings)}");
             else
-                ShowInfo($"Loaded {_rows.Count} rows.");
+                ShowInfo(loadedMsg);
         }
         catch (Exception ex) { ShowError($"Load failed: {ex.Message}"); }
         finally { _loading = false; }
