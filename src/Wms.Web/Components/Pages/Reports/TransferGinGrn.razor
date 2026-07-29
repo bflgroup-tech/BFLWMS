@@ -132,6 +132,20 @@
         </div>
     </div>
 }
+@if (!_isBflGroupView && _storeSummaries.Count > 0)
+{
+    <div class="aiwms-section" style="padding:0; overflow:hidden;">
+        <div style="padding:10px 16px; background:var(--bg-subtle, #f7f7f5); font-weight:700; font-size:13px; letter-spacing:0.02em;">
+            BY STORE
+        </div>
+        <div style="padding:14px 16px; display:flex; gap:16px; flex-wrap:wrap;">
+            @foreach (var s in _storeSummaries)
+            {
+                @SummaryCard(s, "#e8f0fe")
+            }
+        </div>
+    </div>
+}
 
 @{ var breakdownRows = _isBflGroupView ? _summaries : _storeSummaries; }
 @if (breakdownRows.Count > 0)
@@ -139,44 +153,6 @@
     var breakdownLabel = _isBflGroupView ? "Country" : "Store";
     <div class="aiwms-section" style="padding:0; overflow:hidden;">
         <div style="padding:10px 16px; background:var(--bg-subtle, #f7f7f5); font-weight:700; font-size:13px; letter-spacing:0.02em;">
-            SUMMARY
-        </div>
-        <div style="overflow:auto;">
-        <table class="aiwms-table aiwms-table-dense" style="width:100%;">
-            <thead>
-                <tr>
-                    <th>@breakdownLabel</th>
-                    <th style="text-align:right;">Transfers</th>
-                    <th style="text-align:right;">Transfer Qty</th>
-                    <th style="text-align:right;">GIN Count</th>
-                    <th style="text-align:right;">GIN Qty</th>
-                </tr>
-            </thead>
-            <tbody>
-                @foreach (var s in breakdownRows)
-                {
-                    <tr>
-                        <td>@s.Country.ToUpperInvariant()</td>
-                        <td style="text-align:right;">@s.TransferCount.ToString("N0")</td>
-                        <td style="text-align:right;">@s.TransferQty.ToString("N0")</td>
-                        <td style="text-align:right;">@s.GinCount.ToString("N0")</td>
-                        <td style="text-align:right;">@s.GinQty.ToString("N0")</td>
-                    </tr>
-                }
-            </tbody>
-            <tfoot>
-                <tr style="font-weight:600; border-top:2px solid var(--border-default);">
-                    <td>Total</td>
-                    <td style="text-align:right;">@breakdownRows.Sum(s => s.TransferCount).ToString("N0")</td>
-                    <td style="text-align:right;">@breakdownRows.Sum(s => s.TransferQty).ToString("N0")</td>
-                    <td style="text-align:right;">@breakdownRows.Sum(s => s.GinCount).ToString("N0")</td>
-                    <td style="text-align:right;">@breakdownRows.Sum(s => s.GinQty).ToString("N0")</td>
-                </tr>
-            </tfoot>
-        </table>
-        </div>
-
-        <div style="padding:10px 16px; background:var(--bg-subtle, #f7f7f5); font-weight:700; font-size:13px; letter-spacing:0.02em; border-top:1px solid var(--border-default);">
             PER @breakdownLabel.ToUpperInvariant() BREAKDOWN
         </div>
         <div style="padding:14px 16px; display:flex; gap:12px; flex-wrap:wrap;">
@@ -218,6 +194,44 @@
                     }
                 </div>
             }
+        </div>
+
+        <div style="padding:10px 16px; background:var(--bg-subtle, #f7f7f5); font-weight:700; font-size:13px; letter-spacing:0.02em; border-top:1px solid var(--border-default);">
+            SUMMARY
+        </div>
+        <div style="overflow:auto;">
+        <table class="aiwms-table aiwms-table-dense" style="width:100%;">
+            <thead>
+                <tr>
+                    <th>@breakdownLabel</th>
+                    <th style="text-align:right;">Transfers</th>
+                    <th style="text-align:right;">Transfer Qty</th>
+                    <th style="text-align:right;">GIN Count</th>
+                    <th style="text-align:right;">GIN Qty</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var s in breakdownRows)
+                {
+                    <tr>
+                        <td>@s.Country.ToUpperInvariant()</td>
+                        <td style="text-align:right;">@s.TransferCount.ToString("N0")</td>
+                        <td style="text-align:right;">@s.TransferQty.ToString("N0")</td>
+                        <td style="text-align:right;">@s.GinCount.ToString("N0")</td>
+                        <td style="text-align:right;">@s.GinQty.ToString("N0")</td>
+                    </tr>
+                }
+            </tbody>
+            <tfoot>
+                <tr style="font-weight:600; border-top:2px solid var(--border-default);">
+                    <td>Total</td>
+                    <td style="text-align:right;">@breakdownRows.Sum(s => s.TransferCount).ToString("N0")</td>
+                    <td style="text-align:right;">@breakdownRows.Sum(s => s.TransferQty).ToString("N0")</td>
+                    <td style="text-align:right;">@breakdownRows.Sum(s => s.GinCount).ToString("N0")</td>
+                    <td style="text-align:right;">@breakdownRows.Sum(s => s.GinQty).ToString("N0")</td>
+                </tr>
+            </tfoot>
+        </table>
         </div>
     </div>
 }

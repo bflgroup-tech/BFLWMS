@@ -484,6 +484,12 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
 
     // from/to: date-only: this does the end-of-day adjustment itself before
     // delegating, so every caller can just pass plain dates.
+    //
+    // GIN correlates to the store via TrfNo -> transferDetailTable's own
+    // CostCodeTo/LocCodeTo (the same correlation the detail table's GIN join
+    // already uses), NOT vGoodsIssueplt.ShopIssue directly — ShopIssue turned
+    // out not to reliably equal ShopName outside UAE, which silently zeroed
+    // out GIN Count/Qty for every non-UAE store.
     private static async Task<TransferSummary> GetOneStoreSummaryAsync(
         SqlConnection conn, string shopName, string transferDetailTable, string ginTable,
         string costCodeTo, string locCodeTo, DateTime from, DateTime to, CancellationToken ct)
@@ -495,10 +501,14 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
 
         var gin = await conn.QuerySingleAsync<GinCountQtyRow>(new CommandDefinition($@"
-            SELECT COUNT(DISTINCT SrNo) AS GinCount, ISNULL(SUM(Qty),0) AS GinQty
-              FROM {ginTable} WITH (NOLOCK)
-             WHERE ShopIssue = @shopName AND EntryDate >= @from AND EntryDate <= @to",
-            new { shopName, from, to = toEnd }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            SELECT COUNT(DISTINCT c.SrNo) AS GinCount, ISNULL(SUM(c.Qty),0) AS GinQty
+              FROM {ginTable} c WITH (NOLOCK)
+             WHERE c.EntryDate >= @from AND c.EntryDate <= @to
+               AND EXISTS (
+                   SELECT 1 FROM {transferDetailTable} vtd WITH (NOLOCK)
+                    WHERE vtd.TrfNo = c.TrfNo AND vtd.CostCodeTo = @costCodeTo AND vtd.LocCodeTo = @locCodeTo
+               )",
+            new { costCodeTo, locCodeTo, from, to = toEnd }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
 
         return new TransferSummary(shopName, transferRow.TransferCount, transferRow.TransferQty ?? 0, gin.GinCount, gin.GinQty ?? 0);
     }
