@@ -272,6 +272,8 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         IReadOnlyCollection<string>? allocationCountries = null,
         bool ecomManualPriority = false,
         bool traceEnabled = false,
+        bool bypassPass1b = false,
+        int  bypassPoQty  = 200,
         CancellationToken ct = default)
     {
         var result  = new List<AllocationRow>();
@@ -1269,7 +1271,8 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                     // ticked "Trace Allocation" on the razor page. No-ops otherwise.
                     void RecordTrace(int pass, int sortRank, OtsRunLookupRow r, string tierName,
                                      int cap, int currentBefore, int remainingBefore, int take,
-                                     string? skipReason = null, int? ratioSkuMaxOverride = null)
+                                     string? skipReason = null, int? ratioSkuMaxOverride = null,
+                                     int? rawSkuMaxOverride = null)
                     {
                         if (trace is null) return;
                         var soh = itemSohByStore.GetValueOrDefault(
@@ -1277,22 +1280,32 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                         var running = runningOtsQty.GetValueOrDefault((r.StoreID, r.DivCode), r.OtsQtyToday);
                         // RawSkuMax follows THIS row's TierName — Pass 1b uses MinMin,
                         // Pass 3 uses MinMax, Pass 2 uses whatever the OTS picker chose,
-                        // Pass 4 uses MinMax. DefaultSkuMax = RawSkuMax - Soh.
-                        int rawTier = 0;
-                        if (skuMaxBandsByKey.TryGetValue((r.DivCode, r.VolumeGroup ?? ""), out var bandsForTrace))
+                        // Pass 4 uses MinMax. DefaultSkuMax = RawSkuMax - Soh. Callers can
+                        // pass rawSkuMaxOverride to force the value (e.g. FMMPO Pass 1b
+                        // bypass uses MinMin=1 regardless of the band).
+                        int rawTier;
+                        if (rawSkuMaxOverride.HasValue)
                         {
-                            foreach (var b in bandsForTrace)
+                            rawTier = rawSkuMaxOverride.Value;
+                        }
+                        else
+                        {
+                            rawTier = 0;
+                            if (skuMaxBandsByKey.TryGetValue((r.DivCode, r.VolumeGroup ?? ""), out var bandsForTrace))
                             {
-                                if (line.Qty < b.From || line.Qty > b.To) continue;
-                                rawTier = tierName switch
+                                foreach (var b in bandsForTrace)
                                 {
-                                    "MinMin"   => b.MinMin   ?? 0,
-                                    "MinMax"   => b.MinMax   ?? 0,
-                                    "IdealMax" => b.IdealMax ?? 0,
-                                    "MaxMax"   => b.MaxMax   ?? 0,
-                                    _          => 0,
-                                };
-                                break;
+                                    if (line.Qty < b.From || line.Qty > b.To) continue;
+                                    rawTier = tierName switch
+                                    {
+                                        "MinMin"   => b.MinMin   ?? 0,
+                                        "MinMax"   => b.MinMax   ?? 0,
+                                        "IdealMax" => b.IdealMax ?? 0,
+                                        "MaxMax"   => b.MaxMax   ?? 0,
+                                        _          => 0,
+                                    };
+                                    break;
+                                }
                             }
                         }
                         var defaultSkuMax = Math.Max(0, rawTier - soh);
@@ -1502,27 +1515,52 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                         }
 
                         // ---------- Pass 1b: everyone (A..H, LiveOts > 0) up to Min-Min ----------
-                        var pass1bStores = eligible
-                            .Where(r => IsGradeAtoH(r.VolumeGroup) && LiveOtsPct(r) > 0)
-                            .OrderBy(r => VolumeGroupRank(r.VolumeGroup))
-                            .ThenByDescending(LiveOtsPct)
-                            .ToList();
-                        for (var i = 0; i < pass1bStores.Count; i++)
+                        // Bypass options (operator toggles on the razor page):
+                        //   bypassPass1b && line.Qty <= bypassPoQty  -> SKIP Pass 1b entirely
+                        //                                               for this item (small POs
+                        //                                               go straight to Pass 2).
+                        //   bypassPass1b && line.Qty >  bypassPoQty  -> RUN Pass 1b with a
+                        //                                               HARD-CODED MinMin=1
+                        //                                               instead of the band value,
+                        //                                               so large POs spread wide
+                        //                                               with just 1 unit floor
+                        //                                               per SOH-empty store.
+                        var bypassSkip    = bypassPass1b && line.Qty <= bypassPoQty;
+                        var bypassMinMin1 = bypassPass1b && line.Qty >  bypassPoQty;
+                        if (!bypassSkip)
                         {
-                            if (remaining <= 0) break;
-                            var r = pass1bStores[i];
-                            var cap = MinMinCapFor(r);
-                            var current = allocs.TryGetValue(r.StoreID, out var row) ? row.AllocQty : 0;
-                            var remBefore = remaining;
-                            var take = Math.Min(cap - current, remaining);
-                            if (take <= 0)
+                            var pass1bStores = eligible
+                                .Where(r => IsGradeAtoH(r.VolumeGroup) && LiveOtsPct(r) > 0)
+                                .OrderBy(r => VolumeGroupRank(r.VolumeGroup))
+                                .ThenByDescending(LiveOtsPct)
+                                .ToList();
+                            for (var i = 0; i < pass1bStores.Count; i++)
                             {
-                                RecordTrace(1, i, r, "MinMin", cap, current, remBefore, 0, skipReason: "CapReached");
-                                continue;
+                                if (remaining <= 0) break;
+                                var r = pass1bStores[i];
+                                int cap;
+                                if (bypassMinMin1)
+                                {
+                                    var sohOverride = itemSohByStore.GetValueOrDefault(
+                                        (r.StoreID.ToUpperInvariant(), line.ItemCode.ToUpperInvariant()), 0);
+                                    cap = Math.Max(0, 1 - sohOverride);
+                                }
+                                else
+                                {
+                                    cap = MinMinCapFor(r);
+                                }
+                                var current = allocs.TryGetValue(r.StoreID, out var row) ? row.AllocQty : 0;
+                                var remBefore = remaining;
+                                var take = Math.Min(cap - current, remaining);
+                                if (take <= 0)
+                                {
+                                    RecordTrace(1, i, r, "MinMin", cap, current, remBefore, 0, skipReason: "CapReached", rawSkuMaxOverride: bypassMinMin1 ? 1 : (int?)null);
+                                    continue;
+                                }
+                                allocs[r.StoreID] = BumpRow(row, r, take, 0, pass: 1, tierNameOverride: "MinMin");
+                                remaining -= take;
+                                RecordTrace(1, i, r, "MinMin", cap, current, remBefore, take, rawSkuMaxOverride: bypassMinMin1 ? 1 : (int?)null);
                             }
-                            allocs[r.StoreID] = BumpRow(row, r, take, 0, pass: 1, tierNameOverride: "MinMin");
-                            remaining -= take;
-                            RecordTrace(1, i, r, "MinMin", cap, current, remBefore, take);
                         }
 
                         // ---------- Pass 2: positive-OTS stores topped up to OTS-tier cap ----------
