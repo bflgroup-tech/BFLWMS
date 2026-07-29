@@ -1,0 +1,120 @@
+@page "/tcm-laboratory"
+@rendermode RenderMode.InteractiveServer
+@using Microsoft.AspNetCore.Components.Forms
+@attribute [Authorize(Policy = Wms.Core.MenuKeys.TCM_LABORATORY)]
+
+<PageTitle>WMS — Upload TCM File</PageTitle>
+
+<div class="aiwms-page-header">
+    <h2>Upload TCM File</h2>
+    <p>Import a TCM Excel file for lab processing.</p>
+</div>
+
+<div class="aiwms-section">
+    <div class="aiwms-card-header">TCM Import</div>
+
+    <div style="display:flex; gap:16px; align-items:flex-start">
+        <div style="flex:1">
+            <div style="display:grid; grid-template-columns: repeat(4, 160px); gap:10px">
+                <div>
+                    <label class="aiwms-input-lbl">CONTAINER NO *</label>
+                    <input class="aiwms-input" @bind="_containerNo" placeholder="e.g. 7781" />
+                </div>
+                <div>
+                    <label class="aiwms-input-lbl">REF. NO *</label>
+                    <input class="aiwms-input" @bind="_refNo" placeholder="e.g. JFS" />
+                </div>
+                <div>
+                    <label class="aiwms-input-lbl">LAB TYPE *</label>
+                    <select class="aiwms-input" @bind="_labType">
+                        <option value="">(pick)</option>
+                        <option value="Mix">Mix</option>
+                        <option value="Phases">Phases</option>
+                        <option value="Bulky">Bulky</option>
+                        <option value="Phases-Sorted">Phases-Sorted</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="aiwms-input-lbl">PHASE %</label>
+                    <input class="aiwms-input" type="number" step="0.0001" @bind="_phasePct" />
+                </div>
+            </div>
+
+            <div style="margin-top:14px">
+                <label class="aiwms-input-lbl">EXCEL FILE *</label>
+                <div style="display:flex; align-items:center; gap:10px">
+                    <label class="aiwms-btn aiwms-btn-secondary" style="white-space:nowrap; cursor:pointer; margin:0">
+                        Choose File
+                        <InputFile OnChange="OnExcelFileSelected" accept=".xlsx" style="display:none" />
+                    </label>
+                    <span style="font-size:12px; color:var(--text-muted)">
+                        @(string.IsNullOrEmpty(_uploadedExcelFileName) ? "No file selected." : _uploadedExcelFileName)
+                    </span>
+                </div>
+            </div>
+
+            <div style="margin-top:16px">
+                <button class="aiwms-btn aiwms-btn-primary" disabled title="Coming soon">Import Data</button>
+            </div>
+        </div>
+
+        <div style="flex-shrink:0; width:460px; border:1px solid var(--border); border-radius:4px; overflow:hidden">
+            <table class="aiwms-table" style="width:100%; margin:0">
+                <thead>
+                    <tr><th colspan="2">Profit Margin</th></tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td style="white-space:nowrap">Supplier Cost</td>
+                        <td><input class="aiwms-input" type="number" step="0.0001" @bind="SupplierCostText" style="width:190px; text-align:right; font-weight:700; font-size:15px" /></td>
+                    </tr>
+                    <tr>
+                        <td style="white-space:nowrap">FC rate for Cost</td>
+                        <td><input class="aiwms-input" type="number" step="0.0001" @bind="FcRateForCostText" style="width:190px; text-align:right; font-weight:700; font-size:15px" /></td>
+                    </tr>
+                    <tr>
+                        <td style="white-space:nowrap">Additional Expenses %</td>
+                        <td><input class="aiwms-input" type="number" step="0.0001" @bind="AdditionalExpensesPctText" style="width:190px; text-align:right; font-weight:700; font-size:15px" /></td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+@code {
+    private string _containerNo = "";
+    private string _refNo = "";
+    private string _labType = "";
+    private decimal? _phasePct;
+    private decimal _supplierCost = 0.0000m;
+    private decimal _fcRateForCost = 5.0000m;
+    private decimal _additionalExpensesPct = 0.0000m;
+    private string _uploadedExcelFileName = "";
+
+    // Bound instead of the raw decimal fields so the field always redisplays
+    // 4 decimal places on blur (decimal.ToString() drops trailing zeros the
+    // browser's number input would otherwise strip after a user edit).
+    private string SupplierCostText
+    {
+        get => _supplierCost.ToString("F4");
+        set { if (decimal.TryParse(value, out var v)) _supplierCost = v; }
+    }
+
+    private string FcRateForCostText
+    {
+        get => _fcRateForCost.ToString("F4");
+        set { if (decimal.TryParse(value, out var v)) _fcRateForCost = v; }
+    }
+
+    private string AdditionalExpensesPctText
+    {
+        get => _additionalExpensesPct.ToString("F4");
+        set { if (decimal.TryParse(value, out var v)) _additionalExpensesPct = v; }
+    }
+
+    private void OnExcelFileSelected(InputFileChangeEventArgs e)
+    {
+        _uploadedExcelFileName = e.File?.Name ?? "";
+    }
+}
