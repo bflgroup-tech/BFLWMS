@@ -38,10 +38,10 @@
 </div>
 
 <div class="aiwms-section">
-    <div style="display:grid; grid-template-columns: 1fr auto; gap:12px; align-items:end;">
+    <div style="display:flex; gap:12px; align-items:end;">
         <div>
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COUNTRY</label>
-            <select @bind="_country" style="width:100%; max-width:260px; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;">
+            <select @bind="_country" style="width:260px; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;">
                 @foreach (var c in _countries) { <option value="@c">@c</option> }
             </select>
         </div>
@@ -238,6 +238,8 @@ else if (_loadedOnce)
         try
         {
             var list = await Svc.GetCountriesAsync();
+            var excluded = new[] { "ECOM", "Ex2Locations", "Oman" };
+            list = list.Where(c => !excluded.Contains(c, StringComparer.OrdinalIgnoreCase)).ToList();
             if (list.Count > 0) _countries = list;
         }
         catch { /* fall back to the hard-coded UAE seed if the lookup fails */ }
