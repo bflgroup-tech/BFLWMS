@@ -72,9 +72,9 @@ public class CountingReportsService(IOnPremConnectionResolver resolver)
             SELECT bc.ContNo,
                    CAST(bc.Trndate AS DATE) AS CountingDate,
                    ISNULL(bc.BuildingQty, 0) AS CountedQty,
-                   CAST(up.Tmdate AS DATE) AS PurchaseDate,
+                   CAST(up.Trndate AS DATE) AS PurchaseDate,
                    CONVERT(VARCHAR(8), up.Time1, 108) AS PurchaseTime,
-                   DATEDIFF(day, bc.Trndate, up.Tmdate) AS DaysToPurchase,
+                   DATEDIFF(day, bc.Trndate, up.Trndate) AS DaysToPurchase,
                    Divisions = ISNULL(NULLIF(STUFF((
                        SELECT ', ' + d.v
                          FROM (SELECT DISTINCT pcr.Division AS v
@@ -89,14 +89,14 @@ public class CountingReportsService(IOnPremConnectionResolver resolver)
                            AND ISNULL(bcs.division, '') <> ''))
               FROM bfldata.dbo.BuildingCompletion bc WITH (NOLOCK)
              OUTER APPLY (
-                 SELECT TOP 1 up2.Tmdate, up2.Time1
+                 SELECT TOP 1 up2.Trndate, up2.Time1
                    FROM usa.dbo.usapurchase up2 WITH (NOLOCK)
                   WHERE up2.Contno = bc.ContNo
-                  ORDER BY up2.Tmdate, up2.Time1
+                  ORDER BY up2.Trndate, up2.Time1
              ) up
              WHERE bc.Trndate >= '2026-01-01'
-               AND up.Tmdate IS NOT NULL
-             ORDER BY up.Tmdate DESC, up.Time1 DESC, bc.ContNo",
+               AND up.Trndate IS NOT NULL
+             ORDER BY up.Trndate DESC, up.Time1 DESC, bc.ContNo",
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         return rows.AsList();
     }
