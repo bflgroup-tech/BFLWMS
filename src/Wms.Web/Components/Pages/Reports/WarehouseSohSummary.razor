@@ -1,9 +1,272 @@
 @page "/reports/warehouse-soh-summary"
 @attribute [Authorize(Policy = Wms.Core.MenuKeys.RPT_WAREHOUSE_SOH_SUMMARY)]
+@using Wms.Core
+@using Wms.Data.Lpm
+@inject ReportsService Svc
 
 <PageTitle>WMS — Warehouse SOH Summary</PageTitle>
 
-<div class="aiwms-page-header">
-    <h2>Warehouse SOH Summary</h2>
-    <p>Coming soon.</p>
+<style>
+    .wsoh-banner { border-radius: var(--r-md); overflow: hidden; margin-bottom: 16px; border: 1px solid var(--border-default); }
+    .wsoh-banner .title { background: var(--bfl-black); color: var(--bfl-yellow); font-family: var(--font-display); font-weight: 800; font-size: 20px; text-align: center; padding: 14px; letter-spacing: 1px; text-transform: uppercase; }
+    .wsoh-banner .subtitle { background: #3a3a38; color: #fff; text-align: center; padding: 8px; font-style: italic; font-size: 13px; }
+    .wsoh-banner .meta { background: var(--bfl-grey-50); color: var(--text-secondary); text-align: center; padding: 6px; font-size: 11px; }
+
+    .wsoh-box { border: 1px solid var(--border-default); border-radius: var(--r-sm); overflow: hidden; background: #fff; flex: 1; min-width: 220px; }
+    .wsoh-box-header { background: var(--bfl-black); color: var(--bfl-yellow); font-family: var(--font-display); font-weight: 800; font-size: 11px; text-transform: uppercase; letter-spacing: .5px; padding: 9px 14px; }
+    .wsoh-box-body { padding: 10px 14px; }
+    .wsoh-box-row { display: flex; justify-content: space-between; gap: 12px; padding: 4px 0; font-size: 13px; }
+    .wsoh-box-row.total { border-top: 1px solid var(--border-default); margin-top: 4px; padding-top: 8px; font-weight: 700; }
+
+    .wsoh-gauge { display: flex; flex-direction: column; align-items: center; justify-content: center; border: 2px solid var(--bfl-black); border-radius: var(--r-sm); padding: 12px; min-width: 130px; background: #fff; }
+    .wsoh-gauge .pct { font-size: 1.8rem; font-weight: 900; color: var(--bfl-yellow-hov); margin-top: -6px; }
+
+    .wsoh-status-pill { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 999px; }
+    .wsoh-status-pill.action   { background: var(--s-pending-bg); color: var(--s-pending); }
+    .wsoh-status-pill.monitor  { background: var(--bfl-grey-100); color: var(--bfl-grey-700); }
+    .wsoh-status-pill.critical{ background: var(--s-low-bg);     color: var(--s-low); }
+
+    .wsoh-agebar-row { display: grid; grid-template-columns: 90px 1fr 70px; align-items: center; gap: 10px; margin-bottom: 8px; font-size: 12px; }
+    .wsoh-agebar-track { background: var(--bfl-grey-100); border-radius: 999px; height: 14px; overflow: hidden; }
+    .wsoh-agebar-fill { height: 100%; border-radius: 999px; }
+</style>
+
+<div class="wsoh-banner">
+    <div class="title">Warehouse Stock On Hand</div>
+    <div class="subtitle">Warehouse Summary Report | Real-Time KPI Overview</div>
+    <div class="meta">Last Updated: [Auto-refresh] | Data Source: WMS Integration | Refresh Interval: Real-time</div>
 </div>
+
+<div class="aiwms-section">
+    <div style="display:grid; grid-template-columns: 1fr auto; gap:12px; align-items:end;">
+        <div>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COUNTRY</label>
+            <select @bind="_country" style="width:100%; max-width:260px; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;">
+                @foreach (var c in _countries) { <option value="@c">@c</option> }
+            </select>
+        </div>
+        <button class="aiwms-btn aiwms-btn-primary" @onclick="LoadAsync" disabled="@_loading">@(_loading ? "Loading…" : "Load")</button>
+    </div>
+</div>
+
+@{
+    var warehouses = _warehousesByCountry.GetValueOrDefault(_country, new());
+}
+
+@if (warehouses.Count > 0)
+{
+    <div class="aiwms-section">
+        @foreach (var wh in warehouses)
+        {
+            <div style="margin-bottom:18px;">
+                <div style="font-size:12px; font-weight:700; color:var(--text-secondary); margin-bottom:8px;">@wh.Name</div>
+                <div style="display:flex; gap:14px; flex-wrap:wrap; align-items:stretch;">
+                    <div class="wsoh-box">
+                        <div class="wsoh-box-header">📦 Stock On Hand</div>
+                        <div class="wsoh-box-body">
+                            <div class="wsoh-box-row"><span>Total Quantity (Units)</span><span>0</span></div>
+                            <div class="wsoh-box-row"><span>Total Boxes Stock</span><span>0</span></div>
+                            <div class="wsoh-box-row"><span>Number of Boxes</span><span>0</span></div>
+                            @if (wh.HasPallets)
+                            {
+                                <div class="wsoh-box-row"><span>Total Pallets Stock</span><span>0</span></div>
+                                <div class="wsoh-box-row"><span>Number of Pallets</span><span>0</span></div>
+                            }
+                            <div class="wsoh-box-row total"><span>Total Active SKUs</span><span>0</span></div>
+                        </div>
+                    </div>
+                    <div class="wsoh-box">
+                        <div class="wsoh-box-header">📋 Storage Capacity</div>
+                        <div class="wsoh-box-body">
+                            @if (wh.HasPallets)
+                            {
+                                <div class="wsoh-box-row"><span>Total Rack Locations</span><span>0</span></div>
+                                <div class="wsoh-box-row"><span>Free Box Rack Locations</span><span>0</span></div>
+                                <div class="wsoh-box-row"><span>Filled Box Locations</span><span>0</span></div>
+                                <div class="wsoh-box-row"><span>Free Pallet Rack Locations</span><span>0</span></div>
+                                <div class="wsoh-box-row"><span>Filled Pallet Locations</span><span>0</span></div>
+                            }
+                            else
+                            {
+                                <div class="wsoh-box-row"><span>Total Storage Locations</span><span>0</span></div>
+                                <div class="wsoh-box-row"><span>Free Storage Locations</span><span>0</span></div>
+                                <div class="wsoh-box-row"><span>Filled Storage Locations</span><span>0</span></div>
+                            }
+                            <div class="wsoh-box-row total"><span>Overall Utilization %</span><span>0%</span></div>
+                        </div>
+                    </div>
+                    @Gauge(0)
+                </div>
+            </div>
+        }
+    </div>
+
+    <div class="aiwms-section" style="padding:0; overflow:hidden">
+        <div class="wsoh-box-header" style="border-radius:0">Warehouse-wise Performance Summary</div>
+        <div style="overflow-x:auto">
+            <table class="aiwms-table aiwms-table-dense">
+                <thead>
+                    <tr>
+                        <th>Warehouse</th>
+                        <th style="text-align:right">Total Units</th>
+                        <th style="text-align:right">Box Stock</th>
+                        <th style="text-align:right"># Boxes</th>
+                        <th style="text-align:right">Pallet Stock</th>
+                        <th style="text-align:right"># Pallets</th>
+                        <th style="text-align:right">Free Box Rack</th>
+                        <th style="text-align:right">Free Pallet Rack</th>
+                        <th style="text-align:right">Utilization %</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var wh in warehouses)
+                    {
+                        <tr>
+                            <td>@wh.Name</td>
+                            <td style="text-align:right">0</td>
+                            <td style="text-align:right">0</td>
+                            <td style="text-align:right">0</td>
+                            <td style="text-align:right">0</td>
+                            <td style="text-align:right">0</td>
+                            <td style="text-align:right">0</td>
+                            <td style="text-align:right">0</td>
+                            <td style="text-align:right">0%</td>
+                        </tr>
+                    }
+                    <tr style="font-weight:700; background:#fff7e0">
+                        <td>TOTAL</td>
+                        <td style="text-align:right">0</td>
+                        <td style="text-align:right">0</td>
+                        <td style="text-align:right">0</td>
+                        <td style="text-align:right">0</td>
+                        <td style="text-align:right">0</td>
+                        <td style="text-align:right">0</td>
+                        <td style="text-align:right">0</td>
+                        <td style="text-align:right">0%</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="aiwms-section">
+        <div style="display:flex; gap:20px; flex-wrap:wrap; align-items:flex-start;">
+            <div style="flex:1; min-width:320px; padding:0; overflow:hidden">
+                <div class="wsoh-box-header">⚠ Critical Alerts &amp; Aging Inventory</div>
+                <table class="aiwms-table aiwms-table-dense">
+                    <thead>
+                        <tr>
+                            <th>Alert Category</th>
+                            <th style="text-align:right">Units</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var a in _ageAlerts)
+                        {
+                            <tr>
+                                <td>@a.Category</td>
+                                <td style="text-align:right">0</td>
+                                <td><span class="wsoh-status-pill @a.StatusClass">@a.Status</span></td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+
+            <div style="flex:1; min-width:320px;">
+                <div style="font-weight:700; font-size:13px; margin-bottom:10px;">Inventory Age Distribution</div>
+                @foreach (var b in _ageBuckets)
+                {
+                    <div class="wsoh-agebar-row">
+                        <span style="color:var(--text-secondary)">@b.Label</span>
+                        <div class="wsoh-agebar-track"><div class="wsoh-agebar-fill" style="width:0%; background:@b.Color"></div></div>
+                        <span style="text-align:right">0</span>
+                    </div>
+                }
+                <div style="display:flex; justify-content:space-between; font-size:11px; color:var(--text-secondary); margin-top:4px;">
+                    <span>0</span><span>50,000</span>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+else if (_loadedOnce)
+{
+    <div class="aiwms-section"><div class="aiwms-alert info">No warehouses configured for @_country yet.</div></div>
+}
+
+@code {
+    // TODO: placeholder structure — country list, warehouse list, and all figures are
+    // dummy pending the real data source/query.
+    private List<string> _countries = new() { "UAE" };
+    private string _country = "UAE";
+    private bool _loading;
+    private bool _loadedOnce;
+
+    private sealed record WarehouseDummy(string Name, bool HasPallets);
+
+    private static readonly Dictionary<string, List<WarehouseDummy>> _warehousesByCountry =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["UAE"] = new() { new("BlackBOX", false), new("techno", true) },
+        };
+
+    private sealed record AgeAlert(string Category, string Status, string StatusClass);
+    private readonly List<AgeAlert> _ageAlerts = new()
+    {
+        new("1-30 Days",      "Action",   "action"),
+        new("30-60 Days",     "Monitor",  "monitor"),
+        new("60-90 Days",     "Monitor",  "monitor"),
+        new("Above 90",       "Monitor",  "monitor"),
+        new("Elapsed (LPM)",  "Critical", "critical"),
+    };
+
+    // Status-palette colors (good/warning/serious/critical) so the aging buckets read
+    // by severity, not an arbitrary categorical hue.
+    private sealed record AgeBucket(string Label, string Color);
+    private readonly List<AgeBucket> _ageBuckets = new()
+    {
+        new("Current", "#0ca30c"),
+        new(">30 Days", "#fab219"),
+        new(">60 Days", "#ec835a"),
+        new(">90 Days", "#d03b3b"),
+    };
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            var list = await Svc.GetCountriesAsync();
+            if (list.Count > 0) _countries = list;
+        }
+        catch { /* fall back to the hard-coded UAE seed if the lookup fails */ }
+    }
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        await InvokeAsync(StateHasChanged);
+        // TODO: no real query yet — this just flips on the placeholder structure above.
+        await Task.Delay(150);
+        _loadedOnce = true;
+        _loading = false;
+    }
+
+    private RenderFragment Gauge(int pct) => __builder =>
+    {
+        const double r = 50, cx = 60, cy = 60;
+        var circumference = 2 * Math.PI * r;
+        var dash = circumference * pct / 100.0;
+        <div class="wsoh-gauge">
+            <svg viewBox="0 0 120 120" width="100" height="100">
+                <circle cx="@cx" cy="@cy" r="@r" fill="none" stroke="#e5e5e3" stroke-width="10" />
+                <circle cx="@cx" cy="@cy" r="@r" fill="none" stroke="var(--bfl-yellow)" stroke-width="10"
+                        stroke-linecap="round"
+                        stroke-dasharray="@(dash.ToString("F1")) @((circumference - dash).ToString("F1"))"
+                        transform="rotate(-90 @cx @cy)" />
+            </svg>
+            <div class="pct">@(pct)%</div>
+        </div>
+    };
+}
