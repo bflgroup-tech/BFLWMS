@@ -155,6 +155,25 @@ public class ReportsService(IOnPremConnectionResolver resolver)
         return rows.Where(s => !string.IsNullOrWhiteSpace(s)).ToList();
     }
 
+    /// <summary>
+    /// Merch Need (Month/Week/Day) for a country's current calendar month, from
+    /// LPMSIM.dbo.LPM_EOM_Output. Read via OnPremBackup like LPMSIM_Batch — this
+    /// table already carries a Country column for every country, so it doesn't
+    /// need the per-country connection-string dance GetProductionCheckingAsync uses.
+    /// </summary>
+    public async Task<MerchNeedRow> GetMerchNeedAsync(string country, CancellationToken ct = default)
+    {
+        await using var c = OpenOnPremBackup();
+        var row = await c.QuerySingleOrDefaultAsync<MerchNeedRow>(new CommandDefinition(@"
+            SELECT MerchNeedMonth = ISNULL(SUM(MerchNeedMonth), 0),
+                   MerchNeedWeek  = ISNULL(SUM(MerchNeedWeek), 0),
+                   MerchNeedDay   = ISNULL(SUM(MerchNeedDay), 0)
+              FROM LPMSIM.dbo.LPM_EOM_Output
+             WHERE year1 = YEAR(GETDATE()) AND month1 = MONTH(GETDATE()) AND Country = @country",
+            new { country }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        return row ?? new MerchNeedRow(0, 0, 0);
+    }
+
     // ===================== Counting Completion Report (Summary) =====================
     /// <summary>
     /// Reads BFLDATA.dbo.BuildingCompletionSumm — grain is one row per ContNo x

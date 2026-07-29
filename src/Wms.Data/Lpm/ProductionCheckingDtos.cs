@@ -26,3 +26,9 @@ public sealed record ProductionCheckingResult(
     List<ProductionCheckingSummaryRow> Summary,
     int                                 OverallStoreQty,
     long                                TransferQty);
+
+/// <summary>Merch Need (Month/Week/Day) totals for a country's current calendar month, from LPM_EOM_Output.</summary>
+public sealed record MerchNeedRow(
+    long MerchNeedMonth,
+    long MerchNeedWeek,
+    long MerchNeedDay);
