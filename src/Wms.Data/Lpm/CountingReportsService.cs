@@ -30,7 +30,6 @@ public class CountingReportsService(IOnPremConnectionResolver resolver)
         var rows = await opb.QueryAsync<PendingPurchaseRow>(new CommandDefinition(@"
             SELECT bc.ContNo,
                    CAST(bc.Trndate AS DATE) AS CountingDate,
-                   CONVERT(VARCHAR(8), bc.TrnTime, 108) AS TrnTime,
                    ISNULL(bc.BuildingQty, 0) AS CountedQty,
                    DATEDIFF(day, bc.Trndate,
                             CAST(DATEADD(hour, 4, SYSUTCDATETIME()) AS DATE)) AS AgeingDays,
@@ -51,7 +50,7 @@ public class CountingReportsService(IOnPremConnectionResolver resolver)
                AND NOT EXISTS (
                    SELECT 1
                      FROM usa.dbo.usapurchase up WITH (NOLOCK)
-                    WHERE up.ContNo = bc.ContNo
+                    WHERE up.Contno = bc.ContNo
                )
              ORDER BY AgeingDays DESC, bc.ContNo",
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
@@ -72,11 +71,10 @@ public class CountingReportsService(IOnPremConnectionResolver resolver)
         var rows = await opb.QueryAsync<PurchasedContainerRow>(new CommandDefinition(@"
             SELECT bc.ContNo,
                    CAST(bc.Trndate AS DATE) AS CountingDate,
-                   CONVERT(VARCHAR(8), bc.TrnTime, 108) AS CountingTime,
                    ISNULL(bc.BuildingQty, 0) AS CountedQty,
-                   CAST(up.Trndate AS DATE) AS PurchaseDate,
-                   CONVERT(VARCHAR(8), up.TrnTime, 108) AS PurchaseTime,
-                   DATEDIFF(day, bc.Trndate, up.Trndate) AS DaysToPurchase,
+                   CAST(up.Tmdate AS DATE) AS PurchaseDate,
+                   CONVERT(VARCHAR(8), up.Time1, 108) AS PurchaseTime,
+                   DATEDIFF(day, bc.Trndate, up.Tmdate) AS DaysToPurchase,
                    Divisions = ISNULL(NULLIF(STUFF((
                        SELECT ', ' + d.v
                          FROM (SELECT DISTINCT pcr.Division AS v
@@ -91,14 +89,14 @@ public class CountingReportsService(IOnPremConnectionResolver resolver)
                            AND ISNULL(bcs.division, '') <> ''))
               FROM bfldata.dbo.BuildingCompletion bc WITH (NOLOCK)
              OUTER APPLY (
-                 SELECT TOP 1 up2.Trndate, up2.TrnTime
+                 SELECT TOP 1 up2.Tmdate, up2.Time1
                    FROM usa.dbo.usapurchase up2 WITH (NOLOCK)
-                  WHERE up2.ContNo = bc.ContNo
-                  ORDER BY up2.Trndate, up2.TrnTime
+                  WHERE up2.Contno = bc.ContNo
+                  ORDER BY up2.Tmdate, up2.Time1
              ) up
              WHERE bc.Trndate >= '2026-01-01'
-               AND up.Trndate IS NOT NULL
-             ORDER BY up.Trndate DESC, up.TrnTime DESC, bc.ContNo",
+               AND up.Tmdate IS NOT NULL
+             ORDER BY up.Tmdate DESC, up.Time1 DESC, bc.ContNo",
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         return rows.AsList();
     }
