@@ -307,8 +307,11 @@
     private string _country       = "";
 
     private string   _store         = "";
-    private DateTime _dateFrom       = DateTime.Today;
-    private DateTime _dateTo         = DateTime.Today;
+    // Default to yesterday, not today — today's data needs the slower regional
+    // server round trip (see TransferGinGrnService's historical/today split),
+    // so defaulting here keeps the common case on the fast OnPremBackup path.
+    private DateTime _dateFrom       = DateTime.Today.AddDays(-1);
+    private DateTime _dateTo         = DateTime.Today.AddDays(-1);
     private string   _viewMode      = "Detailed"; // "Detailed" | "Summary"
     private bool     _withoutPallet;
     private bool     _withoutGin;
