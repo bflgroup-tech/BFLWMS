@@ -3,6 +3,7 @@
 @using Wms.Core
 @using Wms.Data.Lpm
 @inject ReportsService Svc
+@inject ICurrentUser Me
 
 <PageTitle>WMS — Warehouse SOH Summary</PageTitle>
 
@@ -235,12 +236,20 @@ else if (_loadedOnce)
 
     protected override async Task OnInitializedAsync()
     {
+        await Me.EnsureLoadedAsync();
         try
         {
             var list = await Svc.GetCountriesAsync();
             var excluded = new[] { "ECOM", "Ex2Locations", "Oman" };
             list = list.Where(c => !excluded.Contains(c, StringComparer.OrdinalIgnoreCase)).ToList();
-            if (list.Count > 0) _countries = list;
+            list = Me.FilterCountries(list).ToList();
+            if (list.Count > 0)
+            {
+                _countries = list;
+                _country = Me.Country is not null && list.Contains(Me.Country, StringComparer.OrdinalIgnoreCase)
+                    ? list.First(c => string.Equals(c, Me.Country, StringComparison.OrdinalIgnoreCase))
+                    : list[0];
+            }
         }
         catch { /* fall back to the hard-coded UAE seed if the lookup fails */ }
     }
