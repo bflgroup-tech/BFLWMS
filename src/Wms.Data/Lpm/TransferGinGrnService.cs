@@ -420,30 +420,38 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
 
         var toEnd = to.AddDays(1).AddSeconds(-1);
 
-        // Warehouse-code lookup, per-DataName transfer totals, and the GIN qty
-        // query are all independent — run them concurrently (own connection
-        // each) instead of serially against the same connection.
-        var whTask = WithOnPremAsync(conn =>
+        var wh = await WithOnPremAsync(conn =>
             ResolveWarehouseCodeAsync(conn, "BFLDATA.dbo.DataSettings", country, ct), ct);
-        var ginTask = WithOnPremAsync(conn => conn.QuerySingleAsync<GinCountQtyRow>(new CommandDefinition(@"
-                SELECT COUNT(DISTINCT c.SrNo) AS GinCount, ISNULL(SUM(c.Qty),0) AS GinQty
-                  FROM BFLDATA.dbo.vGoodsIssueplt c WITH (NOLOCK)
-                  JOIN BFLDATA.dbo.DataSettings ds WITH (NOLOCK) ON ds.ShopName = c.ShopIssue
-                 WHERE ds.SIMCountry = @country AND c.EntryDate >= @from AND c.EntryDate <= @to",
-                new { country, from, to = toEnd }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)), ct);
 
-        var wh = await whTask;
-        var perDataNameTask = Task.WhenAll(dataNames.Select(dn => WithOnPremAsync(conn =>
-            conn.QuerySingleAsync<CountQtyRow>(new CommandDefinition(
+        // GIN correlates via TrfNo -> this DataName's OWN transferheader (same
+        // relationship the detail table's GIN join and GetOneStoreSummaryAsync
+        // use) — NOT vGoodsIssueplt.ShopIssue, which doesn't reliably equal
+        // ShopName outside UAE. Computed per-DataName (like Transfer Count/Qty)
+        // since GIN is central (BFLDATA.dbo) but transferheader is per-DataName.
+        var perDataNameTask = Task.WhenAll(dataNames.Select(dn => WithOnPremAsync(async conn =>
+        {
+            var transferRow = await conn.QuerySingleAsync<CountQtyRow>(new CommandDefinition(
                 TransferSummarySql($"[{dn}]..vTransferDetail"),
                 new { from, to = toEnd, whCostCodeTo = wh.CostCodeTo, whLocCodeTo = wh.LocCodeTo },
-                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)), ct)));
+                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
 
-        await Task.WhenAll(perDataNameTask, ginTask);
-        var transferCount = perDataNameTask.Result.Sum(r => r.TransferCount);
-        var transferQty   = perDataNameTask.Result.Sum(r => r.TransferQty ?? 0);
+            var gin = await conn.QuerySingleAsync<GinCountQtyRow>(new CommandDefinition($@"
+                SELECT COUNT(DISTINCT c.SrNo) AS GinCount, ISNULL(SUM(c.Qty),0) AS GinQty
+                  FROM BFLDATA.dbo.vGoodsIssueplt c WITH (NOLOCK)
+                 WHERE c.EntryDate >= @from AND c.EntryDate <= @to
+                   AND EXISTS (SELECT 1 FROM [{dn}]..transferheader a WITH (NOLOCK) WHERE a.TrfNo = c.TrfNo)",
+                new { from, to = toEnd }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
 
-        return new TransferSummary(country, transferCount, transferQty, ginTask.Result.GinCount, ginTask.Result.GinQty ?? 0);
+            return (transferRow, gin);
+        }, ct)));
+
+        await perDataNameTask;
+        var transferCount = perDataNameTask.Result.Sum(r => r.transferRow.TransferCount);
+        var transferQty   = perDataNameTask.Result.Sum(r => r.transferRow.TransferQty ?? 0);
+        var ginCount      = perDataNameTask.Result.Sum(r => r.gin.GinCount);
+        var ginQty        = perDataNameTask.Result.Sum(r => r.gin.GinQty ?? 0);
+
+        return new TransferSummary(country, transferCount, transferQty, ginCount, ginQty);
     }
 
     // Regional server path (non-UAE only) — today's slice.
@@ -485,13 +493,15 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
     // from/to: date-only: this does the end-of-day adjustment itself before
     // delegating, so every caller can just pass plain dates.
     //
-    // GIN correlates to the store via TrfNo -> transferDetailTable's own
-    // CostCodeTo/LocCodeTo (the same correlation the detail table's GIN join
-    // already uses), NOT vGoodsIssueplt.ShopIssue directly — ShopIssue turned
-    // out not to reliably equal ShopName outside UAE, which silently zeroed
-    // out GIN Count/Qty for every non-UAE store.
+    // GIN correlates to the store via TrfNo -> transferHeaderTable's own
+    // CostCodeTo/LocCodeTo — the exact same join the (known-working) detail
+    // table uses for its GIN column (c.TrfNo = a.TrfNo, a = transferheader).
+    // Two earlier attempts got this wrong: vGoodsIssueplt.ShopIssue doesn't
+    // reliably equal ShopName outside UAE, and vTransferDetail.TrfNo doesn't
+    // reliably match vGoodsIssueplt.TrfNo either — transferheader is the one
+    // relationship already proven correct in the detail table.
     private static async Task<TransferSummary> GetOneStoreSummaryAsync(
-        SqlConnection conn, string shopName, string transferDetailTable, string ginTable,
+        SqlConnection conn, string shopName, string transferDetailTable, string transferHeaderTable, string ginTable,
         string costCodeTo, string locCodeTo, DateTime from, DateTime to, CancellationToken ct)
     {
         var toEnd = to.AddDays(1).AddSeconds(-1);
@@ -505,8 +515,8 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
               FROM {ginTable} c WITH (NOLOCK)
              WHERE c.EntryDate >= @from AND c.EntryDate <= @to
                AND EXISTS (
-                   SELECT 1 FROM {transferDetailTable} vtd WITH (NOLOCK)
-                    WHERE vtd.TrfNo = c.TrfNo AND vtd.CostCodeTo = @costCodeTo AND vtd.LocCodeTo = @locCodeTo
+                   SELECT 1 FROM {transferHeaderTable} a WITH (NOLOCK)
+                    WHERE a.TrfNo = c.TrfNo AND a.CostCodeTo = @costCodeTo AND a.LocCodeTo = @locCodeTo
                )",
             new { costCodeTo, locCodeTo, from, to = toEnd }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
 
@@ -516,7 +526,7 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
     private Task<TransferSummary> GetOneStoreSummaryOnPremAsync(
         StoreRow s, DateTime from, DateTime to, CancellationToken ct) =>
         WithOnPremAsync(conn => GetOneStoreSummaryAsync(
-            conn, s.ShopName, $"[{s.DataName}]..vTransferDetail", "BFLDATA.dbo.vGoodsIssueplt",
+            conn, s.ShopName, $"[{s.DataName}]..vTransferDetail", $"[{s.DataName}]..transferheader", "BFLDATA.dbo.vGoodsIssueplt",
             s.CostCodeTo, s.LocCodeTo, from, to, ct), ct);
 
     // Regional (today-only) — reuses the shop's CostCodeTo/LocCodeTo already
@@ -528,7 +538,7 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
     {
         await using var conn = OpenCountryWithDataName(country, dataName);
         return await GetOneStoreSummaryAsync(
-            conn, s.ShopName, "vTransferDetail", "BFLDATA..vgoodsissueplt",
+            conn, s.ShopName, "vTransferDetail", "transferheader", "BFLDATA..vgoodsissueplt",
             s.CostCodeTo, s.LocCodeTo, from, to, ct);
     }
 
