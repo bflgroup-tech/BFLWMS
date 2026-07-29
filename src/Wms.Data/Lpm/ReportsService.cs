@@ -155,6 +155,46 @@ public class ReportsService(IOnPremConnectionResolver resolver)
         return rows.Where(s => !string.IsNullOrWhiteSpace(s)).ToList();
     }
 
+    /// <summary>
+    /// Merch Need (Month/Week/Day) for a country's current calendar month, from
+    /// LPMSIM.dbo.LPM_EOM_Output. Read via OnPremBackup like LPMSIM_Batch — this
+    /// table already carries a Country column for every country, so it doesn't
+    /// need the per-country connection-string dance GetProductionCheckingAsync uses.
+    /// </summary>
+    public async Task<MerchNeedRow> GetMerchNeedAsync(string country, CancellationToken ct = default)
+    {
+        await using var c = OpenOnPremBackup();
+        // MerchNeedMonth/Week/Day are int columns on LPM_EOM_Output; cast the sums to bigint
+        // so Dapper's record-constructor matching lines up with MerchNeedRow's long properties
+        // (it requires an exact type match here, not just an implicit widening conversion).
+        var row = await c.QuerySingleOrDefaultAsync<MerchNeedRow>(new CommandDefinition(@"
+            SELECT MerchNeedMonth = CAST(ISNULL(SUM(MerchNeedMonth), 0) AS BIGINT),
+                   MerchNeedWeek  = CAST(ISNULL(SUM(MerchNeedWeek), 0) AS BIGINT),
+                   MerchNeedDay   = CAST(ISNULL(SUM(MerchNeedDay), 0) AS BIGINT)
+              FROM LPMSIM.dbo.LPM_EOM_Output
+             WHERE year1 = YEAR(GETDATE()) AND month1 = MONTH(GETDATE()) AND Country = @country",
+            new { country }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        return row ?? new MerchNeedRow(0, 0, 0);
+    }
+
+    /// <summary>Merch Need (Month/Week/Day) per Division for a country's current calendar month,
+    /// joining LPM_EOM_Output.DivCode to LPMSIM.dbo.Division for the human name.</summary>
+    public async Task<List<MerchNeedDivisionRow>> GetMerchNeedByDivisionAsync(string country, CancellationToken ct = default)
+    {
+        await using var c = OpenOnPremBackup();
+        var rows = await c.QueryAsync<MerchNeedDivisionRow>(new CommandDefinition(@"
+            SELECT a.DivCode, b.Division,
+                   MerchNeedMonth = CAST(ISNULL(SUM(a.MerchNeedMonth), 0) AS BIGINT),
+                   MerchNeedWeek  = CAST(ISNULL(SUM(a.MerchNeedWeek), 0) AS BIGINT),
+                   MerchNeedDay   = CAST(ISNULL(SUM(a.MerchNeedDay), 0) AS BIGINT)
+              FROM LPMSIM.dbo.LPM_EOM_Output a
+              JOIN LPMSIM.dbo.Division b ON a.DivCode = b.DivCode
+             WHERE a.year1 = YEAR(GETDATE()) AND a.month1 = MONTH(GETDATE()) AND a.Country = @country
+             GROUP BY a.DivCode, b.Division",
+            new { country }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        return rows.AsList();
+    }
+
     // ===================== Counting Completion Report (Summary) =====================
     /// <summary>
     /// Reads BFLDATA.dbo.BuildingCompletionSumm — grain is one row per ContNo x
@@ -189,11 +229,13 @@ public class ReportsService(IOnPremConnectionResolver resolver)
     /// filter on top of the date range.
     /// </summary>
     public async Task<List<CountingCompletionSummaryRow>> GetCountingCompletionSummaryAsync(
-        IEnumerable<string>? countries, DateTime fromDate, DateTime toDate, string? contNo, CancellationToken ct = default)
+        IEnumerable<string>? countries, DateTime fromDate, DateTime toDate, string? contNo,
+        string? warehouse = null, CancellationToken ct = default)
     {
         var countryList = countries?.Where(s => !string.IsNullOrWhiteSpace(s)).ToArray() ?? Array.Empty<string>();
         var noCountryFilter = countryList.Length == 0;
         var contNoFilter = string.IsNullOrWhiteSpace(contNo) ? null : contNo.Trim();
+        var warehouseFilter = string.IsNullOrWhiteSpace(warehouse) ? null : warehouse.Trim();
 
         await using var c = OpenOnPremBackup();
         var rows = await c.QueryAsync<CountingCompletionSummaryRow>(new CommandDefinition(@"
@@ -204,6 +246,7 @@ public class ReportsService(IOnPremConnectionResolver resolver)
             IF OBJECT_ID('tempdb..#CCLpm')      IS NOT NULL DROP TABLE #CCLpm;
             IF OBJECT_ID('tempdb..#CCDiv')      IS NOT NULL DROP TABLE #CCDiv;
             IF OBJECT_ID('tempdb..#CCBrand')    IS NOT NULL DROP TABLE #CCBrand;
+            IF OBJECT_ID('tempdb..#CCWh')       IS NOT NULL DROP TABLE #CCWh;
 
             SELECT s.Country,
                    s.ContNo,
@@ -263,6 +306,22 @@ public class ReportsService(IOnPremConnectionResolver resolver)
              GROUP BY ContNo;
             CREATE CLUSTERED INDEX IX_CCBrand ON #CCBrand (ContNo);
 
+            -- Warehouse (UAE only: JAFZA/TECHNO) comes from Online.dbo.Photochecking —
+            -- a single container can have 100k+ scan rows there, so aggregating (MAX/
+            -- DISTINCT) over every matching row per container took 6-13s for a few
+            -- hundred containers. TOP 1 via APPLY stops at the first match per
+            -- container instead (FORCESEEK — index exists on ContNo, not Warehouse),
+            -- which cut this to well under a second for the same containers.
+            SELECT b.ContNo, wh.Warehouse
+              INTO #CCWh
+              FROM (SELECT DISTINCT ContNo FROM #CCBase) b
+              OUTER APPLY (
+                  SELECT TOP 1 p.Warehouse
+                    FROM Online.dbo.Photochecking p WITH (NOLOCK, FORCESEEK)
+                   WHERE p.ContNo = b.ContNo AND p.Warehouse IS NOT NULL AND p.Warehouse <> ''
+              ) wh;
+            CREATE CLUSTERED INDEX IX_CCWh ON #CCWh (ContNo);
+
             SELECT
                 b.Country,
                 b.ContNo,
@@ -273,17 +332,20 @@ public class ReportsService(IOnPremConnectionResolver resolver)
                 CountedQty             = SUM(ISNULL(b.CountedQty, 0)),
                 LpmMonths              = MAX(lm.LpmMonths),
                 Divisions              = MAX(dv.Divisions),
-                Brands                 = MAX(br.Brands)
+                Brands                 = MAX(br.Brands),
+                Warehouse              = CASE WHEN b.Country = 'UAE' THEN ISNULL(MAX(wh.Warehouse), 'JAFZA') ELSE MAX(wh.Warehouse) END
               FROM #CCBase b
               LEFT JOIN #CCPurchase p  ON p.ContNo = b.ContNo
               LEFT JOIN #CCLpm      lm ON lm.ContNo = b.ContNo
               LEFT JOIN #CCDiv      dv ON dv.Country = b.Country AND dv.ContNo = b.ContNo
               LEFT JOIN #CCBrand    br ON br.ContNo = b.ContNo
+              LEFT JOIN #CCWh       wh ON wh.ContNo = b.ContNo
+             WHERE (@warehouseFilter IS NULL OR b.Country <> 'UAE' OR wh.Warehouse = @warehouseFilter)
              GROUP BY b.Country, b.ContNo
              ORDER BY b.Country, CountingCompletionDate;
 
-            DROP TABLE #CCBase, #CCDet, #CCPurchase, #CCLpm, #CCDiv, #CCBrand;",
-            new { countries = countryList, noCountryFilter = noCountryFilter ? 1 : 0, contNoFilter,
+            DROP TABLE #CCBase, #CCDet, #CCPurchase, #CCLpm, #CCDiv, #CCBrand, #CCWh;",
+            new { countries = countryList, noCountryFilter = noCountryFilter ? 1 : 0, contNoFilter, warehouseFilter,
                   from = fromDate.Date, toExclusive = toDate.Date.AddDays(1) },
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         return rows.AsList();
@@ -301,21 +363,30 @@ public class ReportsService(IOnPremConnectionResolver resolver)
     /// GetCountingCompletionSummaryAsync for why).
     /// </summary>
     public async Task<List<CountingAllocationRow>> GetCountingAllocationAsync(
-        IEnumerable<string>? countries, DateTime fromDate, DateTime toDate, string? contNo, CancellationToken ct = default)
+        IEnumerable<string>? countries, DateTime fromDate, DateTime toDate, string? contNo,
+        string? warehouse = null, CancellationToken ct = default)
     {
         var countryList = countries?.Where(s => !string.IsNullOrWhiteSpace(s)).ToArray() ?? Array.Empty<string>();
         var noCountryFilter = countryList.Length == 0;
         var contNoFilter = string.IsNullOrWhiteSpace(contNo) ? null : contNo.Trim();
+        var warehouseFilter = string.IsNullOrWhiteSpace(warehouse) ? null : warehouse.Trim();
 
         await using var c = OpenOnPremBackup();
         var rows = await c.QueryAsync<CountingAllocationRow>(new CommandDefinition(@"
             SET NOCOUNT ON;
-            IF OBJECT_ID('tempdb..#CABase')     IS NOT NULL DROP TABLE #CABase;
-            IF OBJECT_ID('tempdb..#CADet')      IS NOT NULL DROP TABLE #CADet;
-            IF OBJECT_ID('tempdb..#CAPurchase') IS NOT NULL DROP TABLE #CAPurchase;
-            IF OBJECT_ID('tempdb..#CALpm')      IS NOT NULL DROP TABLE #CALpm;
-            IF OBJECT_ID('tempdb..#CADiv')      IS NOT NULL DROP TABLE #CADiv;
-            IF OBJECT_ID('tempdb..#CABrand')    IS NOT NULL DROP TABLE #CABrand;
+            IF OBJECT_ID('tempdb..#CABase')      IS NOT NULL DROP TABLE #CABase;
+            IF OBJECT_ID('tempdb..#CAConts')     IS NOT NULL DROP TABLE #CAConts;
+            IF OBJECT_ID('tempdb..#CADateBoxes') IS NOT NULL DROP TABLE #CADateBoxes;
+            IF OBJECT_ID('tempdb..#CARaw')       IS NOT NULL DROP TABLE #CARaw;
+            IF OBJECT_ID('tempdb..#CAUpcs')      IS NOT NULL DROP TABLE #CAUpcs;
+            IF OBJECT_ID('tempdb..#CADetUae')    IS NOT NULL DROP TABLE #CADetUae;
+            IF OBJECT_ID('tempdb..#CADetOther')  IS NOT NULL DROP TABLE #CADetOther;
+            IF OBJECT_ID('tempdb..#CADet')       IS NOT NULL DROP TABLE #CADet;
+            IF OBJECT_ID('tempdb..#CAPurchase')  IS NOT NULL DROP TABLE #CAPurchase;
+            IF OBJECT_ID('tempdb..#CALpm')       IS NOT NULL DROP TABLE #CALpm;
+            IF OBJECT_ID('tempdb..#CADiv')       IS NOT NULL DROP TABLE #CADiv;
+            IF OBJECT_ID('tempdb..#CABrand')     IS NOT NULL DROP TABLE #CABrand;
+            IF OBJECT_ID('tempdb..#CAWh')        IS NOT NULL DROP TABLE #CAWh;
 
             SELECT s.Country,
                    s.ContNo,
@@ -331,11 +402,51 @@ public class ReportsService(IOnPremConnectionResolver resolver)
 
             CREATE CLUSTERED INDEX IX_CABase ON #CABase (Country, ContNo);
 
-            SELECT det.ContNo, det.Pallettype, det.CheckedQty, det.LPMDT, det.Brand
-              INTO #CADet
-              FROM BFLDATA.dbo.BuildingCompletionDet det WITH (NOLOCK)
-             WHERE det.ContNo IN (SELECT DISTINCT ContNo FROM #CABase);
+            -- Hybrid: UAE uses USA.dbo.UPCBoxDet/UPCBoxHead/UPCBarCodes (per explicit
+            -- request, optimized — see history), every other country uses the
+            -- original BFLDATA.dbo.BuildingCompletionDet. UPCBoxDet doesn't have box
+            -- data for every container (e.g. KSA's SAINT5900/SAINT7243 had zero rows
+            -- there despite being valid, counted containers), so non-UAE stays on the
+            -- source that actually covers it.
+            SELECT DISTINCT ContNo INTO #CAConts FROM #CABase WHERE Country = 'UAE';
+            CREATE UNIQUE CLUSTERED INDEX IX_CAConts ON #CAConts (ContNo);
 
+            SELECT h.BoxNo, h.PalletType, h.LPMDt, h.OraPoNo,
+                   ContNo = LEFT(h.BoxNo, CHARINDEX('-', h.BoxNo) - 1)
+              INTO #CADateBoxes
+              FROM USA.dbo.UPCBoxHead h WITH (NOLOCK)
+             WHERE ((@contNoFilter IS NULL AND h.TrnDate >= @from AND h.TrnDate < @toExclusive)
+                    OR (@contNoFilter IS NOT NULL AND h.BoxNo LIKE @contNoFilter + '-%'))
+               AND CHARINDEX('-', h.BoxNo) > 0;
+            CREATE CLUSTERED INDEX IX_CADateBoxes ON #CADateBoxes (BoxNo);
+            CREATE NONCLUSTERED INDEX IX_CADateBoxes_ContNo ON #CADateBoxes (ContNo);
+
+            SELECT dfb.ContNo, dfb.PalletType AS Pallettype, v.Qty AS CheckedQty,
+                   dfb.LPMDt AS LPMDT, v.UPC
+              INTO #CARaw
+              FROM #CAConts b
+              JOIN #CADateBoxes dfb ON dfb.ContNo = b.ContNo
+              JOIN USA.dbo.UPCBoxDet v WITH (NOLOCK) ON v.BoxNo = dfb.BoxNo;
+
+            SELECT DISTINCT UPC INTO #CAUpcs FROM #CARaw WHERE UPC IS NOT NULL AND UPC <> '';
+            CREATE UNIQUE CLUSTERED INDEX IX_CAUpcs ON #CAUpcs (UPC);
+
+            SELECT r.ContNo, r.Pallettype, r.CheckedQty, r.LPMDT, bc2.Vendor AS Brand
+              INTO #CADetUae
+              FROM #CARaw r
+              LEFT JOIN #CAUpcs u ON u.UPC = r.UPC
+              LEFT JOIN USA.dbo.UPCBarCodes bc2 WITH (NOLOCK) ON bc2.UPC = u.UPC;
+
+            SELECT det.ContNo, det.Pallettype, det.CheckedQty, det.LPMDT, det.Brand
+              INTO #CADetOther
+              FROM BFLDATA.dbo.BuildingCompletionDet det WITH (NOLOCK)
+             WHERE det.ContNo IN (SELECT DISTINCT ContNo FROM #CABase WHERE Country <> 'UAE');
+
+            SELECT * INTO #CADet FROM (
+                SELECT * FROM #CADetUae
+                UNION ALL
+                SELECT * FROM #CADetOther
+            ) x;
             CREATE CLUSTERED INDEX IX_CADet ON #CADet (ContNo, Pallettype);
 
             SELECT up.ContNo, PurchaseDate = MIN(up.Trndate)
@@ -375,6 +486,19 @@ public class ReportsService(IOnPremConnectionResolver resolver)
              GROUP BY ContNo, ISNULL(Pallettype, '(none)');
             CREATE CLUSTERED INDEX IX_CABrand ON #CABrand (ContNo, PalletType);
 
+            -- Warehouse (UAE only: JAFZA/TECHNO) comes from Online.dbo.Photochecking —
+            -- see #CCWh in GetCountingCompletionSummaryAsync for why TOP 1/APPLY (not
+            -- MAX/DISTINCT) is used here.
+            SELECT b.ContNo, wh.Warehouse
+              INTO #CAWh
+              FROM (SELECT DISTINCT ContNo FROM #CABase) b
+              OUTER APPLY (
+                  SELECT TOP 1 p.Warehouse
+                    FROM Online.dbo.Photochecking p WITH (NOLOCK, FORCESEEK)
+                   WHERE p.ContNo = b.ContNo AND p.Warehouse IS NOT NULL AND p.Warehouse <> ''
+              ) wh;
+            CREATE CLUSTERED INDEX IX_CAWh ON #CAWh (ContNo);
+
             SELECT
                 b.Country,
                 b.ContNo,
@@ -387,7 +511,8 @@ public class ReportsService(IOnPremConnectionResolver resolver)
                 BuildQty               = SUM(ISNULL(d.CheckedQty, 0)),
                 LpmMonths              = MAX(lm.LpmMonths),
                 Divisions              = MAX(dv.Divisions),
-                Brands                 = MAX(br.Brands)
+                Brands                 = MAX(br.Brands),
+                Warehouse              = CASE WHEN b.Country = 'UAE' THEN ISNULL(MAX(wh.Warehouse), 'JAFZA') ELSE MAX(wh.Warehouse) END
               FROM #CABase b
               JOIN #CADet d ON d.ContNo = b.ContNo
               LEFT JOIN #CAPurchase p  ON p.ContNo = b.ContNo
@@ -395,14 +520,21 @@ public class ReportsService(IOnPremConnectionResolver resolver)
               LEFT JOIN #CALpm      lm ON lm.ContNo = b.ContNo AND lm.PalletType = ISNULL(d.Pallettype, '(none)')
               LEFT JOIN #CADiv      dv ON dv.Country = b.Country AND dv.ContNo = b.ContNo
               LEFT JOIN #CABrand    br ON br.ContNo = b.ContNo AND br.PalletType = ISNULL(d.Pallettype, '(none)')
+              LEFT JOIN #CAWh       wh ON wh.ContNo = b.ContNo
+             WHERE (@warehouseFilter IS NULL OR b.Country <> 'UAE' OR wh.Warehouse = @warehouseFilter)
              GROUP BY b.Country, b.ContNo, ISNULL(d.Pallettype, '(none)')
             HAVING SUM(ISNULL(d.CheckedQty, 0)) > 0
              ORDER BY b.Country, b.ContNo;
 
-            DROP TABLE #CABase, #CADet, #CAPurchase, #CALpm, #CADiv, #CABrand;",
-            new { countries = countryList, noCountryFilter = noCountryFilter ? 1 : 0, contNoFilter,
+            DROP TABLE #CABase, #CAConts, #CADateBoxes, #CARaw, #CAUpcs, #CADetUae, #CADetOther, #CADet, #CAPurchase, #CALpm, #CADiv, #CABrand, #CAWh;",
+            new { countries = countryList, noCountryFilter = noCountryFilter ? 1 : 0, contNoFilter, warehouseFilter,
                   from = fromDate.Date, toExclusive = toDate.Date.AddDays(1) },
-            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            // TrnDate-first filtering (see comment above) brought the 14-container
+            // case down to ~2.5s, but the UAE branch's final Brand join still scales
+            // with distinct UPC count — verified ~39s for a full 30-day UAE range
+            // (~494k rows, ~98k distinct UPCs). 300s leaves real headroom for wider
+            // ranges than tested rather than risk a client-side timeout/hang.
+            commandTimeout: 300, cancellationToken: ct));
         return rows.AsList();
     }
 
@@ -420,17 +552,20 @@ public class ReportsService(IOnPremConnectionResolver resolver)
     /// ordered by Country, ContNo.
     /// </summary>
     public async Task<List<CountingCompletionDetailRow>> GetCountingDetailAsync(
-        IEnumerable<string>? countries, DateTime fromDate, DateTime toDate, string? contNo, CancellationToken ct = default)
+        IEnumerable<string>? countries, DateTime fromDate, DateTime toDate, string? contNo,
+        string? warehouse = null, CancellationToken ct = default)
     {
         var countryList = countries?.Where(s => !string.IsNullOrWhiteSpace(s)).ToArray() ?? Array.Empty<string>();
         var noCountryFilter = countryList.Length == 0;
         var contNoFilter = string.IsNullOrWhiteSpace(contNo) ? null : contNo.Trim();
+        var warehouseFilter = string.IsNullOrWhiteSpace(warehouse) ? null : warehouse.Trim();
 
         await using var c = OpenOnPremBackup();
         var rows = await c.QueryAsync<CountingCompletionDetailRow>(new CommandDefinition(@"
             SET NOCOUNT ON;
             IF OBJECT_ID('tempdb..#CDBase')     IS NOT NULL DROP TABLE #CDBase;
             IF OBJECT_ID('tempdb..#CDPurchase') IS NOT NULL DROP TABLE #CDPurchase;
+            IF OBJECT_ID('tempdb..#CDWh')       IS NOT NULL DROP TABLE #CDWh;
 
             SELECT DISTINCT s.Country, s.ContNo
               INTO #CDBase
@@ -449,6 +584,19 @@ public class ReportsService(IOnPremConnectionResolver resolver)
 
             CREATE CLUSTERED INDEX IX_CDPurchase ON #CDPurchase (ContNo);
 
+            -- Warehouse (UAE only: JAFZA/TECHNO) comes from Online.dbo.Photochecking —
+            -- see #CCWh in GetCountingCompletionSummaryAsync for why TOP 1/APPLY (not
+            -- MAX/DISTINCT) is used here.
+            SELECT b.ContNo, wh.Warehouse
+              INTO #CDWh
+              FROM (SELECT DISTINCT ContNo FROM #CDBase) b
+              OUTER APPLY (
+                  SELECT TOP 1 p.Warehouse
+                    FROM Online.dbo.Photochecking p WITH (NOLOCK, FORCESEEK)
+                   WHERE p.ContNo = b.ContNo AND p.Warehouse IS NOT NULL AND p.Warehouse <> ''
+              ) wh;
+            CREATE CLUSTERED INDEX IX_CDWh ON #CDWh (ContNo);
+
             SELECT
                 b.Country,
                 d.ContNo,
@@ -460,19 +608,22 @@ public class ReportsService(IOnPremConnectionResolver resolver)
                 Qty          = SUM(ISNULL(d.CheckedQty, 0)),
                 LpmMonths    = FORMAT(MAX(d.LPMDT), 'MMM-yyyy'),
                 Division     = MAX(sub.Division),
-                Brand        = MAX(d.Brand)
+                Brand        = MAX(d.Brand),
+                Warehouse    = CASE WHEN b.Country = 'UAE' THEN ISNULL(MAX(wh.Warehouse), 'JAFZA') ELSE MAX(wh.Warehouse) END
               FROM BFLDATA.dbo.BuildingCompletionDet d WITH (NOLOCK)
               JOIN #CDBase b ON b.ContNo = d.ContNo
               LEFT JOIN #CDPurchase p ON p.ContNo = d.ContNo
               LEFT JOIN Datareporting.dbo.vUPC_SUBCLASS sub WITH (NOLOCK) ON sub.itemcode = d.upc
               LEFT JOIN BFLDATA.dbo.PalletType pt WITH (NOLOCK) ON pt.PalletType = d.Pallettype
+              LEFT JOIN #CDWh wh ON wh.ContNo = d.ContNo
              WHERE d.ContNo IN (SELECT DISTINCT ContNo FROM #CDBase)
+               AND (@warehouseFilter IS NULL OR b.Country <> 'UAE' OR wh.Warehouse = @warehouseFilter)
              GROUP BY b.Country, d.ContNo, d.upc, ISNULL(d.Pallettype, '(none)')
             HAVING SUM(ISNULL(d.CheckedQty, 0)) > 0
              ORDER BY b.Country, d.ContNo;
 
-            DROP TABLE #CDBase, #CDPurchase;",
-            new { countries = countryList, noCountryFilter = noCountryFilter ? 1 : 0, contNoFilter,
+            DROP TABLE #CDBase, #CDPurchase, #CDWh;",
+            new { countries = countryList, noCountryFilter = noCountryFilter ? 1 : 0, contNoFilter, warehouseFilter,
                   from = fromDate.Date, toExclusive = toDate.Date.AddDays(1) },
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         return rows.AsList();

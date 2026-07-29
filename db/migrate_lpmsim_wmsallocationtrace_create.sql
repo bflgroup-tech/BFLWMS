@@ -43,6 +43,7 @@ BEGIN
         -- Mirror WMS_ContAllocationData audit columns for JOIN-friendly analysis:
         DefaultSkuMax        INT           NULL,          -- RawSkuMax - Soh (never negative)
         RawSkuMax            INT           NULL,          -- Raw tier value for the pass's TierName (Pass 1b=MinMin, Pass 3=MinMax, Pass 2=OTS picker, Pass 4=MinMax)
+        RatioSkuMax          INT           NULL,          -- Pass 4 only — store's SkuMax contribution to the ratio numerator (FSMRR: OTS picker cap; FMMPO: raw MinMax)
         AvgOtsPercent        DECIMAL(9,2)  NULL,
         AvgOtsMin            DECIMAL(9,2)  NULL,
         AvgOtsMax            DECIMAL(9,2)  NULL,

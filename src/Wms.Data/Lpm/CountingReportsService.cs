@@ -57,4 +57,49 @@ public class CountingReportsService(IOnPremConnectionResolver resolver)
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         return rows.AsList();
     }
+
+    /// <summary>
+    /// Purchased Containers — mirrors GetPendingPurchaseAsync but returns
+    /// containers counted (bfldata.BuildingCompletion) on/after 2026-01-01
+    /// that HAVE a matching row in usa.usapurchase. Purchase date/time is
+    /// the earliest usapurchase row per ContNo. Used as the second section
+    /// of the Pending Goods Receipt email so operators see both "waiting"
+    /// and "done" in one message.
+    /// </summary>
+    public async Task<List<PurchasedContainerRow>> GetPurchasedContainersAsync(CancellationToken ct = default)
+    {
+        await using var opb = OpenOnPremBackup();
+        var rows = await opb.QueryAsync<PurchasedContainerRow>(new CommandDefinition(@"
+            SELECT bc.ContNo,
+                   CAST(bc.Trndate AS DATE) AS CountingDate,
+                   CONVERT(VARCHAR(8), bc.TrnTime, 108) AS CountingTime,
+                   ISNULL(bc.BuildingQty, 0) AS CountedQty,
+                   CAST(up.Trndate AS DATE) AS PurchaseDate,
+                   CONVERT(VARCHAR(8), up.TrnTime, 108) AS PurchaseTime,
+                   DATEDIFF(day, bc.Trndate, up.Trndate) AS DaysToPurchase,
+                   Divisions = ISNULL(NULLIF(STUFF((
+                       SELECT ', ' + d.v
+                         FROM (SELECT DISTINCT pcr.Division AS v
+                                 FROM Online.dbo.PhotoCheckingResult pcr WITH (NOLOCK)
+                                WHERE pcr.ContNo = bc.ContNo
+                                  AND ISNULL(pcr.Division, '') <> '') d
+                        ORDER BY d.v
+                          FOR XML PATH(''), TYPE).value('.', 'NVARCHAR(MAX)'), 1, 2, ''), ''),
+                       (SELECT TOP 1 bcs.division
+                          FROM bfldata.dbo.BUILDINGCOMPLETIONSumm bcs WITH (NOLOCK)
+                         WHERE bcs.ContNo = bc.ContNo
+                           AND ISNULL(bcs.division, '') <> ''))
+              FROM bfldata.dbo.BuildingCompletion bc WITH (NOLOCK)
+             OUTER APPLY (
+                 SELECT TOP 1 up2.Trndate, up2.TrnTime
+                   FROM usa.dbo.usapurchase up2 WITH (NOLOCK)
+                  WHERE up2.ContNo = bc.ContNo
+                  ORDER BY up2.Trndate, up2.TrnTime
+             ) up
+             WHERE bc.Trndate >= '2026-01-01'
+               AND up.Trndate IS NOT NULL
+             ORDER BY up.Trndate DESC, up.TrnTime DESC, bc.ContNo",
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        return rows.AsList();
+    }
 }

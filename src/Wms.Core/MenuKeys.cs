@@ -32,6 +32,7 @@ public static class MenuKeys
     public const string RPT_JAFZA_DIVISION_PROD   = "RPT_JAFZA_DIVISION_PROD";
     public const string RPT_SYNC_DATA_COUNT       = "RPT_SYNC_DATA_COUNT";
     public const string RPT_SHIPMENT_STATUS       = "RPT_SHIPMENT_STATUS";
+    public const string RPT_WAREHOUSE_SON_SUMMARY = "RPT_WAREHOUSE_SON_SUMMARY";
 
     public const string ADMIN_USERS               = "ADMIN_USERS";
     public const string ADMIN_WH_MASTER           = "ADMIN_WH_MASTER";
@@ -85,10 +86,11 @@ public static class MenuKeys
         new MenuEntry(RPT_LPM_WH_STOCK,      "Reports",             "LPM WH Stock Report",       "reports/lpm-wh-stock",      new[] { Roles.Admin, Roles.Reports }),
         new MenuEntry(RPT_PRODUCTION_SUMMARY,"Reports",             "Production Summary Report", "reports/production-summary",new[] { Roles.Admin, Roles.Reports }),
         new MenuEntry(RPT_WAREHOUSE_BOXES,   "Reports",             "Warehouse Boxes",           "reports/warehouse-boxes",   new[] { Roles.Admin, Roles.Reports }),
-        new MenuEntry(RPT_TRANSFER_GIN_GRN,  "Reports",             "Transfer/GIN/GRN History",  "reports/transfer-gin-grn",  new[] { Roles.Admin, Roles.Reports }),
+        new MenuEntry(RPT_TRANSFER_GIN_GRN,  "Reports",             "Transfer/GIN/GRN History",  "reports/transfer-gin-grn",  new[] { Roles.Admin, Roles.Reports }, "Outbound"),
         new MenuEntry(RPT_COUNTING_COMPLETION,"Reports",            "Counting Completion Report","reports/counting-completion",new[] { Roles.Admin, Roles.Reports }),
         new MenuEntry(RPT_JAFZA_DIVISION_PROD,"Reports",            "Jafza Manual/Robo Production",  "reports/jafza-division-production",new[] { Roles.Admin, Roles.Reports }),
         new MenuEntry(RPT_SHIPMENT_STATUS,   "Reports",             "Shipment Status",           "reports/shipment-status",  new[] { Roles.Admin, Roles.Reports }, "Inbound"),
+        new MenuEntry(RPT_WAREHOUSE_SON_SUMMARY, "Reports",         "Warehouse SON Summary",     "reports/warehouse-son-summary", new[] { Roles.Admin, Roles.Reports }),
         new MenuEntry(RPT_SYNC_DATA_COUNT,   "IT",                 "Sync Data Count",           "reports/sync-data-count",   new[] { Roles.Admin, Roles.Reports }),
 
         new MenuEntry(ADMIN_USERS,           "Admin",               "Users & Roles",             "admin/users",               new[] { Roles.Admin }),

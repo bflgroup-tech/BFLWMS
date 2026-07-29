@@ -63,7 +63,7 @@ public record AllocationRow(
     int?     Pass2Qty         = null,    // 0 < OTS% < AvgOTS% pass
     int?     Pass3Qty         = null,    // OTS% <= 0 round-robin pass
     int?     Pass4Qty         = null,    // Pass 4 ratio distribution across all eligible stores
-    int?     Pass4RatioCap    = null,    // Store's OTS-driven tier cap at Pass 4 time (denominator for the ratio share)
+    int?     RatioSkuMax      = null,    // Store's SkuMax used in Pass 4 ratio numerator. FSMRR: OTS tier picker cap; FMMPO: raw MinMax value.
     decimal? AvgOtsPercent    = null,    // per-Division AVG(OtsPercentToday WHERE > 0) at item time
     int?     OtsQtyToday      = null,    // OtsQtyToday from WmsOtsPoAllocationRun for this (StoreID, DivCode) — initial value, not decremented
     int?     TgtEOM           = null,    // TgtEOM from WmsOtsPoAllocationRun for this (StoreID, DivCode) — FillSKUMax+RR only
@@ -104,7 +104,9 @@ public record AllocationStatus(
     int  RoundRobinRows,
     int  FillSKUMaxRoundRobinRows = 0,
     int  AzureAllocRows           = 0,   // dbo.WMS_ContAllocationData row count on Azure — > 0 means the container has been synced and Delete should be blocked at UI level
-    int  FillMinMinPlusOthersRows = 0);
+    int  FillMinMinPlusOthersRows = 0,
+    int  PlanningFlagsCount       = 0,   // WmsPlanningFlag rows for this ContNo — Pass 4 items where >=10% remained undistributed
+    int  PlanningFlagsTotalQty    = 0);  // SUM(RemainingQty) of those flag rows — units dropped by Pass 4
 
 /// <summary>How to distribute qty across eligible stores.
 /// FillSKUMax and RoundRobin are kept for run-history compatibility but are
@@ -145,10 +147,26 @@ public record AllocationTraceRow(
     // Pass 2 -> OTS picker's tier, Pass 4 -> MinMax). One tier concept per row.
     int?     DefaultSkuMax  = null, // RawSkuMax - Soh (never negative)
     int?     RawSkuMax      = null, // Raw tier value for this row's TierName
+    int?     RatioSkuMax    = null, // Pass 4 only — store's SkuMax contribution to the ratio numerator
     decimal? AvgOtsPercent  = null,
     decimal? AvgOtsMin      = null,
     decimal? AvgOtsMax      = null,
     decimal? InitialOtsPct  = null);
+
+/// <summary>One row from LPMSIM.dbo.WmsPlanningFlag — items whose FMMPO Pass 4
+/// remainder was >= 10% of PO qty and got dropped (nothing distributed) so a
+/// planner can review. Also used by the Container Allocation page's
+/// "Planning Flags" panel + summary counts (SKU count + total qty flagged).</summary>
+public record PlanningFlagRow(
+    DateTime  FlaggedTS,
+    string    ContNo,
+    string?   PONo,
+    string    ItemCode,
+    int?      DivCode,
+    int       PoQty,
+    int       RemainingQty,
+    string    RunOption,
+    string?   FlaggedBy);
 
 /// <summary>Header row read back for the "Processed Contnos" dropdown banner.
 /// Mirrors WMS_Cont_Allocation_Header columns.</summary>
