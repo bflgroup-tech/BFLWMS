@@ -177,6 +177,24 @@ public class ReportsService(IOnPremConnectionResolver resolver)
         return row ?? new MerchNeedRow(0, 0, 0);
     }
 
+    /// <summary>Merch Need (Month/Week/Day) per Division for a country's current calendar month,
+    /// joining LPM_EOM_Output.DivCode to LPMSIM.dbo.Division for the human name.</summary>
+    public async Task<List<MerchNeedDivisionRow>> GetMerchNeedByDivisionAsync(string country, CancellationToken ct = default)
+    {
+        await using var c = OpenOnPremBackup();
+        var rows = await c.QueryAsync<MerchNeedDivisionRow>(new CommandDefinition(@"
+            SELECT a.DivCode, b.Division,
+                   MerchNeedMonth = CAST(ISNULL(SUM(a.MerchNeedMonth), 0) AS BIGINT),
+                   MerchNeedWeek  = CAST(ISNULL(SUM(a.MerchNeedWeek), 0) AS BIGINT),
+                   MerchNeedDay   = CAST(ISNULL(SUM(a.MerchNeedDay), 0) AS BIGINT)
+              FROM LPMSIM.dbo.LPM_EOM_Output a
+              JOIN LPMSIM.dbo.Division b ON a.DivCode = b.DivCode
+             WHERE a.year1 = YEAR(GETDATE()) AND a.month1 = MONTH(GETDATE()) AND a.Country = @country
+             GROUP BY a.DivCode, b.Division",
+            new { country }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        return rows.AsList();
+    }
+
     // ===================== Counting Completion Report (Summary) =====================
     /// <summary>
     /// Reads BFLDATA.dbo.BuildingCompletionSumm — grain is one row per ContNo x
