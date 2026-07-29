@@ -58,17 +58,18 @@ public class CountingReportsService(IOnPremConnectionResolver resolver)
     }
 
     /// <summary>
-    /// Purchased Containers — mirrors GetPendingPurchaseAsync but returns
-    /// containers counted (bfldata.BuildingCompletion) on/after 2026-01-01
-    /// that HAVE a matching row in usa.usapurchase. Purchase date/time is
-    /// the earliest usapurchase row per ContNo. Used as the second section
-    /// of the Pending Goods Receipt email so operators see both "waiting"
-    /// and "done" in one message.
+    /// Purchased Containers (TODAY only, GST) — containers whose earliest
+    /// usa.usapurchase row landed today, joined with their counting record
+    /// from bfldata.BuildingCompletion. Second section of the Pending Goods
+    /// Receipt email; scoped to today so the mail stays a short "what got
+    /// purchased today" digest rather than an ever-growing history.
     /// </summary>
     public async Task<List<PurchasedContainerRow>> GetPurchasedContainersAsync(CancellationToken ct = default)
     {
         await using var opb = OpenOnPremBackup();
         var rows = await opb.QueryAsync<PurchasedContainerRow>(new CommandDefinition(@"
+            DECLARE @today DATE = CAST(DATEADD(hour, 4, SYSUTCDATETIME()) AS DATE);
+
             SELECT bc.ContNo,
                    CAST(bc.Trndate AS DATE) AS CountingDate,
                    ISNULL(bc.BuildingQty, 0) AS CountedQty,
@@ -94,9 +95,8 @@ public class CountingReportsService(IOnPremConnectionResolver resolver)
                   WHERE up2.Contno = bc.ContNo
                   ORDER BY up2.Trndate, up2.Time1
              ) up
-             WHERE bc.Trndate >= '2026-01-01'
-               AND up.Trndate IS NOT NULL
-             ORDER BY up.Trndate DESC, up.Time1 DESC, bc.ContNo",
+             WHERE CAST(up.Trndate AS DATE) = @today
+             ORDER BY up.Time1 DESC, bc.ContNo",
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         return rows.AsList();
     }
