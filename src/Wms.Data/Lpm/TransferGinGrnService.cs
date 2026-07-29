@@ -28,6 +28,16 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
     // UAE has no dedicated connection string — always use OnPremBackup for it.
     private const string UaeCountry = "UAE";
 
+    // Every non-UAE country's historical data now also flows through this ONE
+    // OnPremBackup server (in addition to UAE's own always-on usage of it) —
+    // "BFL Group" fans out per-country, and per-country fans out again per-shop,
+    // so without a cap a single load can open hundreds of simultaneous
+    // OnPremBackup connections at once, overwhelming it (slower, not faster).
+    // Static: shared across every request/instance, since the thing being
+    // protected is the shared server, not any one call. Mirrors the same fix
+    // ShipmentStatusService already applies for its own OnPremBackup fan-out.
+    private static readonly SemaphoreSlim OnPremThrottle = new(16);
+
     private SqlConnection OpenOnPrem()
     {
         var b = new SqlConnectionStringBuilder(resolver.GetOnPremBackupConnectionString())
@@ -35,6 +45,21 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
         var c = new SqlConnection(b.ConnectionString);
         c.Open();
         return c;
+    }
+
+    // Runs one OnPremBackup query under the shared throttle — the semaphore slot
+    // is held for the connection's whole lifetime (acquired before it opens,
+    // released only after it's disposed), so at most OnPremThrottle.CurrentCount
+    // connections are ever open against OnPremBackup at once from this service.
+    private async Task<T> WithOnPremAsync<T>(Func<SqlConnection, Task<T>> query, CancellationToken ct)
+    {
+        await OnPremThrottle.WaitAsync(ct);
+        try
+        {
+            await using var conn = OpenOnPrem();
+            return await query(conn);
+        }
+        finally { OnPremThrottle.Release(); }
     }
 
     private SqlConnection OpenCountry(string country)
@@ -243,15 +268,14 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
     private async Task<List<TransferHistoryRow>> GetForStoresOnPremAsync(
         List<StoreRow> stores, TransferHistoryFilter f, DateTime from, DateTime to, CancellationToken ct)
     {
-        var perStore = await Task.WhenAll(stores.Select(async s =>
+        var perStore = await Task.WhenAll(stores.Select(s => WithOnPremAsync(async conn =>
         {
-            await using var conn = OpenOnPrem();
             var sql  = BuildSqlOnPrem(s, f, from, to, out var parms);
             var rows = await conn.QueryAsync<TransferHistoryRow>(
                 new CommandDefinition(sql, parms,
                     commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
             return rows.AsList();
-        }));
+        }, ct)));
         return perStore.SelectMany(r => r).ToList();
     }
 
@@ -399,31 +423,21 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
         // Warehouse-code lookup, per-DataName transfer totals, and the GIN qty
         // query are all independent — run them concurrently (own connection
         // each) instead of serially against the same connection.
-        var whTask = Task.Run(async () =>
-        {
-            await using var conn = OpenOnPrem();
-            return await ResolveWarehouseCodeAsync(conn, "BFLDATA.dbo.DataSettings", country, ct);
-        });
-        var ginTask = Task.Run(async () =>
-        {
-            await using var conn = OpenOnPrem();
-            return await conn.QuerySingleAsync<GinCountQtyRow>(new CommandDefinition(@"
+        var whTask = WithOnPremAsync(conn =>
+            ResolveWarehouseCodeAsync(conn, "BFLDATA.dbo.DataSettings", country, ct), ct);
+        var ginTask = WithOnPremAsync(conn => conn.QuerySingleAsync<GinCountQtyRow>(new CommandDefinition(@"
                 SELECT COUNT(DISTINCT c.SrNo) AS GinCount, ISNULL(SUM(c.Qty),0) AS GinQty
                   FROM BFLDATA.dbo.vGoodsIssueplt c WITH (NOLOCK)
                   JOIN BFLDATA.dbo.DataSettings ds WITH (NOLOCK) ON ds.ShopName = c.ShopIssue
                  WHERE ds.SIMCountry = @country AND c.EntryDate >= @from AND c.EntryDate <= @to",
-                new { country, from, to = toEnd }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-        });
+                new { country, from, to = toEnd }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)), ct);
 
         var wh = await whTask;
-        var perDataNameTask = Task.WhenAll(dataNames.Select(async dn =>
-        {
-            await using var conn = OpenOnPrem();
-            return await conn.QuerySingleAsync<CountQtyRow>(new CommandDefinition(
+        var perDataNameTask = Task.WhenAll(dataNames.Select(dn => WithOnPremAsync(conn =>
+            conn.QuerySingleAsync<CountQtyRow>(new CommandDefinition(
                 TransferSummarySql($"[{dn}]..vTransferDetail"),
                 new { from, to = toEnd, whCostCodeTo = wh.CostCodeTo, whLocCodeTo = wh.LocCodeTo },
-                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-        }));
+                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)), ct)));
 
         await Task.WhenAll(perDataNameTask, ginTask);
         var transferCount = perDataNameTask.Result.Sum(r => r.TransferCount);
@@ -489,14 +503,11 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
         return new TransferSummary(shopName, transferRow.TransferCount, transferRow.TransferQty ?? 0, gin.GinCount, gin.GinQty ?? 0);
     }
 
-    private async Task<TransferSummary> GetOneStoreSummaryOnPremAsync(
-        StoreRow s, DateTime from, DateTime to, CancellationToken ct)
-    {
-        await using var conn = OpenOnPrem();
-        return await GetOneStoreSummaryAsync(
+    private Task<TransferSummary> GetOneStoreSummaryOnPremAsync(
+        StoreRow s, DateTime from, DateTime to, CancellationToken ct) =>
+        WithOnPremAsync(conn => GetOneStoreSummaryAsync(
             conn, s.ShopName, $"[{s.DataName}]..vTransferDetail", "BFLDATA.dbo.vGoodsIssueplt",
-            s.CostCodeTo, s.LocCodeTo, from, to, ct);
-    }
+            s.CostCodeTo, s.LocCodeTo, from, to, ct), ct);
 
     // Regional (today-only) — reuses the shop's CostCodeTo/LocCodeTo already
     // resolved from OnPremBackup's DataSettings rather than re-querying the
