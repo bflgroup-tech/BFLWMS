@@ -105,31 +105,31 @@
     }
 </div>
 
-@if (_summaries.Count > 0 || _storeSummary is not null)
+@* BFL Group -> country-level cards only. A single country selected -> store-level only (either the one picked store's card, or every store once "(All stores)" pulls the breakdown below). *@
+@if (_isBflGroupView && _summaries.Count > 0)
 {
     <div class="aiwms-section" style="padding:0; overflow:hidden;">
-        @if (_summaries.Count > 0)
-        {
-            <div style="padding:10px 16px; background:var(--bg-subtle, #f7f7f5); font-weight:700; font-size:13px; letter-spacing:0.02em;">
-                BY COUNTRY
-            </div>
-            <div style="padding:14px 16px; display:flex; gap:16px; flex-wrap:wrap;">
-                @foreach (var s in _summaries)
-                {
-                    @SummaryCard(s, "#f0f0f0")
-                }
-            </div>
-        }
-        @{ var storeSummary = _storeSummary; }
-        @if (storeSummary is not null)
-        {
-            <div style="padding:10px 16px; background:var(--bg-subtle, #f7f7f5); font-weight:700; font-size:13px; letter-spacing:0.02em; @(_summaries.Count > 0 ? "border-top:1px solid var(--border-default);" : "")">
-                BY STORE
-            </div>
-            <div style="padding:14px 16px; display:flex; gap:16px; flex-wrap:wrap;">
-                @SummaryCard(storeSummary, "#e8f0fe")
-            </div>
-        }
+        <div style="padding:10px 16px; background:var(--bg-subtle, #f7f7f5); font-weight:700; font-size:13px; letter-spacing:0.02em;">
+            BY COUNTRY
+        </div>
+        <div style="padding:14px 16px; display:flex; gap:16px; flex-wrap:wrap;">
+            @foreach (var s in _summaries)
+            {
+                @SummaryCard(s, "#f0f0f0")
+            }
+        </div>
+    </div>
+}
+@{ var storeSummary = _storeSummary; }
+@if (!_isBflGroupView && storeSummary is not null)
+{
+    <div class="aiwms-section" style="padding:0; overflow:hidden;">
+        <div style="padding:10px 16px; background:var(--bg-subtle, #f7f7f5); font-weight:700; font-size:13px; letter-spacing:0.02em;">
+            BY STORE
+        </div>
+        <div style="padding:14px 16px; display:flex; gap:16px; flex-wrap:wrap;">
+            @SummaryCard(storeSummary, "#e8f0fe")
+        </div>
     </div>
 }
 
@@ -466,8 +466,13 @@
             // "(All stores)" — mirrors the BFL Group per-country breakdown one level down.
             var singleCountryAllStores = !_isBflGroupView && storeFilter is null && singleCountry is not null;
 
+            // Country-level summary only matters for BFL Group's "BY COUNTRY" cards —
+            // a single country selection shows store-level data instead, so skip
+            // this query entirely rather than fetching a result nothing displays.
             var resultTask      = Svc.GetTransferHistoryAsync(filter);
-            var summaryTask     = Svc.GetTransferSummaryAsync(countries, _dateFrom, _dateTo);
+            var summaryTask     = _isBflGroupView
+                ? Svc.GetTransferSummaryAsync(countries, _dateFrom, _dateTo)
+                : Task.FromResult(new TransferSummaryResult(new List<TransferSummary>(), new List<string>()));
             var storeSummaryTask = storeFilter is not null && singleCountry is not null
                 ? Svc.GetStoreSummaryAsync(singleCountry, storeFilter, _dateFrom, _dateTo)
                 : Task.FromResult<TransferSummary?>(null);
