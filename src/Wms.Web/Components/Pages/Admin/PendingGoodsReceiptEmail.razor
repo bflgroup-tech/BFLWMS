@@ -4,6 +4,7 @@
 @using Wms.Data.Notifications
 @attribute [Authorize(Policy = MenuKeys.ADMIN_PENDING_GOODS_RECEIPT_EMAIL)]
 @inject PendingGoodsReceiptEmailService Svc
+@inject Wms.Web.Hosting.PendingGoodsReceiptEmailSender Sender
 @inject ICurrentUser Me
 
 <PageTitle>WMS — Pending Goods Receipt Email</PageTitle>
@@ -35,11 +36,15 @@
             </label>
 
             <div></div>
-            <div style="display:flex; gap:8px; margin-top:8px">
-                <button class="aiwms-btn aiwms-btn-primary" @onclick="SaveAsync" disabled="@_saving">
+            <div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap; align-items:center">
+                <button class="aiwms-btn aiwms-btn-primary" @onclick="SaveAsync" disabled="@(_saving || _sendingTest)">
                     @(_saving ? "Saving…" : "Save")
                 </button>
-                <button class="aiwms-btn aiwms-btn-secondary" @onclick="LoadAsync" disabled="@_saving">Reload</button>
+                <button class="aiwms-btn aiwms-btn-secondary" @onclick="LoadAsync" disabled="@(_saving || _sendingTest)">Reload</button>
+                <button class="aiwms-btn aiwms-btn-secondary" @onclick="SendTestAsync" disabled="@(_saving || _sendingTest || string.IsNullOrWhiteSpace(_recipients))"
+                        title="Immediately query both sections and send the email to the recipients above, ignoring the interval">
+                    @(_sendingTest ? "Sending…" : "Send Test Email")
+                </button>
             </div>
         </div>
 
@@ -68,6 +73,7 @@
 @code {
     private bool _loading = true;
     private bool _saving;
+    private bool _sendingTest;
     private string _message = "";
     private bool _isError;
 
@@ -105,5 +111,37 @@
         }
         catch (Exception ex) { _message = $"Save failed: {ex.Message}"; _isError = true; }
         finally { _saving = false; }
+    }
+
+    private async Task SendTestAsync()
+    {
+        _sendingTest = true; _message = ""; _isError = false;
+        try
+        {
+            var recipients = _recipients?.Trim() ?? "";
+            if (string.IsNullOrWhiteSpace(recipients))
+            {
+                _message = "Enter at least one recipient before sending a test.";
+                _isError = true;
+                return;
+            }
+            var res = await Sender.SendNowAsync(recipients);
+            if (res.Sent)
+            {
+                _message = $"Test email sent — {res.PendingCount} pending + {res.PurchasedCount} purchased container(s) to {recipients}.";
+                _isError = false;
+            }
+            else
+            {
+                _message = $"Test email NOT sent — {res.StatusMessage}. (Both sections are empty; nothing to mail.)";
+                _isError = false;
+            }
+        }
+        catch (Exception ex)
+        {
+            _message = $"Test email failed: {ex.Message}";
+            _isError = true;
+        }
+        finally { _sendingTest = false; }
     }
 }
