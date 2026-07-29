@@ -1664,44 +1664,42 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                             else
                             {
                                 // Distribute proportionally to A/B/C stores by raw MinMax.
-                                // Filter: VG in {A, B, C} AND LiveOts > 0. Sort: VG asc, then
-                                // LiveOts (refreshed) desc — so the last-store-takes-residual
-                                // tiebreak lands on the strongest positive-OTS store in the
-                                // lowest grade included. Ratio uses raw MinMax as the weight;
-                                // each store's share is take-as-is (no per-store cap).
+                                // Filter: VG in {A, B, C} AND LiveOts > 0. Sort: LiveOts desc
+                                // (across A/B/C flat — highest-OTS store first regardless of
+                                // grade). Ratio uses raw MinMax as the weight; each store's
+                                // share is take-as-is (no per-store cap).
                                 var top3 = eligible
                                     .Where(r => (r.VolumeGroup?.Trim().ToUpperInvariant()) is "A" or "B" or "C")  // A, B, C by letter (decoupled from SortOrder config so an S=Special row between B and C can't shove C out of the top-3 rank)
                                     .Where(r => LiveOtsPct(r) > 0)                                                // positive-OTS stores only
                                     .Select(r => (Row: r, MinMax: RawMinMaxFor(r)))
                                     .Where(x => x.MinMax > 0)
-                                    .OrderBy(x => VolumeGroupRank(x.Row.VolumeGroup))
-                                    .ThenByDescending(x => LiveOtsPct(x.Row))
+                                    .OrderByDescending(x => LiveOtsPct(x.Row))
                                     .ToList();
                                 var totalMinMax = top3.Sum(x => x.MinMax);
                                 if (top3.Count > 0 && totalMinMax > 0)
                                 {
-                                    // ROUND-based distribution (per operator spec):
-                                    //   RatioShare(i) = ROUND(RawSkuMax(i) * origRemaining / totalMinMax)
-                                    // Any 1-2 unit leftover from rounding (either +ve or -ve) is added
-                                    // to the first store in the sort — which is the top-grade store
-                                    // (A > B > C) with the highest LiveOts among positive-OTS A/B/C.
-                                    // SUM(Take) still equals origRemaining exactly.
+                                    // FLOOR-based distribution (largest-remainder-lite):
+                                    //   floorShare(i) = FLOOR(RawSkuMax(i) * origRemaining / totalMinMax)
+                                    //   leftover      = origRemaining - SUM(floorShare)      (always >= 0)
+                                    //   +1 handed out to the first `leftover` stores in sort order
+                                    //   (i.e. highest LiveOts across A/B/C).
+                                    // Guarantees SUM(Take) == origRemaining exactly — never negative
+                                    // remaining. RatioSkuMax records the pure ROUND for audit only.
                                     var origRemaining = remaining;
+                                    var floorShares = new int[top3.Count];
                                     var roundShares = new int[top3.Count];
                                     var shareSum = 0;
                                     for (int i = 0; i < top3.Count; i++)
                                     {
                                         var raw = (double)origRemaining * top3[i].MinMax / totalMinMax;
+                                        floorShares[i] = (int)Math.Floor(raw);
                                         roundShares[i] = (int)Math.Round(raw, MidpointRounding.AwayFromZero);
-                                        shareSum += roundShares[i];
+                                        shareSum += floorShares[i];
                                     }
-                                    var takeShares = (int[])roundShares.Clone();
-                                    var leftover = origRemaining - shareSum;   // may be +ve or -ve
-                                    if (leftover != 0 && takeShares.Length > 0)
-                                    {
-                                        takeShares[0] += leftover;
-                                        if (takeShares[0] < 0) takeShares[0] = 0;   // guard against pathological negatives
-                                    }
+                                    var takeShares = (int[])floorShares.Clone();
+                                    var leftover = origRemaining - shareSum;   // >= 0 since floor <= raw
+                                    for (int j = 0; j < leftover && j < takeShares.Length; j++)
+                                        takeShares[j] += 1;
 
                                     for (int i = 0; i < top3.Count; i++)
                                     {
