@@ -1,13 +1,18 @@
 @page "/reports/warehouse-soh-summary"
+@rendermode RenderMode.InteractiveServer
 @attribute [Authorize(Policy = Wms.Core.MenuKeys.RPT_WAREHOUSE_SOH_SUMMARY)]
 @using Wms.Core
 @using Wms.Data.Lpm
 @inject ReportsService Svc
 @inject ICurrentUser Me
+@inject Microsoft.JSInterop.IJSRuntime JS
 
 <PageTitle>WMS — Warehouse SOH Summary</PageTitle>
 
 <style>
+    .wsoh-country-select summary { list-style: none; }
+    .wsoh-country-select summary::-webkit-details-marker { display: none; }
+
     .wsoh-banner { border-radius: var(--r-md); overflow: hidden; margin-bottom: 16px; border: 1px solid var(--border-default); }
     .wsoh-banner .title { background: var(--bfl-black); color: var(--bfl-yellow); font-family: var(--font-display); font-weight: 800; font-size: 20px; text-align: center; padding: 14px; letter-spacing: 1px; text-transform: uppercase; }
     .wsoh-banner .subtitle { background: #3a3a38; color: #fff; text-align: center; padding: 8px; font-style: italic; font-size: 13px; }
@@ -40,18 +45,33 @@
 
 <div class="aiwms-section">
     <div style="display:flex; gap:12px; align-items:end;">
-        <div>
-            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COUNTRY</label>
-            <select @bind="_country" style="width:260px; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;">
-                @foreach (var c in _countries) { <option value="@c">@c.ToUpper()</option> }
-            </select>
+        <div class="wsoh-country-select">
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COUNTRY (select any)</label>
+            <details id="wsoh-country-dropdown" style="position:relative;">
+                <summary style="display:flex; align-items:center; justify-content:space-between; gap:8px; width:260px; height:36px; box-sizing:border-box; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white; cursor:pointer; user-select:none;">
+                    <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">@CountrySelectionLabel</span>
+                    <span style="color:var(--text-secondary); font-size:10px; flex-shrink:0;">&#9660;</span>
+                </summary>
+                <div style="position:absolute; top:100%; left:0; right:0; z-index:20; margin-top:4px; display:flex; flex-direction:column; gap:4px; max-height:220px; overflow-y:auto; border:1px solid var(--border-default); border-radius:var(--r-sm); padding:8px 10px; background:white; box-shadow:0 4px 12px rgba(0,0,0,0.15);">
+                    @foreach (var c in _countries)
+                    {
+                        <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:13px">
+                            <input type="checkbox" checked="@_selectedCountries.Contains(c)" @onchange="@(e => ToggleCountry(c, (bool)e.Value!))" />
+                            @c.ToUpper()
+                        </label>
+                    }
+                </div>
+            </details>
         </div>
-        <button class="aiwms-btn aiwms-btn-primary" @onclick="LoadAsync" disabled="@_loading">@(_loading ? "Loading…" : "Load")</button>
+        <button class="aiwms-btn aiwms-btn-primary" @onclick="LoadAsync" disabled="@(_loading || _selectedCountries.Count == 0)">@(_loading ? "Loading…" : "Load")</button>
     </div>
 </div>
 
 @{
-    var warehouses = _warehousesByCountry.GetValueOrDefault(_country, new());
+    var warehouses = _selectedCountries
+        .SelectMany(c => _warehousesByCountry.GetValueOrDefault(c, new()).Select(w => (Country: c, Warehouse: w)))
+        .ToList();
+    var multiCountry = _selectedCountries.Count > 1;
 }
 
 @if (warehouses.Count > 0)
@@ -60,7 +80,9 @@
         @foreach (var wh in warehouses)
         {
             <div style="margin-bottom:18px;">
-                <div style="font-size:12px; font-weight:700; color:var(--text-secondary); margin-bottom:8px;">@wh.Name</div>
+                <div style="font-size:12px; font-weight:700; color:var(--text-secondary); margin-bottom:8px;">
+                    @wh.Warehouse.Name@(multiCountry ? $" — {wh.Country.ToUpper()}" : "")
+                </div>
                 <div style="display:flex; gap:14px; flex-wrap:wrap; align-items:stretch;">
                     <div class="wsoh-box">
                         <div class="wsoh-box-header">📦 Stock On Hand</div>
@@ -68,7 +90,7 @@
                             <div class="wsoh-box-row"><span>Total Quantity (Units)</span><span>0</span></div>
                             <div class="wsoh-box-row"><span>Total Boxes Stock</span><span>0</span></div>
                             <div class="wsoh-box-row"><span>Number of Boxes</span><span>0</span></div>
-                            @if (wh.HasPallets)
+                            @if (wh.Warehouse.HasPallets)
                             {
                                 <div class="wsoh-box-row"><span>Total Pallets Stock</span><span>0</span></div>
                                 <div class="wsoh-box-row"><span>Number of Pallets</span><span>0</span></div>
@@ -79,7 +101,7 @@
                     <div class="wsoh-box">
                         <div class="wsoh-box-header">📋 Storage Capacity</div>
                         <div class="wsoh-box-body">
-                            @if (wh.HasPallets)
+                            @if (wh.Warehouse.HasPallets)
                             {
                                 <div class="wsoh-box-row"><span>Total Rack Locations</span><span>0</span></div>
                                 <div class="wsoh-box-row"><span>Free Box Rack Locations</span><span>0</span></div>
@@ -108,6 +130,7 @@
             <table class="aiwms-table aiwms-table-dense">
                 <thead>
                     <tr>
+                        @if (multiCountry) { <th>Country</th> }
                         <th>Warehouse</th>
                         <th style="text-align:right">Total Units</th>
                         <th style="text-align:right">Box Stock</th>
@@ -123,7 +146,8 @@
                     @foreach (var wh in warehouses)
                     {
                         <tr>
-                            <td>@wh.Name</td>
+                            @if (multiCountry) { <td>@wh.Country.ToUpper()</td> }
+                            <td>@wh.Warehouse.Name</td>
                             <td style="text-align:right">0</td>
                             <td style="text-align:right">0</td>
                             <td style="text-align:right">0</td>
@@ -135,7 +159,7 @@
                         </tr>
                     }
                     <tr style="font-weight:700; background:#fff7e0">
-                        <td>TOTAL</td>
+                        <td colspan="@(multiCountry ? 2 : 1)">TOTAL</td>
                         <td style="text-align:right">0</td>
                         <td style="text-align:right">0</td>
                         <td style="text-align:right">0</td>
@@ -194,16 +218,36 @@
 }
 else if (_loadedOnce)
 {
-    <div class="aiwms-section"><div class="aiwms-alert info">No warehouses configured for @_country yet.</div></div>
+    <div class="aiwms-section"><div class="aiwms-alert info">No warehouses configured for @string.Join(", ", _selectedCountries.Select(c => c.ToUpper())) yet.</div></div>
 }
 
 @code {
     // TODO: placeholder structure — country list, warehouse list, and all figures are
     // dummy pending the real data source/query.
     private List<string> _countries = new() { "UAE" };
-    private string _country = "UAE";
+    private HashSet<string> _selectedCountries = new(StringComparer.OrdinalIgnoreCase) { "UAE" };
     private bool _loading;
     private bool _loadedOnce;
+
+    private void ToggleCountry(string country, bool isChecked)
+    {
+        if (isChecked) _selectedCountries.Add(country);
+        else _selectedCountries.Remove(country);
+    }
+
+    private string CountrySelectionLabel
+    {
+        get
+        {
+            var picked = _countries.Where(c => _selectedCountries.Contains(c)).ToList();
+            return picked.Count switch
+            {
+                0 => "Select countries...",
+                <= 2 => string.Join(", ", picked.Select(c => c.ToUpper())),
+                _ => $"{picked.Count} countries selected"
+            };
+        }
+    }
 
     private sealed record WarehouseDummy(string Name, bool HasPallets);
 
@@ -246,12 +290,27 @@ else if (_loadedOnce)
             if (list.Count > 0)
             {
                 _countries = list;
-                _country = Me.Country is not null && list.Contains(Me.Country, StringComparer.OrdinalIgnoreCase)
+                var defaultCountry = Me.Country is not null && list.Contains(Me.Country, StringComparer.OrdinalIgnoreCase)
                     ? list.First(c => string.Equals(c, Me.Country, StringComparison.OrdinalIgnoreCase))
                     : list[0];
+                _selectedCountries = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { defaultCountry };
             }
         }
         catch { /* fall back to the hard-coded UAE seed if the lookup fails */ }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        await JS.InvokeVoidAsync("eval", @"
+            (function(){
+                if (window.__wsohCountryDropdownBound) return;
+                window.__wsohCountryDropdownBound = true;
+                document.addEventListener('click', function (e) {
+                    var d = document.getElementById('wsoh-country-dropdown');
+                    if (d && d.open && !d.contains(e.target)) d.removeAttribute('open');
+                });
+            })();");
     }
 
     private async Task LoadAsync()
