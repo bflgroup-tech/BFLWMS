@@ -29,9 +29,10 @@ public class CountingReportsService(IOnPremConnectionResolver resolver)
         await using var opb = OpenOnPremBackup();
         var rows = await opb.QueryAsync<PendingPurchaseRow>(new CommandDefinition(@"
             SELECT bc.ContNo,
-                   CAST(bc.Trndate AS DATE) AS CountingDate,
+                   CAST(bc.Tmdate AS DATE) AS CountingDate,
+                   CONVERT(VARCHAR(8), bc.TmTime, 108) AS TrnTime,
                    ISNULL(bc.BuildingQty, 0) AS CountedQty,
-                   DATEDIFF(day, bc.Trndate,
+                   DATEDIFF(day, bc.Tmdate,
                             CAST(DATEADD(hour, 4, SYSUTCDATETIME()) AS DATE)) AS AgeingDays,
                    Divisions = ISNULL(NULLIF(STUFF((
                        SELECT ', ' + d.v
@@ -46,7 +47,7 @@ public class CountingReportsService(IOnPremConnectionResolver resolver)
                          WHERE bcs.ContNo = bc.ContNo
                            AND ISNULL(bcs.division, '') <> ''))
               FROM bfldata.dbo.BuildingCompletion bc WITH (NOLOCK)
-             WHERE bc.Trndate >= '2026-01-01'
+             WHERE bc.Tmdate >= '2026-01-01'
                AND NOT EXISTS (
                    SELECT 1
                      FROM usa.dbo.usapurchase up WITH (NOLOCK)
@@ -70,11 +71,12 @@ public class CountingReportsService(IOnPremConnectionResolver resolver)
         await using var opb = OpenOnPremBackup();
         var rows = await opb.QueryAsync<PurchasedContainerRow>(new CommandDefinition(@"
             SELECT bc.ContNo,
-                   CAST(bc.Trndate AS DATE) AS CountingDate,
+                   CAST(bc.Tmdate AS DATE) AS CountingDate,
+                   CONVERT(VARCHAR(8), bc.TmTime, 108) AS CountingTime,
                    ISNULL(bc.BuildingQty, 0) AS CountedQty,
                    CAST(up.Tmdate AS DATE) AS PurchaseDate,
                    CONVERT(VARCHAR(8), up.Time1, 108) AS PurchaseTime,
-                   DATEDIFF(day, bc.Trndate, up.Tmdate) AS DaysToPurchase,
+                   DATEDIFF(day, bc.Tmdate, up.Tmdate) AS DaysToPurchase,
                    Divisions = ISNULL(NULLIF(STUFF((
                        SELECT ', ' + d.v
                          FROM (SELECT DISTINCT pcr.Division AS v
@@ -94,7 +96,7 @@ public class CountingReportsService(IOnPremConnectionResolver resolver)
                   WHERE up2.Contno = bc.ContNo
                   ORDER BY up2.Tmdate, up2.Time1
              ) up
-             WHERE bc.Trndate >= '2026-01-01'
+             WHERE bc.Tmdate >= '2026-01-01'
                AND up.Tmdate IS NOT NULL
              ORDER BY up.Tmdate DESC, up.Time1 DESC, bc.ContNo",
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
