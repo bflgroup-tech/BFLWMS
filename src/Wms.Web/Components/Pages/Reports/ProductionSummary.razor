@@ -161,6 +161,7 @@ else if (VisibleRows().Count > 0)
                 .ThenBy(x => x.Country)
                 .ThenBy(x => x.Division)
                 .ToList();
+            pivot = WithMissingMerchNeedDivisions(pivot);
             var hasMixed = pivot.Sum(x => x.Mixed) > 0;
             var isUae = _selectedCountries.Contains("UAE");
 
@@ -372,6 +373,30 @@ else if (_loadedOnce && VisibleRows().Count == 0)
         return (0, 0, 0);
     }
 
+    // Divisions with Merch Need data but zero scans that day are otherwise invisible in the
+    // Summary pivot (it's grouped from scan rows), so add a zero-production row for each one
+    // per (Country, ProductionDay) already present in the report.
+    private List<DivisionPivotRow> WithMissingMerchNeedDivisions(List<DivisionPivotRow> pivot)
+    {
+        var missing = pivot
+            .Select(p => (p.Country, p.ProductionDay))
+            .Distinct()
+            .SelectMany(cd => _merchNeedByCountryDivision.GetValueOrDefault(cd.Country, new())
+                .Where(mn => !pivot.Any(p =>
+                    string.Equals(p.Country, cd.Country, StringComparison.OrdinalIgnoreCase) &&
+                    p.ProductionDay == cd.ProductionDay &&
+                    string.Equals(p.Division, mn.Division, StringComparison.OrdinalIgnoreCase)))
+                .Select(mn => new DivisionPivotRow(
+                    cd.Country, cd.ProductionDay, mn.Division,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    mn.MerchNeedMonth, mn.MerchNeedWeek, mn.MerchNeedDay)));
+        return pivot.Concat(missing)
+            .OrderByDescending(x => x.ProductionDay)
+            .ThenBy(x => x.Country)
+            .ThenBy(x => x.Division)
+            .ToList();
+    }
+
     private bool CanLoad => _selectedCountries.Count > 0 && _from <= _to;
 
     // The report caches every country ever loaded this session (so re-checking a country you
@@ -494,6 +519,7 @@ else if (_loadedOnce && VisibleRows().Count == 0)
                         mn.Month, mn.Week, mn.Day);
                 })
                 .OrderByDescending(x => x.ProductionDay).ThenBy(x => x.Country).ThenBy(x => x.Division).ToList();
+            pivot = WithMissingMerchNeedDivisions(pivot);
             var isUae = _selectedCountries.Contains("UAE");
             if (multiCountry) sb.Append("Country,");
             sb.Append("Date,Division,LPM,Non-LPM,Mixed,Unknown,Scanned Qty,Stores Qty");
@@ -543,7 +569,7 @@ else if (_loadedOnce && VisibleRows().Count == 0)
 
     private RenderFragment MetricCard(string label, string value, string bg, string fg, bool big) => __builder =>
     {
-        <div style="background:@bg; color:@fg; padding:12px 16px; border-radius:var(--r-sm); border:1px solid #00000010">
+        <div style="background:@bg; color:@fg; padding:12px 16px; border-radius:var(--r-sm); border:1px solid #00000010; text-align:center; display:flex; flex-direction:column; align-items:center; justify-content:center;">
             <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px">@label</div>
             <div style="font-size:@(big ? "1.6rem" : "1.2rem"); font-weight:@(big ? "900" : "700")">@value</div>
         </div>
