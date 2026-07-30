@@ -128,28 +128,28 @@
         <div style="padding:10px 16px; background:var(--bg-subtle, #f7f7f5); font-weight:700; font-size:13px; letter-spacing:0.02em;">
             BY @breakdownLabel.ToUpperInvariant()
         </div>
-        <div style="padding:14px 16px; display:grid; grid-template-columns:repeat(3, 1fr); gap:14px;">
+        <div style="padding:10px 16px; display:grid; grid-template-columns:repeat(3, 1fr); gap:10px;">
             @foreach (var s in breakdownRows)
             {
-                <div style="border:1px solid var(--border-default); border-radius:8px; padding:10px 14px;">
-                    <div style="text-align:center; font-size:11px; font-weight:700; color:#333333; text-transform:uppercase; letter-spacing:0.02em; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
+                <div style="border:1px solid var(--border-default); border-radius:6px; padding:6px 8px;">
+                    <div style="text-align:center; font-size:10px; font-weight:700; color:#333333; text-transform:uppercase; letter-spacing:0.02em; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
                         @s.Country.ToUpperInvariant()
                     </div>
-                    <div style="display:flex; justify-content:center; gap:16px; margin-top:8px;">
-                        <div style="text-align:center;">
-                            <div style="font-size:11px; color:var(--text-secondary); white-space:nowrap;">Transfers</div>
+                    <div style="display:flex; justify-content:center; margin-top:5px;">
+                        <div style="text-align:center; flex:1; padding:0 6px;">
+                            <div style="font-size:10px; color:var(--text-secondary); white-space:nowrap;">Transfers</div>
                             <div style="font-size:11px; font-weight:700; color:#333333;">@s.TransferCount.ToString("N0")</div>
                         </div>
-                        <div style="text-align:center;">
-                            <div style="font-size:11px; color:var(--text-secondary); white-space:nowrap;">Transfer Qty</div>
+                        <div style="text-align:center; flex:1; padding:0 6px; border-left:1px solid var(--border-default);">
+                            <div style="font-size:10px; color:var(--text-secondary); white-space:nowrap;">Transfer Qty</div>
                             <div style="font-size:11px; font-weight:700; color:#333333;">@s.TransferQty.ToString("N0")</div>
                         </div>
-                        <div style="text-align:center;">
-                            <div style="font-size:11px; color:var(--text-secondary); white-space:nowrap;">GIN Count</div>
+                        <div style="text-align:center; flex:1; padding:0 6px; border-left:1px solid var(--border-default);">
+                            <div style="font-size:10px; color:var(--text-secondary); white-space:nowrap;">GIN Count</div>
                             <div style="font-size:11px; font-weight:700; color:#333333;">@s.GinCount.ToString("N0")</div>
                         </div>
-                        <div style="text-align:center;">
-                            <div style="font-size:11px; color:var(--text-secondary); white-space:nowrap;">GIN Qty</div>
+                        <div style="text-align:center; flex:1; padding:0 6px; border-left:1px solid var(--border-default);">
+                            <div style="font-size:10px; color:var(--text-secondary); white-space:nowrap;">GIN Qty</div>
                             <div style="font-size:11px; font-weight:700; color:#333333;">@s.GinQty.ToString("N0")</div>
                         </div>
                     </div>
