@@ -78,13 +78,13 @@ public class PendingGoodsReceiptEmailSender(
             sb.Append("</tbody></table>");
         }
 
-        // ---- Section 2: Purchased ----
-        sb.Append("<h2 style=\"margin:28px 0 8px 0\">Purchased Containers</h2>");
-        sb.Append("<p style=\"margin:0 0 12px 0; color:#555\">Containers counted from <b>01/01/2026</b> onwards whose GRN row HAS landed in <code>usa.dbo.usapurchase</code>. Purchase date/time is the earliest usapurchase row for the container. Days to Purchase = counting → purchase lag.</p>");
+        // ---- Section 2: Purchased today ----
+        sb.Append("<h2 style=\"margin:28px 0 8px 0\">Purchased Containers — Today (GST)</h2>");
+        sb.Append("<p style=\"margin:0 0 12px 0; color:#555\">Containers whose earliest GRN row landed in <code>usa.dbo.usapurchase</code> today. Purchase date/time is that earliest row. Days to Purchase = counting → purchase lag.</p>");
         sb.Append($"<p style=\"margin:0 0 12px 0\"><b>{purchased.Count} container(s)</b> — {purchased.Sum(r => r.CountedQty):N0} total counted qty.</p>");
         if (purchased.Count == 0)
         {
-            sb.Append("<p style=\"margin:0 0 16px 0; color:#888; font-style:italic\">No purchased containers in scope.</p>");
+            sb.Append("<p style=\"margin:0 0 16px 0; color:#888; font-style:italic\">No containers purchased today.</p>");
         }
         else
         {

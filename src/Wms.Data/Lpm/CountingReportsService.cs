@@ -58,23 +58,24 @@ public class CountingReportsService(IOnPremConnectionResolver resolver)
     }
 
     /// <summary>
-    /// Purchased Containers — mirrors GetPendingPurchaseAsync but returns
-    /// containers counted (bfldata.BuildingCompletion) on/after 2026-01-01
-    /// that HAVE a matching row in usa.usapurchase. Purchase date/time is
-    /// the earliest usapurchase row per ContNo. Used as the second section
-    /// of the Pending Goods Receipt email so operators see both "waiting"
-    /// and "done" in one message.
+    /// Purchased Containers (TODAY only, GST) — containers whose earliest
+    /// usa.usapurchase row landed today, joined with their counting record
+    /// from bfldata.BuildingCompletion. Second section of the Pending Goods
+    /// Receipt email; scoped to today so the mail stays a short "what got
+    /// purchased today" digest rather than an ever-growing history.
     /// </summary>
     public async Task<List<PurchasedContainerRow>> GetPurchasedContainersAsync(CancellationToken ct = default)
     {
         await using var opb = OpenOnPremBackup();
         var rows = await opb.QueryAsync<PurchasedContainerRow>(new CommandDefinition(@"
+            DECLARE @today DATE = CAST(DATEADD(hour, 4, SYSUTCDATETIME()) AS DATE);
+
             SELECT bc.ContNo,
                    CAST(bc.Trndate AS DATE) AS CountingDate,
                    ISNULL(bc.BuildingQty, 0) AS CountedQty,
-                   CAST(up.Tmdate AS DATE) AS PurchaseDate,
+                   CAST(up.Trndate AS DATE) AS PurchaseDate,
                    CONVERT(VARCHAR(8), up.Time1, 108) AS PurchaseTime,
-                   DATEDIFF(day, bc.Trndate, up.Tmdate) AS DaysToPurchase,
+                   DATEDIFF(day, bc.Trndate, up.Trndate) AS DaysToPurchase,
                    Divisions = ISNULL(NULLIF(STUFF((
                        SELECT ', ' + d.v
                          FROM (SELECT DISTINCT pcr.Division AS v
@@ -89,14 +90,13 @@ public class CountingReportsService(IOnPremConnectionResolver resolver)
                            AND ISNULL(bcs.division, '') <> ''))
               FROM bfldata.dbo.BuildingCompletion bc WITH (NOLOCK)
              OUTER APPLY (
-                 SELECT TOP 1 up2.Tmdate, up2.Time1
+                 SELECT TOP 1 up2.Trndate, up2.Time1
                    FROM usa.dbo.usapurchase up2 WITH (NOLOCK)
                   WHERE up2.Contno = bc.ContNo
-                  ORDER BY up2.Tmdate, up2.Time1
+                  ORDER BY up2.Trndate, up2.Time1
              ) up
-             WHERE bc.Trndate >= '2026-01-01'
-               AND up.Tmdate IS NOT NULL
-             ORDER BY up.Tmdate DESC, up.Time1 DESC, bc.ContNo",
+             WHERE CAST(up.Trndate AS DATE) = @today
+             ORDER BY up.Time1 DESC, bc.ContNo",
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         return rows.AsList();
     }
