@@ -116,17 +116,19 @@
     </div>
 }
 
-@if (_storeSummaries.Count > 0)
+@{ var breakdownRows = _country == BflGroupValue ? _countrySummaries : _storeSummaries; }
+@if (breakdownRows.Count > 0)
 {
+    var breakdownLabel = _country == BflGroupValue ? "Country" : "Store";
     <div class="aiwms-section" style="padding:0; overflow:hidden; margin-bottom:16px;">
         <div style="padding:10px 16px; background:var(--bg-subtle, #f7f7f5); font-weight:700; font-size:13px; letter-spacing:0.02em;">
-            BY STORE
+            BY @breakdownLabel.ToUpperInvariant()
         </div>
         <div style="padding:14px 16px; overflow:auto;">
         <table class="aiwms-table aiwms-table-dense" style="width:auto; min-width:480px;">
             <thead>
                 <tr>
-                    <th>Store</th>
+                    <th>@breakdownLabel</th>
                     <th style="text-align:right;">Transfer Count</th>
                     <th style="text-align:right;">Transfer Qty</th>
                     <th style="text-align:right;">GIN Count</th>
@@ -134,7 +136,7 @@
                 </tr>
             </thead>
             <tbody>
-                @foreach (var s in _storeSummaries)
+                @foreach (var s in breakdownRows)
                 {
                     <tr>
                         <td>@s.Country.ToUpperInvariant()</td>
@@ -148,10 +150,10 @@
             <tfoot>
                 <tr style="font-weight:600; border-top:2px solid var(--border-default);">
                     <td>Total</td>
-                    <td style="text-align:right;">@_storeSummaries.Sum(s => s.TransferCount).ToString("N0")</td>
-                    <td style="text-align:right;">@_storeSummaries.Sum(s => s.TransferQty).ToString("N0")</td>
-                    <td style="text-align:right;">@_storeSummaries.Sum(s => s.GinCount).ToString("N0")</td>
-                    <td style="text-align:right;">@_storeSummaries.Sum(s => s.GinQty).ToString("N0")</td>
+                    <td style="text-align:right;">@breakdownRows.Sum(s => s.TransferCount).ToString("N0")</td>
+                    <td style="text-align:right;">@breakdownRows.Sum(s => s.TransferQty).ToString("N0")</td>
+                    <td style="text-align:right;">@breakdownRows.Sum(s => s.GinCount).ToString("N0")</td>
+                    <td style="text-align:right;">@breakdownRows.Sum(s => s.GinQty).ToString("N0")</td>
                 </tr>
             </tfoot>
         </table>
@@ -215,6 +217,7 @@
     private List<TransferHistoryRow> _rows = new();
     private TransferSummary? _total;
     private List<TransferSummary> _storeSummaries = new();
+    private List<TransferSummary> _countrySummaries = new();
     private readonly List<string> _totalWarnings = new();
 
     // Regular country-scoped users only ever see their own country (locked,
@@ -285,12 +288,16 @@
     }
 
     // Every country's totals summed into one grand total (also used for a
-    // single country selection — the list just has one entry then). Warnings
-    // are stashed into _totalWarnings for LoadAsync to merge in.
+    // single country selection — the list just has one entry then). Also
+    // stashes the per-country breakdown into _countrySummaries — shown as a
+    // BY COUNTRY table, but only rendered when BFL Group is actually selected
+    // (a single country's own 1-item list isn't worth showing as a table).
+    // Warnings are stashed into _totalWarnings for LoadAsync to merge in.
     private async Task<TransferSummary?> GetAggregateTotalAsync(List<string>? countries)
     {
         var result = await Svc.GetTransferSummaryAsync(countries, _dateFrom, _dateTo);
         if (result.Warnings.Count > 0) _totalWarnings.AddRange(result.Warnings);
+        _countrySummaries = result.Summaries;
         if (result.Summaries.Count == 0) return null;
         return new TransferSummary(
             "Total",
@@ -302,7 +309,7 @@
 
     private async Task LoadAsync()
     {
-        _loading = true; _message = ""; _rows.Clear(); _total = null; _storeSummaries.Clear(); _totalWarnings.Clear();
+        _loading = true; _message = ""; _rows.Clear(); _total = null; _storeSummaries.Clear(); _countrySummaries.Clear(); _totalWarnings.Clear();
         await InvokeAsync(StateHasChanged);
         try
         {
