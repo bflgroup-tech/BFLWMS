@@ -32,6 +32,15 @@ public sealed record WhStorageCapacity(
         : 0;
 }
 
+/// <summary>Aging-bucket units for Critical Alerts &amp; Aging Inventory -- a single global
+/// total across RACKS.dbo.WHBoxItems (that table is UAE-only), not split per warehouse group.</summary>
+public sealed record WhAgingUnits(
+    long Days1To30,
+    long Days30To60,
+    long Days60To90,
+    long DaysAbove90,
+    long ElapsedLpm);
+
 /// <summary>
 /// Backs the Warehouse SOH Summary report. Reads RACKS.dbo.WHBoxItems via the shared
 /// OnPremBackup (LOGBACKUP) connection -- same as WarehouseBoxesService -- not a
@@ -157,5 +166,34 @@ public class WarehouseSohSummaryService(IOnPremConnectionResolver resolver)
         await rdr.ReadAsync(ct);
         return new WhStorageCapacity(
             rdr.GetInt64(0), rdr.GetInt64(1), rdr.GetInt64(2), 0, 0);
+    }
+
+    /// <summary>Critical Alerts &amp; Aging Inventory units, bucketed by LPM month. LPMDt is stored
+    /// as a dd/MM/yyyy string of the LPM batch's first-of-month date; buckets compare against
+    /// the current month's first-of-month (and +1/+2/+3 months) in that same string format.</summary>
+    public async Task<WhAgingUnits> GetAgingUnitsAsync(CancellationToken ct = default)
+    {
+        await using var c = OpenOnPremBackup();
+        await using var cmd = c.CreateCommand();
+        cmd.CommandText = @"
+            SET NOCOUNT ON;
+            DECLARE @lpm_1_30 VARCHAR(15), @lpm_30_60 VARCHAR(15), @lpm_60_90 VARCHAR(15), @lpm_above_90 VARCHAR(15);
+            SELECT @lpm_1_30 = CONVERT(VARCHAR(10), DATEFROMPARTS(YEAR(GETDATE()), MONTH(GETDATE()), 1), 103),
+                   @lpm_30_60 = CONVERT(VARCHAR(10), DATEADD(MONTH, 1, DATEFROMPARTS(YEAR(GETDATE()), MONTH(GETDATE()), 1)), 103),
+                   @lpm_60_90 = CONVERT(VARCHAR(10), DATEADD(MONTH, 2, DATEFROMPARTS(YEAR(GETDATE()), MONTH(GETDATE()), 1)), 103),
+                   @lpm_above_90 = CONVERT(VARCHAR(10), DATEADD(MONTH, 3, DATEFROMPARTS(YEAR(GETDATE()), MONTH(GETDATE()), 1)), 103);
+
+            SELECT
+                Days1To30   = CAST(ISNULL(SUM(CASE WHEN LPMDt = @lpm_1_30    THEN qty ELSE 0 END), 0) AS BIGINT),
+                Days30To60  = CAST(ISNULL(SUM(CASE WHEN LPMDt = @lpm_30_60   THEN qty ELSE 0 END), 0) AS BIGINT),
+                Days60To90  = CAST(ISNULL(SUM(CASE WHEN LPMDt = @lpm_60_90   THEN qty ELSE 0 END), 0) AS BIGINT),
+                DaysAbove90 = CAST(ISNULL(SUM(CASE WHEN LPMDt = @lpm_above_90 THEN qty ELSE 0 END), 0) AS BIGINT),
+                ElapsedLpm  = CAST(ISNULL(SUM(CASE WHEN LPMDt < @lpm_1_30    THEN qty ELSE 0 END), 0) AS BIGINT)
+              FROM RACKS.dbo.WHBoxItems";
+        cmd.CommandTimeout = CommandTimeoutSeconds;
+        await using var rdr = await cmd.ExecuteReaderAsync(ct);
+        await rdr.ReadAsync(ct);
+        return new WhAgingUnits(
+            rdr.GetInt64(0), rdr.GetInt64(1), rdr.GetInt64(2), rdr.GetInt64(3), rdr.GetInt64(4));
     }
 }

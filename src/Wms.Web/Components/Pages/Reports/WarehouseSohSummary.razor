@@ -190,7 +190,7 @@
                         {
                             <tr>
                                 <td>@a.Category</td>
-                                <td style="text-align:right">0</td>
+                                <td style="text-align:right">@UnitsFor(a.Category).ToString("N0")</td>
                                 <td><span class="wsoh-status-pill @a.StatusClass">@a.Status</span></td>
                             </tr>
                         }
@@ -271,6 +271,22 @@ else if (_loadedOnce)
         new("Elapsed (LPM)",  "Critical", "critical"),
     };
 
+    private WhAgingUnits? _agingUnits;
+
+    private long UnitsFor(string category) => _agingUnits switch
+    {
+        null => 0,
+        var u => category switch
+        {
+            "1-30 Days"     => u.Days1To30,
+            "30-60 Days"    => u.Days30To60,
+            "60-90 Days"    => u.Days60To90,
+            "Above 90"      => u.DaysAbove90,
+            "Elapsed (LPM)" => u.ElapsedLpm,
+            _ => 0
+        }
+    };
+
     // Status-palette colors (good/warning/serious/critical) so the aging buckets read
     // by severity, not an arbitrary categorical hue.
     private sealed record AgeBucket(string Label, string Color);
@@ -322,6 +338,7 @@ else if (_loadedOnce)
         _loading = true;
         _groupTotals.Clear();
         _storageTotals.Clear();
+        _agingUnits = null;
         await InvokeAsync(StateHasChanged);
         try
         {
@@ -332,6 +349,8 @@ else if (_loadedOnce)
 
                 _storageTotals[("UAE", true)]  = await SohSvc.GetStorageCapacityExcludingBlackboxAsync();
                 _storageTotals[("UAE", false)] = await SohSvc.GetStorageCapacityForBlackboxAsync();
+
+                _agingUnits = await SohSvc.GetAgingUnitsAsync();
             }
         }
         finally
