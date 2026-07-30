@@ -74,8 +74,9 @@
         @foreach (var wh in warehouses)
         {
             <div style="margin-bottom:18px;">
-                <div style="font-size:12px; font-weight:700; color:var(--text-secondary); margin-bottom:8px;">
-                    @wh.Warehouse.Name@(multiCountry ? $" — {wh.Country.ToUpper()}" : "")
+                <div style="display:flex; align-items:center; gap:8px; font-size:17px; font-weight:800; color:var(--bfl-black); margin-bottom:10px; padding-bottom:6px; border-bottom:3px solid var(--bfl-yellow);">
+                    <span>🏭</span>
+                    <span>@wh.Warehouse.Name@(multiCountry ? $" — {wh.Country.ToUpper()}" : "")</span>
                 </div>
                 <div style="display:flex; gap:14px; flex-wrap:wrap; align-items:stretch;">
                     <div class="wsoh-box">
