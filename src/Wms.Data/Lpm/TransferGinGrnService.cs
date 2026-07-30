@@ -435,11 +435,17 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
                 new { from, to = toEnd, whCostCodeTo = wh.CostCodeTo, whLocCodeTo = wh.LocCodeTo },
                 commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
 
+            // a.TrfDate bounded to [from, to] too — TrfNo gets reused across
+            // unrelated transfers over time, so an unbounded match would let a
+            // GIN linked to some other, differently-dated transfer count here.
             var gin = await conn.QuerySingleAsync<GinCountQtyRow>(new CommandDefinition($@"
                 SELECT COUNT(DISTINCT c.SrNo) AS GinCount, ISNULL(SUM(c.Qty),0) AS GinQty
                   FROM BFLDATA.dbo.vGoodsIssueplt c WITH (NOLOCK)
                  WHERE c.EntryDate >= @from AND c.EntryDate <= @to
-                   AND EXISTS (SELECT 1 FROM [{dn}]..transferheader a WITH (NOLOCK) WHERE a.TrfNo = c.TrfNo)",
+                   AND EXISTS (
+                       SELECT 1 FROM [{dn}]..transferheader a WITH (NOLOCK)
+                        WHERE a.TrfNo = c.TrfNo AND a.TrfDate >= @from AND a.TrfDate <= @to
+                   )",
                 new { from, to = toEnd }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
 
             return (transferRow, gin);
@@ -510,6 +516,12 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
             new { from, to = toEnd, costCodeTo, locCodeTo },
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
 
+        // a.TrfDate is ALSO bounded to [from, to] here — TrfNo gets reused by
+        // DIFFERENT stores at different points in time (the same reuse that
+        // caused the detail table's duplicate-row bug), so an unbounded EXISTS
+        // matched on TrfNo+CostCodeTo/LocCodeTo alone let one store's GIN rows
+        // get double-counted for another, unrelated store whose transferheader
+        // happened to reuse the same TrfNo outside this window.
         var gin = await conn.QuerySingleAsync<GinCountQtyRow>(new CommandDefinition($@"
             SELECT COUNT(DISTINCT c.SrNo) AS GinCount, ISNULL(SUM(c.Qty),0) AS GinQty
               FROM {ginTable} c WITH (NOLOCK)
@@ -517,6 +529,7 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
                AND EXISTS (
                    SELECT 1 FROM {transferHeaderTable} a WITH (NOLOCK)
                     WHERE a.TrfNo = c.TrfNo AND a.CostCodeTo = @costCodeTo AND a.LocCodeTo = @locCodeTo
+                      AND a.TrfDate >= @from AND a.TrfDate <= @to
                )",
             new { costCodeTo, locCodeTo, from, to = toEnd }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
 
