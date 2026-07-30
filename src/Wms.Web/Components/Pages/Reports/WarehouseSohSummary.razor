@@ -76,6 +76,7 @@
             var whNames = string.Join(", ", cg.Select(w => w.Warehouse.Name));
             var anyPallets = cg.Key.HasPallets;
             var totals = _groupTotals.GetValueOrDefault(cg.Key);
+            var storage = _storageTotals.GetValueOrDefault(cg.Key);
             <div style="margin-bottom:18px;">
                 <div style="display:flex; align-items:center; gap:8px; font-size:17px; font-weight:800; color:var(--bfl-black); text-transform:uppercase; letter-spacing:.5px; margin-bottom:10px; padding-bottom:6px; border-bottom:3px solid var(--bfl-yellow);">
                     <span>🏭</span>
@@ -101,22 +102,22 @@
                         <div class="wsoh-box-body">
                             @if (anyPallets)
                             {
-                                <div class="wsoh-box-row"><span>Total Rack Locations</span><span>0</span></div>
-                                <div class="wsoh-box-row"><span>Free Box Rack Locations</span><span>0</span></div>
-                                <div class="wsoh-box-row"><span>Filled Box Locations</span><span>0</span></div>
-                                <div class="wsoh-box-row"><span>Free Pallet Rack Locations</span><span>0</span></div>
-                                <div class="wsoh-box-row"><span>Filled Pallet Locations</span><span>0</span></div>
+                                <div class="wsoh-box-row"><span>Total Rack Locations</span><span>@((storage?.TotalRackLocations ?? 0).ToString("N0"))</span></div>
+                                <div class="wsoh-box-row"><span>Free Box Rack Locations</span><span>@((storage?.FreeBoxRackLocations ?? 0).ToString("N0"))</span></div>
+                                <div class="wsoh-box-row"><span>Filled Box Locations</span><span>@((storage?.FilledBoxLocations ?? 0).ToString("N0"))</span></div>
+                                <div class="wsoh-box-row"><span>Free Pallet Rack Locations</span><span>@((storage?.FreePalletRackLocations ?? 0).ToString("N0"))</span></div>
+                                <div class="wsoh-box-row"><span>Filled Pallet Locations</span><span>@((storage?.FilledPalletLocations ?? 0).ToString("N0"))</span></div>
                             }
                             else
                             {
-                                <div class="wsoh-box-row"><span>Total Storage Locations</span><span>0</span></div>
-                                <div class="wsoh-box-row"><span>Free Storage Locations</span><span>0</span></div>
-                                <div class="wsoh-box-row"><span>Filled Storage Locations</span><span>0</span></div>
+                                <div class="wsoh-box-row"><span>Total Storage Locations</span><span>@((storage?.TotalRackLocations ?? 0).ToString("N0"))</span></div>
+                                <div class="wsoh-box-row"><span>Free Storage Locations</span><span>@((storage?.FreeBoxRackLocations ?? 0).ToString("N0"))</span></div>
+                                <div class="wsoh-box-row"><span>Filled Storage Locations</span><span>@((storage?.FilledBoxLocations ?? 0).ToString("N0"))</span></div>
                             }
-                            <div class="wsoh-box-row"><span>Overall Utilization %</span><span>0%</span></div>
+                            <div class="wsoh-box-row"><span>Overall Utilization %</span><span>@((storage?.OverallUtilizationPct ?? 0).ToString("N1"))%</span></div>
                         </div>
                     </div>
-                    @Gauge(0)
+                    @Gauge(storage?.OverallUtilizationPct ?? 0)
                 </div>
             </div>
         }
@@ -227,10 +228,10 @@ else if (_loadedOnce)
     private bool _loading;
     private bool _loadedOnce;
 
-    // Real Stock On Hand figures wired in so far, keyed by the same (Country, HasPallets)
-    // grouping the section headings use. TODO: Storage Capacity fields still show 0 until
-    // their own query is provided.
+    // Real Stock On Hand / Storage Capacity figures, keyed by the same (Country, HasPallets)
+    // grouping the section headings use.
     private readonly Dictionary<(string Country, bool HasPallets), WhStockOnHand> _groupTotals = new();
+    private readonly Dictionary<(string Country, bool HasPallets), WhStorageCapacity> _storageTotals = new();
 
     private void ToggleCountry(string country, bool isChecked)
     {
@@ -320,6 +321,7 @@ else if (_loadedOnce)
     {
         _loading = true;
         _groupTotals.Clear();
+        _storageTotals.Clear();
         await InvokeAsync(StateHasChanged);
         try
         {
@@ -327,8 +329,10 @@ else if (_loadedOnce)
             {
                 _groupTotals[("UAE", true)]  = await SohSvc.GetStockOnHandExcludingBlackboxAsync();
                 _groupTotals[("UAE", false)] = await SohSvc.GetStockOnHandForBlackboxAsync();
+
+                _storageTotals[("UAE", true)]  = await SohSvc.GetStorageCapacityExcludingBlackboxAsync();
+                _storageTotals[("UAE", false)] = await SohSvc.GetStorageCapacityForBlackboxAsync();
             }
-            // TODO: everything else still shows 0 pending its own query.
         }
         finally
         {
@@ -337,7 +341,7 @@ else if (_loadedOnce)
         }
     }
 
-    private RenderFragment Gauge(int pct) => __builder =>
+    private RenderFragment Gauge(double pct) => __builder =>
     {
         const double r = 50, cx = 60, cy = 60;
         var circumference = 2 * Math.PI * r;
@@ -350,7 +354,7 @@ else if (_loadedOnce)
                         stroke-dasharray="@(dash.ToString("F1")) @((circumference - dash).ToString("F1"))"
                         transform="rotate(-90 @cx @cy)" />
             </svg>
-            <div class="pct">@(pct)%</div>
+            <div class="pct">@(pct.ToString("N1"))%</div>
         </div>
     };
 }
