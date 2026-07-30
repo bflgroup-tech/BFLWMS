@@ -9,7 +9,8 @@ public sealed record WhStockOnHand(
     long TotalBoxesStock,
     long NumberOfBoxes,
     long TotalPalletsStock,
-    long NumberOfPallets);
+    long NumberOfPallets,
+    long TotalActiveSkus);
 
 /// <summary>
 /// Backs the Warehouse SOH Summary report. Reads RACKS.dbo.WHBoxItems via the shared
@@ -54,7 +55,8 @@ public class WarehouseSohSummaryService(IOnPremConnectionResolver resolver)
                 TotalBoxesStock   = CAST(ISNULL(SUM(CASE WHEN BoxNo <> '' THEN qty ELSE 0 END), 0) AS BIGINT),
                 NumberOfBoxes     = CAST(COUNT(DISTINCT CASE WHEN BoxNo <> '' THEN BoxNo END) AS BIGINT),
                 TotalPalletsStock = CAST(ISNULL(SUM(CASE WHEN PalletNo <> '' THEN qty ELSE 0 END), 0) AS BIGINT),
-                NumberOfPallets   = CAST(COUNT(DISTINCT CASE WHEN PalletNo <> '' THEN PalletNo END) AS BIGINT)
+                NumberOfPallets   = CAST(COUNT(DISTINCT CASE WHEN PalletNo <> '' THEN PalletNo END) AS BIGINT),
+                TotalActiveSkus   = CAST(COUNT(DISTINCT ItemCode) AS BIGINT)
               FROM RACKS.dbo.WHBoxItems
              WHERE {whereClause}";
         cmd.CommandTimeout = CommandTimeoutSeconds;
@@ -65,6 +67,7 @@ public class WarehouseSohSummaryService(IOnPremConnectionResolver resolver)
             rdr.GetInt64(1),
             rdr.GetInt64(2),
             rdr.GetInt64(3),
-            rdr.GetInt64(4));
+            rdr.GetInt64(4),
+            rdr.GetInt64(5));
     }
 }
