@@ -5,6 +5,7 @@ public record TransferHistoryRow(
     string  ShopName,
     string  TrfNo,
     DateTime TrfDate,
+    int     Quantity,
     string? PalletNo,
     DateTime? BuildDate,
     string?  GINNo,
