@@ -46,13 +46,15 @@ public class WarehouseSohSummaryService(IOnPremConnectionResolver resolver)
     {
         await using var c = OpenOnPremBackup();
         await using var cmd = c.CreateCommand();
+        // qty/BoxNo/PalletNo aggregates come back as SQL int, not bigint -- cast explicitly
+        // so GetInt64 (which requires an exact type match, no implicit widening) doesn't throw.
         cmd.CommandText = $@"
             SELECT
-                TotalQuantity     = ISNULL(SUM(qty), 0),
-                TotalBoxesStock   = ISNULL(SUM(CASE WHEN BoxNo <> '' THEN qty ELSE 0 END), 0),
-                NumberOfBoxes     = COUNT(DISTINCT CASE WHEN BoxNo <> '' THEN BoxNo END),
-                TotalPalletsStock = ISNULL(SUM(CASE WHEN PalletNo <> '' THEN qty ELSE 0 END), 0),
-                NumberOfPallets   = COUNT(DISTINCT CASE WHEN PalletNo <> '' THEN PalletNo END)
+                TotalQuantity     = CAST(ISNULL(SUM(qty), 0) AS BIGINT),
+                TotalBoxesStock   = CAST(ISNULL(SUM(CASE WHEN BoxNo <> '' THEN qty ELSE 0 END), 0) AS BIGINT),
+                NumberOfBoxes     = CAST(COUNT(DISTINCT CASE WHEN BoxNo <> '' THEN BoxNo END) AS BIGINT),
+                TotalPalletsStock = CAST(ISNULL(SUM(CASE WHEN PalletNo <> '' THEN qty ELSE 0 END), 0) AS BIGINT),
+                NumberOfPallets   = CAST(COUNT(DISTINCT CASE WHEN PalletNo <> '' THEN PalletNo END) AS BIGINT)
               FROM RACKS.dbo.WHBoxItems
              WHERE {whereClause}";
         cmd.CommandTimeout = CommandTimeoutSeconds;
@@ -61,8 +63,8 @@ public class WarehouseSohSummaryService(IOnPremConnectionResolver resolver)
         return new WhStockOnHand(
             rdr.GetInt64(0),
             rdr.GetInt64(1),
-            rdr.GetInt32(2),
+            rdr.GetInt64(2),
             rdr.GetInt64(3),
-            rdr.GetInt32(4));
+            rdr.GetInt64(4));
     }
 }
