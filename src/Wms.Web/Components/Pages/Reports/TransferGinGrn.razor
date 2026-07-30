@@ -330,26 +330,21 @@
     // Consistent color per metric across every country's pie + one shared legend.
     private static readonly (string Label, string Color)[] PieMetricColors =
     [
-        ("Transfers",    "#4C6EF5"),
-        ("Transfer Qty", "#F59F00"),
-        ("GIN Count",    "#37B24D"),
-        ("GIN Qty",      "#E64980"),
+        ("Transfers",  "#4C6EF5"),
+        ("GIN Count",  "#37B24D"),
     ];
 
     private record PieSlice(string Label, decimal Value, double Percent, string Color, string Path);
 
-    // 4 slices per country — Transfers/Transfer Qty/GIN Count/GIN Qty as a share
-    // of that country's own total across those 4 (heterogeneous units, so the
-    // pie shows relative weight within one country's card, not a cross-country
-    // comparison).
+    // 2 slices per country — Transfer Count/GIN Count as a share of that
+    // country's own total across those 2 (Transfer Qty/GIN Qty still show as
+    // text on the card, just not in the pie).
     private static List<PieSlice> PieSlicesFor(TransferSummary s)
     {
         var values = new (string Label, decimal Value, string Color)[]
         {
             (PieMetricColors[0].Label, s.TransferCount, PieMetricColors[0].Color),
-            (PieMetricColors[1].Label, s.TransferQty,   PieMetricColors[1].Color),
-            (PieMetricColors[2].Label, s.GinCount,      PieMetricColors[2].Color),
-            (PieMetricColors[3].Label, s.GinQty,        PieMetricColors[3].Color),
+            (PieMetricColors[1].Label, s.GinCount,       PieMetricColors[1].Color),
         }.Where(v => v.Value > 0).ToList();
 
         var total = values.Sum(v => v.Value);
