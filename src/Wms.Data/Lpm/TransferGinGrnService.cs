@@ -435,17 +435,17 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
                 new { from, to = toEnd, whCostCodeTo = wh.CostCodeTo, whLocCodeTo = wh.LocCodeTo },
                 commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
 
-            // No CostCodeTo/LocCodeTo filter at this level (country-wide, not a
-            // specific store) — this just confirms the GIN's TrfNo belongs to
-            // SOME transfer in this DataName at all, so (unlike the per-store
-            // query) there's no cross-store ambiguity for a date bound to
-            // resolve; leaving it unbounded avoids excluding GINs whose
-            // transfer predates the window.
+            // Same TrfNo-set approach as GetOneStoreSummaryAsync: this
+            // DataName's transfers created in [from, to] first (cheap), then
+            // GIN activity for exactly that TrfNo set — no correlated
+            // per-row subquery.
             var gin = await conn.QuerySingleAsync<GinCountQtyRow>(new CommandDefinition($@"
                 SELECT COUNT(DISTINCT c.SrNo) AS GinCount, ISNULL(SUM(c.Qty),0) AS GinQty
                   FROM BFLDATA.dbo.vGoodsIssueplt c WITH (NOLOCK)
-                 WHERE c.EntryDate >= @from AND c.EntryDate <= @to
-                   AND EXISTS (SELECT 1 FROM [{dn}]..transferheader a WITH (NOLOCK) WHERE a.TrfNo = c.TrfNo)",
+                 WHERE c.TrfNo IN (
+                     SELECT TrfNo FROM [{dn}]..transferheader WITH (NOLOCK)
+                      WHERE TrfDate >= @from AND TrfDate <= @to
+                 )",
                 new { from, to = toEnd }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
 
             return (transferRow, gin);
@@ -499,13 +499,10 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
     // from/to: date-only: this does the end-of-day adjustment itself before
     // delegating, so every caller can just pass plain dates.
     //
-    // GIN correlates to the store via TrfNo -> transferHeaderTable's own
-    // CostCodeTo/LocCodeTo — the exact same join the (known-working) detail
-    // table uses for its GIN column (c.TrfNo = a.TrfNo, a = transferheader).
-    // Two earlier attempts got this wrong: vGoodsIssueplt.ShopIssue doesn't
-    // reliably equal ShopName outside UAE, and vTransferDetail.TrfNo doesn't
-    // reliably match vGoodsIssueplt.TrfNo either — transferheader is the one
-    // relationship already proven correct in the detail table.
+    // GIN is scoped by the underlying TRANSFER's own date+store (TrfDate,
+    // CostCodeTo/LocCodeTo on transferHeaderTable), not the GIN's own
+    // EntryDate — see the query below for why (avoids both a slow correlated
+    // subquery and TrfNo-reuse ambiguity between stores).
     private static async Task<TransferSummary> GetOneStoreSummaryAsync(
         SqlConnection conn, string shopName, string transferDetailTable, string transferHeaderTable, string ginTable,
         string costCodeTo, string locCodeTo, DateTime from, DateTime to, CancellationToken ct)
@@ -516,28 +513,21 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
             new { from, to = toEnd, costCodeTo, locCodeTo },
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
 
-        // TrfNo gets reused by DIFFERENT stores at different points in time
-        // (the same reuse behind the detail table's duplicate-row bug), so a
-        // GIN row can match several transferheader rows across unrelated
-        // stores/dates. Bounding a.TrfDate to [from, to] avoided the
-        // cross-store double count but also zeroed out the (more common)
-        // case where the transfer was created before the window and only its
-        // GIN falls inside it. Instead, pick — per GIN row — whichever
-        // transferheader occurrence is the most recent one at or before that
-        // GIN's own EntryDate (the transfer this GIN actually belongs to,
-        // chronologically), and check THAT occurrence's store.
+        // Scoped by the TRANSFER's own date/store (TrfDate + CostCodeTo/LocCodeTo),
+        // not the GIN's own EntryDate: get this store's transfers created in
+        // [from, to] first (cheap — same filter as the transfer-count query
+        // above), then look up GIN activity for exactly that TrfNo set. No
+        // correlated per-row subquery, and no reuse ambiguity — the TrfNo set
+        // is already uniquely scoped to this store before vGoodsIssueplt is
+        // even touched.
         var gin = await conn.QuerySingleAsync<GinCountQtyRow>(new CommandDefinition($@"
             SELECT COUNT(DISTINCT c.SrNo) AS GinCount, ISNULL(SUM(c.Qty),0) AS GinQty
               FROM {ginTable} c WITH (NOLOCK)
-             WHERE c.EntryDate >= @from AND c.EntryDate <= @to
-               AND EXISTS (
-                   SELECT 1 FROM {transferHeaderTable} a WITH (NOLOCK)
-                    WHERE a.TrfNo = c.TrfNo AND a.CostCodeTo = @costCodeTo AND a.LocCodeTo = @locCodeTo
-                      AND a.TrfDate = (
-                          SELECT MAX(a2.TrfDate) FROM {transferHeaderTable} a2 WITH (NOLOCK)
-                           WHERE a2.TrfNo = c.TrfNo AND a2.TrfDate <= c.EntryDate
-                      )
-               )",
+             WHERE c.TrfNo IN (
+                 SELECT TrfNo FROM {transferHeaderTable} WITH (NOLOCK)
+                  WHERE TrfDate >= @from AND TrfDate <= @to
+                    AND CostCodeTo = @costCodeTo AND LocCodeTo = @locCodeTo
+             )",
             new { costCodeTo, locCodeTo, from, to = toEnd }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
 
         return new TransferSummary(shopName, transferRow.TransferCount, transferRow.TransferQty ?? 0, gin.GinCount, gin.GinQty ?? 0);
