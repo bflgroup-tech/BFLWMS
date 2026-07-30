@@ -27,11 +27,18 @@ public class WarehouseSohSummaryService(IOnPremConnectionResolver resolver)
     }
 
     /// <summary>Total Quantity (Units) across TECHNO/JAFZA/YOTO -- everything except BlackBOX.</summary>
-    public async Task<long> GetTotalQuantityExcludingBlackboxAsync(CancellationToken ct = default)
+    public Task<long> GetTotalQuantityExcludingBlackboxAsync(CancellationToken ct = default) =>
+        GetTotalQuantityAsync("Warehouse <> 'BLACKBOX'", ct);
+
+    /// <summary>Total Quantity (Units) for BlackBOX only.</summary>
+    public Task<long> GetTotalQuantityForBlackboxAsync(CancellationToken ct = default) =>
+        GetTotalQuantityAsync("Warehouse = 'BLACKBOX'", ct);
+
+    private async Task<long> GetTotalQuantityAsync(string whereClause, CancellationToken ct)
     {
         await using var c = OpenOnPremBackup();
         await using var cmd = c.CreateCommand();
-        cmd.CommandText = "SELECT ISNULL(SUM(qty), 0) FROM RACKS.dbo.WHBoxItems WHERE Warehouse <> 'BLACKBOX'";
+        cmd.CommandText = $"SELECT ISNULL(SUM(qty), 0) FROM RACKS.dbo.WHBoxItems WHERE {whereClause}";
         cmd.CommandTimeout = CommandTimeoutSeconds;
         var result = await cmd.ExecuteScalarAsync(ct);
         return Convert.ToInt64(result);

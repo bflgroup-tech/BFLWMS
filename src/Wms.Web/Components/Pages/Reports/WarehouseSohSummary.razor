@@ -327,8 +327,11 @@ else if (_loadedOnce)
         {
             if (_selectedCountries.Contains("UAE"))
             {
-                var qty = await SohSvc.GetTotalQuantityExcludingBlackboxAsync();
-                _groupTotals[("UAE", true)] = new GroupTotals(qty);
+                var mainQty = await SohSvc.GetTotalQuantityExcludingBlackboxAsync();
+                _groupTotals[("UAE", true)] = new GroupTotals(mainQty);
+
+                var blackboxQty = await SohSvc.GetTotalQuantityForBlackboxAsync();
+                _groupTotals[("UAE", false)] = new GroupTotals(blackboxQty);
             }
             // TODO: everything else still shows 0 pending its own query.
         }
