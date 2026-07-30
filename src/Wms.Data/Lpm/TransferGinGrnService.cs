@@ -600,6 +600,68 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
         return await GetOneStoreSummaryRegionalAsync(country, dataName, s, today, today, ct);
     }
 
+    /// <summary>
+    /// Per-STORE breakdown within a single country — same shape as
+    /// GetTransferSummaryAsync's per-country breakdown, just one level down.
+    /// Shown below the total cards when a single country is selected with
+    /// "(All stores)".
+    /// </summary>
+    public async Task<List<TransferSummary>> GetStoreSummariesAsync(
+        string country, DateTime dateFrom, DateTime dateTo, CancellationToken ct = default)
+    {
+        var from = dateFrom.Date;
+        var to   = dateTo.Date;
+
+        List<StoreRow> stores;
+        await using (var onprem = OpenOnPrem())
+        {
+            stores = await GetStoresOnPremAsync(onprem, country, store: null, ct);
+        }
+
+        if (country == UaeCountry)
+        {
+            var tasks = stores.Select(s => GetOneStoreSummaryOnPremAsync(country, s, from, to, ct));
+            var results = await Task.WhenAll(tasks);
+            return results.OrderBy(r => r.Country).ToList();
+        }
+        else
+        {
+            var (histFrom, histTo, includesToday) = SplitDateRange(from, to);
+
+            var histTasks = histFrom is not null
+                ? stores.Select(s => GetOneStoreSummaryOnPremAsync(country, s, histFrom.Value, histTo!.Value, ct)).ToArray()
+                : [];
+
+            Task<TransferSummary>[] todayTasks = [];
+            if (includesToday)
+            {
+                await using var onprem = OpenOnPrem();
+                var dataName = await WhBoxItemsSource.ResolveDataNameAsync(onprem, country, ct);
+                if (string.IsNullOrWhiteSpace(dataName))
+                    throw new InvalidOperationException(
+                        $"No DataName found in BFLDATA.dbo.DataSettings for country '{country}'.");
+
+                var today = DateTime.Today;
+                todayTasks = stores.Select(s => GetOneStoreSummaryRegionalAsync(country, dataName, s, today, today, ct)).ToArray();
+            }
+
+            await Task.WhenAll(histTasks.Concat(todayTasks));
+
+            var byShop = new Dictionary<string, (int TransferCount, int TransferQty, int GinCount, int GinQty)>(
+                StringComparer.OrdinalIgnoreCase);
+            foreach (var t in histTasks.Select(x => x.Result).Concat(todayTasks.Select(x => x.Result)))
+            {
+                var cur = byShop.GetValueOrDefault(t.Country);
+                byShop[t.Country] = (
+                    cur.TransferCount + t.TransferCount, cur.TransferQty + t.TransferQty,
+                    cur.GinCount + t.GinCount, cur.GinQty + t.GinQty);
+            }
+            return byShop
+                .Select(kv => new TransferSummary(kv.Key, kv.Value.TransferCount, kv.Value.TransferQty, kv.Value.GinCount, kv.Value.GinQty))
+                .OrderBy(r => r.Country).ToList();
+        }
+    }
+
     // ── SQL builders ─────────────────────────────────────────────────────────
 
     // Shop's own CostCodeTo/LocCodeTo (resolved via GetStoresOnPremAsync) scope

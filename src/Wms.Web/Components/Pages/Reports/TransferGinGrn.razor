@@ -116,6 +116,49 @@
     </div>
 }
 
+@if (_storeSummaries.Count > 0)
+{
+    <div class="aiwms-section" style="padding:0; overflow:hidden; margin-bottom:16px;">
+        <div style="padding:10px 16px; background:var(--bg-subtle, #f7f7f5); font-weight:700; font-size:13px; letter-spacing:0.02em;">
+            BY STORE
+        </div>
+        <div style="padding:14px 16px; overflow:auto;">
+        <table class="aiwms-table aiwms-table-dense" style="width:auto; min-width:480px;">
+            <thead>
+                <tr>
+                    <th>Store</th>
+                    <th style="text-align:right;">Transfer Count</th>
+                    <th style="text-align:right;">Transfer Qty</th>
+                    <th style="text-align:right;">GIN Count</th>
+                    <th style="text-align:right;">GIN Qty</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var s in _storeSummaries)
+                {
+                    <tr>
+                        <td>@s.Country.ToUpperInvariant()</td>
+                        <td style="text-align:right;">@s.TransferCount.ToString("N0")</td>
+                        <td style="text-align:right;">@s.TransferQty.ToString("N0")</td>
+                        <td style="text-align:right;">@s.GinCount.ToString("N0")</td>
+                        <td style="text-align:right;">@s.GinQty.ToString("N0")</td>
+                    </tr>
+                }
+            </tbody>
+            <tfoot>
+                <tr style="font-weight:600; border-top:2px solid var(--border-default);">
+                    <td>Total</td>
+                    <td style="text-align:right;">@_storeSummaries.Sum(s => s.TransferCount).ToString("N0")</td>
+                    <td style="text-align:right;">@_storeSummaries.Sum(s => s.TransferQty).ToString("N0")</td>
+                    <td style="text-align:right;">@_storeSummaries.Sum(s => s.GinCount).ToString("N0")</td>
+                    <td style="text-align:right;">@_storeSummaries.Sum(s => s.GinQty).ToString("N0")</td>
+                </tr>
+            </tfoot>
+        </table>
+        </div>
+    </div>
+}
+
 @code {
     private RenderFragment StatCard(string label, int value, string bg, string color) => @<div style="background:@bg; border-radius:8px; padding:12px 20px; flex:1; min-width:150px; text-align:center;">
         <div style="font-size:11px; font-weight:700; color:@color; text-transform:uppercase; letter-spacing:0.03em;">@label</div>
@@ -171,6 +214,7 @@
     private List<string> _stores    = new();
     private List<TransferHistoryRow> _rows = new();
     private TransferSummary? _total;
+    private List<TransferSummary> _storeSummaries = new();
     private readonly List<string> _totalWarnings = new();
 
     // Regular country-scoped users only ever see their own country (locked,
@@ -258,7 +302,7 @@
 
     private async Task LoadAsync()
     {
-        _loading = true; _message = ""; _rows.Clear(); _total = null; _totalWarnings.Clear();
+        _loading = true; _message = ""; _rows.Clear(); _total = null; _storeSummaries.Clear(); _totalWarnings.Clear();
         await InvokeAsync(StateHasChanged);
         try
         {
@@ -309,11 +353,19 @@
                 ? Svc.GetStoreSummaryAsync(singleCountry, storeFilter, _dateFrom, _dateTo)
                 : GetAggregateTotalAsync(countries);
 
-            await Task.WhenAll(resultTask, totalTask);
+            // Per-store breakdown table, only when a single country is picked
+            // with "(All stores)" — not meaningful for BFL Group or a specific store.
+            var singleCountryAllStores = storeFilter is null && singleCountry is not null;
+            var storeSummariesTask = singleCountryAllStores
+                ? Svc.GetStoreSummariesAsync(singleCountry!, _dateFrom, _dateTo)
+                : Task.FromResult(new List<TransferSummary>());
+
+            await Task.WhenAll(resultTask, totalTask, storeSummariesTask);
 
             var result = resultTask.Result;
-            _rows  = result.Rows;
-            _total = totalTask.Result;
+            _rows            = result.Rows;
+            _total           = totalTask.Result;
+            _storeSummaries  = storeSummariesTask.Result;
 
             var allWarnings = result.Warnings.Concat(_totalWarnings).ToList();
             var loadedMsg   = _viewMode == "Detailed" ? $"Loaded {_rows.Count} rows." : "Summary loaded.";
