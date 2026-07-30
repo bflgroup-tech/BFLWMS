@@ -71,12 +71,14 @@
 @if (warehouses.Count > 0)
 {
     <div class="aiwms-section">
-        @foreach (var wh in warehouses)
+        @foreach (var cg in warehouses.GroupBy(w => w.Country))
         {
+            var whNames = string.Join(", ", cg.Select(w => w.Warehouse.Name));
+            var anyPallets = cg.Any(w => w.Warehouse.HasPallets);
             <div style="margin-bottom:18px;">
                 <div style="display:flex; align-items:center; gap:8px; font-size:17px; font-weight:800; color:var(--bfl-black); text-transform:uppercase; letter-spacing:.5px; margin-bottom:10px; padding-bottom:6px; border-bottom:3px solid var(--bfl-yellow);">
                     <span>🏭</span>
-                    <span>@wh.Warehouse.Name@(multiCountry ? $" — {wh.Country.ToUpper()}" : "")</span>
+                    <span>@whNames@(multiCountry ? $" — {cg.Key.ToUpper()}" : "")</span>
                 </div>
                 <div style="display:flex; gap:14px; flex-wrap:wrap; align-items:stretch;">
                     <div class="wsoh-box">
@@ -85,7 +87,7 @@
                             <div class="wsoh-box-row"><span>Total Quantity (Units)</span><span>0</span></div>
                             <div class="wsoh-box-row"><span>Total Boxes Stock</span><span>0</span></div>
                             <div class="wsoh-box-row"><span>Number of Boxes</span><span>0</span></div>
-                            @if (wh.Warehouse.HasPallets)
+                            @if (anyPallets)
                             {
                                 <div class="wsoh-box-row"><span>Total Pallets Stock</span><span>0</span></div>
                                 <div class="wsoh-box-row"><span>Number of Pallets</span><span>0</span></div>
@@ -96,7 +98,7 @@
                     <div class="wsoh-box">
                         <div class="wsoh-box-header">📋 Storage Capacity</div>
                         <div class="wsoh-box-body">
-                            @if (wh.Warehouse.HasPallets)
+                            @if (anyPallets)
                             {
                                 <div class="wsoh-box-row"><span>Total Rack Locations</span><span>0</span></div>
                                 <div class="wsoh-box-row"><span>Free Box Rack Locations</span><span>0</span></div>
