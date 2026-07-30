@@ -684,8 +684,11 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
 
         // GIN lives centrally (BFLDATA.dbo) for UAE, but in the shop's own
         // DataName db for everyone else — confirmed: bflksa..vGoodsIssuePlt,
-        // not BFLDATA.dbo.vGoodsIssueplt, for KSA.
-        var ginTable = isUae ? "BFLDATA.dbo.vGoodsIssueplt" : $"[{s.DataName}]..vGoodsIssueplt";
+        // not BFLDATA.dbo.vGoodsIssueplt, for KSA. Same for vGoodsIssue
+        // (Build/Pallet) — confirmed by PalletNo/BuildDate coming back blank
+        // for KSA while still reading from the central BFLDATA.dbo table.
+        var ginTable   = isUae ? "BFLDATA.dbo.vGoodsIssueplt" : $"[{s.DataName}]..vGoodsIssueplt";
+        var buildTable = isUae ? "BFLDATA.dbo.vGoodsIssue"    : $"[{s.DataName}]..vGoodsIssue";
 
         var sb = new StringBuilder($@"
 SELECT ROW_NUMBER() OVER (ORDER BY a.TrfDate, a.TrfNo, c.SrNo) SrNo,
@@ -693,7 +696,7 @@ SELECT ROW_NUMBER() OVER (ORDER BY a.TrfDate, a.TrfNo, c.SrNo) SrNo,
        a.TrfNo,
        a.TrfDate,
        Quantity  = CAST(ISNULL((SELECT SUM(Quantity) FROM [{s.DataName}]..vTransferDetail WHERE TrfNo = a.TrfNo), 0) AS INT),
-       PalletNo  = (SELECT TOP 1 PalletNo FROM BFLDATA.dbo.vGoodsIssue WHERE TrfNo = a.TrfNo AND EntryDate >= a.TrfDate ORDER BY PalletNo DESC),
+       PalletNo  = (SELECT TOP 1 PalletNo FROM {buildTable} WHERE TrfNo = a.TrfNo AND EntryDate >= a.TrfDate ORDER BY PalletNo DESC),
        b.EntryDate BuildDate,
        CAST(c.SrNo AS nvarchar(50)) GINNo,
        c.EntryDate GINDate,
@@ -704,7 +707,7 @@ SELECT ROW_NUMBER() OVER (ORDER BY a.TrfDate, a.TrfNo, c.SrNo) SrNo,
   LEFT JOIN (
       SELECT TrfNo, PalletNo, EntryDate,
              ROW_NUMBER() OVER (PARTITION BY TrfNo ORDER BY PalletNo DESC) rn
-        FROM BFLDATA.dbo.vGoodsIssue
+        FROM {buildTable}
   )                                            b  ON b.TrfNo = a.TrfNo AND b.rn = 1 AND b.EntryDate >= a.TrfDate
   LEFT JOIN {ginTable}                         c  ON c.TrfNo = a.TrfNo AND c.EntryDate >= a.TrfDate
   LEFT JOIN [{s.DataName}]..GRNHeaderRF          d  ON d.TrfNo = a.TrfNo AND d.EntryDate >= a.TrfDate
@@ -712,7 +715,7 @@ SELECT ROW_NUMBER() OVER (ORDER BY a.TrfDate, a.TrfNo, c.SrNo) SrNo,
  WHERE a.TrfNo NOT LIKE 'FN%'{dateFilter}
    AND a.CostCodeTo = @costCodeTo AND a.LocCodeTo = @locCodeTo");
 
-        AppendCommonFilters(sb, p, f, includeStoreFilter: false);
+        AppendCommonFilters(sb, p, f, buildTable, includeStoreFilter: false);
         sb.Append("\n ORDER BY a.TrfDate, a.TrfNo");
         return sb.ToString();
     }
@@ -734,7 +737,7 @@ SELECT ROW_NUMBER() OVER (ORDER BY a.TrfNo, c.SrNo) SrNo,
        a.TrfNo,
        a.TrfDate,
        Quantity  = CAST(ISNULL((SELECT SUM(Quantity) FROM vTransferDetail WHERE TrfNo = a.TrfNo), 0) AS INT),
-       PalletNo  = (SELECT TOP 1 PalletNo FROM BFLDATA..vGoodsIssue WHERE TrfNo = a.TrfNo AND EntryDate >= a.TrfDate ORDER BY PalletNo DESC),
+       PalletNo  = (SELECT TOP 1 PalletNo FROM vGoodsIssue WHERE TrfNo = a.TrfNo AND EntryDate >= a.TrfDate ORDER BY PalletNo DESC),
        b.EntryDate BuildDate,
        CAST(c.SrNo AS nvarchar(50)) GINNo,
        c.EntryDate GINDate,
@@ -745,7 +748,7 @@ SELECT ROW_NUMBER() OVER (ORDER BY a.TrfNo, c.SrNo) SrNo,
   LEFT JOIN (
       SELECT TrfNo, PalletNo, EntryDate,
              ROW_NUMBER() OVER (PARTITION BY TrfNo ORDER BY PalletNo DESC) rn
-        FROM BFLDATA..vGoodsIssue
+        FROM vGoodsIssue
   )                                b  ON b.TrfNo = a.TrfNo AND b.rn = 1 AND b.EntryDate >= a.TrfDate
   LEFT JOIN vGoodsIssueplt          c  ON c.TrfNo = a.TrfNo AND c.EntryDate >= a.TrfDate
   LEFT JOIN GRNHeaderRF             d  ON d.TrfNo = a.TrfNo AND d.EntryDate >= a.TrfDate
@@ -756,7 +759,7 @@ SELECT ROW_NUMBER() OVER (ORDER BY a.TrfNo, c.SrNo) SrNo,
        SELECT ShopName FROM BFLDATA..DataSettings WHERE Concept = 'Warehouse'
    )");
 
-        AppendCommonFilters(sb, p, f);
+        AppendCommonFilters(sb, p, f, "vGoodsIssue");
         sb.Append("\n ORDER BY a.TrfDate, a.TrfNo");
         return sb.ToString();
     }
@@ -764,8 +767,13 @@ SELECT ROW_NUMBER() OVER (ORDER BY a.TrfNo, c.SrNo) SrNo,
     // includeStoreFilter: false for the OnPremBackup path, where the query is
     // already scoped to one shop's own CostCodeTo/LocCodeTo (see BuildSqlOnPrem)
     // — there's no "e" (DataSettings) alias left to filter on there.
+    // buildTable: the SAME vGoodsIssue reference the caller's own query already
+    // uses (BFLDATA.dbo.vGoodsIssue / [DataName]..vGoodsIssue / vGoodsIssue) —
+    // this was hardcoded to "BFLDATA..vGoodsIssue" regardless of caller, which
+    // silently matched nothing for non-UAE countries (same class of bug as the
+    // main PalletNo/BuildDate/GIN table fixes).
     private static void AppendCommonFilters(
-        StringBuilder sb, DynamicParameters p, TransferHistoryFilter f, bool includeStoreFilter = true)
+        StringBuilder sb, DynamicParameters p, TransferHistoryFilter f, string buildTable, bool includeStoreFilter = true)
     {
         if (includeStoreFilter && !string.IsNullOrWhiteSpace(f.Store))
         {
@@ -774,7 +782,7 @@ SELECT ROW_NUMBER() OVER (ORDER BY a.TrfNo, c.SrNo) SrNo,
         }
 
         if (f.WithoutPallet)
-            sb.Append("\n   AND NOT EXISTS (SELECT 1 FROM BFLDATA..vGoodsIssue WHERE TrfNo = a.TrfNo)");
+            sb.Append($"\n   AND NOT EXISTS (SELECT 1 FROM {buildTable} WHERE TrfNo = a.TrfNo)");
 
         if (f.WithoutGin)
             sb.Append("\n   AND c.SrNo IS NULL");
