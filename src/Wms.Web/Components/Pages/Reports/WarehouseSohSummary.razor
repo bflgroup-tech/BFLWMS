@@ -4,6 +4,7 @@
 @using Wms.Core
 @using Wms.Data.Lpm
 @inject ReportsService Svc
+@inject WarehouseSohSummaryService SohSvc
 @inject ICurrentUser Me
 @inject Microsoft.JSInterop.IJSRuntime JS
 
@@ -75,6 +76,7 @@
         {
             var whNames = string.Join(", ", cg.Select(w => w.Warehouse.Name));
             var anyPallets = cg.Key.HasPallets;
+            var totals = _groupTotals.GetValueOrDefault(cg.Key);
             <div style="margin-bottom:18px;">
                 <div style="display:flex; align-items:center; gap:8px; font-size:17px; font-weight:800; color:var(--bfl-black); text-transform:uppercase; letter-spacing:.5px; margin-bottom:10px; padding-bottom:6px; border-bottom:3px solid var(--bfl-yellow);">
                     <span>🏭</span>
@@ -84,7 +86,7 @@
                     <div class="wsoh-box">
                         <div class="wsoh-box-header">📦 Stock On Hand</div>
                         <div class="wsoh-box-body">
-                            <div class="wsoh-box-row"><span>Total Quantity (Units)</span><span>0</span></div>
+                            <div class="wsoh-box-row"><span>Total Quantity (Units)</span><span>@((totals?.TotalQuantity ?? 0).ToString("N0"))</span></div>
                             <div class="wsoh-box-row"><span>Total Boxes Stock</span><span>0</span></div>
                             <div class="wsoh-box-row"><span>Number of Boxes</span><span>0</span></div>
                             @if (anyPallets)
@@ -226,6 +228,12 @@ else if (_loadedOnce)
     private bool _loading;
     private bool _loadedOnce;
 
+    // Real figures wired in so far, keyed by the same (Country, HasPallets) grouping the
+    // section headings use. TODO: everything else in a group still shows 0 until its own
+    // query is provided.
+    private sealed record GroupTotals(long TotalQuantity);
+    private readonly Dictionary<(string Country, bool HasPallets), GroupTotals> _groupTotals = new();
+
     private void ToggleCountry(string country, bool isChecked)
     {
         if (isChecked) _selectedCountries.Add(country);
@@ -313,11 +321,22 @@ else if (_loadedOnce)
     private async Task LoadAsync()
     {
         _loading = true;
+        _groupTotals.Clear();
         await InvokeAsync(StateHasChanged);
-        // TODO: no real query yet — this just flips on the placeholder structure above.
-        await Task.Delay(150);
-        _loadedOnce = true;
-        _loading = false;
+        try
+        {
+            if (_selectedCountries.Contains("UAE"))
+            {
+                var qty = await SohSvc.GetTotalQuantityExcludingBlackboxAsync();
+                _groupTotals[("UAE", true)] = new GroupTotals(qty);
+            }
+            // TODO: everything else still shows 0 pending its own query.
+        }
+        finally
+        {
+            _loadedOnce = true;
+            _loading = false;
+        }
     }
 
     private RenderFragment Gauge(int pct) => __builder =>
