@@ -128,58 +128,29 @@
         <div style="padding:10px 16px; background:var(--bg-subtle, #f7f7f5); font-weight:700; font-size:13px; letter-spacing:0.02em;">
             BY @breakdownLabel.ToUpperInvariant()
         </div>
-        <div style="padding:10px 16px 0; display:flex; gap:14px; align-items:center; font-size:11px;">
-            @foreach (var (label, color) in PieMetricColors)
-            {
-                <div style="display:flex; align-items:center; gap:5px;">
-                    <span style="width:10px; height:10px; border-radius:2px; background:@color; flex:0 0 auto;"></span>
-                    <span>@label</span>
-                </div>
-            }
-        </div>
         <div style="padding:14px 16px; display:grid; grid-template-columns:repeat(3, 1fr); gap:14px;">
             @foreach (var s in breakdownRows)
             {
-                var slices = PieSlicesFor(s);
-                <div style="border:1px solid var(--border-default); border-radius:8px; padding:10px 14px; display:flex; gap:12px; align-items:center;">
-                    <svg viewBox="0 0 200 200" width="70" height="70" style="flex:0 0 auto;">
-                        @if (slices.Count == 0)
-                        {
-                            <circle cx="100" cy="100" r="90" fill="#f0f0f0" />
-                        }
-                        else if (slices.Count == 1)
-                        {
-                            <circle cx="100" cy="100" r="90" fill="@slices[0].Color" />
-                        }
-                        else
-                        {
-                            @foreach (var slice in slices)
-                            {
-                                <path d="@slice.Path" fill="@slice.Color" />
-                            }
-                        }
-                    </svg>
-                    <div style="flex:1; min-width:0;">
-                        <div style="font-size:11px; font-weight:700; color:#333333; text-transform:uppercase; letter-spacing:0.02em; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
-                            @s.Country.ToUpperInvariant()
+                <div style="border:1px solid var(--border-default); border-radius:8px; padding:10px 14px;">
+                    <div style="text-align:center; font-size:11px; font-weight:700; color:#333333; text-transform:uppercase; letter-spacing:0.02em; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
+                        @s.Country.ToUpperInvariant()
+                    </div>
+                    <div style="display:flex; justify-content:center; gap:16px; margin-top:8px;">
+                        <div style="text-align:center;">
+                            <div style="font-size:11px; color:var(--text-secondary); white-space:nowrap;">Transfers</div>
+                            <div style="font-size:11px; font-weight:700; color:#333333;">@s.TransferCount.ToString("N0")</div>
                         </div>
-                        <div style="display:flex; gap:10px; margin-top:6px; flex-wrap:wrap;">
-                            <div>
-                                <div style="font-size:10px; color:var(--text-secondary); white-space:nowrap;">Transfers</div>
-                                <div style="font-size:11px; font-weight:700; color:#333333;">@s.TransferCount.ToString("N0")</div>
-                            </div>
-                            <div>
-                                <div style="font-size:10px; color:var(--text-secondary); white-space:nowrap;">Trf Qty</div>
-                                <div style="font-size:11px; font-weight:700; color:#333333;">@s.TransferQty.ToString("N0")</div>
-                            </div>
-                            <div>
-                                <div style="font-size:10px; color:var(--text-secondary); white-space:nowrap;">GIN Cnt</div>
-                                <div style="font-size:11px; font-weight:700; color:#333333;">@s.GinCount.ToString("N0")</div>
-                            </div>
-                            <div>
-                                <div style="font-size:10px; color:var(--text-secondary); white-space:nowrap;">GIN Qty</div>
-                                <div style="font-size:11px; font-weight:700; color:#333333;">@s.GinQty.ToString("N0")</div>
-                            </div>
+                        <div style="text-align:center;">
+                            <div style="font-size:11px; color:var(--text-secondary); white-space:nowrap;">Transfer Qty</div>
+                            <div style="font-size:11px; font-weight:700; color:#333333;">@s.TransferQty.ToString("N0")</div>
+                        </div>
+                        <div style="text-align:center;">
+                            <div style="font-size:11px; color:var(--text-secondary); white-space:nowrap;">GIN Count</div>
+                            <div style="font-size:11px; font-weight:700; color:#333333;">@s.GinCount.ToString("N0")</div>
+                        </div>
+                        <div style="text-align:center;">
+                            <div style="font-size:11px; color:var(--text-secondary); white-space:nowrap;">GIN Qty</div>
+                            <div style="font-size:11px; font-weight:700; color:#333333;">@s.GinQty.ToString("N0")</div>
                         </div>
                     </div>
                 </div>
@@ -326,56 +297,6 @@
     private bool   _loading;
     private string _message = "";
     private bool   _isError;
-
-    // Consistent color per metric across every country's pie + one shared legend.
-    private static readonly (string Label, string Color)[] PieMetricColors =
-    [
-        ("Transfers",  "#4C6EF5"),
-        ("GIN Count",  "#37B24D"),
-    ];
-
-    private record PieSlice(string Label, decimal Value, double Percent, string Color, string Path);
-
-    // 2 slices per country — Transfer Count/GIN Count as a share of that
-    // country's own total across those 2 (Transfer Qty/GIN Qty still show as
-    // text on the card, just not in the pie).
-    private static List<PieSlice> PieSlicesFor(TransferSummary s)
-    {
-        var values = new (string Label, decimal Value, string Color)[]
-        {
-            (PieMetricColors[0].Label, s.TransferCount, PieMetricColors[0].Color),
-            (PieMetricColors[1].Label, s.GinCount,       PieMetricColors[1].Color),
-        }.Where(v => v.Value > 0).ToList();
-
-        var total = values.Sum(v => v.Value);
-        if (total <= 0) return [];
-
-        const double cx = 100, cy = 100, r = 90;
-        var slices = new List<PieSlice>();
-        var cumulativeAngle = 0.0;
-
-        foreach (var v in values)
-        {
-            var percent    = (double)(v.Value / total) * 100;
-            var startAngle = cumulativeAngle;
-            var endAngle   = cumulativeAngle + percent / 100 * 360;
-            cumulativeAngle = endAngle;
-
-            var (x1, y1) = PointOnCircle(cx, cy, r, startAngle);
-            var (x2, y2) = PointOnCircle(cx, cy, r, endAngle);
-            var largeArc = endAngle - startAngle > 180 ? 1 : 0;
-            var path = $"M{cx},{cy} L{x1:F2},{y1:F2} A{r},{r} 0 {largeArc} 1 {x2:F2},{y2:F2} Z";
-
-            slices.Add(new PieSlice(v.Label, v.Value, percent, v.Color, path));
-        }
-        return slices;
-    }
-
-    private static (double X, double Y) PointOnCircle(double cx, double cy, double r, double angleDeg)
-    {
-        var rad = (angleDeg - 90) * Math.PI / 180;
-        return (cx + r * Math.Cos(rad), cy + r * Math.Sin(rad));
-    }
 
     protected override async Task OnInitializedAsync()
     {
