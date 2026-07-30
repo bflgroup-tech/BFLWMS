@@ -3,6 +3,14 @@ using Microsoft.Data.SqlClient;
 
 namespace Wms.Data.Lpm;
 
+/// <summary>Stock On Hand figures for one warehouse group (e.g. TECHNO/JAFZA/YOTO combined, or BlackBOX alone).</summary>
+public sealed record WhStockOnHand(
+    long TotalQuantity,
+    long TotalBoxesStock,
+    long NumberOfBoxes,
+    long TotalPalletsStock,
+    long NumberOfPallets);
+
 /// <summary>
 /// Backs the Warehouse SOH Summary report. Reads RACKS.dbo.WHBoxItems via the shared
 /// OnPremBackup (LOGBACKUP) connection -- same as WarehouseBoxesService -- not a
@@ -26,21 +34,35 @@ public class WarehouseSohSummaryService(IOnPremConnectionResolver resolver)
         return c;
     }
 
-    /// <summary>Total Quantity (Units) across TECHNO/JAFZA/YOTO -- everything except BlackBOX.</summary>
-    public Task<long> GetTotalQuantityExcludingBlackboxAsync(CancellationToken ct = default) =>
-        GetTotalQuantityAsync("Warehouse <> 'BLACKBOX'", ct);
+    /// <summary>Stock On Hand for TECHNO/JAFZA/YOTO combined -- everything except BlackBOX.</summary>
+    public Task<WhStockOnHand> GetStockOnHandExcludingBlackboxAsync(CancellationToken ct = default) =>
+        GetStockOnHandAsync("Warehouse <> 'BLACKBOX'", ct);
 
-    /// <summary>Total Quantity (Units) for BlackBOX only.</summary>
-    public Task<long> GetTotalQuantityForBlackboxAsync(CancellationToken ct = default) =>
-        GetTotalQuantityAsync("Warehouse = 'BLACKBOX'", ct);
+    /// <summary>Stock On Hand for BlackBOX only.</summary>
+    public Task<WhStockOnHand> GetStockOnHandForBlackboxAsync(CancellationToken ct = default) =>
+        GetStockOnHandAsync("Warehouse = 'BLACKBOX'", ct);
 
-    private async Task<long> GetTotalQuantityAsync(string whereClause, CancellationToken ct)
+    private async Task<WhStockOnHand> GetStockOnHandAsync(string whereClause, CancellationToken ct)
     {
         await using var c = OpenOnPremBackup();
         await using var cmd = c.CreateCommand();
-        cmd.CommandText = $"SELECT ISNULL(SUM(qty), 0) FROM RACKS.dbo.WHBoxItems WHERE {whereClause}";
+        cmd.CommandText = $@"
+            SELECT
+                TotalQuantity     = ISNULL(SUM(qty), 0),
+                TotalBoxesStock   = ISNULL(SUM(CASE WHEN BoxNo <> '' THEN qty ELSE 0 END), 0),
+                NumberOfBoxes     = COUNT(DISTINCT CASE WHEN BoxNo <> '' THEN BoxNo END),
+                TotalPalletsStock = ISNULL(SUM(CASE WHEN PalletNo <> '' THEN qty ELSE 0 END), 0),
+                NumberOfPallets   = COUNT(DISTINCT CASE WHEN PalletNo <> '' THEN PalletNo END)
+              FROM RACKS.dbo.WHBoxItems
+             WHERE {whereClause}";
         cmd.CommandTimeout = CommandTimeoutSeconds;
-        var result = await cmd.ExecuteScalarAsync(ct);
-        return Convert.ToInt64(result);
+        await using var rdr = await cmd.ExecuteReaderAsync(ct);
+        await rdr.ReadAsync(ct);
+        return new WhStockOnHand(
+            rdr.GetInt64(0),
+            rdr.GetInt64(1),
+            rdr.GetInt32(2),
+            rdr.GetInt64(3),
+            rdr.GetInt32(4));
     }
 }

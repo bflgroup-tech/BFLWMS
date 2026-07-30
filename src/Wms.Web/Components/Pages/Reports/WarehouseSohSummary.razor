@@ -88,12 +88,12 @@
                         <div class="wsoh-box-header">📦 Stock On Hand</div>
                         <div class="wsoh-box-body">
                             <div class="wsoh-box-row"><span>Total Quantity (Units)</span><span>@((totals?.TotalQuantity ?? 0).ToString("N0"))</span></div>
-                            <div class="wsoh-box-row"><span>Total Boxes Stock</span><span>0</span></div>
-                            <div class="wsoh-box-row"><span>Number of Boxes</span><span>0</span></div>
+                            <div class="wsoh-box-row"><span>Total Boxes Stock</span><span>@((totals?.TotalBoxesStock ?? 0).ToString("N0"))</span></div>
+                            <div class="wsoh-box-row"><span>Number of Boxes</span><span>@((totals?.NumberOfBoxes ?? 0).ToString("N0"))</span></div>
                             @if (anyPallets)
                             {
-                                <div class="wsoh-box-row"><span>Total Pallets Stock</span><span>0</span></div>
-                                <div class="wsoh-box-row"><span>Number of Pallets</span><span>0</span></div>
+                                <div class="wsoh-box-row"><span>Total Pallets Stock</span><span>@((totals?.TotalPalletsStock ?? 0).ToString("N0"))</span></div>
+                                <div class="wsoh-box-row"><span>Number of Pallets</span><span>@((totals?.NumberOfPallets ?? 0).ToString("N0"))</span></div>
                             }
                             <div class="wsoh-box-row total"><span>Total Active SKUs</span><span>0</span></div>
                         </div>
@@ -229,11 +229,10 @@ else if (_loadedOnce)
     private bool _loading;
     private bool _loadedOnce;
 
-    // Real figures wired in so far, keyed by the same (Country, HasPallets) grouping the
-    // section headings use. TODO: everything else in a group still shows 0 until its own
-    // query is provided.
-    private sealed record GroupTotals(long TotalQuantity);
-    private readonly Dictionary<(string Country, bool HasPallets), GroupTotals> _groupTotals = new();
+    // Real Stock On Hand figures wired in so far, keyed by the same (Country, HasPallets)
+    // grouping the section headings use. TODO: Storage Capacity fields still show 0 until
+    // their own query is provided.
+    private readonly Dictionary<(string Country, bool HasPallets), WhStockOnHand> _groupTotals = new();
 
     private void ToggleCountry(string country, bool isChecked)
     {
@@ -328,11 +327,8 @@ else if (_loadedOnce)
         {
             if (_selectedCountries.Contains("UAE"))
             {
-                var mainQty = await SohSvc.GetTotalQuantityExcludingBlackboxAsync();
-                _groupTotals[("UAE", true)] = new GroupTotals(mainQty);
-
-                var blackboxQty = await SohSvc.GetTotalQuantityForBlackboxAsync();
-                _groupTotals[("UAE", false)] = new GroupTotals(blackboxQty);
+                _groupTotals[("UAE", true)]  = await SohSvc.GetStockOnHandExcludingBlackboxAsync();
+                _groupTotals[("UAE", false)] = await SohSvc.GetStockOnHandForBlackboxAsync();
             }
             // TODO: everything else still shows 0 pending its own query.
         }
