@@ -62,15 +62,6 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
         finally { OnPremThrottle.Release(); }
     }
 
-    private SqlConnection OpenCountry(string country)
-    {
-        var b = new SqlConnectionStringBuilder(resolver.GetCountryConnectionString(country))
-            { ConnectTimeout = ConnectTimeoutSeconds };
-        var c = new SqlConnection(b.ConnectionString);
-        c.Open();
-        return c;
-    }
-
     // The country connection string's default DB may not be the country's actual
     // DB name (e.g. "bflksa") — dataName is resolved from OnPremBackup first
     // (see WhBoxItemsSource.ResolveDataNameAsync) and forced here via InitialCatalog.
@@ -123,39 +114,23 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
     }
 
     /// <summary>
-    /// Stores for the country.
-    /// UAE → OnPremBackup with SIMCountry filter (no dedicated UAE connection string).
-    /// Others → country server's local BFLDATA.dbo.DataSettings, which only contains
-    ///          that country's stores so no SIMCountry filter is needed.
+    /// Stores for the country, from OnPremBackup's BFLDATA.dbo.DataSettings
+    /// (SIMCountry filter) — same source for every country now, UAE included,
+    /// rather than hitting the regional server just to populate a dropdown.
     /// </summary>
     public async Task<List<string>> GetStoresAsync(string country, CancellationToken ct = default)
     {
-        if (country == UaeCountry)
-        {
-            await using var c = OpenOnPrem();
-            var rows = await c.QueryAsync<string>(new CommandDefinition(@"
-                SELECT DISTINCT ShopName
-                  FROM BFLDATA.dbo.DataSettings
-                 WHERE SIMCountry = @country
-                   AND ShopName   IS NOT NULL AND ShopName <> ''
-                   AND Concept    <> 'Warehouse'
-                 ORDER BY ShopName",
-                new { country },
-                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-            return rows.AsList();
-        }
-        else
-        {
-            await using var c = OpenCountry(country);
-            var rows = await c.QueryAsync<string>(new CommandDefinition(@"
-                SELECT DISTINCT ShopName
-                  FROM BFLDATA.dbo.DataSettings
-                 WHERE ShopName IS NOT NULL AND ShopName <> ''
-                   AND Concept  <> 'Warehouse'
-                 ORDER BY ShopName",
-                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-            return rows.AsList();
-        }
+        await using var c = OpenOnPrem();
+        var rows = await c.QueryAsync<string>(new CommandDefinition(@"
+            SELECT DISTINCT ShopName
+              FROM BFLDATA.dbo.DataSettings
+             WHERE SIMCountry = @country
+               AND ShopName   IS NOT NULL AND ShopName <> ''
+               AND Concept    <> 'Warehouse'
+             ORDER BY ShopName",
+            new { country },
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        return rows.AsList();
     }
 
     // ── Shop resolution (OnPremBackup) ──────────────────────────────────────
@@ -351,17 +326,19 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
     // Concept = 'Warehouse' lookup GetStoresAsync/BuildSqlOnPrem/BuildSqlCountry
     // already use to exclude warehouse rows, just resolved to actual code values
     // here instead of a ShopName NOT IN (...) filter. This differs per country
-    // (e.g. KSA is '005'/'05'), so it must be looked up, never hardcoded.
+    // (e.g. KSA is '005'/'05'), so it must be looked up, never hardcoded. Uses
+    // the "Country" column (not "SIMCountry") — confirmed directly:
+    // select costcodeto, loccodeto from bfldata..datasettings where Country = 'KSA' and concept = 'warehouse'.
     private static async Task<WarehouseCode> ResolveWarehouseCodeAsync(
-        SqlConnection conn, string dataSettingsTable, string? simCountry, CancellationToken ct)
+        SqlConnection conn, string dataSettingsTable, string? country, CancellationToken ct)
     {
-        var simFilter = simCountry is null ? "" : " AND SIMCountry = @simCountry";
+        var countryFilter = country is null ? "" : " AND Country = @country";
         var sql = $@"
             SELECT TOP 1 CostCodeTo, LocCodeTo
               FROM {dataSettingsTable} WITH (NOLOCK)
-             WHERE Concept = 'Warehouse'{simFilter}";
+             WHERE Concept = 'Warehouse'{countryFilter}";
         var row = await conn.QuerySingleOrDefaultAsync<WarehouseCode>(new CommandDefinition(
-            sql, new { simCountry }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            sql, new { country }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         return row ?? new WarehouseCode();
     }
 
@@ -479,7 +456,7 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
                 $"No DataName found in BFLDATA.dbo.DataSettings for country '{country}'.");
 
         await using var conn = OpenCountryWithDataName(country, dataName);
-        var wh = await ResolveWarehouseCodeAsync(conn, "BFLDATA..DataSettings", simCountry: null, ct);
+        var wh = await ResolveWarehouseCodeAsync(conn, "BFLDATA..DataSettings", country: null, ct);
         var toEnd = to.AddDays(1).AddSeconds(-1);
 
         var transferRow = await conn.QuerySingleAsync<CountQtyRow>(new CommandDefinition(
@@ -623,67 +600,6 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
         return await GetOneStoreSummaryRegionalAsync(country, dataName, s, today, today, ct);
     }
 
-    /// <summary>
-    /// Per-STORE breakdown within a single country — same shape as
-    /// GetTransferSummaryAsync's per-country breakdown, just one level down.
-    /// Shown when a single country is selected with "(All stores)".
-    /// </summary>
-    public async Task<List<TransferSummary>> GetStoreSummariesAsync(
-        string country, DateTime dateFrom, DateTime dateTo, CancellationToken ct = default)
-    {
-        var from = dateFrom.Date;
-        var to   = dateTo.Date;
-
-        List<StoreRow> stores;
-        await using (var onprem = OpenOnPrem())
-        {
-            stores = await GetStoresOnPremAsync(onprem, country, store: null, ct);
-        }
-
-        if (country == UaeCountry)
-        {
-            var tasks = stores.Select(s => GetOneStoreSummaryOnPremAsync(country, s, from, to, ct));
-            var results = await Task.WhenAll(tasks);
-            return results.OrderBy(r => r.Country).ToList();
-        }
-        else
-        {
-            var (histFrom, histTo, includesToday) = SplitDateRange(from, to);
-
-            var histTasks = histFrom is not null
-                ? stores.Select(s => GetOneStoreSummaryOnPremAsync(country, s, histFrom.Value, histTo!.Value, ct)).ToArray()
-                : [];
-
-            Task<TransferSummary>[] todayTasks = [];
-            if (includesToday)
-            {
-                await using var onprem = OpenOnPrem();
-                var dataName = await WhBoxItemsSource.ResolveDataNameAsync(onprem, country, ct);
-                if (string.IsNullOrWhiteSpace(dataName))
-                    throw new InvalidOperationException(
-                        $"No DataName found in BFLDATA.dbo.DataSettings for country '{country}'.");
-
-                var today = DateTime.Today;
-                todayTasks = stores.Select(s => GetOneStoreSummaryRegionalAsync(country, dataName, s, today, today, ct)).ToArray();
-            }
-
-            await Task.WhenAll(histTasks.Concat(todayTasks));
-
-            var byShop = new Dictionary<string, (int TransferCount, int TransferQty, int GinCount, int GinQty)>(
-                StringComparer.OrdinalIgnoreCase);
-            foreach (var t in histTasks.Select(x => x.Result).Concat(todayTasks.Select(x => x.Result)))
-            {
-                var cur = byShop.GetValueOrDefault(t.Country);
-                byShop[t.Country] = (
-                    cur.TransferCount + t.TransferCount, cur.TransferQty + t.TransferQty,
-                    cur.GinCount + t.GinCount, cur.GinQty + t.GinQty);
-            }
-            return byShop
-                .Select(kv => new TransferSummary(kv.Key, kv.Value.TransferCount, kv.Value.TransferQty, kv.Value.GinCount, kv.Value.GinQty))
-                .OrderBy(r => r.Country).ToList();
-        }
-    }
-
     // ── SQL builders ─────────────────────────────────────────────────────────
 
     // Shop's own CostCodeTo/LocCodeTo (resolved via GetStoresOnPremAsync) scope
@@ -714,6 +630,7 @@ SELECT ROW_NUMBER() OVER (ORDER BY a.TrfDate, a.TrfNo, c.SrNo) SrNo,
        @shopName ShopName,
        a.TrfNo,
        a.TrfDate,
+       Quantity  = ISNULL((SELECT SUM(Quantity) FROM [{s.DataName}]..vTransferDetail WHERE TrfNo = a.TrfNo), 0),
        PalletNo  = (SELECT TOP 1 PalletNo FROM BFLDATA.dbo.vGoodsIssue WHERE TrfNo = a.TrfNo AND EntryDate >= a.TrfDate ORDER BY PalletNo DESC),
        b.EntryDate BuildDate,
        CAST(c.SrNo AS nvarchar(50)) GINNo,
@@ -754,6 +671,7 @@ SELECT ROW_NUMBER() OVER (ORDER BY a.TrfNo, c.SrNo) SrNo,
        e.ShopName,
        a.TrfNo,
        a.TrfDate,
+       Quantity  = ISNULL((SELECT SUM(Quantity) FROM vTransferDetail WHERE TrfNo = a.TrfNo), 0),
        PalletNo  = (SELECT TOP 1 PalletNo FROM BFLDATA..vGoodsIssue WHERE TrfNo = a.TrfNo AND EntryDate >= a.TrfDate ORDER BY PalletNo DESC),
        b.EntryDate BuildDate,
        CAST(c.SrNo AS nvarchar(50)) GINNo,
