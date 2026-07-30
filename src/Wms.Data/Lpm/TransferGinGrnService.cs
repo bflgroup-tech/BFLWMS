@@ -227,7 +227,7 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
             {
                 uaeStores = await GetStoresOnPremAsync(onprem, UaeCountry, f.Store, ct);
             }
-            return await GetForStoresOnPremAsync(uaeStores, f, f.DateFrom.Date, f.DateTo.Date, ct);
+            return await GetForStoresOnPremAsync(uaeStores, f, f.DateFrom.Date, f.DateTo.Date, isUae: true, ct);
         }
 
         // Search ignores the date range entirely (matches any date in history) —
@@ -248,7 +248,7 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
                 {
                     stores = await GetStoresOnPremAsync(onprem, country, f.Store, ct);
                 }
-                return await GetForStoresOnPremAsync(stores, f, histFrom.Value, histTo!.Value, ct);
+                return await GetForStoresOnPremAsync(stores, f, histFrom.Value, histTo!.Value, isUae: false, ct);
             }));
         }
         if (includesToday)
@@ -266,11 +266,11 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
     // "every store" load took so long: each linked-server round trip against
     // OnPremBackup was paid serially instead of in parallel.
     private async Task<List<TransferHistoryRow>> GetForStoresOnPremAsync(
-        List<StoreRow> stores, TransferHistoryFilter f, DateTime from, DateTime to, CancellationToken ct)
+        List<StoreRow> stores, TransferHistoryFilter f, DateTime from, DateTime to, bool isUae, CancellationToken ct)
     {
         var perStore = await Task.WhenAll(stores.Select(s => WithOnPremAsync(async conn =>
         {
-            var sql  = BuildSqlOnPrem(s, f, from, to, out var parms);
+            var sql  = BuildSqlOnPrem(s, f, from, to, isUae, out var parms);
             var rows = await conn.QueryAsync<TransferHistoryRow>(
                 new CommandDefinition(sql, parms,
                     commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
@@ -423,33 +423,41 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
         var wh = await WithOnPremAsync(conn =>
             ResolveWarehouseCodeAsync(conn, "BFLDATA.dbo.DataSettings", country, ct), ct);
 
-        // GIN correlates via TrfNo -> this DataName's OWN transferheader (same
-        // relationship the detail table's GIN join and GetOneStoreSummaryAsync
-        // use) — NOT vGoodsIssueplt.ShopIssue, which doesn't reliably equal
-        // ShopName outside UAE. Computed per-DataName (like Transfer Count/Qty)
-        // since GIN is central (BFLDATA.dbo) but transferheader is per-DataName.
-        var perDataNameTask = Task.WhenAll(dataNames.Select(dn => WithOnPremAsync(async conn =>
+        // GIN correlates via TrfNo -> this DataName's OWN transferheader
+        // (same relationship the detail table's GIN join and
+        // GetOneStoreSummaryAsync use) — NOT vGoodsIssueplt.ShopIssue, which
+        // doesn't reliably equal ShopName outside UAE.
+        var perDataNameTask = Task.WhenAll(dataNames.Select(dn =>
         {
-            var transferRow = await conn.QuerySingleAsync<CountQtyRow>(new CommandDefinition(
-                TransferSummarySql($"[{dn}]..vTransferDetail"),
-                new { from, to = toEnd, whCostCodeTo = wh.CostCodeTo, whLocCodeTo = wh.LocCodeTo },
-                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            // GIN lives in the central BFLDATA.dbo db for UAE, but in each
+            // country's OWN DataName db for everyone else — same "wrong db"
+            // mistake already caught and fixed for vTransferDetail, just
+            // missed here too. Confirmed directly: bflksa..vGoodsIssuePlt,
+            // not BFLDATA.dbo.vGoodsIssueplt, for KSA.
+            var ginTable = country == UaeCountry ? "BFLDATA.dbo.vGoodsIssueplt" : $"[{dn}]..vGoodsIssueplt";
+            return WithOnPremAsync(async conn =>
+            {
+                var transferRow = await conn.QuerySingleAsync<CountQtyRow>(new CommandDefinition(
+                    TransferSummarySql($"[{dn}]..vTransferDetail"),
+                    new { from, to = toEnd, whCostCodeTo = wh.CostCodeTo, whLocCodeTo = wh.LocCodeTo },
+                    commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
 
-            // Same TrfNo-set approach as GetOneStoreSummaryAsync: this
-            // DataName's transfers created in [from, to] first (cheap), then
-            // GIN activity for exactly that TrfNo set — no correlated
-            // per-row subquery.
-            var gin = await conn.QuerySingleAsync<GinCountQtyRow>(new CommandDefinition($@"
-                SELECT COUNT(DISTINCT c.SrNo) AS GinCount, ISNULL(SUM(c.Qty),0) AS GinQty
-                  FROM BFLDATA.dbo.vGoodsIssueplt c WITH (NOLOCK)
-                 WHERE c.TrfNo IN (
-                     SELECT TrfNo FROM [{dn}]..transferheader WITH (NOLOCK)
-                      WHERE TrfDate >= @from AND TrfDate <= @to
-                 )",
-                new { from, to = toEnd }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+                // Same TrfNo-set approach as GetOneStoreSummaryAsync: this
+                // DataName's transfers created in [from, to] first (cheap),
+                // then GIN activity for exactly that TrfNo set — no
+                // correlated per-row subquery.
+                var gin = await conn.QuerySingleAsync<GinCountQtyRow>(new CommandDefinition($@"
+                    SELECT COUNT(DISTINCT c.SrNo) AS GinCount, ISNULL(SUM(c.Qty),0) AS GinQty
+                      FROM {ginTable} c WITH (NOLOCK)
+                     WHERE c.TrfNo IN (
+                         SELECT TrfNo FROM [{dn}]..transferheader WITH (NOLOCK)
+                          WHERE TrfDate >= @from AND TrfDate <= @to
+                     )",
+                    new { from, to = toEnd }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
 
-            return (transferRow, gin);
-        }, ct)));
+                return (transferRow, gin);
+            }, ct);
+        }));
 
         await perDataNameTask;
         var transferCount = perDataNameTask.Result.Sum(r => r.transferRow.TransferCount);
@@ -479,10 +487,16 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
             new { from, to = toEnd, whCostCodeTo = wh.CostCodeTo, whLocCodeTo = wh.LocCodeTo },
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
 
+        // vGoodsIssueplt lives in the country's own dataName db here (same as
+        // transferheader/vTransferDetail), NOT the sibling BFLDATA db —
+        // confirmed directly: bflksa..vGoodsIssuePlt, not BFLDATA..vgoodsissueplt.
         var gin = await conn.QuerySingleAsync<GinCountQtyRow>(new CommandDefinition(@"
             SELECT COUNT(DISTINCT SrNo) AS GinCount, ISNULL(SUM(Qty),0) AS GinQty
-              FROM BFLDATA..vgoodsissueplt WITH (NOLOCK)
-             WHERE EntryDate >= @from AND EntryDate <= @to",
+              FROM vgoodsissueplt WITH (NOLOCK)
+             WHERE TrfNo IN (
+                 SELECT TrfNo FROM transferheader WITH (NOLOCK)
+                  WHERE TrfDate >= @from AND TrfDate <= @to
+             )",
             new { from, to = toEnd }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
 
         return new TransferSummary(country, transferRow.TransferCount, transferRow.TransferQty ?? 0, gin.GinCount, gin.GinQty ?? 0);
@@ -533,22 +547,29 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
         return new TransferSummary(shopName, transferRow.TransferCount, transferRow.TransferQty ?? 0, gin.GinCount, gin.GinQty ?? 0);
     }
 
+    // GIN lives centrally (BFLDATA.dbo) for UAE, but in the shop's own
+    // DataName db for everyone else — same "wrong db" mistake already fixed
+    // for vTransferDetail, just missed here too (confirmed: bflksa..vGoodsIssuePlt).
     private Task<TransferSummary> GetOneStoreSummaryOnPremAsync(
-        StoreRow s, DateTime from, DateTime to, CancellationToken ct) =>
-        WithOnPremAsync(conn => GetOneStoreSummaryAsync(
-            conn, s.ShopName, $"[{s.DataName}]..vTransferDetail", $"[{s.DataName}]..transferheader", "BFLDATA.dbo.vGoodsIssueplt",
+        string country, StoreRow s, DateTime from, DateTime to, CancellationToken ct)
+    {
+        var ginTable = country == UaeCountry ? "BFLDATA.dbo.vGoodsIssueplt" : $"[{s.DataName}]..vGoodsIssueplt";
+        return WithOnPremAsync(conn => GetOneStoreSummaryAsync(
+            conn, s.ShopName, $"[{s.DataName}]..vTransferDetail", $"[{s.DataName}]..transferheader", ginTable,
             s.CostCodeTo, s.LocCodeTo, from, to, ct), ct);
+    }
 
     // Regional (today-only) — reuses the shop's CostCodeTo/LocCodeTo already
     // resolved from OnPremBackup's DataSettings rather than re-querying the
     // regional server for it: DataSettings is reference/master data, not subject
-    // to the same same-day sync lag that transactional tables are.
+    // to the same same-day sync lag that transactional tables are. vGoodsIssueplt
+    // lives in the country's own dataName db here too, not the sibling BFLDATA db.
     private async Task<TransferSummary> GetOneStoreSummaryRegionalAsync(
         string country, string dataName, StoreRow s, DateTime from, DateTime to, CancellationToken ct)
     {
         await using var conn = OpenCountryWithDataName(country, dataName);
         return await GetOneStoreSummaryAsync(
-            conn, s.ShopName, "vTransferDetail", "transferheader", "BFLDATA..vgoodsissueplt",
+            conn, s.ShopName, "vTransferDetail", "transferheader", "vgoodsissueplt",
             s.CostCodeTo, s.LocCodeTo, from, to, ct);
     }
 
@@ -572,11 +593,11 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
         if (s is null) return null;
 
         if (country == UaeCountry)
-            return await GetOneStoreSummaryOnPremAsync(s, from, to, ct);
+            return await GetOneStoreSummaryOnPremAsync(country, s, from, to, ct);
 
         var (histFrom, histTo, includesToday) = SplitDateRange(from, to);
         var histTask = histFrom is not null
-            ? GetOneStoreSummaryOnPremAsync(s, histFrom.Value, histTo!.Value, ct)
+            ? GetOneStoreSummaryOnPremAsync(country, s, histFrom.Value, histTo!.Value, ct)
             : Task.FromResult(new TransferSummary(store, 0, 0, 0, 0));
         var todayTask = includesToday
             ? GetTodayStoreSummaryRegionalAsync(country, s, ct)
@@ -621,7 +642,7 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
 
         if (country == UaeCountry)
         {
-            var tasks = stores.Select(s => GetOneStoreSummaryOnPremAsync(s, from, to, ct));
+            var tasks = stores.Select(s => GetOneStoreSummaryOnPremAsync(country, s, from, to, ct));
             var results = await Task.WhenAll(tasks);
             return results.OrderBy(r => r.Country).ToList();
         }
@@ -630,7 +651,7 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
             var (histFrom, histTo, includesToday) = SplitDateRange(from, to);
 
             var histTasks = histFrom is not null
-                ? stores.Select(s => GetOneStoreSummaryOnPremAsync(s, histFrom.Value, histTo!.Value, ct)).ToArray()
+                ? stores.Select(s => GetOneStoreSummaryOnPremAsync(country, s, histFrom.Value, histTo!.Value, ct)).ToArray()
                 : [];
 
             Task<TransferSummary>[] todayTasks = [];
@@ -673,7 +694,7 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
     // from/to: date-only — end-of-day adjustment happens here, matching how the
     // detail table's own filter dates already need @from/@to bound this way.
     private static string BuildSqlOnPrem(
-        StoreRow s, TransferHistoryFilter f, DateTime from, DateTime to, out DynamicParameters p)
+        StoreRow s, TransferHistoryFilter f, DateTime from, DateTime to, bool isUae, out DynamicParameters p)
     {
         p = new DynamicParameters();
         p.Add("@shopName",   s.ShopName);
@@ -682,6 +703,11 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
         var hasSearch    = !string.IsNullOrWhiteSpace(f.SearchValue);
         var dateFilter   = hasSearch ? "" : "\n   AND a.TrfDate >= @from AND a.TrfDate <= @to";
         if (!hasSearch) { p.Add("@from", from); p.Add("@to", to.AddDays(1).AddSeconds(-1)); }
+
+        // GIN lives centrally (BFLDATA.dbo) for UAE, but in the shop's own
+        // DataName db for everyone else — confirmed: bflksa..vGoodsIssuePlt,
+        // not BFLDATA.dbo.vGoodsIssueplt, for KSA.
+        var ginTable = isUae ? "BFLDATA.dbo.vGoodsIssueplt" : $"[{s.DataName}]..vGoodsIssueplt";
 
         var sb = new StringBuilder($@"
 SELECT ROW_NUMBER() OVER (ORDER BY a.TrfDate, a.TrfNo, c.SrNo) SrNo,
@@ -701,7 +727,7 @@ SELECT ROW_NUMBER() OVER (ORDER BY a.TrfDate, a.TrfNo, c.SrNo) SrNo,
              ROW_NUMBER() OVER (PARTITION BY TrfNo ORDER BY PalletNo DESC) rn
         FROM BFLDATA.dbo.vGoodsIssue
   )                                            b  ON b.TrfNo = a.TrfNo AND b.rn = 1 AND b.EntryDate >= a.TrfDate
-  LEFT JOIN BFLDATA.dbo.vGoodsIssueplt        c  ON c.TrfNo = a.TrfNo AND c.EntryDate >= a.TrfDate
+  LEFT JOIN {ginTable}                         c  ON c.TrfNo = a.TrfNo AND c.EntryDate >= a.TrfDate
   LEFT JOIN [{s.DataName}]..GRNHeaderRF          d  ON d.TrfNo = a.TrfNo AND d.EntryDate >= a.TrfDate
   LEFT JOIN [{s.DataName}]..TransferReverse      f  ON f.TrfNo = a.TrfNo
  WHERE a.TrfNo NOT LIKE 'FN%'{dateFilter}
@@ -741,7 +767,7 @@ SELECT ROW_NUMBER() OVER (ORDER BY a.TrfNo, c.SrNo) SrNo,
              ROW_NUMBER() OVER (PARTITION BY TrfNo ORDER BY PalletNo DESC) rn
         FROM BFLDATA..vGoodsIssue
   )                                b  ON b.TrfNo = a.TrfNo AND b.rn = 1 AND b.EntryDate >= a.TrfDate
-  LEFT JOIN BFLDATA..vGoodsIssueplt c  ON c.TrfNo = a.TrfNo AND c.EntryDate >= a.TrfDate
+  LEFT JOIN vGoodsIssueplt          c  ON c.TrfNo = a.TrfNo AND c.EntryDate >= a.TrfDate
   LEFT JOIN GRNHeaderRF             d  ON d.TrfNo = a.TrfNo AND d.EntryDate >= a.TrfDate
   JOIN  BFLDATA..DataSettings       e  ON a.CostCodeTo = e.CostCodeTo
   LEFT JOIN TransferReverse         f  ON f.TrfNo = a.TrfNo
