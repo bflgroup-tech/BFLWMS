@@ -21,7 +21,7 @@
         {
             <div style="flex:0 0 220px; position:relative;">
                 <label class="aiwms-filter-label">COUNTRY</label>
-                <details @key="_dropdownResetKey" style="position:relative;">
+                <details class="aiwms-dropdown" @key="_dropdownResetKey" style="position:relative;">
                     <summary style="cursor:pointer; padding:5px 7px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:12px; background:white; list-style:none; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
                         @CountrySummaryText
                     </summary>
@@ -82,7 +82,7 @@
         </div>
         <div style="flex:0 0 200px;">
             <label class="aiwms-filter-label" style="white-space:nowrap;">WEEK — overrides dates</label>
-            <details @key="_dropdownResetKey" style="position:relative;">
+            <details class="aiwms-dropdown" @key="_dropdownResetKey" style="position:relative;">
                 <summary style="cursor:pointer; padding:5px 7px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:12px; background:white; list-style:none; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
                     @WeekSummaryText
                 </summary>
@@ -133,38 +133,38 @@
                         <div style="font-size:11px; font-weight:700; color:var(--text-secondary); text-transform:uppercase; margin-bottom:6px;">
                             @cts.Country.ToUpperInvariant()
                         </div>
-                        <div style="display:flex; gap:12px; flex-wrap:wrap;">
+                        <div style="display:flex; gap:8px;">
                             @foreach (var t in cts.Types)
                             {
                                 var (bg, text) = TypeColor(t.Type);
-                                <div style="background:@bg; border-radius:8px; padding:10px 14px; width:260px; flex:0 0 auto;">
-                                    <div style="text-align:center; font-size:11px; font-weight:700; color:@text; text-transform:uppercase; letter-spacing:0.02em;">
+                                <div style="background:@bg; border-radius:8px; padding:10px 12px; flex:1 1 0; min-width:0;">
+                                    <div style="text-align:center; font-size:13px; font-weight:700; color:@text; text-transform:uppercase; letter-spacing:0.02em; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
                                         @t.Title
                                     </div>
                                     <div style="display:flex; align-items:stretch; margin-top:8px;">
-                                        <div style="flex:1; text-align:center;">
-                                            <div style="font-size:11px; color:var(--text-secondary);">Delivered</div>
-                                            <div style="display:flex; justify-content:center; gap:12px; margin-top:5px;">
+                                        <div style="flex:1; text-align:center; min-width:0;">
+                                            <div style="font-size:12px; color:var(--text-secondary);">Delivered</div>
+                                            <div style="display:flex; justify-content:center; gap:8px; margin-top:5px;">
                                                 <div>
                                                     <div style="font-size:11px; color:var(--text-secondary); white-space:nowrap;">Ship Count</div>
-                                                    <div style="font-size:11px; font-weight:700; color:@text;">@t.DeliveredCount.ToString("N0")</div>
+                                                    <div style="font-size:16px; font-weight:700; color:#222222; margin-top:2px; white-space:nowrap;">@t.DeliveredCount.ToString("N0")</div>
                                                 </div>
                                                 <div>
                                                     <div style="font-size:11px; color:var(--text-secondary); white-space:nowrap;">Quantity</div>
-                                                    <div style="font-size:11px; font-weight:700; color:@text;">@t.DeliveredQty.ToString("N0")</div>
+                                                    <div style="font-size:16px; font-weight:700; color:#222222; margin-top:2px; white-space:nowrap;">@t.DeliveredQty.ToString("N0")</div>
                                                 </div>
                                             </div>
                                         </div>
-                                        <div style="flex:1; text-align:center; border-left:1px solid rgba(0,0,0,0.18); margin-left:10px; padding-left:10px;">
-                                            <div style="font-size:11px; color:var(--text-secondary);">Intransit</div>
-                                            <div style="display:flex; justify-content:center; gap:12px; margin-top:5px;">
+                                        <div style="flex:1; text-align:center; min-width:0; border-left:1px solid rgba(0,0,0,0.18); margin-left:6px; padding-left:6px;">
+                                            <div style="font-size:12px; color:var(--text-secondary);">Intransit</div>
+                                            <div style="display:flex; justify-content:center; gap:8px; margin-top:5px;">
                                                 <div>
                                                     <div style="font-size:11px; color:var(--text-secondary); white-space:nowrap;">Ship Count</div>
-                                                    <div style="font-size:11px; font-weight:700; color:@text;">@t.IntransitCount.ToString("N0")</div>
+                                                    <div style="font-size:16px; font-weight:700; color:#222222; margin-top:2px; white-space:nowrap;">@t.IntransitCount.ToString("N0")</div>
                                                 </div>
                                                 <div>
                                                     <div style="font-size:11px; color:var(--text-secondary); white-space:nowrap;">Quantity</div>
-                                                    <div style="font-size:11px; font-weight:700; color:@text;">@t.IntransitQty.ToString("N0")</div>
+                                                    <div style="font-size:16px; font-weight:700; color:#222222; margin-top:2px; white-space:nowrap;">@t.IntransitQty.ToString("N0")</div>
                                                 </div>
                                             </div>
                                         </div>
@@ -723,6 +723,24 @@ else if (_rows.Count > 0 && !_isBflGroupView)
 
         if (!_canSelectMultiple)
             _lockedCountry = CurrentUser.Country ?? "";
+    }
+
+    // <details> has no native "close when focus/click moves elsewhere" behavior —
+    // attach a single document-level click listener (idempotent via the window
+    // flag, since this only needs binding once per page load) that closes any open
+    // .aiwms-dropdown whose click target falls outside it.
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        await JS.InvokeVoidAsync("eval", @"
+            if (!window.__aiwmsDropdownOutsideClick) {
+                window.__aiwmsDropdownOutsideClick = true;
+                document.addEventListener('click', function (e) {
+                    document.querySelectorAll('details.aiwms-dropdown[open]').forEach(function (d) {
+                        if (!d.contains(e.target)) d.removeAttribute('open');
+                    });
+                });
+            }");
     }
 
     private async Task LoadAsync()
