@@ -34,7 +34,7 @@ public class SyncDataCountService(IOnPremConnectionResolver resolver)
         "Transfer Header", "Transfer Detail", "RF Pair", "Sales Price",
         "Building Completion", "UPC Box", "Goods Issue Plt", "PLT Delivery",
         "Goods Issue", "GRN", "USA Org File", "USA Purchase",
-        "PLT Issue", "Cont Receipt", "Cont Receipt Export",
+        "PLT Issue", "Cont Receipt", "Cont Receipt Export", "Close R1 Pallet",
     };
 
     private string OnPremCs() =>
@@ -253,6 +253,11 @@ public class SyncDataCountService(IOnPremConnectionResolver resolver)
                 "SELECT COUNT(Sn) FROM BFLDATA..GoodsIssueHead WITH(NOLOCK) WHERE CAST(EntryDate AS DATE) BETWEEN @from AND @to",
             ("Goods Issue", true) =>
                 $"SELECT COUNT(Sn) FROM [{dn}]..GoodsIssueHead WITH(NOLOCK) WHERE CAST(EntryDate AS DATE) BETWEEN @from AND @to",
+
+            ("Close R1 Pallet", false) =>
+                "SELECT COUNT(Palletno) FROM BFLDATA..CloseR1pallet WITH(NOLOCK) WHERE CAST(Trndate AS DATE) BETWEEN @from AND @to",
+            ("Close R1 Pallet", true) =>
+                $"SELECT COUNT(Palletno) FROM [{dn}]..CloseR1pallet WITH(NOLOCK) WHERE CAST(Trndate AS DATE) BETWEEN @from AND @to",
 
             ("GRN", false) =>
                 "SELECT COUNT(1) FROM GRNHeaderRF WITH(NOLOCK) WHERE CAST(EntryDate AS DATE) BETWEEN @from AND @to",
