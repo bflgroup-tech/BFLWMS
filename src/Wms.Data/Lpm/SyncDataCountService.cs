@@ -35,7 +35,13 @@ public class SyncDataCountService(IOnPremConnectionResolver resolver)
         "Building Completion", "UPC Box", "Goods Issue Plt", "PLT Delivery",
         "Goods Issue", "GRN", "USA Org File", "USA Purchase",
         "PLT Issue", "Cont Receipt", "Cont Receipt Export", "Close R1 Pallet",
+        "Item Group", "Item Master",
     };
+
+    // HO-only master/lookup tables (hodata) — no per-country copy, no date column,
+    // so there is nothing to put in the Regional side and no date range to filter by.
+    private static readonly HashSet<string> HoOnlyDescriptions = new(
+        ["Item Group", "Item Master"], StringComparer.OrdinalIgnoreCase);
 
     private string OnPremCs() =>
         new SqlConnectionStringBuilder(resolver.GetOnPremBackupConnectionString())
@@ -187,6 +193,9 @@ public class SyncDataCountService(IOnPremConnectionResolver resolver)
         string dbName, string dataName, string prefix, bool isKsa,
         DateTime from, DateTime to, bool isHo, CancellationToken ct)
     {
+        if (!isHo && HoOnlyDescriptions.Contains(desc))
+            return (null, null);
+
         var dn = dataName;
         var p  = new DynamicParameters();
         p.Add("@from",    from);
@@ -258,6 +267,11 @@ public class SyncDataCountService(IOnPremConnectionResolver resolver)
                 "SELECT COUNT(Palletno) FROM BFLDATA..CloseR1pallet WITH(NOLOCK) WHERE CAST(Trndate AS DATE) BETWEEN @from AND @to",
             ("Close R1 Pallet", true) =>
                 $"SELECT COUNT(Palletno) FROM [{dn}]..CloseR1pallet WITH(NOLOCK) WHERE CAST(Trndate AS DATE) BETWEEN @from AND @to",
+
+            ("Item Group", true) =>
+                "SELECT COUNT(*) FROM hodata.dbo.itemgroup WITH(NOLOCK)",
+            ("Item Master", true) =>
+                "SELECT COUNT(*) FROM hodata.dbo.itemmaster WITH(NOLOCK)",
 
             ("GRN", false) =>
                 "SELECT COUNT(1) FROM GRNHeaderRF WITH(NOLOCK) WHERE CAST(EntryDate AS DATE) BETWEEN @from AND @to",
