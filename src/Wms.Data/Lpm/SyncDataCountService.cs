@@ -38,11 +38,6 @@ public class SyncDataCountService(IOnPremConnectionResolver resolver)
         "Item Group", "Item Master",
     };
 
-    // HO-only master/lookup tables (hodata) — no per-country copy, no date column,
-    // so there is nothing to put in the Regional side and no date range to filter by.
-    private static readonly HashSet<string> HoOnlyDescriptions = new(
-        ["Item Group", "Item Master"], StringComparer.OrdinalIgnoreCase);
-
     private string OnPremCs() =>
         new SqlConnectionStringBuilder(resolver.GetOnPremBackupConnectionString())
             { ConnectTimeout = ConnectTimeoutSeconds }.ConnectionString;
@@ -193,9 +188,6 @@ public class SyncDataCountService(IOnPremConnectionResolver resolver)
         string dbName, string dataName, string prefix, bool isKsa,
         DateTime from, DateTime to, bool isHo, CancellationToken ct)
     {
-        if (!isHo && HoOnlyDescriptions.Contains(desc))
-            return (null, null);
-
         var dn = dataName;
         var p  = new DynamicParameters();
         p.Add("@from",    from);
@@ -268,10 +260,15 @@ public class SyncDataCountService(IOnPremConnectionResolver resolver)
             ("Close R1 Pallet", true) =>
                 $"SELECT COUNT(Palletno) FROM [{dn}]..CloseR1pallet WITH(NOLOCK) WHERE CAST(Trndate AS DATE) BETWEEN @from AND @to",
 
+            ("Item Group", false) =>
+                "SELECT COUNT(groupcode) FROM ItemGroup WITH(NOLOCK)",
             ("Item Group", true) =>
-                "SELECT COUNT(*) FROM hodata.dbo.itemgroup WITH(NOLOCK)",
+                $"SELECT COUNT(groupcode) FROM [{dn}]..ItemGroup WITH(NOLOCK)",
+
+            ("Item Master", false) =>
+                "SELECT COUNT(itemcode) FROM ItemMaster WITH(NOLOCK)",
             ("Item Master", true) =>
-                "SELECT COUNT(*) FROM hodata.dbo.itemmaster WITH(NOLOCK)",
+                $"SELECT COUNT(itemcode) FROM [{dn}]..ItemMaster WITH(NOLOCK)",
 
             ("GRN", false) =>
                 "SELECT COUNT(1) FROM GRNHeaderRF WITH(NOLOCK) WHERE CAST(EntryDate AS DATE) BETWEEN @from AND @to",
