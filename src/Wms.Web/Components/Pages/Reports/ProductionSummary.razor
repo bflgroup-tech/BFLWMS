@@ -296,7 +296,7 @@ else if (_loadedOnce && VisibleRows().Count == 0)
     // implicitly "configured" regardless of UAE_DB_ConnectionString. Every other country needs
     // a configured {Country}_DB_ConnectionString or GetProductionCheckingAsync silently returns 0 rows.
     private HashSet<string> _configuredCountries = new(StringComparer.OrdinalIgnoreCase) { "UAE" };
-    private string _selectedWeek = "";
+    private string _selectedWeek = ComputeCurrentWeekNumber();
     private DateTime _from = CurrentProductionDayGst();
     private DateTime _to   = CurrentProductionDayGst();
     private string _view = "Summary";
@@ -471,6 +471,13 @@ else if (_loadedOnce && VisibleRows().Count == 0)
                 yield return (i + 1, start, end);
             }
         }
+    }
+
+    private static string ComputeCurrentWeekNumber()
+    {
+        var today = CurrentProductionDayGst();
+        var jan1  = new DateTime(today.Year, 1, 1);
+        return (((today - jan1).Days / 7) + 1).ToString();
     }
 
     private void OnWeekChanged()
