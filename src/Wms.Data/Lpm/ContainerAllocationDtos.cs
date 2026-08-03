@@ -74,7 +74,8 @@ public record AllocationRow(
     decimal? AvgOtsMax        = null,    // AvgOts + OTSBandPct — upper edge of the IdealMax band for this item.
     decimal? InitialOtsPct    = null,    // OtsPercentToday from WmsOtsPoAllocationRun (static, matches OTS PO Allocation report %).
     int?     Soh              = null,    // per-(Store, Item) SOH from racks.LPM_locstock used in cap = tier - SOH.
-    int?     RunningOtsQty    = null);   // runningOtsQty at the moment this row was written (after prior-item decrements).
+    int?     RunningOtsQty    = null,    // runningOtsQty at the moment this row was written (after prior-item decrements).
+    decimal? MinMinCoverPct   = null);   // FMMPO Bypass Pass 1b audit: ABCReqdStock / PoQty * 100. Same value on every row for the item. Null when bypass is off. See dbo.Pass1ByPass for the full per-item breakdown.
 
 /// <summary>One row in the blocked-items list: an (item, store) pair that was
 /// excluded from allocation by LPM_StoreDeptAccess or LPM_StoreDivAccess.</summary>

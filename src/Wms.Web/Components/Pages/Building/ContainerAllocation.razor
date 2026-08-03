@@ -94,18 +94,9 @@
             @if (_runOption == "FillMinMinPlusOthers")
             {
                 <label style="display:flex; align-items:center; gap:6px; font-size:12px; cursor:pointer"
-                       title="When ticked, Pass 1b behaves per Bypass PO Line Qty: if item's PO qty > Bypass qty, use MinMin=1 (constant, ignores band). If PO qty <= Bypass qty, skip Pass 1b for that item entirely. Passes 2/3/4 unchanged.">
+                       title="When ticked, Pass 1b per-item behaviour is driven by MinMinCoverPct = ABCReqdStock / PoQty × 100. If pct ≥ 100% the item skips Pass 1b entirely (ABC A/B/C stores' need alone covers the PO). If pct < 100% Pass 1b runs in two stages: stage 1 tops A/B/C OTS≥0 stores to their Pass-2 tier; stage 2 gives MinMin=1 to the remaining A–H OTS≥0 stores for the leftover. Full per-item calc is written to dbo.Pass1ByPass. Passes 2/3/4 unchanged.">
                     <input type="checkbox" @bind="_bypassPass1b" /> Bypass Pass 1b
                 </label>
-                @if (_bypassPass1b)
-                {
-                    <label style="display:flex; align-items:center; gap:6px; font-size:12px"
-                           title="PO qty threshold that decides Pass 1b behaviour. Items with PO qty > this use MinMin=1; items with PO qty <= this skip Pass 1b.">
-                        Bypass PO Line Qty:
-                        <input type="number" min="0" @bind="_bypassPoQty"
-                               style="width:80px; padding:4px 6px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:12px" />
-                    </label>
-                }
             }
         }
         @{
@@ -625,7 +616,6 @@
     private bool _ecomManualPriority = false;
     private bool _traceEnabled = false;
     private bool _bypassPass1b = false;
-    private int  _bypassPoQty  = 200;
     private long _totalPoQty;
     private List<BlockedItemRow> _blocked = new();
     private bool _showBlocked;
@@ -873,7 +863,7 @@
             var allocCsv = string.Join(",", _allocCountries);
             {
                 var sw = System.Diagnostics.Stopwatch.StartNew();
-                var procResult = await Svc.ProcessAllocationAsync(_contno, progress, ro, _allocCountries, _ecomManualPriority, _traceEnabled, _bypassPass1b, _bypassPoQty);
+                var procResult = await Svc.ProcessAllocationAsync(_contno, progress, ro, _allocCountries, _ecomManualPriority, _traceEnabled, _bypassPass1b);
                 algoMs = sw.ElapsedMilliseconds;
                 _allocation = procResult.Allocations;
                 _blocked    = procResult.Blocked;
