@@ -48,7 +48,6 @@
         <div>
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">WEEK</label>
             <select @bind="_selectedWeek" @bind:after="OnWeekChanged" style="width:100%; height:36px; box-sizing:border-box; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;">
-                <option value="">(pick)</option>
                 @foreach (var w in Weeks)
                 {
                     <option value="@w.Num">W@(w.Num) &middot; @w.Start.ToString("dd-MMM") &rarr; @w.End.ToString("dd-MMM")</option>
@@ -452,20 +451,21 @@ else if (_loadedOnce && VisibleRows().Count == 0)
     }
 
     // Simple Week 1..52/53 list for the current calendar year — 7-day blocks
-    // starting Jan 1 (the last week is truncated to Dec 31). "4-4-5" grouping
-    // is a retail-calendar convention for rolling these into months/quarters;
-    // this list only needs the flat week numbering for the dropdown.
+    // starting on the first Sunday on/after Jan 1 (the last week is truncated
+    // to Dec 31). "4-4-5" grouping is a retail-calendar convention for rolling
+    // these into months/quarters; this list only needs the flat week numbering
+    // for the dropdown.
     private IEnumerable<(int Num, DateTime Start, DateTime End)> Weeks
     {
         get
         {
-            var year   = CurrentProductionDayGst().Year;
-            var jan1   = new DateTime(year, 1, 1);
-            var dec31  = new DateTime(year, 12, 31);
-            var weekCount = (int)Math.Ceiling(((dec31 - jan1).Days + 1) / 7.0);
+            var year       = CurrentProductionDayGst().Year;
+            var week1Start = FirstWeekStart(year);
+            var dec31      = new DateTime(year, 12, 31);
+            var weekCount  = (int)Math.Ceiling(((dec31 - week1Start).Days + 1) / 7.0);
             for (var i = 0; i < weekCount; i++)
             {
-                var start = jan1.AddDays(i * 7);
+                var start = week1Start.AddDays(i * 7);
                 var end   = start.AddDays(6);
                 if (end > dec31) end = dec31;
                 yield return (i + 1, start, end);
@@ -473,11 +473,19 @@ else if (_loadedOnce && VisibleRows().Count == 0)
         }
     }
 
+    private static DateTime FirstWeekStart(int year)
+    {
+        var jan1 = new DateTime(year, 1, 1);
+        var daysUntilSunday = ((int)DayOfWeek.Sunday - (int)jan1.DayOfWeek + 7) % 7;
+        return jan1.AddDays(daysUntilSunday);
+    }
+
     private static string ComputeCurrentWeekNumber()
     {
-        var today = CurrentProductionDayGst();
-        var jan1  = new DateTime(today.Year, 1, 1);
-        return (((today - jan1).Days / 7) + 1).ToString();
+        var today      = CurrentProductionDayGst();
+        var week1Start = FirstWeekStart(today.Year);
+        if (today < week1Start) return "1";
+        return (((today - week1Start).Days / 7) + 1).ToString();
     }
 
     private void OnWeekChanged()
