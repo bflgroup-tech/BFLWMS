@@ -48,3 +48,35 @@ public record JafzaRoboProductionDetailRow(
     string?  GroupName,
     string   Division,
     int      Qty);
+
+/// <summary>
+/// JAFZA Export Production — Summary. One row per (TrnDate, Division,
+/// ShopName), Qty = SUM(all hour buckets, hr1a..hr22a + HR0A) from
+/// BFLDATA.dbo.DailyCountCategoryTrf (Warehouse = 'JAFZA'). No item-level
+/// detail is available from this source — Summary only.
+/// </summary>
+public record JafzaExportProductionRow(
+    DateTime TrnDate,
+    string   Division,
+    string   ShopName,
+    int      Qty);
+
+/// <summary>
+/// Business-week option for the JAFZA Production Report's Week filter, from
+/// LPMSIM.dbo.BFL_MFP_OUTBOUND_T1's fiscal (year, week) pair. That table
+/// carries no per-week date column at all (only a batch-load createts shared
+/// by every row), so OtsDate here is computed in C# as the Sunday starting
+/// that fiscal week: FirstSundayOfJanuary(year) + (week-1)*7 days — confirmed
+/// against a known example (fiscal week 31 of 2026 = 02-Aug through
+/// 08-Aug-2026). This is an inferred rule (no authoritative fiscal-calendar
+/// table was found in LPMSIM/BFLDATA/USA), not a value read off a stored
+/// date, so it should be spot-checked against other known weeks if BFL's
+/// fiscal year start rule turns out to differ. The business week is the full
+/// Sunday-through-Saturday span, always 7 days, within the report's existing
+/// 7-day range cap.
+/// </summary>
+public record JafzaWeekOption(int Wk, DateTime OtsDate)
+{
+    public DateTime WeekStart => OtsDate.AddDays(-(int)OtsDate.DayOfWeek);
+    public DateTime WeekEnd   => WeekStart.AddDays(6);
+}

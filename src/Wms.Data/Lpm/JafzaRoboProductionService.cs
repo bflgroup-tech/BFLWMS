@@ -6,7 +6,10 @@ namespace Wms.Data.Lpm;
 
 /// <summary>
 /// JAFZA Robo Production Report. Ported from a legacy VB.NET desktop query
-/// ("#pair") against ROBOTICS.dbo.PairingConformationDetail.
+/// ("#pair") against ROBOTICS.dbo.PairingConformationDetail. Both Summary and
+/// Detailed read this same source — an alternate Summary source
+/// (BFLDATA.dbo.DailyCountCategoryBuildRobo) was tried and dropped after its
+/// totals were found to mismatch this connection's actual pairing data.
 ///
 /// Two-connection split (confirmed against the real environment): only
 /// ROBOTICS.dbo.PairingConformationDetail itself is read via the JafazaRoboDb
@@ -144,6 +147,21 @@ public class JafzaRoboProductionService(IOnPremConnectionResolver resolver)
         }
 
         return new EnrichmentLookups(groupByItem, divByGroup, groupNameByGroup);
+    }
+
+    /// <summary>
+    /// Total Qty only, for the summary-card total. Just sums GetSummaryAsync's rows —
+    /// the 7-day range cap already keeps this cheap, so it's not worth a separate
+    /// SUM-only query path like the Manual/Export services have. Optionally restricted
+    /// to a set of Divisions (from the report's Divisions filter).
+    /// </summary>
+    public async Task<int> GetTotalQtyAsync(
+        DateTime fromDate, DateTime toDate, string? username, IReadOnlyCollection<string>? divisions = null, CancellationToken ct = default)
+    {
+        var rows = await GetSummaryAsync(fromDate, toDate, username, ct);
+        return rows
+            .Where(r => divisions is not { Count: > 0 } || divisions.Contains(r.Division, StringComparer.OrdinalIgnoreCase))
+            .Sum(r => r.Qty);
     }
 
     /// <summary>Division-wise summary — one row per (TrnDate, Division, Username).</summary>
