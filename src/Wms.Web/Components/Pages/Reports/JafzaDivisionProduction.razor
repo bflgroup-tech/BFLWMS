@@ -3,23 +3,47 @@
 @using Wms.Core
 @using Wms.Data.Lpm
 @using ClosedXML.Excel
+@using MudBlazor
 @attribute [Authorize(Policy = MenuKeys.RPT_JAFZA_DIVISION_PROD)]
 @inject JafzaDivisionProductionService Svc
 @inject JafzaRoboProductionService RoboSvc
+@inject JafzaExportProductionService ExportSvc
 @inject IJSRuntime JS
+@inject ILogger<JafzaDivisionProduction> Logger
 
-<PageTitle>WMS - Jafza Manual/Robo Production</PageTitle>
+<PageTitle>WMS - JAFZA Production Report(Manual/Robo/Export)</PageTitle>
 
 <div class="aiwms-page-header">
-    <h2>Jafza Manual/Robo Production</h2>
+    <h2>JAFZA Production Report(Manual/Robo/Export)</h2>
     @if (_source == "Manual")
     {
         <p>Photo-checking production from Online.dbo.PhotoChecking (Warehouse = JAFZA). Scans before 05:00 count toward the previous day's shift. Date range is limited to 7 days.</p>
     }
-    else
+    else if (_source == "Robo")
     {
         <p>Robo pairing production from ROBOTICS.dbo.PairingConformationDetail (JafazaRoboDb). Scans before 05:00 count toward the previous day's shift. Date range is limited to 7 days.</p>
     }
+    else
+    {
+        <p>Export production from BFLDATA.dbo.DailyCountCategoryTrf (Warehouse = JAFZA) — Qty is the sum of all hour buckets for that Division/Shop. Summary only (no item-level detail available from this source).</p>
+    }
+</div>
+
+<div class="aiwms-section">
+    <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:12px;">
+        <div style="background:#FCE7EB; border-radius:var(--r-sm); padding:12px 16px;">
+            <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:#8A3A48">Manual Prod</div>
+            <div style="font-size:1.4rem; font-weight:800; color:#8A3A48">@(_totalsLoading ? "..." : _manualTotal.ToString("N0"))</div>
+        </div>
+        <div style="background:#E6F7F0; border-radius:var(--r-sm); padding:12px 16px;">
+            <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:#1F6E4C">RoboProd</div>
+            <div style="font-size:1.4rem; font-weight:800; color:#1F6E4C">@(_totalsLoading ? "..." : _roboTotal.ToString("N0"))</div>
+        </div>
+        <div style="background:#E4EEFC; border-radius:var(--r-sm); padding:12px 16px;">
+            <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:#1E4E8C">Export Prod</div>
+            <div style="font-size:1.4rem; font-weight:800; color:#1E4E8C">@(_totalsLoading ? "..." : _exportTotal.ToString("N0"))</div>
+        </div>
+    </div>
 </div>
 
 <div class="aiwms-section">
@@ -31,30 +55,64 @@
         <label style="display:flex; align-items:center; gap:4px; cursor:pointer">
             <input type="radio" name="src" value="Robo" checked="@(_source == "Robo")" @onchange="@(() => SetSource("Robo"))" /> Robo
         </label>
-    </div>
-
-    <div style="display:flex; gap:14px; align-items:center; margin-bottom:14px; flex-wrap:wrap">
-        <strong style="font-size:11px; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">Report:</strong>
         <label style="display:flex; align-items:center; gap:4px; cursor:pointer">
-            <input type="radio" name="rpt" value="Summary" checked="@(_view == "Summary")" @onchange="@(() => SetView("Summary"))" /> Summary (Division-wise)
-        </label>
-        <label style="display:flex; align-items:center; gap:4px; cursor:pointer">
-            <input type="radio" name="rpt" value="Detailed" checked="@(_view == "Detailed")" @onchange="@(() => SetView("Detailed"))" /> Detailed (Item-wise)
+            <input type="radio" name="src" value="Export" checked="@(_source == "Export")" @onchange="@(() => SetSource("Export"))" /> Export
         </label>
     </div>
 
-    <div style="display:grid; grid-template-columns: 1fr 1fr 1fr auto; gap:12px; align-items:end;">
+    @if (_source != "Export")
+    {
+        <div style="display:flex; gap:14px; align-items:center; margin-bottom:14px; flex-wrap:wrap">
+            <strong style="font-size:11px; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">Report:</strong>
+            <label style="display:flex; align-items:center; gap:4px; cursor:pointer">
+                <input type="radio" name="rpt" value="Summary" checked="@(_view == "Summary")" @onchange="@(() => SetView("Summary"))" /> Summary (Division-wise)
+            </label>
+            <label style="display:flex; align-items:center; gap:4px; cursor:pointer">
+                <input type="radio" name="rpt" value="Detailed" checked="@(_view == "Detailed")" @onchange="@(() => SetView("Detailed"))" /> Detailed (Item-wise)
+            </label>
+        </div>
+    }
+
+    <div style="display:grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap:12px; align-items:end; margin-bottom:12px;">
+        <div>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">WEEK (supersedes date range)</label>
+            <select value="@_selectedWeek" @onchange="@(async (ChangeEventArgs e) => await SetWeek(e.Value?.ToString() ?? ""))" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white">
+                <option value="">-- Use date range below --</option>
+                @foreach (var w in _weeks)
+                {
+                    <option value="@w.Wk">Wk @w.Wk (@w.WeekStart.ToString("dd-MMM") - @w.WeekEnd.ToString("dd-MMM-yyyy"))</option>
+                }
+            </select>
+        </div>
         <div>
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">FROM *</label>
-            <input type="date" @bind="_from" @bind:format="yyyy-MM-dd" max="@DateTime.Today.ToString("yyyy-MM-dd")" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
+            <input type="date" @bind="_from" @bind:format="yyyy-MM-dd" max="@DateTime.Today.ToString("yyyy-MM-dd")" disabled="@(_selectedWeek.HasValue)" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
         </div>
         <div>
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">TO *</label>
-            <input type="date" @bind="_to" @bind:format="yyyy-MM-dd" max="@DateTime.Today.ToString("yyyy-MM-dd")" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
+            <input type="date" @bind="_to" @bind:format="yyyy-MM-dd" max="@DateTime.Today.ToString("yyyy-MM-dd")" disabled="@(_selectedWeek.HasValue)" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
         </div>
+        @if (_source != "Export")
+        {
+            <div>
+                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">USERNAME (optional)</label>
+                <input @bind="_username" @bind:event="oninput" placeholder="e.g. 5475" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
+            </div>
+        }
+        else
+        {
+            <div></div>
+        }
+    </div>
+
+    <div style="display:grid; grid-template-columns: 1fr auto; gap:12px; align-items:end;">
         <div>
-            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">USERNAME (optional)</label>
-            <input @bind="_username" @bind:event="oninput" placeholder="e.g. 5475" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">DIVISIONS (select any)</label>
+            <MudSelect T="string" Dense="true" MultiSelection="true" SelectAll="true" Placeholder="All"
+                       Variant="Variant.Outlined" Margin="Margin.Dense"
+                       SelectedValues="_selectedDivisions" SelectedValuesChanged="@OnDivisionsChanged">
+                @foreach (var d in AvailableDivisions()) { <MudSelectItem T="string" Value="@d" @key="@d">@d</MudSelectItem> }
+            </MudSelect>
         </div>
         <div style="display:flex; gap:8px">
             <button class="aiwms-btn aiwms-btn-primary" @onclick="LoadAsync" disabled="@(_loading || !IsRangeValid)">@(_loading ? "Loading..." : "Load")</button>
@@ -78,17 +136,17 @@
     {
         <div class="aiwms-section">
             <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:12px;">
-                <div style="background:var(--surface-1, #f7f7f5); border-radius:var(--r-sm); padding:12px 16px;">
-                    <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">Total Divisions</div>
-                    <div style="font-size:1.4rem; font-weight:800">@FilteredSummaryRows().Select(r => r.Division).Distinct(StringComparer.OrdinalIgnoreCase).Count().ToString("N0")</div>
+                <div style="background:#FCE7EB; border-radius:var(--r-sm); padding:12px 16px;">
+                    <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:#8A3A48">Total Divisions</div>
+                    <div style="font-size:1.4rem; font-weight:800; color:#8A3A48">@FilteredSummaryRows().Select(r => r.Division).Distinct(StringComparer.OrdinalIgnoreCase).Count().ToString("N0")</div>
                 </div>
-                <div style="background:var(--surface-1, #f7f7f5); border-radius:var(--r-sm); padding:12px 16px;">
-                    <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">Total Users</div>
-                    <div style="font-size:1.4rem; font-weight:800">@FilteredSummaryRows().Select(r => r.Username).Distinct(StringComparer.OrdinalIgnoreCase).Count().ToString("N0")</div>
+                <div style="background:#EFEAFB; border-radius:var(--r-sm); padding:12px 16px;">
+                    <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:#4E3B96">Total Users</div>
+                    <div style="font-size:1.4rem; font-weight:800; color:#4E3B96">@FilteredSummaryRows().Select(r => r.Username).Distinct(StringComparer.OrdinalIgnoreCase).Count().ToString("N0")</div>
                 </div>
-                <div style="background:var(--surface-1, #f7f7f5); border-radius:var(--r-sm); padding:12px 16px;">
-                    <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">Total Checked Qty</div>
-                    <div style="font-size:1.4rem; font-weight:800">@FilteredSummaryRows().Sum(r => r.CheckedQty).ToString("N0")</div>
+                <div style="background:#FFF4E0; border-radius:var(--r-sm); padding:12px 16px;">
+                    <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:#8A5A12">Total Checked Qty</div>
+                    <div style="font-size:1.4rem; font-weight:800; color:#8A5A12">@FilteredSummaryRows().Sum(r => r.CheckedQty).ToString("N0")</div>
                 </div>
             </div>
         </div>
@@ -137,17 +195,17 @@
     {
         <div class="aiwms-section">
             <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:12px;">
-                <div style="background:var(--surface-1, #f7f7f5); border-radius:var(--r-sm); padding:12px 16px;">
-                    <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">Total Items</div>
-                    <div style="font-size:1.4rem; font-weight:800">@FilteredDetailRows().Count.ToString("N0")</div>
+                <div style="background:#FCE7EB; border-radius:var(--r-sm); padding:12px 16px;">
+                    <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:#8A3A48">Total Items</div>
+                    <div style="font-size:1.4rem; font-weight:800; color:#8A3A48">@FilteredDetailRows().Count.ToString("N0")</div>
                 </div>
-                <div style="background:var(--surface-1, #f7f7f5); border-radius:var(--r-sm); padding:12px 16px;">
-                    <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">Total Users</div>
-                    <div style="font-size:1.4rem; font-weight:800">@FilteredDetailRows().Select(r => r.Username).Distinct(StringComparer.OrdinalIgnoreCase).Count().ToString("N0")</div>
+                <div style="background:#EFEAFB; border-radius:var(--r-sm); padding:12px 16px;">
+                    <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:#4E3B96">Total Users</div>
+                    <div style="font-size:1.4rem; font-weight:800; color:#4E3B96">@FilteredDetailRows().Select(r => r.Username).Distinct(StringComparer.OrdinalIgnoreCase).Count().ToString("N0")</div>
                 </div>
-                <div style="background:var(--surface-1, #f7f7f5); border-radius:var(--r-sm); padding:12px 16px;">
-                    <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">Total Checked Qty</div>
-                    <div style="font-size:1.4rem; font-weight:800">@FilteredDetailRows().Sum(r => r.CheckedQty).ToString("N0")</div>
+                <div style="background:#FFF4E0; border-radius:var(--r-sm); padding:12px 16px;">
+                    <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:#8A5A12">Total Checked Qty</div>
+                    <div style="font-size:1.4rem; font-weight:800; color:#8A5A12">@FilteredDetailRows().Sum(r => r.CheckedQty).ToString("N0")</div>
                 </div>
             </div>
         </div>
@@ -205,23 +263,23 @@
         </div>
     }
 }
-else
+else if (_source == "Robo")
 {
     @if (_view == "Summary" && _roboSummaryRows.Count > 0)
     {
         <div class="aiwms-section">
             <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:12px;">
-                <div style="background:var(--surface-1, #f7f7f5); border-radius:var(--r-sm); padding:12px 16px;">
-                    <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">Total Divisions</div>
-                    <div style="font-size:1.4rem; font-weight:800">@FilteredRoboSummaryRows().Select(r => r.Division).Distinct(StringComparer.OrdinalIgnoreCase).Count().ToString("N0")</div>
+                <div style="background:#E6F7F0; border-radius:var(--r-sm); padding:12px 16px;">
+                    <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:#1F6E4C">Total Divisions</div>
+                    <div style="font-size:1.4rem; font-weight:800; color:#1F6E4C">@FilteredRoboSummaryRows().Select(r => r.Division).Distinct(StringComparer.OrdinalIgnoreCase).Count().ToString("N0")</div>
                 </div>
-                <div style="background:var(--surface-1, #f7f7f5); border-radius:var(--r-sm); padding:12px 16px;">
-                    <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">Total Users</div>
-                    <div style="font-size:1.4rem; font-weight:800">@FilteredRoboSummaryRows().Select(r => r.Username).Distinct(StringComparer.OrdinalIgnoreCase).Count().ToString("N0")</div>
+                <div style="background:#E0F7FA; border-radius:var(--r-sm); padding:12px 16px;">
+                    <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:#0E6E7A">Total Users</div>
+                    <div style="font-size:1.4rem; font-weight:800; color:#0E6E7A">@FilteredRoboSummaryRows().Select(r => r.Username).Distinct(StringComparer.OrdinalIgnoreCase).Count().ToString("N0")</div>
                 </div>
-                <div style="background:var(--surface-1, #f7f7f5); border-radius:var(--r-sm); padding:12px 16px;">
-                    <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">Total Qty</div>
-                    <div style="font-size:1.4rem; font-weight:800">@FilteredRoboSummaryRows().Sum(r => r.Qty).ToString("N0")</div>
+                <div style="background:#E4EEFC; border-radius:var(--r-sm); padding:12px 16px;">
+                    <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:#1E4E8C">Total Qty</div>
+                    <div style="font-size:1.4rem; font-weight:800; color:#1E4E8C">@FilteredRoboSummaryRows().Sum(r => r.Qty).ToString("N0")</div>
                 </div>
             </div>
         </div>
@@ -270,17 +328,17 @@ else
     {
         <div class="aiwms-section">
             <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:12px;">
-                <div style="background:var(--surface-1, #f7f7f5); border-radius:var(--r-sm); padding:12px 16px;">
-                    <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">Total Items</div>
-                    <div style="font-size:1.4rem; font-weight:800">@FilteredRoboDetailRows().Count.ToString("N0")</div>
+                <div style="background:#E6F7F0; border-radius:var(--r-sm); padding:12px 16px;">
+                    <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:#1F6E4C">Total Items</div>
+                    <div style="font-size:1.4rem; font-weight:800; color:#1F6E4C">@FilteredRoboDetailRows().Count.ToString("N0")</div>
                 </div>
-                <div style="background:var(--surface-1, #f7f7f5); border-radius:var(--r-sm); padding:12px 16px;">
-                    <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">Total Users</div>
-                    <div style="font-size:1.4rem; font-weight:800">@FilteredRoboDetailRows().Select(r => r.Username).Distinct(StringComparer.OrdinalIgnoreCase).Count().ToString("N0")</div>
+                <div style="background:#E0F7FA; border-radius:var(--r-sm); padding:12px 16px;">
+                    <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:#0E6E7A">Total Users</div>
+                    <div style="font-size:1.4rem; font-weight:800; color:#0E6E7A">@FilteredRoboDetailRows().Select(r => r.Username).Distinct(StringComparer.OrdinalIgnoreCase).Count().ToString("N0")</div>
                 </div>
-                <div style="background:var(--surface-1, #f7f7f5); border-radius:var(--r-sm); padding:12px 16px;">
-                    <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">Total Qty</div>
-                    <div style="font-size:1.4rem; font-weight:800">@FilteredRoboDetailRows().Sum(r => r.Qty).ToString("N0")</div>
+                <div style="background:#E4EEFC; border-radius:var(--r-sm); padding:12px 16px;">
+                    <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:#1E4E8C">Total Qty</div>
+                    <div style="font-size:1.4rem; font-weight:800; color:#1E4E8C">@FilteredRoboDetailRows().Sum(r => r.Qty).ToString("N0")</div>
                 </div>
             </div>
         </div>
@@ -335,8 +393,90 @@ else
         </div>
     }
 }
+else if (_source == "Export" && _exportRows.Count > 0)
+{
+    <div class="aiwms-section">
+        <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:12px;">
+            <div style="background:#EFEAFB; border-radius:var(--r-sm); padding:12px 16px;">
+                <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:#4E3B96">Total Divisions</div>
+                <div style="font-size:1.4rem; font-weight:800; color:#4E3B96">@FilteredExportRows().Select(r => r.Division).Distinct(StringComparer.OrdinalIgnoreCase).Count().ToString("N0")</div>
+            </div>
+            <div style="background:#FFF4E0; border-radius:var(--r-sm); padding:12px 16px;">
+                <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:#8A5A12">Total Shops</div>
+                <div style="font-size:1.4rem; font-weight:800; color:#8A5A12">@FilteredExportRows().Select(r => r.ShopName).Distinct(StringComparer.OrdinalIgnoreCase).Count().ToString("N0")</div>
+            </div>
+            <div style="background:#E6F7F0; border-radius:var(--r-sm); padding:12px 16px;">
+                <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:#1F6E4C">Total Qty</div>
+                <div style="font-size:1.4rem; font-weight:800; color:#1F6E4C">@FilteredExportRows().Sum(r => r.Qty).ToString("N0")</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="aiwms-section">
+        <div class="aiwms-card-header" style="margin-bottom:10px">Production by Shop</div>
+        <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap:12px;">
+            @{ var shopColors = ShopCardColors; }
+            @for (int i = 0; i < ShopTotals().Count; i++)
+            {
+                var shop = ShopTotals()[i];
+                var color = shopColors[i % shopColors.Length];
+                <div style="background:@color.Bg; border-radius:var(--r-sm); padding:12px 16px;">
+                    <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:@color.Fg">@shop.ShopName</div>
+                    <div style="font-size:1.4rem; font-weight:800; color:@color.Fg">@shop.Qty.ToString("N0")</div>
+                </div>
+            }
+        </div>
+    </div>
+
+    <div class="aiwms-section">
+        <div style="display:flex; gap:12px; align-items:end; margin-bottom:14px; flex-wrap:wrap">
+            <div style="flex:1; min-width:240px">
+                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">SEARCH (DIVISION / SHOP NAME)</label>
+                <input @bind="_search" @bind:event="oninput" placeholder="Type to filter..." style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
+            </div>
+        </div>
+
+        <div class="aiwms-card-header">Summary (Export) - @FilteredExportRows().Count row(s)</div>
+        <div style="overflow-x:auto">
+        <table class="aiwms-table aiwms-table-dense" style="table-layout:fixed; width:100%">
+            <colgroup>
+                <col style="width:140px" />
+                <col style="width:260px" />
+                <col style="width:200px" />
+                <col style="width:140px" />
+            </colgroup>
+            <thead>
+                <tr>
+                    <th>Trn Date</th>
+                    <th>Division</th>
+                    <th>Shop Name</th>
+                    <th style="text-align:center">Qty</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var r in FilteredExportRows())
+                {
+                    <tr>
+                        <td>@FmtDate(r.TrnDate)</td>
+                        <td style="word-break:break-word">@r.Division</td>
+                        <td style="word-break:break-word">@r.ShopName</td>
+                        <td style="text-align:center">@r.Qty.ToString("N0")</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+        </div>
+    </div>
+}
 
 @code {
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadTotalsAsync();
+        try { _weeks = await Svc.GetAvailableWeeksAsync(); }
+        catch (Exception ex) { Logger.LogWarning(ex, "JafzaDivisionProduction: failed to load available weeks"); }
+    }
+
     private string _source = "Manual";
     private string _view = "Summary";
     private DateTime _from = DateTime.Today;
@@ -347,10 +487,20 @@ else
     private string _message = "";
     private bool _isError;
     private string _search = "";
+    private HashSet<string> _selectedDivisions = new(StringComparer.OrdinalIgnoreCase);
+    private List<JafzaWeekOption> _weeks = new();
+    private int? _selectedWeek;
     private List<JafzaProductionSummaryRow> _summaryRows = new();
     private List<JafzaProductionDetailRow>  _detailRows  = new();
     private List<JafzaRoboProductionSummaryRow> _roboSummaryRows = new();
     private List<JafzaRoboProductionDetailRow>  _roboDetailRows  = new();
+    private List<JafzaExportProductionRow>  _exportRows  = new();
+
+    // Manual/Robo/Export total-qty summary cards — shown regardless of which
+    // Source is currently selected, refreshed alongside every Load so they
+    // always reflect the current From/To (Username only affects Manual/Robo).
+    private bool _totalsLoading;
+    private int _manualTotal, _roboTotal, _exportTotal;
 
     private bool IsRangeValid => _from <= _to && (_to - _from).TotalDays <= 6;
 
@@ -358,8 +508,9 @@ else
     {
         ("Manual", "Summary") => _summaryRows.Count,
         ("Manual", _)         => _detailRows.Count,
-        (_, "Summary")        => _roboSummaryRows.Count,
-        _                     => _roboDetailRows.Count
+        ("Robo", "Summary")   => _roboSummaryRows.Count,
+        ("Robo", _)           => _roboDetailRows.Count,
+        _                     => _exportRows.Count
     };
 
     // Switching Source or Report type re-runs the same From/To/Username search
@@ -379,12 +530,32 @@ else
         if (IsRangeValid) await LoadAsync();
     }
 
+    // A selected Week supersedes manual From/To — sets them to that week's
+    // OTSDate..OTSDate+6 range (disabling the date inputs in the UI) and
+    // reloads. Clearing the Week selection re-enables manual date entry.
+    private async Task SetWeek(string weekValue)
+    {
+        if (string.IsNullOrEmpty(weekValue) || !int.TryParse(weekValue, out var wk))
+        {
+            _selectedWeek = null;
+            return;
+        }
+        var week = _weeks.FirstOrDefault(w => w.Wk == wk);
+        if (week is null) return;
+
+        _selectedWeek = wk;
+        _from = week.WeekStart;
+        _to   = week.WeekEnd;
+        if (IsRangeValid) await LoadAsync();
+    }
+
     private async Task LoadAsync()
     {
         if (!IsRangeValid) return;
         _loading = true; _message = ""; _isError = false;
         _summaryRows = new(); _detailRows = new();
         _roboSummaryRows = new(); _roboDetailRows = new();
+        _exportRows = new();
         try
         {
             if (_source == "Manual")
@@ -400,7 +571,7 @@ else
                     if (_detailRows.Count == 0) _message = "No rows for the selected filters.";
                 }
             }
-            else
+            else if (_source == "Robo")
             {
                 if (_view == "Summary")
                 {
@@ -413,9 +584,60 @@ else
                     if (_roboDetailRows.Count == 0) _message = "No rows for the selected filters.";
                 }
             }
+            else
+            {
+                _exportRows = await ExportSvc.GetSummaryAsync(_from, _to);
+                if (_exportRows.Count == 0) _message = "No rows for the selected filters.";
+            }
+
+            // Sequential, not concurrent, with the main fetch above — running both at
+            // once fires two simultaneous connections at the narrow-scope JafazaRoboDb
+            // server, which has been seen to trip a transient "network path not found"
+            // error on one of them under that contention.
+            await LoadTotalsAsync();
         }
         catch (Exception ex) { _message = ex.Message; _isError = true; }
         finally { _loading = false; }
+    }
+
+    // Each total is fetched and caught independently — a failure in one source
+    // (e.g. Robo's connection not configured in this environment) must not zero
+    // out the other two, which is what a single try/catch around Task.WhenAll
+    // would do.
+    private async Task LoadTotalsAsync()
+    {
+        // No forced StateHasChanged here — an immediate re-render while a
+        // MudSelect popup click is still being processed regenerates
+        // AvailableDivisions() (a brand-new list every call) and was found to
+        // reset the popup's just-applied checkbox toggle, making single clicks
+        // appear to not register. The natural render after the click handler
+        // returns is enough; only the finally-block StateHasChanged below
+        // (after the fetch settles) is needed to flip the cards out of "...".
+        _totalsLoading = true;
+        try
+        {
+            await Task.WhenAll(
+                LoadOneTotalAsync("Manual", () => Svc.GetTotalQtyAsync(_from, _to, _username, _selectedDivisions), v => _manualTotal = v),
+                LoadOneTotalAsync("Robo",   () => RoboSvc.GetTotalQtyAsync(_from, _to, _username, _selectedDivisions), v => _roboTotal = v),
+                LoadOneTotalAsync("Export", () => ExportSvc.GetTotalQtyAsync(_from, _to, _selectedDivisions), v => _exportTotal = v));
+        }
+        finally
+        {
+            _totalsLoading = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task LoadOneTotalAsync(string label, Func<Task<int>> fetch, Action<int> assign)
+    {
+        try { assign(await fetch()); }
+        catch (Exception ex)
+        {
+            // Summary cards are best-effort — a failure in one shouldn't block the
+            // other two or the main report, but it must be visible somewhere rather
+            // than silently leaving that card at 0.
+            Logger.LogWarning(ex, "JafzaDivisionProduction: failed to load {Label} total", label);
+        }
     }
 
     private async Task ExportExcelAsync()
@@ -469,7 +691,7 @@ else
                 ws.Columns().AdjustToContents();
                 name = $"jafza-manual-production-detailed-{_from:yyyyMMdd}-{_to:yyyyMMdd}.xlsx";
             }
-            else if (_view == "Summary")
+            else if (_source == "Robo" && _view == "Summary")
             {
                 var ws = wb.AddWorksheet("Summary (Robo)");
                 string[] headers = { "Trn Date", "Division", "Username", "Qty" };
@@ -488,7 +710,7 @@ else
                 ws.Columns().AdjustToContents();
                 name = $"jafza-robo-production-summary-{_from:yyyyMMdd}-{_to:yyyyMMdd}.xlsx";
             }
-            else
+            else if (_source == "Robo")
             {
                 var ws = wb.AddWorksheet("Detailed (Robo)");
                 string[] headers = { "Trn Date", "Item Code", "Username", "Group Code", "Group Name", "Division", "Qty" };
@@ -510,6 +732,25 @@ else
                 ws.Columns().AdjustToContents();
                 name = $"jafza-robo-production-detailed-{_from:yyyyMMdd}-{_to:yyyyMMdd}.xlsx";
             }
+            else
+            {
+                var ws = wb.AddWorksheet("Summary (Export)");
+                string[] headers = { "Trn Date", "Division", "Shop Name", "Qty" };
+                for (int i = 0; i < headers.Length; i++) ws.Cell(1, i + 1).Value = headers[i];
+                ws.Row(1).Style.Font.Bold = true;
+
+                int row = 2;
+                foreach (var r in FilteredExportRows())
+                {
+                    ws.Cell(row, 1).Value = FmtDate(r.TrnDate);
+                    ws.Cell(row, 2).Value = r.Division;
+                    ws.Cell(row, 3).Value = r.ShopName;
+                    ws.Cell(row, 4).Value = r.Qty;
+                    row++;
+                }
+                ws.Columns().AdjustToContents();
+                name = $"jafza-export-production-summary-{_from:yyyyMMdd}-{_to:yyyyMMdd}.xlsx";
+            }
 
             using var ms = new MemoryStream();
             wb.SaveAs(ms);
@@ -520,43 +761,105 @@ else
         finally { _exporting = false; }
     }
 
+    // Every row type here carries a Division field — the multiselect filter
+    // applies the same way to all 5 lists, ANDed with the existing free-text
+    // search. Empty selection means "All" (no filtering by division).
+    private bool DivisionMatches(string? division) =>
+        _selectedDivisions.Count == 0 || (division is not null && _selectedDivisions.Contains(division));
+
+    // The top Manual/Robo/Export total cards are fetched via SQL (not derived from
+    // the currently-loaded source's rows), so changing the Divisions filter has to
+    // explicitly re-fetch them to stay in sync with what the tables show. This
+    // handler must stay synchronous (not "async Task") and fire the refresh in the
+    // background rather than awaiting it — MudSelect withholds the checkbox's
+    // checked/unchecked visual update until SelectedValuesChanged's returned Task
+    // completes, so awaiting a multi-second SQL round trip here made every click
+    // look unresponsive (both checking and unchecking) until a second click landed.
+    private void OnDivisionsChanged(IEnumerable<string> values)
+    {
+        _selectedDivisions = values.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        _ = LoadTotalsAsync();
+    }
+
+    private List<string> AvailableDivisions() => (_source switch
+    {
+        "Manual" => _view == "Summary" ? _summaryRows.Select(r => r.Division) : _detailRows.Select(r => r.Division),
+        "Robo"   => _view == "Summary" ? _roboSummaryRows.Select(r => r.Division) : _roboDetailRows.Select(r => r.Division),
+        _        => _exportRows.Select(r => r.Division)
+    })
+        .Where(d => !string.IsNullOrWhiteSpace(d))
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .OrderBy(d => d, StringComparer.OrdinalIgnoreCase)
+        .ToList();
+
     private List<JafzaProductionSummaryRow> FilteredSummaryRows()
     {
-        if (string.IsNullOrWhiteSpace(_search)) return _summaryRows;
         var term = _search.Trim();
-        return _summaryRows.Where(r => Matches(r.Division, term) || Matches(r.Username, term)).ToList();
+        return _summaryRows.Where(r =>
+            DivisionMatches(r.Division) &&
+            (term.Length == 0 || Matches(r.Division, term) || Matches(r.Username, term))).ToList();
     }
 
     private List<JafzaProductionDetailRow> FilteredDetailRows()
     {
-        if (string.IsNullOrWhiteSpace(_search)) return _detailRows;
         var term = _search.Trim();
         return _detailRows.Where(r =>
-            Matches(r.UPC, term) ||
-            Matches(r.Username, term) ||
-            Matches(r.GroupCode, term) ||
-            Matches(r.Division, term) ||
-            Matches(r.OraPoNo, term)).ToList();
+            DivisionMatches(r.Division) &&
+            (term.Length == 0 ||
+             Matches(r.UPC, term) ||
+             Matches(r.Username, term) ||
+             Matches(r.GroupCode, term) ||
+             Matches(r.Division, term) ||
+             Matches(r.OraPoNo, term))).ToList();
     }
 
     private List<JafzaRoboProductionSummaryRow> FilteredRoboSummaryRows()
     {
-        if (string.IsNullOrWhiteSpace(_search)) return _roboSummaryRows;
         var term = _search.Trim();
-        return _roboSummaryRows.Where(r => Matches(r.Division, term) || Matches(r.Username, term)).ToList();
+        return _roboSummaryRows.Where(r =>
+            DivisionMatches(r.Division) &&
+            (term.Length == 0 || Matches(r.Division, term) || Matches(r.Username, term))).ToList();
     }
 
     private List<JafzaRoboProductionDetailRow> FilteredRoboDetailRows()
     {
-        if (string.IsNullOrWhiteSpace(_search)) return _roboDetailRows;
         var term = _search.Trim();
         return _roboDetailRows.Where(r =>
-            Matches(r.ItemCode, term) ||
-            Matches(r.Username, term) ||
-            Matches(r.GroupCode, term) ||
-            Matches(r.GroupName, term) ||
-            Matches(r.Division, term)).ToList();
+            DivisionMatches(r.Division) &&
+            (term.Length == 0 ||
+             Matches(r.ItemCode, term) ||
+             Matches(r.Username, term) ||
+             Matches(r.GroupCode, term) ||
+             Matches(r.GroupName, term) ||
+             Matches(r.Division, term))).ToList();
     }
+
+    private List<JafzaExportProductionRow> FilteredExportRows()
+    {
+        var term = _search.Trim();
+        return _exportRows.Where(r =>
+            DivisionMatches(r.Division) &&
+            (term.Length == 0 || Matches(r.Division, term) || Matches(r.ShopName, term))).ToList();
+    }
+
+    private List<(string ShopName, int Qty)> ShopTotals() =>
+        FilteredExportRows()
+            .GroupBy(r => r.ShopName, StringComparer.OrdinalIgnoreCase)
+            .Select(g => (ShopName: g.Key, Qty: g.Sum(r => r.Qty)))
+            .OrderByDescending(x => x.Qty)
+            .ToList();
+
+    private static readonly (string Bg, string Fg)[] ShopCardColors =
+    {
+        ("#FCE7EB", "#8A3A48"), // pink
+        ("#E6F7F0", "#1F6E4C"), // green
+        ("#E4EEFC", "#1E4E8C"), // blue
+        ("#FFF4E0", "#8A5A12"), // amber
+        ("#EFEAFB", "#4E3B96"), // purple
+        ("#FBE9ED", "#8C2E45"), // rose
+        ("#E0F7FA", "#0E6E7A"), // teal
+        ("#F2EEDC", "#6B5B1E"), // sand
+    };
 
     private static bool Matches(string? value, string term) =>
         !string.IsNullOrEmpty(value) && value.Contains(term, StringComparison.OrdinalIgnoreCase);
