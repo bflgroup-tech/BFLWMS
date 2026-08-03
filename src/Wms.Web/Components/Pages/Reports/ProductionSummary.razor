@@ -296,8 +296,8 @@ else if (_loadedOnce && VisibleRows().Count == 0)
     // a configured {Country}_DB_ConnectionString or GetProductionCheckingAsync silently returns 0 rows.
     private HashSet<string> _configuredCountries = new(StringComparer.OrdinalIgnoreCase) { "UAE" };
     private string _selectedWeek = ComputeCurrentWeekNumber();
-    private DateTime _from = CurrentProductionDayGst();
-    private DateTime _to   = CurrentProductionDayGst();
+    private DateTime _from = ComputeCurrentWeekRange().Start;
+    private DateTime _to   = ComputeCurrentWeekRange().End;
     private string _view = "Summary";
     private bool _loading;
     private string? _loadingMsg;
@@ -486,6 +486,19 @@ else if (_loadedOnce && VisibleRows().Count == 0)
         var week1Start = FirstWeekStart(today.Year);
         if (today < week1Start) return "1";
         return (((today - week1Start).Days / 7) + 1).ToString();
+    }
+
+    private static (DateTime Start, DateTime End) ComputeCurrentWeekRange()
+    {
+        var today      = CurrentProductionDayGst();
+        var week1Start = FirstWeekStart(today.Year);
+        var start = today < week1Start
+            ? week1Start
+            : week1Start.AddDays((today - week1Start).Days / 7 * 7);
+        var dec31 = new DateTime(today.Year, 12, 31);
+        var end = start.AddDays(6);
+        if (end > dec31) end = dec31;
+        return (start, end);
     }
 
     private void OnWeekChanged()
