@@ -14,6 +14,35 @@
 <style>
     .psr-country-select summary { list-style: none; }
     .psr-country-select summary::-webkit-details-marker { display: none; }
+
+    .psr-week-fieldset {
+        border: 1px solid var(--border-default);
+        border-radius: var(--r-sm);
+        margin: 0;
+        padding: 0 10px;
+        height: 36px;
+        box-sizing: border-box;
+        display: flex;
+        align-items: center;
+        background: white;
+    }
+    .psr-week-fieldset legend {
+        padding: 0 4px;
+        font-size: 11px;
+        font-weight: 700;
+        color: var(--text-secondary);
+        text-transform: uppercase;
+        letter-spacing: .5px;
+    }
+    .psr-week-select {
+        width: 100%;
+        height: 100%;
+        border: none;
+        outline: none;
+        background: transparent;
+        font-size: 13px;
+        padding: 0;
+    }
 </style>
 
 <div class="aiwms-page-header">
@@ -46,14 +75,16 @@
             </details>
         </div>
         <div>
-            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">WEEK</label>
-            <select @bind="_selectedWeek" @bind:after="OnWeekChanged" style="width:100%; height:36px; box-sizing:border-box; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;">
-                <option value="">(pick)</option>
-                @foreach (var w in Weeks)
-                {
-                    <option value="@w.Num">Week @w.Num</option>
-                }
-            </select>
+            <fieldset class="psr-week-fieldset">
+                <legend>Week (4-4-5)</legend>
+                <select @bind="_selectedWeek" @bind:after="OnWeekChanged" class="psr-week-select">
+                    <option value="">(pick)</option>
+                    @foreach (var w in Weeks)
+                    {
+                        <option value="@w.Num">W@(w.Num) &middot; @w.Start.ToString("dd-MMM") &rarr; @w.End.ToString("dd-MMM")</option>
+                    }
+                </select>
+            </fieldset>
         </div>
         <div>
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">FROM</label>
