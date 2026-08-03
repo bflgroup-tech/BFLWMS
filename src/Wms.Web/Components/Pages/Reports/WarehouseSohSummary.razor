@@ -1,0 +1,379 @@
+@page "/reports/warehouse-soh-summary"
+@rendermode RenderMode.InteractiveServer
+@attribute [Authorize(Policy = Wms.Core.MenuKeys.RPT_WAREHOUSE_SOH_SUMMARY)]
+@using Wms.Core
+@using Wms.Data.Lpm
+@inject ReportsService Svc
+@inject WarehouseSohSummaryService SohSvc
+@inject ICurrentUser Me
+@inject Microsoft.JSInterop.IJSRuntime JS
+
+<PageTitle>WMS — Warehouse SOH Summary</PageTitle>
+
+<style>
+    .wsoh-country-select summary { list-style: none; }
+    .wsoh-country-select summary::-webkit-details-marker { display: none; }
+
+    .wsoh-box { border: 1px solid var(--border-default); border-radius: var(--r-sm); overflow: hidden; background: #fff; flex: 1; min-width: 220px; }
+    .wsoh-box-header { background: var(--bfl-black); color: var(--bfl-yellow); font-family: var(--font-display); font-weight: 800; font-size: 11px; text-transform: uppercase; letter-spacing: .5px; padding: 9px 14px; text-align: center; }
+    .wsoh-box-body { padding: 10px 14px; }
+    .wsoh-box-row { display: flex; justify-content: space-between; gap: 12px; padding: 4px 0; font-size: 13px; }
+
+    .wsoh-gauge { display: flex; flex-direction: column; align-items: center; justify-content: center; border: 2px solid var(--bfl-black); border-radius: var(--r-sm); padding: 12px; min-width: 130px; background: #fff; }
+    .wsoh-gauge .pct { font-size: 1.8rem; font-weight: 900; color: var(--bfl-yellow-hov); margin-top: -6px; }
+
+    .wsoh-status-pill { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 999px; }
+    .wsoh-status-pill.action   { background: var(--s-pending-bg); color: var(--s-pending); }
+    .wsoh-status-pill.monitor  { background: var(--bfl-grey-100); color: var(--bfl-grey-700); }
+    .wsoh-status-pill.critical{ background: var(--s-low-bg);     color: var(--s-low); }
+
+    .wsoh-agebar-row { display: grid; grid-template-columns: 90px 1fr 70px; align-items: center; gap: 10px; margin-bottom: 8px; font-size: 12px; }
+    .wsoh-agebar-track { background: var(--bfl-grey-100); border-radius: 999px; height: 14px; overflow: hidden; }
+    .wsoh-agebar-fill { height: 100%; border-radius: 999px; }
+</style>
+
+<div class="aiwms-page-header">
+    <h2>Warehouse Stock On Hand</h2>
+    <p>Warehouse Summary Report | Real-Time KPI Overview. Last Updated: [Auto-refresh] | Data Source: WMS Integration | Refresh Interval: Real-time.</p>
+</div>
+
+<div class="aiwms-section">
+    <div style="display:flex; gap:12px; align-items:end;">
+        <div class="wsoh-country-select">
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COUNTRY (select any)</label>
+            <details id="wsoh-country-dropdown" style="position:relative;">
+                <summary style="display:flex; align-items:center; justify-content:space-between; gap:8px; width:260px; height:36px; box-sizing:border-box; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white; cursor:pointer; user-select:none;">
+                    <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">@CountrySelectionLabel</span>
+                    <span style="color:var(--text-secondary); font-size:10px; flex-shrink:0;">&#9660;</span>
+                </summary>
+                <div style="position:absolute; top:100%; left:0; right:0; z-index:20; margin-top:4px; display:flex; flex-direction:column; gap:4px; max-height:220px; overflow-y:auto; border:1px solid var(--border-default); border-radius:var(--r-sm); padding:8px 10px; background:white; box-shadow:0 4px 12px rgba(0,0,0,0.15);">
+                    @foreach (var c in _countries)
+                    {
+                        <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:13px">
+                            <input type="checkbox" checked="@_selectedCountries.Contains(c)" @onchange="@(e => ToggleCountry(c, (bool)e.Value!))" />
+                            @c.ToUpper()
+                        </label>
+                    }
+                </div>
+            </details>
+        </div>
+        <button class="aiwms-btn aiwms-btn-primary" @onclick="LoadAsync" disabled="@(_loading || _selectedCountries.Count == 0)">@(_loading ? "Loading…" : "Load")</button>
+    </div>
+</div>
+
+@{
+    var warehouses = _selectedCountries
+        .SelectMany(c => _warehousesByCountry.GetValueOrDefault(c, new()).Select(w => (Country: c, Warehouse: w)))
+        .ToList();
+    var multiCountry = _selectedCountries.Count > 1;
+}
+
+@if (warehouses.Count > 0)
+{
+    <div class="aiwms-section">
+        @foreach (var cg in warehouses.GroupBy(w => (w.Country, w.Warehouse.HasPallets)))
+        {
+            var whNames = string.Join(", ", cg.Select(w => w.Warehouse.Name));
+            var anyPallets = cg.Key.HasPallets;
+            var totals = _groupTotals.GetValueOrDefault(cg.Key);
+            var storage = _storageTotals.GetValueOrDefault(cg.Key);
+            <div style="margin-bottom:18px;">
+                <div style="display:flex; align-items:center; gap:8px; font-size:17px; font-weight:800; color:var(--bfl-black); text-transform:uppercase; letter-spacing:.5px; margin-bottom:10px; padding-bottom:6px; border-bottom:3px solid var(--bfl-yellow);">
+                    <span>🏭</span>
+                    <span>@whNames@(multiCountry ? $" — {cg.Key.Country.ToUpper()}" : "")</span>
+                </div>
+                <div style="display:flex; gap:14px; flex-wrap:wrap; align-items:stretch;">
+                    <div class="wsoh-box">
+                        <div class="wsoh-box-header">📦 Stock On Hand</div>
+                        <div class="wsoh-box-body">
+                            <div class="wsoh-box-row"><span>Total Quantity (Units)</span><span>@((totals?.TotalQuantity ?? 0).ToString("N0"))</span></div>
+                            <div class="wsoh-box-row"><span>Total Boxes Stock</span><span>@((totals?.TotalBoxesStock ?? 0).ToString("N0"))</span></div>
+                            <div class="wsoh-box-row"><span>Number of Boxes</span><span>@((totals?.NumberOfBoxes ?? 0).ToString("N0"))</span></div>
+                            @if (anyPallets)
+                            {
+                                <div class="wsoh-box-row"><span>Total Pallets Stock</span><span>@((totals?.TotalPalletsStock ?? 0).ToString("N0"))</span></div>
+                                <div class="wsoh-box-row"><span>Number of Pallets</span><span>@((totals?.NumberOfPallets ?? 0).ToString("N0"))</span></div>
+                            }
+                            <div class="wsoh-box-row"><span>Total Active SKUs</span><span>@((totals?.TotalActiveSkus ?? 0).ToString("N0"))</span></div>
+                        </div>
+                    </div>
+                    <div class="wsoh-box">
+                        <div class="wsoh-box-header">📋 Storage Capacity</div>
+                        <div class="wsoh-box-body">
+                            @if (anyPallets)
+                            {
+                                <div class="wsoh-box-row"><span>Total Rack Locations</span><span>@((storage?.TotalRackLocations ?? 0).ToString("N0"))</span></div>
+                                <div class="wsoh-box-row"><span>Free Box Rack Locations</span><span>@((storage?.FreeBoxRackLocations ?? 0).ToString("N0"))</span></div>
+                                <div class="wsoh-box-row"><span>Filled Box Locations</span><span>@((storage?.FilledBoxLocations ?? 0).ToString("N0"))</span></div>
+                                <div class="wsoh-box-row"><span>Free Pallet Rack Locations</span><span>@((storage?.FreePalletRackLocations ?? 0).ToString("N0"))</span></div>
+                                <div class="wsoh-box-row"><span>Filled Pallet Locations</span><span>@((storage?.FilledPalletLocations ?? 0).ToString("N0"))</span></div>
+                            }
+                            else
+                            {
+                                <div class="wsoh-box-row"><span>Total Storage Locations</span><span>@((storage?.TotalRackLocations ?? 0).ToString("N0"))</span></div>
+                                <div class="wsoh-box-row"><span>Free Storage Locations</span><span>@((storage?.FreeBoxRackLocations ?? 0).ToString("N0"))</span></div>
+                                <div class="wsoh-box-row"><span>Filled Storage Locations</span><span>@((storage?.FilledBoxLocations ?? 0).ToString("N0"))</span></div>
+                            }
+                            <div class="wsoh-box-row"><span>Overall Utilization %</span><span>@((storage?.OverallUtilizationPct ?? 0).ToString("N1"))%</span></div>
+                        </div>
+                    </div>
+                    @Gauge(storage?.OverallUtilizationPct ?? 0)
+                </div>
+            </div>
+        }
+    </div>
+
+    <div class="aiwms-section" style="padding:0; overflow:hidden">
+        <div class="wsoh-box-header" style="border-radius:0">Warehouse-wise Performance Summary</div>
+        <div style="overflow-x:auto">
+            <table class="aiwms-table aiwms-table-dense">
+                <thead>
+                    <tr>
+                        @if (multiCountry) { <th>Country</th> }
+                        <th>Warehouse</th>
+                        <th style="text-align:right">Total Units</th>
+                        <th style="text-align:right">Box Stock</th>
+                        <th style="text-align:right">No of Boxes</th>
+                        <th style="text-align:right">Pallet Stock</th>
+                        <th style="text-align:right">No of Pallets</th>
+                        <th style="text-align:right">Free Box Rack</th>
+                        <th style="text-align:right">Free Pallet Rack</th>
+                        <th style="text-align:right">Utilization %</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var wh in warehouses)
+                    {
+                        <tr>
+                            @if (multiCountry) { <td>@wh.Country.ToUpper()</td> }
+                            <td>@wh.Warehouse.Name</td>
+                            <td style="text-align:right">0</td>
+                            <td style="text-align:right">0</td>
+                            <td style="text-align:right">0</td>
+                            <td style="text-align:right">0</td>
+                            <td style="text-align:right">0</td>
+                            <td style="text-align:right">0</td>
+                            <td style="text-align:right">0</td>
+                            <td style="text-align:right">0%</td>
+                        </tr>
+                    }
+                    <tr style="font-weight:700; background:#fff7e0">
+                        <td colspan="@(multiCountry ? 2 : 1)">TOTAL</td>
+                        <td style="text-align:right">0</td>
+                        <td style="text-align:right">0</td>
+                        <td style="text-align:right">0</td>
+                        <td style="text-align:right">0</td>
+                        <td style="text-align:right">0</td>
+                        <td style="text-align:right">0</td>
+                        <td style="text-align:right">0</td>
+                        <td style="text-align:right">0%</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="aiwms-section">
+        <div style="display:flex; gap:20px; flex-wrap:wrap; align-items:flex-start;">
+            <div style="flex:1; min-width:320px; padding:0; overflow:hidden">
+                <div class="wsoh-box-header">⚠ Critical Alerts &amp; Aging Inventory</div>
+                <table class="aiwms-table aiwms-table-dense">
+                    <thead>
+                        <tr>
+                            <th>Alert Category</th>
+                            <th style="text-align:right">Units</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var a in _ageAlerts)
+                        {
+                            <tr>
+                                <td>@a.Category</td>
+                                <td style="text-align:right">@UnitsFor(a.Category).ToString("N0")</td>
+                                <td><span class="wsoh-status-pill @a.StatusClass">@a.Status</span></td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+
+            <div style="flex:1; min-width:320px;">
+                <div style="font-weight:700; font-size:13px; margin-bottom:10px;">Inventory Age Distribution</div>
+                @foreach (var b in _ageBuckets)
+                {
+                    <div class="wsoh-agebar-row">
+                        <span style="color:var(--text-secondary)">@b.Label</span>
+                        <div class="wsoh-agebar-track"><div class="wsoh-agebar-fill" style="width:0%; background:@b.Color"></div></div>
+                        <span style="text-align:right">0</span>
+                    </div>
+                }
+                <div style="display:flex; justify-content:space-between; font-size:11px; color:var(--text-secondary); margin-top:4px;">
+                    <span>0</span><span>50,000</span>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+else if (_loadedOnce)
+{
+    <div class="aiwms-section"><div class="aiwms-alert info">No warehouses configured for @string.Join(", ", _selectedCountries.Select(c => c.ToUpper())) yet.</div></div>
+}
+
+@code {
+    // TODO: placeholder structure — country list, warehouse list, and all figures are
+    // dummy pending the real data source/query.
+    private List<string> _countries = new() { "UAE" };
+    private HashSet<string> _selectedCountries = new(StringComparer.OrdinalIgnoreCase) { "UAE" };
+    private bool _loading;
+    private bool _loadedOnce;
+
+    // Real Stock On Hand / Storage Capacity figures, keyed by the same (Country, HasPallets)
+    // grouping the section headings use.
+    private readonly Dictionary<(string Country, bool HasPallets), WhStockOnHand> _groupTotals = new();
+    private readonly Dictionary<(string Country, bool HasPallets), WhStorageCapacity> _storageTotals = new();
+
+    private void ToggleCountry(string country, bool isChecked)
+    {
+        if (isChecked) _selectedCountries.Add(country);
+        else _selectedCountries.Remove(country);
+    }
+
+    private string CountrySelectionLabel
+    {
+        get
+        {
+            var picked = _countries.Where(c => _selectedCountries.Contains(c)).ToList();
+            return picked.Count switch
+            {
+                0 => "Select countries...",
+                <= 2 => string.Join(", ", picked.Select(c => c.ToUpper())),
+                _ => $"{picked.Count} countries selected"
+            };
+        }
+    }
+
+    private sealed record WarehouseDummy(string Name, bool HasPallets);
+
+    private static readonly Dictionary<string, List<WarehouseDummy>> _warehousesByCountry =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["UAE"] = new() { new("TECHNO", true), new("JAFZA", true), new("YOTO", true), new("BlackBOX", false) },
+        };
+
+    private sealed record AgeAlert(string Category, string Status, string StatusClass);
+    private readonly List<AgeAlert> _ageAlerts = new()
+    {
+        new("1-30 Days",      "Action",   "action"),
+        new("30-60 Days",     "Monitor",  "monitor"),
+        new("60-90 Days",     "Monitor",  "monitor"),
+        new("Above 90",       "Monitor",  "monitor"),
+        new("Elapsed (LPM)",  "Critical", "critical"),
+    };
+
+    private WhAgingUnits? _agingUnits;
+
+    private long UnitsFor(string category) => _agingUnits switch
+    {
+        null => 0,
+        var u => category switch
+        {
+            "1-30 Days"     => u.Days1To30,
+            "30-60 Days"    => u.Days30To60,
+            "60-90 Days"    => u.Days60To90,
+            "Above 90"      => u.DaysAbove90,
+            "Elapsed (LPM)" => u.ElapsedLpm,
+            _ => 0
+        }
+    };
+
+    // Status-palette colors (good/warning/serious/critical) so the aging buckets read
+    // by severity, not an arbitrary categorical hue.
+    private sealed record AgeBucket(string Label, string Color);
+    private readonly List<AgeBucket> _ageBuckets = new()
+    {
+        new("Current", "#0ca30c"),
+        new(">30 Days", "#fab219"),
+        new(">60 Days", "#ec835a"),
+        new(">90 Days", "#d03b3b"),
+    };
+
+    protected override async Task OnInitializedAsync()
+    {
+        await Me.EnsureLoadedAsync();
+        try
+        {
+            var list = await Svc.GetCountriesAsync();
+            var excluded = new[] { "ECOM", "Ex2Locations", "Oman" };
+            list = list.Where(c => !excluded.Contains(c, StringComparer.OrdinalIgnoreCase)).ToList();
+            list = Me.FilterCountries(list).ToList();
+            if (list.Count > 0)
+            {
+                _countries = list;
+                var defaultCountry = Me.Country is not null && list.Contains(Me.Country, StringComparer.OrdinalIgnoreCase)
+                    ? list.First(c => string.Equals(c, Me.Country, StringComparison.OrdinalIgnoreCase))
+                    : list[0];
+                _selectedCountries = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { defaultCountry };
+            }
+        }
+        catch { /* fall back to the hard-coded UAE seed if the lookup fails */ }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        await JS.InvokeVoidAsync("eval", @"
+            (function(){
+                if (window.__wsohCountryDropdownBound) return;
+                window.__wsohCountryDropdownBound = true;
+                document.addEventListener('click', function (e) {
+                    var d = document.getElementById('wsoh-country-dropdown');
+                    if (d && d.open && !d.contains(e.target)) d.removeAttribute('open');
+                });
+            })();");
+    }
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        _groupTotals.Clear();
+        _storageTotals.Clear();
+        _agingUnits = null;
+        await InvokeAsync(StateHasChanged);
+        try
+        {
+            if (_selectedCountries.Contains("UAE"))
+            {
+                _groupTotals[("UAE", true)]  = await SohSvc.GetStockOnHandExcludingBlackboxAsync();
+                _groupTotals[("UAE", false)] = await SohSvc.GetStockOnHandForBlackboxAsync();
+
+                _storageTotals[("UAE", true)]  = await SohSvc.GetStorageCapacityExcludingBlackboxAsync();
+                _storageTotals[("UAE", false)] = await SohSvc.GetStorageCapacityForBlackboxAsync();
+
+                _agingUnits = await SohSvc.GetAgingUnitsAsync();
+            }
+        }
+        finally
+        {
+            _loadedOnce = true;
+            _loading = false;
+        }
+    }
+
+    private RenderFragment Gauge(double pct) => __builder =>
+    {
+        const double r = 50, cx = 60, cy = 60;
+        var circumference = 2 * Math.PI * r;
+        var dash = circumference * pct / 100.0;
+        <div class="wsoh-gauge">
+            <svg viewBox="0 0 120 120" width="100" height="100">
+                <circle cx="@cx" cy="@cy" r="@r" fill="none" stroke="#e5e5e3" stroke-width="10" />
+                <circle cx="@cx" cy="@cy" r="@r" fill="none" stroke="var(--bfl-yellow)" stroke-width="10"
+                        stroke-linecap="round"
+                        stroke-dasharray="@(dash.ToString("F1")) @((circumference - dash).ToString("F1"))"
+                        transform="rotate(-90 @cx @cy)" />
+            </svg>
+            <div class="pct">@(pct.ToString("N1"))%</div>
+        </div>
+    };
+}

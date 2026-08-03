@@ -53,3 +53,4 @@ PublishProfiles/
 *.nupkg
 *.snupkg
 .nuget/
+.claude/settings.local.json

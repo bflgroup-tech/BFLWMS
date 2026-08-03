@@ -74,7 +74,8 @@ public record AllocationRow(
     decimal? AvgOtsMax        = null,    // AvgOts + OTSBandPct — upper edge of the IdealMax band for this item.
     decimal? InitialOtsPct    = null,    // OtsPercentToday from WmsOtsPoAllocationRun (static, matches OTS PO Allocation report %).
     int?     Soh              = null,    // per-(Store, Item) SOH from racks.LPM_locstock used in cap = tier - SOH.
-    int?     RunningOtsQty    = null);   // runningOtsQty at the moment this row was written (after prior-item decrements).
+    int?     RunningOtsQty    = null,    // runningOtsQty at the moment this row was written (after prior-item decrements).
+    decimal? MinMinCoverPct   = null);   // FMMPO Bypass Pass 1b audit: ABCReqdStock / PoQty * 100. Same value on every row for the item. Null when bypass is off. See dbo.Pass1ByPass for the full per-item breakdown.
 
 /// <summary>One row in the blocked-items list: an (item, store) pair that was
 /// excluded from allocation by LPM_StoreDeptAccess or LPM_StoreDivAccess.</summary>
@@ -104,7 +105,9 @@ public record AllocationStatus(
     int  RoundRobinRows,
     int  FillSKUMaxRoundRobinRows = 0,
     int  AzureAllocRows           = 0,   // dbo.WMS_ContAllocationData row count on Azure — > 0 means the container has been synced and Delete should be blocked at UI level
-    int  FillMinMinPlusOthersRows = 0);
+    int  FillMinMinPlusOthersRows = 0,
+    int  PlanningFlagsCount       = 0,   // WmsPlanningFlag rows for this ContNo — Pass 4 items where >=10% remained undistributed
+    int  PlanningFlagsTotalQty    = 0);  // SUM(RemainingQty) of those flag rows — units dropped by Pass 4
 
 /// <summary>How to distribute qty across eligible stores.
 /// FillSKUMax and RoundRobin are kept for run-history compatibility but are
@@ -150,6 +153,21 @@ public record AllocationTraceRow(
     decimal? AvgOtsMin      = null,
     decimal? AvgOtsMax      = null,
     decimal? InitialOtsPct  = null);
+
+/// <summary>One row from LPMSIM.dbo.WmsPlanningFlag — items whose FMMPO Pass 4
+/// remainder was >= 10% of PO qty and got dropped (nothing distributed) so a
+/// planner can review. Also used by the Container Allocation page's
+/// "Planning Flags" panel + summary counts (SKU count + total qty flagged).</summary>
+public record PlanningFlagRow(
+    DateTime  FlaggedTS,
+    string    ContNo,
+    string?   PONo,
+    string    ItemCode,
+    int?      DivCode,
+    int       PoQty,
+    int       RemainingQty,
+    string    RunOption,
+    string?   FlaggedBy);
 
 /// <summary>Header row read back for the "Processed Contnos" dropdown banner.
 /// Mirrors WMS_Cont_Allocation_Header columns.</summary>

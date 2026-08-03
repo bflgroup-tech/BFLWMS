@@ -272,6 +272,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         IReadOnlyCollection<string>? allocationCountries = null,
         bool ecomManualPriority = false,
         bool traceEnabled = false,
+        bool bypassPass1b = false,
         CancellationToken ct = default)
     {
         var result  = new List<AllocationRow>();
@@ -282,6 +283,12 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         var traceOn = traceEnabled &&
             (runOption == RunOption.FillSKUMaxRoundRobin || runOption == RunOption.FillMinMinPlusOthers);
         var trace = traceOn ? new List<AllocationTraceRow>() : null;
+        // Bypass Pass 1b audit — accumulated during FMMPO processing when the
+        // operator ticks the checkbox. Flushed at the end into dbo.Pass1ByPass
+        // (delete-by-ContNo then bulk insert, same lifecycle as WmsAllocationTrace).
+        var pass1BypassAudit = (bypassPass1b && runOption == RunOption.FillMinMinPlusOthers)
+            ? new List<(string PONo, string Itemcode, int PoQty, int ABCMax, int ABCSOH, int ABCReqdStock, decimal MinMinCoverPct)>()
+            : null;
         if (string.IsNullOrWhiteSpace(contno)) return new(result, blocked, trace);
         contno = contno.Trim();
 
@@ -1269,7 +1276,8 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                     // ticked "Trace Allocation" on the razor page. No-ops otherwise.
                     void RecordTrace(int pass, int sortRank, OtsRunLookupRow r, string tierName,
                                      int cap, int currentBefore, int remainingBefore, int take,
-                                     string? skipReason = null)
+                                     string? skipReason = null, int? ratioSkuMaxOverride = null,
+                                     int? rawSkuMaxOverride = null)
                     {
                         if (trace is null) return;
                         var soh = itemSohByStore.GetValueOrDefault(
@@ -1277,29 +1285,43 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                         var running = runningOtsQty.GetValueOrDefault((r.StoreID, r.DivCode), r.OtsQtyToday);
                         // RawSkuMax follows THIS row's TierName — Pass 1b uses MinMin,
                         // Pass 3 uses MinMax, Pass 2 uses whatever the OTS picker chose,
-                        // Pass 4 uses MinMax. DefaultSkuMax = RawSkuMax - Soh.
-                        int rawTier = 0;
-                        if (skuMaxBandsByKey.TryGetValue((r.DivCode, r.VolumeGroup ?? ""), out var bandsForTrace))
+                        // Pass 4 uses MinMax. DefaultSkuMax = RawSkuMax - Soh. Callers can
+                        // pass rawSkuMaxOverride to force the value (e.g. FMMPO Pass 1b
+                        // bypass uses MinMin=1 regardless of the band).
+                        int rawTier;
+                        if (rawSkuMaxOverride.HasValue)
                         {
-                            foreach (var b in bandsForTrace)
+                            rawTier = rawSkuMaxOverride.Value;
+                        }
+                        else
+                        {
+                            rawTier = 0;
+                            if (skuMaxBandsByKey.TryGetValue((r.DivCode, r.VolumeGroup ?? ""), out var bandsForTrace))
                             {
-                                if (line.Qty < b.From || line.Qty > b.To) continue;
-                                rawTier = tierName switch
+                                foreach (var b in bandsForTrace)
                                 {
-                                    "MinMin"   => b.MinMin   ?? 0,
-                                    "MinMax"   => b.MinMax   ?? 0,
-                                    "IdealMax" => b.IdealMax ?? 0,
-                                    "MaxMax"   => b.MaxMax   ?? 0,
-                                    _          => 0,
-                                };
-                                break;
+                                    if (line.Qty < b.From || line.Qty > b.To) continue;
+                                    rawTier = tierName switch
+                                    {
+                                        "MinMin"   => b.MinMin   ?? 0,
+                                        "MinMax"   => b.MinMax   ?? 0,
+                                        "IdealMax" => b.IdealMax ?? 0,
+                                        "MaxMax"   => b.MaxMax   ?? 0,
+                                        _          => 0,
+                                    };
+                                    break;
+                                }
                             }
                         }
                         var defaultSkuMax = Math.Max(0, rawTier - soh);
-                        // Pass 4 uses `cap` as the ratio numerator (FSMRR: OTS picker cap,
-                        // FMMPO: raw MinMax) — stamp it explicitly so trace rows are readable
-                        // without knowing the algorithm's internal convention. NULL for other passes.
-                        int? ratioSkuMax = pass == 4 ? cap : (int?)null;
+                        // RatioSkuMax on Pass 4 rows carries the ratio DENOMINATOR — the sum
+                        // of all eligible stores' raw SKU-max contributions for this item.
+                        // Each store's share = RawSkuMax / RatioSkuMax * RemainingBefore, so
+                        // stamping the denominator makes the share verifiable from the row.
+                        // FMMPO passes the total via override; FSMRR falls back to `cap` (its
+                        // per-store tier cap, matching prior behaviour there). NULL for
+                        // passes 1b / 2 / 3 — no ratio.
+                        int? ratioSkuMax = pass == 4 ? (ratioSkuMaxOverride ?? cap) : (int?)null;
                         trace.Add(new AllocationTraceRow(
                             ContNo: line.ContNo, Itemcode: line.ItemCode, StoreID: r.StoreID,
                             DivCode: divCode, Pass: pass, SortRank: sortRank,
@@ -1457,7 +1479,9 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                         // Pass 2 : top positive-OTS stores up from current alloc to their OTS-driven tier cap (- SOH).
                         // Pass 3 : negative-OTS stores get up to (MinMin - SOH). Conservative
                         //          — over-stocked stores get only the safety floor.
-                        // Pass 4 : if remaining < 10% of PoQty -> distribute to A/B/C proportional to MinMax.
+                        // Pass 4 : if remaining < 10% of PoQty -> distribute across A/B/C
+                        //          stores with LiveOts > 0, proportional to raw MinMax
+                        //          (share = MinMax / SUM(MinMax) * remaining, no per-store cap).
                         //          else -> flag the item in dbo.WmsPlanningFlag, drop remaining, move on.
                         static bool IsGradeAtoH(string? vg)
                         {
@@ -1496,27 +1520,144 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                         }
 
                         // ---------- Pass 1b: everyone (A..H, LiveOts > 0) up to Min-Min ----------
-                        var pass1bStores = eligible
-                            .Where(r => IsGradeAtoH(r.VolumeGroup) && LiveOtsPct(r) > 0)
-                            .OrderBy(r => VolumeGroupRank(r.VolumeGroup))
-                            .ThenByDescending(LiveOtsPct)
-                            .ToList();
-                        for (var i = 0; i < pass1bStores.Count; i++)
+                        // Bypass Pass 1b (operator toggle on the razor page) — v1.0.348+ logic:
+                        //   Compute per-item ABC coverage:
+                        //     ABCReqdStock  = Sum over A/B/C stores with LiveOts >= 0 of
+                        //                     max(0, Pass-2 tier - SOH).
+                        //     MinMinCoverPct = ABCReqdStock / PoQty * 100.
+                        //   Branch:
+                        //     MinMinCoverPct >= 100  ->  SKIP Pass 1b entirely (ABC need
+                        //                                already covers the PO — jump to Pass 2).
+                        //     MinMinCoverPct <  100  ->  STAGE 1: top up each ABC/OTS>=0 store
+                        //                                to its Pass-2 tier (- SOH). STAGE 2:
+                        //                                MinMin=1 sweep across A-H OTS>=0
+                        //                                stores for the leftover (ABC stores
+                        //                                skip via CapReached).
+                        //   Every item's calc is audited in dbo.Pass1ByPass, and the pct is
+                        //   stamped on every WMS_ContAllocationData row for the item.
+                        //   PoQty threshold is no longer used to decide Pass 1b eligibility.
+                        decimal? minMinCoverPct = null;   // stamped on every row for this item, null when bypass is off
+                        var bypassSkip = false;
+                        var bypassAbcThenMinMin = false;
+                        if (bypassPass1b)
                         {
-                            if (remaining <= 0) break;
-                            var r = pass1bStores[i];
-                            var cap = MinMinCapFor(r);
-                            var current = allocs.TryGetValue(r.StoreID, out var row) ? row.AllocQty : 0;
-                            var remBefore = remaining;
-                            var take = Math.Min(cap - current, remaining);
-                            if (take <= 0)
+                            var abcSet = eligible
+                                .Where(r => (r.VolumeGroup?.Trim().ToUpperInvariant()) is "A" or "B" or "C")
+                                .Where(r => LiveOtsPct(r) >= 0)
+                                .Select(r =>
+                                {
+                                    var (rawTier, cap, _) = SkuMaxRawAndCapFor(r);
+                                    var soh = itemSohByStore.GetValueOrDefault(
+                                        (r.StoreID.ToUpperInvariant(), line.ItemCode.ToUpperInvariant()), 0);
+                                    return (Row: r, Tier: rawTier, Soh: soh, Cap: cap);
+                                })
+                                .ToList();
+                            var abcMax       = abcSet.Sum(x => x.Tier);
+                            var abcSoh       = abcSet.Sum(x => x.Soh);
+                            var abcReqdStock = abcSet.Sum(x => x.Cap);
+                            minMinCoverPct = line.Qty > 0
+                                ? Math.Round((decimal)abcReqdStock * 100m / line.Qty, 2)
+                                : 0m;
+                            pass1BypassAudit!.Add((
+                                PONo: line.OraPONo ?? "",
+                                Itemcode: line.ItemCode,
+                                PoQty: line.Qty,
+                                ABCMax: abcMax,
+                                ABCSOH: abcSoh,
+                                ABCReqdStock: abcReqdStock,
+                                MinMinCoverPct: minMinCoverPct.Value));
+
+                            if (minMinCoverPct.Value >= 100m)
+                                bypassSkip = true;                        // ABC need alone covers the PO
+                            else
+                                bypassAbcThenMinMin = true;               // stage 1 + stage 2
+                        }
+
+                        if (bypassSkip)
+                        {
+                            // No Pass 1b work — remaining rolls straight into Pass 2.
+                        }
+                        else if (bypassAbcThenMinMin)
+                        {
+                            // ----- Stage 1: top up A/B/C OTS>=0 stores to Pass-2 tier - SOH -----
+                            var stage1Stores = eligible
+                                .Where(r => (r.VolumeGroup?.Trim().ToUpperInvariant()) is "A" or "B" or "C")
+                                .Where(r => LiveOtsPct(r) >= 0)
+                                .OrderBy(r => VolumeGroupRank(r.VolumeGroup))
+                                .ThenByDescending(LiveOtsPct)
+                                .ToList();
+                            for (var i = 0; i < stage1Stores.Count; i++)
                             {
-                                RecordTrace(1, i, r, "MinMin", cap, current, remBefore, 0, skipReason: "CapReached");
-                                continue;
+                                if (remaining <= 0) break;
+                                var r = stage1Stores[i];
+                                var (_, cap, tierName) = SkuMaxRawAndCapFor(r);
+                                var current = allocs.TryGetValue(r.StoreID, out var row) ? row.AllocQty : 0;
+                                var remBefore = remaining;
+                                var take = Math.Min(cap - current, remaining);
+                                if (take <= 0)
+                                {
+                                    RecordTrace(1, i, r, tierName, cap, current, remBefore, 0, skipReason: "CapReached");
+                                    continue;
+                                }
+                                allocs[r.StoreID] = BumpRow(row, r, take, 0, pass: 1, tierNameOverride: tierName);
+                                remaining -= take;
+                                RecordTrace(1, i, r, tierName, cap, current, remBefore, take);
                             }
-                            allocs[r.StoreID] = BumpRow(row, r, take, 0, pass: 1, tierNameOverride: "MinMin");
-                            remaining -= take;
-                            RecordTrace(1, i, r, "MinMin", cap, current, remBefore, take);
+
+                            // ----- Stage 2: MinMin=1 sweep on A-H OTS>=0 for the leftover -----
+                            if (remaining > 0)
+                            {
+                                var stage2Stores = eligible
+                                    .Where(r => IsGradeAtoH(r.VolumeGroup) && LiveOtsPct(r) >= 0)
+                                    .OrderBy(r => VolumeGroupRank(r.VolumeGroup))
+                                    .ThenByDescending(LiveOtsPct)
+                                    .ToList();
+                                for (var i = 0; i < stage2Stores.Count; i++)
+                                {
+                                    if (remaining <= 0) break;
+                                    var r = stage2Stores[i];
+                                    var sohOverride = itemSohByStore.GetValueOrDefault(
+                                        (r.StoreID.ToUpperInvariant(), line.ItemCode.ToUpperInvariant()), 0);
+                                    var cap = Math.Max(0, 1 - sohOverride);
+                                    var current = allocs.TryGetValue(r.StoreID, out var row) ? row.AllocQty : 0;
+                                    var remBefore = remaining;
+                                    var take = Math.Min(cap - current, remaining);
+                                    if (take <= 0)
+                                    {
+                                        RecordTrace(1, i, r, "MinMin", cap, current, remBefore, 0, skipReason: "CapReached", rawSkuMaxOverride: 1);
+                                        continue;
+                                    }
+                                    allocs[r.StoreID] = BumpRow(row, r, take, 0, pass: 1, tierNameOverride: "MinMin");
+                                    remaining -= take;
+                                    RecordTrace(1, i, r, "MinMin", cap, current, remBefore, take, rawSkuMaxOverride: 1);
+                                }
+                            }
+                        }
+                        else
+                        {
+                            // ----- Default (bypass off): band MinMin floor for A-H OTS>0 -----
+                            var pass1bStores = eligible
+                                .Where(r => IsGradeAtoH(r.VolumeGroup) && LiveOtsPct(r) > 0)
+                                .OrderBy(r => VolumeGroupRank(r.VolumeGroup))
+                                .ThenByDescending(LiveOtsPct)
+                                .ToList();
+                            for (var i = 0; i < pass1bStores.Count; i++)
+                            {
+                                if (remaining <= 0) break;
+                                var r = pass1bStores[i];
+                                var cap = MinMinCapFor(r);
+                                var current = allocs.TryGetValue(r.StoreID, out var row) ? row.AllocQty : 0;
+                                var remBefore = remaining;
+                                var take = Math.Min(cap - current, remaining);
+                                if (take <= 0)
+                                {
+                                    RecordTrace(1, i, r, "MinMin", cap, current, remBefore, 0, skipReason: "CapReached");
+                                    continue;
+                                }
+                                allocs[r.StoreID] = BumpRow(row, r, take, 0, pass: 1, tierNameOverride: "MinMin");
+                                remaining -= take;
+                                RecordTrace(1, i, r, "MinMin", cap, current, remBefore, take);
+                            }
                         }
 
                         // ---------- Pass 2: positive-OTS stores topped up to OTS-tier cap ----------
@@ -1589,44 +1730,103 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                                         },
                                         commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
                                 }
+                                // Also record a synthetic "Flagged" trace row so SUM(Take)
+                                // across the trace for (ContNo, Itemcode) still reconciles
+                                // to line.Qty. Direct append (not RecordTrace) because
+                                // there is no real store: StoreID = "Flagged", Cap = Take
+                                // = the dropped remainder, SkipReason = "Flagged".
+                                if (trace is not null)
+                                {
+                                    trace.Add(new AllocationTraceRow(
+                                        ContNo: line.ContNo, Itemcode: line.ItemCode, StoreID: "Flagged",
+                                        DivCode: divCode, Pass: 4, SortRank: 0,
+                                        VolumeGroup: null, TierName: "Flagged",
+                                        LiveOtsPctBefore: null,
+                                        Cap: remaining, Soh: 0,
+                                        CurrentBeforeTake: 0,
+                                        RemainingBefore: remaining,
+                                        Take: remaining,
+                                        RemainingAfter: 0,
+                                        RunningOtsQtyAfter: 0,
+                                        RunOption: runOption.ToString(),
+                                        SkipReason: "Flagged",
+                                        DefaultSkuMax: null, RawSkuMax: null, RatioSkuMax: null,
+                                        AvgOtsPercent: avgOtsDecimal,
+                                        AvgOtsMin: avgOtsMinDecimal,
+                                        AvgOtsMax: avgOtsMaxDecimal,
+                                        InitialOtsPct: null));
+                                }
                                 remaining = 0;   // drop; move on to next item
                             }
                             else
                             {
-                                // Distribute proportionally to A/B/C stores by MinMax.
+                                // Distribute proportionally to A/B/C stores by raw MinMax.
+                                // Filter: VG in {A, B, C} AND LiveOts > 0. Sort: LiveOts desc
+                                // (across A/B/C flat — highest-OTS store first regardless of
+                                // grade). Ratio uses raw MinMax as the weight; each store's
+                                // share is take-as-is (no per-store cap).
                                 var top3 = eligible
-                                    .Where(r => VolumeGroupRank(r.VolumeGroup) is 1 or 2 or 3)  // A, B, C from LPM_VolumeGroupRange.SortOrder
+                                    .Where(r => (r.VolumeGroup?.Trim().ToUpperInvariant()) is "A" or "B" or "C")  // A, B, C by letter (decoupled from SortOrder config so an S=Special row between B and C can't shove C out of the top-3 rank)
+                                    .Where(r => LiveOtsPct(r) > 0)                                                // positive-OTS stores only
                                     .Select(r => (Row: r, MinMax: RawMinMaxFor(r)))
                                     .Where(x => x.MinMax > 0)
-                                    .OrderBy(x => VolumeGroupRank(x.Row.VolumeGroup))
-                                    .ThenByDescending(x => LiveOtsPct(x.Row))
+                                    .OrderByDescending(x => LiveOtsPct(x.Row))
                                     .ToList();
                                 var totalMinMax = top3.Sum(x => x.MinMax);
                                 if (top3.Count > 0 && totalMinMax > 0)
                                 {
-                                    var assigned = 0;
-                                    for (int i = 0; i < top3.Count && remaining > 0; i++)
+                                    // FLOOR-based distribution (largest-remainder-lite):
+                                    //   floorShare(i) = FLOOR(RawSkuMax(i) * origRemaining / totalMinMax)
+                                    //   leftover      = origRemaining - SUM(floorShare)      (always >= 0)
+                                    //   +1 handed out to the first `leftover` stores in sort order
+                                    //   (i.e. highest LiveOts across A/B/C).
+                                    // Guarantees SUM(Take) == origRemaining exactly — never negative
+                                    // remaining. RatioSkuMax records the pure ROUND for audit only.
+                                    var origRemaining = remaining;
+                                    var floorShares = new int[top3.Count];
+                                    var roundShares = new int[top3.Count];
+                                    var shareSum = 0;
+                                    for (int i = 0; i < top3.Count; i++)
+                                    {
+                                        var raw = (double)origRemaining * top3[i].MinMax / totalMinMax;
+                                        floorShares[i] = (int)Math.Floor(raw);
+                                        roundShares[i] = (int)Math.Round(raw, MidpointRounding.AwayFromZero);
+                                        shareSum += floorShares[i];
+                                    }
+                                    var takeShares = (int[])floorShares.Clone();
+                                    var leftover = origRemaining - shareSum;   // >= 0 since floor <= raw
+                                    for (int j = 0; j < leftover && j < takeShares.Length; j++)
+                                        takeShares[j] += 1;
+
+                                    for (int i = 0; i < top3.Count; i++)
                                     {
                                         var (r, minMax) = top3[i];
-                                        var share = i == top3.Count - 1
-                                            ? remaining
-                                            : (int)Math.Floor((double)remaining * minMax / totalMinMax);
+                                        var ratioShare  = roundShares[i];  // pure ROUND ratio (audit)
+                                        var take        = takeShares[i];   // ratio + leftover on i==0
                                         var current = allocs.TryGetValue(r.StoreID, out var row) ? row.AllocQty : 0;
                                         var remBefore = remaining;
-                                        if (share <= 0)
+                                        if (take <= 0)
                                         {
-                                            RecordTrace(4, i, r, "MinMax", minMax, current, remBefore, 0, skipReason: "ShareZero");
+                                            RecordTrace(4, i, r, "MinMax", minMax, current, remBefore, 0, skipReason: "ShareZero", ratioSkuMaxOverride: ratioShare);
                                             continue;
                                         }
-                                        allocs[r.StoreID] = BumpRow(row, r, share, 0, pass: 4, tierNameOverride: "MinMax")
-                                            with { RatioSkuMax = minMax };
-                                        remaining -= share;
-                                        assigned += share;
-                                        RecordTrace(4, i, r, "MinMax", minMax, current, remBefore, share);
+                                        allocs[r.StoreID] = BumpRow(row, r, take, 0, pass: 4, tierNameOverride: "MinMax")
+                                            with { RatioSkuMax = ratioShare };
+                                        remaining -= take;
+                                        RecordTrace(4, i, r, "MinMax", minMax, current, remBefore, take, ratioSkuMaxOverride: ratioShare);
                                     }
-                                    _ = assigned;
                                 }
                             }
+                        }
+
+                        // Stamp MinMinCoverPct on every row for this item (same
+                        // value across all its store rows). Only when Bypass Pass 1b
+                        // was ticked; null otherwise so operators can spot bypass-
+                        // affected items in the grid.
+                        if (minMinCoverPct.HasValue)
+                        {
+                            foreach (var storeId in allocs.Keys.ToList())
+                                allocs[storeId] = allocs[storeId] with { MinMinCoverPct = minMinCoverPct };
                         }
                     }
 
@@ -1771,6 +1971,41 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
             foreach (DataColumn col in tdt.Columns)
                 tbulk.ColumnMappings.Add(col.ColumnName, col.ColumnName);
             await tbulk.WriteToServerAsync(tdt, ct);
+        }
+
+        // Bypass Pass 1b audit flush — one row per PO line item, DELETE-by-ContNo
+        // then bulk-insert so re-runs show the latest calc only. Only fires when
+        // the operator ticked Bypass Pass 1b on an FMMPO run.
+        if (pass1BypassAudit is { Count: > 0 })
+        {
+            progress?.Report(new AllocationProgress(0, pass1BypassAudit.Count, "Writing Bypass Pass 1b audit"));
+            await using var cb = OpenOnPremBackup();
+            cb.ChangeDatabase("LPMSIM");
+            await cb.ExecuteAsync(new CommandDefinition(
+                "DELETE FROM dbo.Pass1ByPass WHERE ContNo = @c",
+                new { c = contno }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+
+            var bdt = new DataTable();
+            bdt.Columns.Add("ContNo",         typeof(string));
+            bdt.Columns.Add("PONo",           typeof(string));
+            bdt.Columns.Add("Itemcode",       typeof(string));
+            bdt.Columns.Add("POQty",          typeof(int));
+            bdt.Columns.Add("ABCMax",         typeof(int));
+            bdt.Columns.Add("ABCSOH",         typeof(int));
+            bdt.Columns.Add("ABCReqdStock",   typeof(int));
+            bdt.Columns.Add("MinMinCoverPct", typeof(decimal));
+            foreach (var a in pass1BypassAudit)
+                bdt.Rows.Add(contno, a.PONo, a.Itemcode, a.PoQty, a.ABCMax, a.ABCSOH, a.ABCReqdStock, a.MinMinCoverPct);
+
+            using var bbulk = new SqlBulkCopy(cb)
+            {
+                DestinationTableName = "dbo.Pass1ByPass",
+                BatchSize = 5000,
+                BulkCopyTimeout = CommandTimeoutSeconds,
+            };
+            foreach (DataColumn col in bdt.Columns)
+                bbulk.ColumnMappings.Add(col.ColumnName, col.ColumnName);
+            await bbulk.WriteToServerAsync(bdt, ct);
         }
 
         return new AllocationProcessResult(result, blocked, trace);
@@ -2085,6 +2320,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         dt.Columns.Add("OtsQtyToday",      typeof(int));
         dt.Columns.Add("TgtEOM",           typeof(int));
         dt.Columns.Add("RawSkuMax",        typeof(int));
+        dt.Columns.Add("MinMinCoverPct",   typeof(decimal));
 
         var now = DateTime.UtcNow.AddHours(4);  // GST stamp for Trndate/Time1
         var trnDate = now.Date;
@@ -2131,7 +2367,8 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                 (object?)r.RunningOtsQty ?? DBNull.Value,
                 (object?)r.OtsQtyToday ?? DBNull.Value,
                 (object?)r.TgtEOM ?? DBNull.Value,
-                (object?)r.RawSkuMax ?? DBNull.Value);
+                (object?)r.RawSkuMax ?? DBNull.Value,
+                (object?)r.MinMinCoverPct ?? DBNull.Value);
         }
 
         c.ChangeDatabase("LPMSIM");
@@ -2250,6 +2487,12 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
             DELETE FROM LPMSIM.dbo.WMS_ContAllocationDraftHeader  WHERE Country = @ct AND ContNo = @c;",
             new { ct = genCountry, c = contno }, commandTimeout: 120, cancellationToken: ct));
 
+        // Planning flags key on ContNo (not GenCountry/BatchNo) — clear them
+        // too so a re-Process starts from a clean flag set.
+        await c.ExecuteAsync(new CommandDefinition(
+            "DELETE FROM LPMSIM.dbo.WmsPlanningFlag WHERE ContNo = @c",
+            new { c = contno }, commandTimeout: 120, cancellationToken: ct));
+
         _ = roTag; // silence unused-warning while keeping the runOption param on the signature
         return detailDeleted;
     }
@@ -2310,8 +2553,30 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
             azureRows = exists == 1 ? 1 : 0;
         }
 
+        // Planning flags: count Pass 4 items dropped this container (>=10% residual)
+        // and sum the RemainingQty so the UI can show "N items · Q qty" on the button.
+        var pf = await c.QueryFirstAsync<(int Cnt, int TotalQty)>(new CommandDefinition(@"
+            SELECT COUNT(*) AS Cnt, ISNULL(SUM(RemainingQty), 0) AS TotalQty
+              FROM LPMSIM.dbo.WmsPlanningFlag WITH (NOLOCK)
+             WHERE ContNo = @c",
+            new { c = contno }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+
         return new AllocationStatus(hasDraft, hasFinal, draftRows, f.Total, f.Max1, d.RunOption,
-                                     f.Fsm, f.Rr, f.Frr, azureRows, f.Fmm);
+                                     f.Fsm, f.Rr, f.Frr, azureRows, f.Fmm, pf.Cnt, pf.TotalQty);
+    }
+
+    /// <summary>Load Planning Flag rows for a container — the FMMPO Pass 4
+    /// items whose residual was ≥10% of PO qty and got dropped for planner review.</summary>
+    public async Task<List<PlanningFlagRow>> LoadPlanningFlagsAsync(string contno, CancellationToken ct = default)
+    {
+        await using var c = OpenOnPremBackup();
+        var rows = await c.QueryAsync<PlanningFlagRow>(new CommandDefinition(@"
+            SELECT FlaggedTS, ContNo, PONo, ItemCode, DivCode, PoQty, RemainingQty, RunOption, FlaggedBy
+              FROM LPMSIM.dbo.WmsPlanningFlag WITH (NOLOCK)
+             WHERE ContNo = @c
+             ORDER BY FlaggedTS DESC, ItemCode",
+            new { c = contno }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        return rows.AsList();
     }
 
     // ===================== Confirm & Save (Draft -> WMS_ContAllocationData) =====================
@@ -2512,10 +2777,10 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                                        int? POQty, int? AllocatedQty, int? Phase2Qty, int? SkuMax, int? DivCode, string? StoreID, string? Country, string? GroupCode, string? Division,
                                        string? Remarks, DateTime? LPMDt, double? OTS, int? PriorityRank, int? MnwToday,
                                        int? Pass1Qty, int? Pass2Qty, int? Pass3Qty, int? Pass4Qty, decimal? AvgOtsPercent,
-                                       int? OtsQtyToday, int? TgtEOM, int? RawSkuMax, int? RatioSkuMax)>(new CommandDefinition($@"
+                                       int? OtsQtyToday, int? TgtEOM, int? RawSkuMax, int? RatioSkuMax, decimal? MinMinCoverPct)>(new CommandDefinition($@"
             SELECT d.ContNo, d.ORAPONo, d.Itemcode, d.Itemname, d.Brand, d.POQty, d.AllocatedQty, d.Phase2Qty, d.SkuMax, d.DivCode, d.StoreID, d.Country,
                    d.GroupCode, d.Division, d.Remarks, d.LPMDt, d.OTS, d.PriorityRank, d.MnwToday,
-                   d.Pass1Qty, d.Pass2Qty, d.Pass3Qty, d.Pass4Qty, d.AvgOtsPercent, d.OtsQtyToday, d.TgtEOM, d.RawSkuMax, d.RatioSkuMax
+                   d.Pass1Qty, d.Pass2Qty, d.Pass3Qty, d.Pass4Qty, d.AvgOtsPercent, d.OtsQtyToday, d.TgtEOM, d.RawSkuMax, d.RatioSkuMax, d.MinMinCoverPct
               FROM LPMSIM.dbo.WMS_ContAllocationData d WITH (NOLOCK)
               {joinAndWhereSql}
              ORDER BY d.IdNo",
@@ -2615,7 +2880,8 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                 OtsQtyToday: r.OtsQtyToday,
                 TgtEOM: r.TgtEOM,
                 RawSkuMax: r.RawSkuMax,
-                RatioSkuMax: r.RatioSkuMax);
+                RatioSkuMax: r.RatioSkuMax,
+                MinMinCoverPct: r.MinMinCoverPct);
         }).ToList();
     }
 

@@ -84,6 +84,7 @@ public class Program
         builder.Services.AddScoped<ReportsService>();
         builder.Services.AddScoped<CountingCompletionTodayService>();
         builder.Services.AddScoped<WarehouseBoxesService>();
+        builder.Services.AddScoped<WarehouseSohSummaryService>();
         builder.Services.AddScoped<TransferGinGrnService>();
         builder.Services.AddScoped<ShipmentStatusService>();
         builder.Services.AddScoped<SyncDataCountService>();
@@ -102,6 +103,7 @@ public class Program
         builder.Services.AddHostedService<Wms.Web.Hosting.ToteMasterScheduledService>();
         builder.Services.AddHostedService<Wms.Web.Hosting.BoxesToWmsProdScheduledService>();
         builder.Services.AddHostedService<Wms.Web.Hosting.PendingGoodsReceiptEmailScheduledService>();
+        builder.Services.AddScoped<Wms.Web.Hosting.PendingGoodsReceiptEmailSender>();
         builder.Services.AddScoped<Wms.Data.Notifications.PendingGoodsReceiptEmailService>();
 
         // WMS DbContext — Azure SQL via AAD (Managed Identity in App Service,

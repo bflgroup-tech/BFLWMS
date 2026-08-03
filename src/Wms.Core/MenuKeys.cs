@@ -32,12 +32,15 @@ public static class MenuKeys
     public const string RPT_JAFZA_DIVISION_PROD   = "RPT_JAFZA_DIVISION_PROD";
     public const string RPT_SYNC_DATA_COUNT       = "RPT_SYNC_DATA_COUNT";
     public const string RPT_SHIPMENT_STATUS       = "RPT_SHIPMENT_STATUS";
+    public const string RPT_WAREHOUSE_SOH_SUMMARY = "RPT_WAREHOUSE_SOH_SUMMARY";
 
     public const string ADMIN_USERS               = "ADMIN_USERS";
     public const string ADMIN_WH_MASTER           = "ADMIN_WH_MASTER";
     public const string ADMIN_AUDIT_LOG           = "ADMIN_AUDIT_LOG";
     public const string ADMIN_NIGHTLY_BATCHES     = "ADMIN_NIGHTLY_BATCHES";
     public const string ADMIN_PENDING_GOODS_RECEIPT_EMAIL = "ADMIN_PENDING_GOODS_RECEIPT_EMAIL";
+
+    public const string TCM_LABORATORY             = "TCM_LABORATORY";
 
     /// <summary>One catalogue entry per menu item.</summary>
     /// <param name="Category">
@@ -67,6 +70,7 @@ public static class MenuKeys
 
         new MenuEntry(ROBOTIC_CHUTE_MAPPING,  "Robotic",             "Chute Mapping (Jafza)",      "robotic/chute-mapping",     new[] { Roles.Admin, Roles.WHAssociate, Roles.WHSupervisor, Roles.WHManager }),
         new MenuEntry(ROBOTIC_CHUTE_MAPPING_TECHNO, "Robotic",       "Chute Mapping (Techno)",     "robotic/chute-mapping-techno", new[] { Roles.Admin, Roles.WHAssociate, Roles.WHSupervisor, Roles.WHManager }),
+        new MenuEntry(TCM_LABORATORY,         "TCM Laboratory",      "Upload TCM File",            "tcm-laboratory",            new[] { Roles.Admin, Roles.WHManager, Roles.WHSupervisor }),
 
         new MenuEntry(DATASYNC_CONTAINER_ALLOCATION, "Data Sync",   "Container Allocation Data Sync", "datasync/container-allocation", new[] { Roles.Admin, Roles.WHManager }),
         new MenuEntry(DATASYNC_MASTER,               "Data Sync",   "Master Data Sync",               "datasync/master",               new[] { Roles.Admin, Roles.WHManager }),
@@ -86,6 +90,7 @@ public static class MenuKeys
         new MenuEntry(RPT_COUNTING_COMPLETION,"Reports",            "Counting Completion Report","reports/counting-completion",new[] { Roles.Admin, Roles.Reports }),
         new MenuEntry(RPT_JAFZA_DIVISION_PROD,"Reports",            "JAFZA Production Report(Manual/Robo/Export)",  "reports/jafza-division-production",new[] { Roles.Admin, Roles.Reports }),
         new MenuEntry(RPT_SHIPMENT_STATUS,   "Reports",             "Shipment Status",           "reports/shipment-status",  new[] { Roles.Admin, Roles.Reports }, "Inbound"),
+        new MenuEntry(RPT_WAREHOUSE_SOH_SUMMARY, "Reports",         "Warehouse SOH Summary",     "reports/warehouse-soh-summary", new[] { Roles.Admin, Roles.Reports }),
         new MenuEntry(RPT_SYNC_DATA_COUNT,   "IT",                 "Sync Data Count",           "reports/sync-data-count",   new[] { Roles.Admin, Roles.Reports }),
 
         new MenuEntry(ADMIN_USERS,           "Admin",               "Users & Roles",             "admin/users",               new[] { Roles.Admin }),

@@ -30,7 +30,6 @@ public class CountingReportsService(IOnPremConnectionResolver resolver)
         var rows = await opb.QueryAsync<PendingPurchaseRow>(new CommandDefinition(@"
             SELECT bc.ContNo,
                    CAST(bc.Trndate AS DATE) AS CountingDate,
-                   CONVERT(VARCHAR(8), bc.TrnTime, 108) AS TrnTime,
                    ISNULL(bc.BuildingQty, 0) AS CountedQty,
                    DATEDIFF(day, bc.Trndate,
                             CAST(DATEADD(hour, 4, SYSUTCDATETIME()) AS DATE)) AS AgeingDays,
@@ -51,9 +50,53 @@ public class CountingReportsService(IOnPremConnectionResolver resolver)
                AND NOT EXISTS (
                    SELECT 1
                      FROM usa.dbo.usapurchase up WITH (NOLOCK)
-                    WHERE up.ContNo = bc.ContNo
+                    WHERE up.Contno = bc.ContNo
                )
              ORDER BY AgeingDays DESC, bc.ContNo",
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        return rows.AsList();
+    }
+
+    /// <summary>
+    /// Purchased Containers (TODAY only, GST) — containers whose earliest
+    /// usa.usapurchase row landed today, joined with their counting record
+    /// from bfldata.BuildingCompletion. Second section of the Pending Goods
+    /// Receipt email; scoped to today so the mail stays a short "what got
+    /// purchased today" digest rather than an ever-growing history.
+    /// </summary>
+    public async Task<List<PurchasedContainerRow>> GetPurchasedContainersAsync(CancellationToken ct = default)
+    {
+        await using var opb = OpenOnPremBackup();
+        var rows = await opb.QueryAsync<PurchasedContainerRow>(new CommandDefinition(@"
+            DECLARE @today DATE = CAST(DATEADD(hour, 4, SYSUTCDATETIME()) AS DATE);
+
+            SELECT bc.ContNo,
+                   CAST(bc.Trndate AS DATE) AS CountingDate,
+                   ISNULL(bc.BuildingQty, 0) AS CountedQty,
+                   CAST(up.Trndate AS DATE) AS PurchaseDate,
+                   CONVERT(VARCHAR(8), up.Time1, 108) AS PurchaseTime,
+                   DATEDIFF(day, bc.Trndate, up.Trndate) AS DaysToPurchase,
+                   Divisions = ISNULL(NULLIF(STUFF((
+                       SELECT ', ' + d.v
+                         FROM (SELECT DISTINCT pcr.Division AS v
+                                 FROM Online.dbo.PhotoCheckingResult pcr WITH (NOLOCK)
+                                WHERE pcr.ContNo = bc.ContNo
+                                  AND ISNULL(pcr.Division, '') <> '') d
+                        ORDER BY d.v
+                          FOR XML PATH(''), TYPE).value('.', 'NVARCHAR(MAX)'), 1, 2, ''), ''),
+                       (SELECT TOP 1 bcs.division
+                          FROM bfldata.dbo.BUILDINGCOMPLETIONSumm bcs WITH (NOLOCK)
+                         WHERE bcs.ContNo = bc.ContNo
+                           AND ISNULL(bcs.division, '') <> ''))
+              FROM bfldata.dbo.BuildingCompletion bc WITH (NOLOCK)
+             OUTER APPLY (
+                 SELECT TOP 1 up2.Trndate, up2.Time1
+                   FROM usa.dbo.usapurchase up2 WITH (NOLOCK)
+                  WHERE up2.Contno = bc.ContNo
+                  ORDER BY up2.Trndate, up2.Time1
+             ) up
+             WHERE CAST(up.Trndate AS DATE) = @today
+             ORDER BY up.Time1 DESC, bc.ContNo",
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         return rows.AsList();
     }

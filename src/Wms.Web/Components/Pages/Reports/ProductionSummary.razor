@@ -81,10 +81,14 @@ else if (VisibleRows().Count > 0)
     var unkQty     = visibleRows.Where(r => r.Kind == "Unknown").Sum(r => r.TotalScanned);
     var visibleStoreQty    = visibleRows.Sum(r => r.StoreQty);
     var visibleTransferQty = _transferQtyByCountry.Where(kv => _selectedCountries.Contains(kv.Key)).Sum(kv => kv.Value);
+    var visibleMerchNeed   = _merchNeedByCountry.Where(kv => _selectedCountries.Contains(kv.Key)).Select(kv => kv.Value).ToList();
+    var merchNeedMonth     = visibleMerchNeed.Sum(m => m.MerchNeedMonth);
+    var merchNeedWeek      = visibleMerchNeed.Sum(m => m.MerchNeedWeek);
+    var merchNeedDay       = visibleMerchNeed.Sum(m => m.MerchNeedDay);
 
     <div class="aiwms-section">
-        <div style="display:grid; grid-template-columns: 2fr 1fr 1fr 1fr 1fr 1fr; gap:12px;">
-            @MetricCard("Store Qty",      visibleStoreQty.ToString("N0"), "#fdf2f8", "#9d174d", true)
+        <div style="display:grid; grid-template-columns: repeat(9, 1fr); gap:12px;">
+            @MetricCard("Store Qty",      visibleStoreQty.ToString("N0"), "#fdf2f8", "#9d174d", false)
             @if (visibleTransferQty > 0)
             {
                 @MetricCard("Transfer Qty",   visibleTransferQty.ToString("N0"),     "#ccfbf1", "#0f766e", false)
@@ -93,6 +97,9 @@ else if (VisibleRows().Count > 0)
             @MetricCard("LPM",           lpmQty.ToString("N0"),           "#dcfce7", "#166534", false)
             @MetricCard("Non-LPM",       nonLpmQty.ToString("N0"),        "#f3e8ff", "#6b21a8", false)
             @MetricCard("Unknown",       unkQty.ToString("N0"),           "#fef3c7", "#92400e", false)
+            @MetricCard("Merch Need (Month)", merchNeedMonth.ToString("N0"), "#ffedd5", "#9a3412", false)
+            @MetricCard("Merch Need (Week)",  merchNeedWeek.ToString("N0"),  "#ffedd5", "#9a3412", false)
+            @MetricCard("Merch Need (Day)",   merchNeedDay.ToString("N0"),   "#ffedd5", "#9a3412", false)
         </div>
     </div>
 
@@ -104,13 +111,16 @@ else if (VisibleRows().Count > 0)
             {
                 <div style="margin-bottom:14px;">
                     <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary); margin-bottom:6px;">@cs.Country</div>
-                    <div style="display:grid; grid-template-columns: 2fr 1fr 1fr 1fr 1fr 1fr; gap:12px;">
+                    <div style="display:grid; grid-template-columns: repeat(9, 1fr); gap:12px;">
                         @MetricCard("Store Qty",      cs.StoreQty.ToString("N0"),     "#fdf2f8", "#9d174d", false)
                         @MetricCard("Transfer Qty",   cs.TransferQty.ToString("N0"),  "#ccfbf1", "#0f766e", false)
                         @MetricCard("Total Scanned",  cs.TotalScanned.ToString("N0"), "#dbeafe", "#1e40af", false)
                         @MetricCard("LPM",            cs.Lpm.ToString("N0"),          "#dcfce7", "#166534", false)
                         @MetricCard("Non-LPM",        cs.NonLpm.ToString("N0"),       "#f3e8ff", "#6b21a8", false)
                         @MetricCard("Unknown",        cs.Unknown.ToString("N0"),      "#fef3c7", "#92400e", false)
+                        @MetricCard("Merch Need (Month)", cs.MerchNeedMonth.ToString("N0"), "#ffedd5", "#9a3412", false)
+                        @MetricCard("Merch Need (Week)",  cs.MerchNeedWeek.ToString("N0"),  "#ffedd5", "#9a3412", false)
+                        @MetricCard("Merch Need (Day)",   cs.MerchNeedDay.ToString("N0"),   "#ffedd5", "#9a3412", false)
                     </div>
                 </div>
             }
@@ -129,44 +139,56 @@ else if (VisibleRows().Count > 0)
             var multiCountry = _selectedCountries.Count > 1;
             var pivot = visibleSummary
                 .GroupBy(s => new { s.Country, s.ProductionDay, s.Division })
-                .Select(g => new DivisionPivotRow(
-                    g.Key.Country,
-                    g.Key.ProductionDay,
-                    g.Key.Division,
-                    g.Where(x => x.Kind == "LPM").Sum(x => x.TotalScanned),
-                    g.Where(x => x.Kind == "Non-LPM").Sum(x => x.TotalScanned),
-                    g.Where(x => x.Kind == "Mixed").Sum(x => x.TotalScanned),
-                    g.Where(x => x.Kind == "Unknown").Sum(x => x.TotalScanned),
-                    g.Sum(x => x.TotalScanned),
-                    g.Sum(x => x.StoreQty),
-                    g.Sum(x => x.UaeStoreQty),
-                    g.Sum(x => x.OmanStoreQty),
-                    g.Sum(x => x.Ex2StoreQty)))
+                .Select(g =>
+                {
+                    var mn = MerchNeedFor(g.Key.Country, g.Key.Division);
+                    return new DivisionPivotRow(
+                        g.Key.Country,
+                        g.Key.ProductionDay,
+                        g.Key.Division,
+                        g.Where(x => x.Kind == "LPM").Sum(x => x.TotalScanned),
+                        g.Where(x => x.Kind == "Non-LPM").Sum(x => x.TotalScanned),
+                        g.Where(x => x.Kind == "Mixed").Sum(x => x.TotalScanned),
+                        g.Where(x => x.Kind == "Unknown").Sum(x => x.TotalScanned),
+                        g.Sum(x => x.TotalScanned),
+                        g.Sum(x => x.StoreQty),
+                        g.Sum(x => x.UaeStoreQty),
+                        g.Sum(x => x.OmanStoreQty),
+                        g.Sum(x => x.Ex2StoreQty),
+                        mn.Month, mn.Week, mn.Day);
+                })
                 .OrderByDescending(x => x.ProductionDay)
                 .ThenBy(x => x.Country)
                 .ThenBy(x => x.Division)
                 .ToList();
+            pivot = WithMissingMerchNeedDivisions(pivot);
             var hasMixed = pivot.Sum(x => x.Mixed) > 0;
             var isUae = _selectedCountries.Contains("UAE");
 
             <table class="aiwms-table aiwms-table-dense">
                 <thead>
                     <tr>
-                        <th>Date</th>
-                        @if (multiCountry) { <th>Country</th> }
-                        <th>Division</th>
-                        <th style="text-align:right">LPM</th>
-                        <th style="text-align:right">Non-LPM</th>
-                        @if (hasMixed) { <th style="text-align:right">Mixed</th> }
-                        <th style="text-align:right">Unknown</th>
-                        <th style="text-align:right">Scanned Qty</th>
-                        <th style="text-align:right">Stores Qty</th>
+                        <th rowspan="2">Date</th>
+                        @if (multiCountry) { <th rowspan="2">Country</th> }
+                        <th rowspan="2">Division</th>
+                        <th rowspan="2" style="text-align:right">LPM</th>
+                        <th rowspan="2" style="text-align:right">Non-LPM</th>
+                        @if (hasMixed) { <th rowspan="2" style="text-align:right">Mixed</th> }
+                        <th rowspan="2" style="text-align:right">Unknown</th>
+                        <th rowspan="2" style="text-align:right">Scanned Qty</th>
+                        <th rowspan="2" style="text-align:right">Stores Qty</th>
                         @if (isUae)
                         {
-                            <th style="text-align:right">UAE Qty</th>
-                            <th style="text-align:right">Oman Qty</th>
-                            <th style="text-align:right">Ex2 Qty</th>
+                            <th rowspan="2" style="text-align:right">UAE Qty</th>
+                            <th rowspan="2" style="text-align:right">Oman Qty</th>
+                            <th rowspan="2" style="text-align:right">Ex2 Qty</th>
                         }
+                        <th colspan="3" style="text-align:center">Merch Need</th>
+                    </tr>
+                    <tr>
+                        <th style="text-align:right">Month</th>
+                        <th style="text-align:right">Week</th>
+                        <th style="text-align:right">Day</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -188,6 +210,9 @@ else if (VisibleRows().Count > 0)
                                 <td style="text-align:right">@p.OmanQty.ToString("N0")</td>
                                 <td style="text-align:right">@p.Ex2Qty.ToString("N0")</td>
                             }
+                            <td style="text-align:right">@p.MerchNeedMonth.ToString("N0")</td>
+                            <td style="text-align:right">@p.MerchNeedWeek.ToString("N0")</td>
+                            <td style="text-align:right">@p.MerchNeedDay.ToString("N0")</td>
                         </tr>
                     }
                     <tr style="font-weight:700; background:#fff7e0">
@@ -204,6 +229,9 @@ else if (VisibleRows().Count > 0)
                             <td style="text-align:right">@pivot.Sum(x => x.OmanQty).ToString("N0")</td>
                             <td style="text-align:right">@pivot.Sum(x => x.Ex2Qty).ToString("N0")</td>
                         }
+                        <td style="text-align:right">@pivot.Sum(x => x.MerchNeedMonth).ToString("N0")</td>
+                        <td style="text-align:right">@pivot.Sum(x => x.MerchNeedWeek).ToString("N0")</td>
+                        <td style="text-align:right">@pivot.Sum(x => x.MerchNeedDay).ToString("N0")</td>
                     </tr>
                 </tbody>
             </table>
@@ -332,6 +360,42 @@ else if (_loadedOnce && VisibleRows().Count == 0)
     private int  _overallStoreQty;
     private long _transferQty;
     private Dictionary<string, long> _transferQtyByCountry = new(StringComparer.OrdinalIgnoreCase);
+    private Dictionary<string, MerchNeedRow> _merchNeedByCountry = new(StringComparer.OrdinalIgnoreCase);
+    private Dictionary<string, List<MerchNeedDivisionRow>> _merchNeedByCountryDivision = new(StringComparer.OrdinalIgnoreCase);
+
+    private (long Month, long Week, long Day) MerchNeedFor(string country, string division)
+    {
+        if (_merchNeedByCountryDivision.TryGetValue(country, out var list))
+        {
+            var match = list.FirstOrDefault(d => string.Equals(d.Division, division, StringComparison.OrdinalIgnoreCase));
+            if (match is not null) return (match.MerchNeedMonth, match.MerchNeedWeek, match.MerchNeedDay);
+        }
+        return (0, 0, 0);
+    }
+
+    // Divisions with Merch Need data but zero scans that day are otherwise invisible in the
+    // Summary pivot (it's grouped from scan rows), so add a zero-production row for each one
+    // per (Country, ProductionDay) already present in the report.
+    private List<DivisionPivotRow> WithMissingMerchNeedDivisions(List<DivisionPivotRow> pivot)
+    {
+        var missing = pivot
+            .Select(p => (p.Country, p.ProductionDay))
+            .Distinct()
+            .SelectMany(cd => _merchNeedByCountryDivision.GetValueOrDefault(cd.Country, new())
+                .Where(mn => !pivot.Any(p =>
+                    string.Equals(p.Country, cd.Country, StringComparison.OrdinalIgnoreCase) &&
+                    p.ProductionDay == cd.ProductionDay &&
+                    string.Equals(p.Division, mn.Division, StringComparison.OrdinalIgnoreCase)))
+                .Select(mn => new DivisionPivotRow(
+                    cd.Country, cd.ProductionDay, mn.Division,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    mn.MerchNeedMonth, mn.MerchNeedWeek, mn.MerchNeedDay)));
+        return pivot.Concat(missing)
+            .OrderByDescending(x => x.ProductionDay)
+            .ThenBy(x => x.Country)
+            .ThenBy(x => x.Division)
+            .ToList();
+    }
 
     private bool CanLoad => _selectedCountries.Count > 0 && _from <= _to;
 
@@ -343,7 +407,8 @@ else if (_loadedOnce && VisibleRows().Count == 0)
     private bool HasAnyVisibleRows => _rows.Any(r => _selectedCountries.Contains(r.Country));
 
     private sealed record CountrySummaryTotals(
-        string Country, long StoreQty, long TransferQty, long TotalScanned, long Lpm, long NonLpm, long Unknown);
+        string Country, long StoreQty, long TransferQty, long TotalScanned, long Lpm, long NonLpm, long Unknown,
+        long MerchNeedMonth, long MerchNeedWeek, long MerchNeedDay);
 
     private List<CountrySummaryTotals> CountrySummaries(List<CountryRow> rows) =>
         rows.GroupBy(r => r.Country)
@@ -354,14 +419,18 @@ else if (_loadedOnce && VisibleRows().Count == 0)
                 g.Sum(r => r.TotalScanned),
                 g.Where(r => r.Kind == "LPM").Sum(r => r.TotalScanned),
                 g.Where(r => r.Kind == "Non-LPM").Sum(r => r.TotalScanned),
-                g.Where(r => r.Kind == "Unknown").Sum(r => r.TotalScanned)))
+                g.Where(r => r.Kind == "Unknown").Sum(r => r.TotalScanned),
+                _merchNeedByCountry.GetValueOrDefault(g.Key)?.MerchNeedMonth ?? 0,
+                _merchNeedByCountry.GetValueOrDefault(g.Key)?.MerchNeedWeek  ?? 0,
+                _merchNeedByCountry.GetValueOrDefault(g.Key)?.MerchNeedDay   ?? 0))
             .OrderBy(c => c.Country)
             .ToList();
 
     private sealed record DivisionPivotRow(
         string Country, DateTime ProductionDay, string Division,
         long Lpm, long NonLpm, long Mixed, long Unknown,
-        long ScannedQty, int StoresQty, int UaeQty, int OmanQty, int Ex2Qty);
+        long ScannedQty, int StoresQty, int UaeQty, int OmanQty, int Ex2Qty,
+        long MerchNeedMonth, long MerchNeedWeek, long MerchNeedDay);
 
     // Current WH production day in GST (UTC+4). If "now" is before 06:00 GST,
     // the production day is yesterday.
@@ -375,11 +444,12 @@ else if (_loadedOnce && VisibleRows().Count == 0)
     {
         if (!CanLoad) return;
         _loading = true; _message = ""; _loadedOnce = false;
-        _rows.Clear(); _summary.Clear(); _overallStoreQty = 0; _transferQty = 0; _transferQtyByCountry.Clear();
+        _rows.Clear(); _summary.Clear(); _overallStoreQty = 0; _transferQty = 0; _transferQtyByCountry.Clear(); _merchNeedByCountry.Clear(); _merchNeedByCountryDivision.Clear();
         await InvokeAsync(StateHasChanged);
         try
         {
             var countries = _selectedCountries.ToList();
+            var merchNeedErrors = new List<string>();
             for (int i = 0; i < countries.Count; i++)
             {
                 var country = countries[i];
@@ -397,13 +467,28 @@ else if (_loadedOnce && VisibleRows().Count == 0)
                 _overallStoreQty += result.OverallStoreQty;
                 _transferQty     += result.TransferQty;
                 _transferQtyByCountry[country] = result.TransferQty;
+
+                // Merch Need reads LPM_EOM_Output directly (current calendar month, all
+                // countries in one table) — independent of the per-country scan connection
+                // above, so fetch it even for countries with no scan connection configured.
+                try { _merchNeedByCountry[country] = await Svc.GetMerchNeedAsync(country); }
+                catch (Exception mnEx) { merchNeedErrors.Add($"{country}: {mnEx.Message}"); _merchNeedByCountry[country] = new MerchNeedRow(0, 0, 0); }
+
+                try { _merchNeedByCountryDivision[country] = await Svc.GetMerchNeedByDivisionAsync(country); }
+                catch (Exception mnEx) { merchNeedErrors.Add($"{country} (by division): {mnEx.Message}"); _merchNeedByCountryDivision[country] = new(); }
             }
             _loadedOnce = true;
             var unconfigured = countries.Where(c => !_configuredCountries.Contains(c)).ToList();
+            var notes = new List<string>();
             if (unconfigured.Count > 0)
             {
-                ShowInfo($"Note: {string.Join(", ", unconfigured)} {(unconfigured.Count == 1 ? "has" : "have")} no DB connection configured, so {(unconfigured.Count == 1 ? "it" : "they")} will always show 0 rows here.");
+                notes.Add($"{string.Join(", ", unconfigured)} {(unconfigured.Count == 1 ? "has" : "have")} no DB connection configured, so {(unconfigured.Count == 1 ? "it" : "they")} will always show 0 rows here.");
             }
+            if (merchNeedErrors.Count > 0)
+            {
+                notes.Add($"Merch Need lookup failed for: {string.Join(" | ", merchNeedErrors)}");
+            }
+            if (notes.Count > 0) ShowInfo("Note: " + string.Join(" ", notes));
         }
         catch (Exception ex) { ShowError($"Load failed: {ex.Message}"); }
         finally { _loading = false; _loadingMsg = null; }
@@ -420,19 +505,26 @@ else if (_loadedOnce && VisibleRows().Count == 0)
         {
             var pivot = visibleSummary
                 .GroupBy(s => new { s.Country, s.ProductionDay, s.Division })
-                .Select(g => new DivisionPivotRow(
-                    g.Key.Country, g.Key.ProductionDay, g.Key.Division,
-                    g.Where(x => x.Kind == "LPM").Sum(x => x.TotalScanned),
-                    g.Where(x => x.Kind == "Non-LPM").Sum(x => x.TotalScanned),
-                    g.Where(x => x.Kind == "Mixed").Sum(x => x.TotalScanned),
-                    g.Where(x => x.Kind == "Unknown").Sum(x => x.TotalScanned),
-                    g.Sum(x => x.TotalScanned), g.Sum(x => x.StoreQty),
-                    g.Sum(x => x.UaeStoreQty), g.Sum(x => x.OmanStoreQty), g.Sum(x => x.Ex2StoreQty)))
+                .Select(g =>
+                {
+                    var mn = MerchNeedFor(g.Key.Country, g.Key.Division);
+                    return new DivisionPivotRow(
+                        g.Key.Country, g.Key.ProductionDay, g.Key.Division,
+                        g.Where(x => x.Kind == "LPM").Sum(x => x.TotalScanned),
+                        g.Where(x => x.Kind == "Non-LPM").Sum(x => x.TotalScanned),
+                        g.Where(x => x.Kind == "Mixed").Sum(x => x.TotalScanned),
+                        g.Where(x => x.Kind == "Unknown").Sum(x => x.TotalScanned),
+                        g.Sum(x => x.TotalScanned), g.Sum(x => x.StoreQty),
+                        g.Sum(x => x.UaeStoreQty), g.Sum(x => x.OmanStoreQty), g.Sum(x => x.Ex2StoreQty),
+                        mn.Month, mn.Week, mn.Day);
+                })
                 .OrderByDescending(x => x.ProductionDay).ThenBy(x => x.Country).ThenBy(x => x.Division).ToList();
+            pivot = WithMissingMerchNeedDivisions(pivot);
             var isUae = _selectedCountries.Contains("UAE");
             if (multiCountry) sb.Append("Country,");
             sb.Append("Date,Division,LPM,Non-LPM,Mixed,Unknown,Scanned Qty,Stores Qty");
             if (isUae) sb.Append(",UAE Qty,Oman Qty,Ex2 Qty");
+            sb.Append(",Merch Need Month,Merch Need Week,Merch Need Day");
             sb.AppendLine();
             foreach (var p in pivot)
             {
@@ -443,6 +535,7 @@ else if (_loadedOnce && VisibleRows().Count == 0)
                   .Append(p.Mixed).Append(',').Append(p.Unknown).Append(',')
                   .Append(p.ScannedQty).Append(',').Append(p.StoresQty);
                 if (isUae) sb.Append(',').Append(p.UaeQty).Append(',').Append(p.OmanQty).Append(',').Append(p.Ex2Qty);
+                sb.Append(',').Append(p.MerchNeedMonth).Append(',').Append(p.MerchNeedWeek).Append(',').Append(p.MerchNeedDay);
                 sb.AppendLine();
             }
             if (multiCountry) sb.Append(",");
@@ -450,6 +543,7 @@ else if (_loadedOnce && VisibleRows().Count == 0)
               .Append(pivot.Sum(x => x.Mixed)).Append(',').Append(pivot.Sum(x => x.Unknown)).Append(',')
               .Append(pivot.Sum(x => x.ScannedQty)).Append(',').Append(pivot.Sum(x => x.StoresQty));
             if (isUae) sb.Append(',').Append(pivot.Sum(x => x.UaeQty)).Append(',').Append(pivot.Sum(x => x.OmanQty)).Append(',').Append(pivot.Sum(x => x.Ex2Qty));
+            sb.Append(',').Append(pivot.Sum(x => x.MerchNeedMonth)).Append(',').Append(pivot.Sum(x => x.MerchNeedWeek)).Append(',').Append(pivot.Sum(x => x.MerchNeedDay));
             sb.AppendLine();
         }
         else
@@ -475,7 +569,7 @@ else if (_loadedOnce && VisibleRows().Count == 0)
 
     private RenderFragment MetricCard(string label, string value, string bg, string fg, bool big) => __builder =>
     {
-        <div style="background:@bg; color:@fg; padding:12px 16px; border-radius:var(--r-sm); border:1px solid #00000010">
+        <div style="background:@bg; color:@fg; padding:12px 16px; border-radius:var(--r-sm); border:1px solid #00000010; text-align:center; display:flex; flex-direction:column; align-items:center; justify-content:center;">
             <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px">@label</div>
             <div style="font-size:@(big ? "1.6rem" : "1.2rem"); font-weight:@(big ? "900" : "700")">@value</div>
         </div>
