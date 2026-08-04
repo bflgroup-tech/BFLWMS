@@ -8,6 +8,7 @@
 @inject JafzaDivisionProductionService Svc
 @inject JafzaRoboProductionService RoboSvc
 @inject JafzaExportProductionService ExportSvc
+@inject JafzaBoxGrnProductionService BoxGrnSvc
 @inject IJSRuntime JS
 @inject ILogger<JafzaDivisionProduction> Logger
 
@@ -23,27 +24,14 @@
     {
         <p>Robo pairing production from ROBOTICS.dbo.PairingConformationDetail (JafazaRoboDb). Scans before 05:00 count toward the previous day's shift. Date range is limited to 7 days.</p>
     }
-    else
+    else if (_source == "Export")
     {
         <p>Export production from BFLDATA.dbo.DailyCountCategoryTrf (Warehouse = JAFZA) — Qty is the sum of all hour buckets for that Division/Shop. Summary only (no item-level detail available from this source).</p>
     }
-</div>
-
-<div class="aiwms-section">
-    <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:12px;">
-        <div style="background:#FCE7EB; border-radius:var(--r-sm); padding:12px 16px;">
-            <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:#8A3A48">Manual Prod</div>
-            <div style="font-size:1.4rem; font-weight:800; color:#8A3A48">@(_totalsLoading ? "..." : _manualTotal.ToString("N0"))</div>
-        </div>
-        <div style="background:#E6F7F0; border-radius:var(--r-sm); padding:12px 16px;">
-            <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:#1F6E4C">RoboProd</div>
-            <div style="font-size:1.4rem; font-weight:800; color:#1F6E4C">@(_totalsLoading ? "..." : _roboTotal.ToString("N0"))</div>
-        </div>
-        <div style="background:#E4EEFC; border-radius:var(--r-sm); padding:12px 16px;">
-            <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:#1E4E8C">Export Prod</div>
-            <div style="font-size:1.4rem; font-weight:800; color:#1E4E8C">@(_totalsLoading ? "..." : _exportTotal.ToString("N0"))</div>
-        </div>
-    </div>
+    else
+    {
+        <p>Box GRN production for JAFZA. Date range is limited to 7 days.</p>
+    }
 </div>
 
 <div class="aiwms-section">
@@ -57,6 +45,9 @@
         </label>
         <label style="display:flex; align-items:center; gap:4px; cursor:pointer">
             <input type="radio" name="src" value="Export" checked="@(_source == "Export")" @onchange="@(() => SetSource("Export"))" /> Export
+        </label>
+        <label style="display:flex; align-items:center; gap:4px; cursor:pointer">
+            <input type="radio" name="src" value="BoxGrn" checked="@(_source == "BoxGrn")" @onchange="@(() => SetSource("BoxGrn"))" /> Box GRN
         </label>
     </div>
 
@@ -92,7 +83,7 @@
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">TO *</label>
             <input type="date" @bind="_to" @bind:format="yyyy-MM-dd" max="@DateTime.Today.ToString("yyyy-MM-dd")" disabled="@(_selectedWeek.HasValue)" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
         </div>
-        @if (_source != "Export")
+        @if (_source != "Export" && _source != "BoxGrn")
         {
             <div>
                 <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">USERNAME (optional)</label>
@@ -128,6 +119,31 @@
     {
         <div class="aiwms-alert @(_isError ? "error" : "info")" style="margin-top:12px">@_message</div>
     }
+</div>
+
+<div class="aiwms-section">
+    <div style="display:grid; grid-template-columns: repeat(5, 1fr); gap:12px;">
+        <div style="background:#FCE7EB; border-radius:var(--r-sm); padding:12px 16px;">
+            <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:#8A3A48">Manual Prod</div>
+            <div style="font-size:1.4rem; font-weight:800; color:#8A3A48">@(_totalsLoading ? "..." : _manualTotal.ToString("N0"))</div>
+        </div>
+        <div style="background:#E6F7F0; border-radius:var(--r-sm); padding:12px 16px;">
+            <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:#1F6E4C">RoboProd</div>
+            <div style="font-size:1.4rem; font-weight:800; color:#1F6E4C">@(_totalsLoading ? "..." : _roboTotal.ToString("N0"))</div>
+        </div>
+        <div style="background:#E4EEFC; border-radius:var(--r-sm); padding:12px 16px;">
+            <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:#1E4E8C">Export Prod</div>
+            <div style="font-size:1.4rem; font-weight:800; color:#1E4E8C">@(_totalsLoading ? "..." : _exportTotal.ToString("N0"))</div>
+        </div>
+        <div style="background:#FFF4E0; border-radius:var(--r-sm); padding:12px 16px;">
+            <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:#8A5A12">Box GRN Prod</div>
+            <div style="font-size:1.4rem; font-weight:800; color:#8A5A12">@(_totalsLoading ? "..." : _boxGrnTotal.ToString("N0"))</div>
+        </div>
+        <div style="background:#EFEAFB; border-radius:var(--r-sm); padding:12px 16px;">
+            <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:#4E3B96">Total Prod</div>
+            <div style="font-size:1.4rem; font-weight:800; color:#4E3B96">@(_totalsLoading ? "..." : (_manualTotal + _roboTotal + _exportTotal + _boxGrnTotal).ToString("N0"))</div>
+        </div>
+    </div>
 </div>
 
 @if (_source == "Manual")
@@ -393,6 +409,119 @@ else if (_source == "Robo")
         </div>
     }
 }
+else if (_source == "BoxGrn")
+{
+    @if (_view == "Summary" && _boxGrnSummaryRows.Count > 0)
+    {
+        <div class="aiwms-section">
+            <div style="display:grid; grid-template-columns: repeat(2, 1fr); gap:12px;">
+                <div style="background:#FFF4E0; border-radius:var(--r-sm); padding:12px 16px;">
+                    <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:#8A5A12">Total Divisions</div>
+                    <div style="font-size:1.4rem; font-weight:800; color:#8A5A12">@FilteredBoxGrnSummaryRows().Select(r => r.Division).Distinct(StringComparer.OrdinalIgnoreCase).Count().ToString("N0")</div>
+                </div>
+                <div style="background:#EFEAFB; border-radius:var(--r-sm); padding:12px 16px;">
+                    <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:#4E3B96">Total Qty</div>
+                    <div style="font-size:1.4rem; font-weight:800; color:#4E3B96">@FilteredBoxGrnSummaryRows().Sum(r => r.Qty).ToString("N0")</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="aiwms-section">
+            <div style="display:flex; gap:12px; align-items:end; margin-bottom:14px; flex-wrap:wrap">
+                <div style="flex:1; min-width:240px">
+                    <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">SEARCH (DIVISION)</label>
+                    <input @bind="_search" @bind:event="oninput" placeholder="Type to filter..." style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
+                </div>
+            </div>
+
+            <div class="aiwms-card-header">Summary (Box GRN) - @FilteredBoxGrnSummaryRows().Count row(s)</div>
+            <div style="overflow-x:auto">
+            <table class="aiwms-table aiwms-table-dense" style="table-layout:fixed; width:100%">
+                <colgroup>
+                    <col style="width:140px" />
+                    <col style="width:260px" />
+                    <col style="width:140px" />
+                </colgroup>
+                <thead>
+                    <tr>
+                        <th>Trn Date</th>
+                        <th>Division</th>
+                        <th style="text-align:center">Qty</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var r in FilteredBoxGrnSummaryRows())
+                    {
+                        <tr>
+                            <td>@FmtDate(r.TrnDate)</td>
+                            <td style="word-break:break-word">@r.Division</td>
+                            <td style="text-align:center">@r.Qty.ToString("N0")</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+            </div>
+        </div>
+    }
+    else if (_view == "Detailed" && _boxGrnDetailRows.Count > 0)
+    {
+        <div class="aiwms-section">
+            <div style="display:grid; grid-template-columns: repeat(2, 1fr); gap:12px;">
+                <div style="background:#FFF4E0; border-radius:var(--r-sm); padding:12px 16px;">
+                    <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:#8A5A12">Total Items</div>
+                    <div style="font-size:1.4rem; font-weight:800; color:#8A5A12">@FilteredBoxGrnDetailRows().Count.ToString("N0")</div>
+                </div>
+                <div style="background:#EFEAFB; border-radius:var(--r-sm); padding:12px 16px;">
+                    <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:#4E3B96">Total Qty</div>
+                    <div style="font-size:1.4rem; font-weight:800; color:#4E3B96">@FilteredBoxGrnDetailRows().Sum(r => r.Qty).ToString("N0")</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="aiwms-section">
+            <div style="display:flex; gap:12px; align-items:end; margin-bottom:14px; flex-wrap:wrap">
+                <div style="flex:1; min-width:240px">
+                    <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">SEARCH (ITEM CODE / GROUP CODE / DIVISION)</label>
+                    <input @bind="_search" @bind:event="oninput" placeholder="Type to filter..." style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
+                </div>
+            </div>
+
+            <div class="aiwms-card-header">Detailed (Box GRN) - @FilteredBoxGrnDetailRows().Count row(s)</div>
+            <div style="overflow-x:auto">
+            <table class="aiwms-table aiwms-table-dense" style="table-layout:fixed; width:100%">
+                <colgroup>
+                    <col style="width:110px" />
+                    <col style="width:150px" />
+                    <col style="width:100px" />
+                    <col style="width:200px" />
+                    <col style="width:110px" />
+                </colgroup>
+                <thead>
+                    <tr>
+                        <th>Trn Date</th>
+                        <th>Item Code</th>
+                        <th>Group Code</th>
+                        <th>Division</th>
+                        <th style="text-align:center">Qty</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var r in FilteredBoxGrnDetailRows())
+                    {
+                        <tr>
+                            <td>@FmtDate(r.TrnDate)</td>
+                            <td style="font-family:var(--font-mono)">@r.ItemCode</td>
+                            <td>@r.GroupCode</td>
+                            <td style="word-break:break-word">@r.Division</td>
+                            <td style="text-align:center">@r.Qty.ToString("N0")</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+            </div>
+        </div>
+    }
+}
 else if (_source == "Export" && _exportRows.Count > 0)
 {
     <div class="aiwms-section">
@@ -495,12 +624,14 @@ else if (_source == "Export" && _exportRows.Count > 0)
     private List<JafzaRoboProductionSummaryRow> _roboSummaryRows = new();
     private List<JafzaRoboProductionDetailRow>  _roboDetailRows  = new();
     private List<JafzaExportProductionRow>  _exportRows  = new();
+    private List<JafzaBoxGrnSummaryRow> _boxGrnSummaryRows = new();
+    private List<JafzaBoxGrnDetailRow>  _boxGrnDetailRows  = new();
 
-    // Manual/Robo/Export total-qty summary cards — shown regardless of which
-    // Source is currently selected, refreshed alongside every Load so they
-    // always reflect the current From/To (Username only affects Manual/Robo).
+    // Manual/Robo/Export/Box GRN total-qty summary cards — shown regardless of
+    // which Source is currently selected, refreshed alongside every Load so
+    // they always reflect the current From/To (Username only affects Manual/Robo).
     private bool _totalsLoading;
-    private int _manualTotal, _roboTotal, _exportTotal;
+    private int _manualTotal, _roboTotal, _exportTotal, _boxGrnTotal;
 
     private bool IsRangeValid => _from <= _to && (_to - _from).TotalDays <= 6;
 
@@ -510,6 +641,8 @@ else if (_source == "Export" && _exportRows.Count > 0)
         ("Manual", _)         => _detailRows.Count,
         ("Robo", "Summary")   => _roboSummaryRows.Count,
         ("Robo", _)           => _roboDetailRows.Count,
+        ("BoxGrn", "Summary") => _boxGrnSummaryRows.Count,
+        ("BoxGrn", _)         => _boxGrnDetailRows.Count,
         _                     => _exportRows.Count
     };
 
@@ -556,6 +689,7 @@ else if (_source == "Export" && _exportRows.Count > 0)
         _summaryRows = new(); _detailRows = new();
         _roboSummaryRows = new(); _roboDetailRows = new();
         _exportRows = new();
+        _boxGrnSummaryRows = new(); _boxGrnDetailRows = new();
         try
         {
             if (_source == "Manual")
@@ -582,6 +716,19 @@ else if (_source == "Export" && _exportRows.Count > 0)
                 {
                     _roboDetailRows = await RoboSvc.GetDetailAsync(_from, _to, _username);
                     if (_roboDetailRows.Count == 0) _message = "No rows for the selected filters.";
+                }
+            }
+            else if (_source == "BoxGrn")
+            {
+                if (_view == "Summary")
+                {
+                    _boxGrnSummaryRows = await BoxGrnSvc.GetSummaryAsync(_from, _to);
+                    if (_boxGrnSummaryRows.Count == 0) _message = "No rows for the selected filters.";
+                }
+                else
+                {
+                    _boxGrnDetailRows = await BoxGrnSvc.GetDetailAsync(_from, _to);
+                    if (_boxGrnDetailRows.Count == 0) _message = "No rows for the selected filters.";
                 }
             }
             else
@@ -619,7 +766,8 @@ else if (_source == "Export" && _exportRows.Count > 0)
             await Task.WhenAll(
                 LoadOneTotalAsync("Manual", () => Svc.GetTotalQtyAsync(_from, _to, _username, _selectedDivisions), v => _manualTotal = v),
                 LoadOneTotalAsync("Robo",   () => RoboSvc.GetTotalQtyAsync(_from, _to, _username, _selectedDivisions), v => _roboTotal = v),
-                LoadOneTotalAsync("Export", () => ExportSvc.GetTotalQtyAsync(_from, _to, _selectedDivisions), v => _exportTotal = v));
+                LoadOneTotalAsync("Export", () => ExportSvc.GetTotalQtyAsync(_from, _to, _selectedDivisions), v => _exportTotal = v),
+                LoadOneTotalAsync("BoxGrn", () => BoxGrnSvc.GetTotalQtyAsync(_from, _to, _selectedDivisions), v => _boxGrnTotal = v));
         }
         finally
         {
@@ -732,6 +880,44 @@ else if (_source == "Export" && _exportRows.Count > 0)
                 ws.Columns().AdjustToContents();
                 name = $"jafza-robo-production-detailed-{_from:yyyyMMdd}-{_to:yyyyMMdd}.xlsx";
             }
+            else if (_source == "BoxGrn" && _view == "Summary")
+            {
+                var ws = wb.AddWorksheet("Summary (Box GRN)");
+                string[] headers = { "Trn Date", "Division", "Qty" };
+                for (int i = 0; i < headers.Length; i++) ws.Cell(1, i + 1).Value = headers[i];
+                ws.Row(1).Style.Font.Bold = true;
+
+                int row = 2;
+                foreach (var r in FilteredBoxGrnSummaryRows())
+                {
+                    ws.Cell(row, 1).Value = FmtDate(r.TrnDate);
+                    ws.Cell(row, 2).Value = r.Division;
+                    ws.Cell(row, 3).Value = r.Qty;
+                    row++;
+                }
+                ws.Columns().AdjustToContents();
+                name = $"jafza-boxgrn-production-summary-{_from:yyyyMMdd}-{_to:yyyyMMdd}.xlsx";
+            }
+            else if (_source == "BoxGrn")
+            {
+                var ws = wb.AddWorksheet("Detailed (Box GRN)");
+                string[] headers = { "Trn Date", "Item Code", "Group Code", "Division", "Qty" };
+                for (int i = 0; i < headers.Length; i++) ws.Cell(1, i + 1).Value = headers[i];
+                ws.Row(1).Style.Font.Bold = true;
+
+                int row = 2;
+                foreach (var r in FilteredBoxGrnDetailRows())
+                {
+                    ws.Cell(row, 1).Value = FmtDate(r.TrnDate);
+                    ws.Cell(row, 2).Value = r.ItemCode;
+                    ws.Cell(row, 3).Value = r.GroupCode;
+                    ws.Cell(row, 4).Value = r.Division;
+                    ws.Cell(row, 5).Value = r.Qty;
+                    row++;
+                }
+                ws.Columns().AdjustToContents();
+                name = $"jafza-boxgrn-production-detailed-{_from:yyyyMMdd}-{_to:yyyyMMdd}.xlsx";
+            }
             else
             {
                 var ws = wb.AddWorksheet("Summary (Export)");
@@ -762,7 +948,7 @@ else if (_source == "Export" && _exportRows.Count > 0)
     }
 
     // Every row type here carries a Division field — the multiselect filter
-    // applies the same way to all 5 lists, ANDed with the existing free-text
+    // applies the same way to all 7 lists, ANDed with the existing free-text
     // search. Empty selection means "All" (no filtering by division).
     private bool DivisionMatches(string? division) =>
         _selectedDivisions.Count == 0 || (division is not null && _selectedDivisions.Contains(division));
@@ -785,6 +971,7 @@ else if (_source == "Export" && _exportRows.Count > 0)
     {
         "Manual" => _view == "Summary" ? _summaryRows.Select(r => r.Division) : _detailRows.Select(r => r.Division),
         "Robo"   => _view == "Summary" ? _roboSummaryRows.Select(r => r.Division) : _roboDetailRows.Select(r => r.Division),
+        "BoxGrn" => _view == "Summary" ? _boxGrnSummaryRows.Select(r => r.Division) : _boxGrnDetailRows.Select(r => r.Division),
         _        => _exportRows.Select(r => r.Division)
     })
         .Where(d => !string.IsNullOrWhiteSpace(d))
@@ -840,6 +1027,25 @@ else if (_source == "Export" && _exportRows.Count > 0)
         return _exportRows.Where(r =>
             DivisionMatches(r.Division) &&
             (term.Length == 0 || Matches(r.Division, term) || Matches(r.ShopName, term))).ToList();
+    }
+
+    private List<JafzaBoxGrnSummaryRow> FilteredBoxGrnSummaryRows()
+    {
+        var term = _search.Trim();
+        return _boxGrnSummaryRows.Where(r =>
+            DivisionMatches(r.Division) &&
+            (term.Length == 0 || Matches(r.Division, term))).ToList();
+    }
+
+    private List<JafzaBoxGrnDetailRow> FilteredBoxGrnDetailRows()
+    {
+        var term = _search.Trim();
+        return _boxGrnDetailRows.Where(r =>
+            DivisionMatches(r.Division) &&
+            (term.Length == 0 ||
+             Matches(r.ItemCode, term) ||
+             Matches(r.GroupCode, term) ||
+             Matches(r.Division, term))).ToList();
     }
 
     private List<(string ShopName, int Qty)> ShopTotals() =>
