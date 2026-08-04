@@ -15,6 +15,8 @@ public record OtsPoAllocationRow(
     int      SOHToday,        // SUM from Racks.dbo.LPM_Locstock
     int      NoOfLeadWeeks,   // per-country config from WmsCountryOtsWeeks — how many weeks of lead the interpolation projects forward
     int      WeekSales,       // SUM(SalesTgtWk) over the next N weeks starting current wk
+    int      LeadIntransit,   // vTransferDetail qty per country whose LPMDt <= (1st of month that today+leadWeeks lands in), split across (Country, DivCode) stores via largest-remainder. UAE=0.
+    int      LeadDCSOH,       // {DataName}..whboxitemexport qty per country whose LPMDt <= same cutoff, split across (Country, DivCode) stores via largest-remainder.
     int      InTransit,       // (Ex2SOH + boxsoh) / storeCount(country); UAE = 0
     int      Ex2DcSoh,        // r1whsoh / storeCount(country)
     int      CountingWIP,     // SUM(AllocatedQty) for approved-but-not-completed containers per (StoreID, DivCode)
