@@ -573,7 +573,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         //     LeadIntransit source: P2EXPORT..vTransferDetail JOIN
         //         datareporting.dbo.vupc_subclass, restricted to trfno in
         //         racks..InTransit_ExportShipment WHERE country=@ct AND intransit='Y'.
-        //     LeadDCSOH source: [{DataName}]..whboxitemexport JOIN vupc_subclass,
+        //     LeadDCSOH source: [{DataName}]..WHBoxItemsExport JOIN vupc_subclass,
         //         DataName looked up in bfldata.dbo.DataSettings per country.
         var leadTask = SafeAsync(warnings, "LeadIntransit + LeadDCSOH", async () =>
         {
@@ -622,7 +622,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                 if (!Regex.IsMatch(dataName, @"^[A-Za-z0-9_]+$")) continue;
                 var dcRows = await c.QueryAsync<(int DivCode, int Total)>(new CommandDefinition($@"
                     SELECT v.DivID AS DivCode, SUM(ISNULL(w.Qty, 0)) AS Total
-                      FROM [{dataName}]..whboxitemexport w WITH (NOLOCK)
+                      FROM [{dataName}]..WHBoxItemsExport w WITH (NOLOCK)
                       JOIN datareporting.dbo.vupc_subclass v WITH (NOLOCK) ON v.itemcode = w.ItemCode
                      WHERE w.LPMDt <= @cutoff
                        AND v.DivID IS NOT NULL
