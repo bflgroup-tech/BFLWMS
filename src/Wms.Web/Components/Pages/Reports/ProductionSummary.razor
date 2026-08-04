@@ -170,9 +170,12 @@ else if (VisibleRows().Count > 0)
             // Merch Need is a per-(Country, Division) constant, but a division can span
             // multiple rows here (one per ProductionDay it has scans on) — summing every
             // row would count that same Merch Need value once per day instead of once
-            // overall, so total each division's value exactly once first.
+            // overall, so total each division's value exactly once first. Key is
+            // case-insensitive: real scan rows use Datareporting.subclassmaster's Title
+            // Case division names, but WithMissingMerchNeedDivisions' synthetic rows use
+            // tmpPlanningTarget's ALL CAPS names — same division, different casing.
             var distinctDivisionMerchNeed = pivot
-                .GroupBy(x => (x.Country, x.Division))
+                .GroupBy(x => (x.Country.ToUpperInvariant(), x.Division.ToUpperInvariant()))
                 .Select(g => g.First())
                 .ToList();
             var totalMerchNeedMonth = distinctDivisionMerchNeed.Sum(x => x.MerchNeedMonth);
@@ -622,8 +625,13 @@ else if (_loadedOnce && VisibleRows().Count == 0)
             if (isUae) sb.Append(',').Append(pivot.Sum(x => x.UaeQty)).Append(',').Append(pivot.Sum(x => x.OmanQty)).Append(',').Append(pivot.Sum(x => x.Ex2Qty));
             // Merch Need is a per-(Country, Division) constant; a division can span
             // multiple rows here (one per ProductionDay), so total each division's
-            // value exactly once rather than once per row.
-            var distinctDivisionMerchNeedCsv = pivot.GroupBy(x => (x.Country, x.Division)).Select(g => g.First()).ToList();
+            // value exactly once rather than once per row. Case-insensitive key: see
+            // the on-screen TOTAL row above for why (Title Case scan rows vs ALL CAPS
+            // synthetic missing-division rows).
+            var distinctDivisionMerchNeedCsv = pivot
+                .GroupBy(x => (x.Country.ToUpperInvariant(), x.Division.ToUpperInvariant()))
+                .Select(g => g.First())
+                .ToList();
             sb.Append(',').Append(distinctDivisionMerchNeedCsv.Sum(x => x.MerchNeedMonth))
               .Append(',').Append(distinctDivisionMerchNeedCsv.Sum(x => x.MerchNeedWeek))
               .Append(',').Append(distinctDivisionMerchNeedCsv.Sum(x => x.MerchNeedDay));
