@@ -167,6 +167,17 @@ else if (VisibleRows().Count > 0)
             pivot = WithMissingMerchNeedDivisions(pivot);
             var hasMixed = pivot.Sum(x => x.Mixed) > 0;
             var isUae = _selectedCountries.Contains("UAE");
+            // Merch Need is a per-(Country, Division) constant, but a division can span
+            // multiple rows here (one per ProductionDay it has scans on) — summing every
+            // row would count that same Merch Need value once per day instead of once
+            // overall, so total each division's value exactly once first.
+            var distinctDivisionMerchNeed = pivot
+                .GroupBy(x => (x.Country, x.Division))
+                .Select(g => g.First())
+                .ToList();
+            var totalMerchNeedMonth = distinctDivisionMerchNeed.Sum(x => x.MerchNeedMonth);
+            var totalMerchNeedWeek  = distinctDivisionMerchNeed.Sum(x => x.MerchNeedWeek);
+            var totalMerchNeedDay   = distinctDivisionMerchNeed.Sum(x => x.MerchNeedDay);
 
             <table class="aiwms-table aiwms-table-dense">
                 <thead>
@@ -226,9 +237,9 @@ else if (VisibleRows().Count > 0)
                             <td style="text-align:right">@pivot.Sum(x => x.OmanQty).ToString("N0")</td>
                             <td style="text-align:right">@pivot.Sum(x => x.Ex2Qty).ToString("N0")</td>
                         }
-                        <td style="text-align:right">@pivot.Sum(x => x.MerchNeedMonth).ToString("N0")</td>
-                        <td style="text-align:right">@pivot.Sum(x => x.MerchNeedWeek).ToString("N0")</td>
-                        <td style="text-align:right">@pivot.Sum(x => x.MerchNeedDay).ToString("N0")</td>
+                        <td style="text-align:right">@totalMerchNeedMonth.ToString("N0")</td>
+                        <td style="text-align:right">@totalMerchNeedWeek.ToString("N0")</td>
+                        <td style="text-align:right">@totalMerchNeedDay.ToString("N0")</td>
                     </tr>
                 </tbody>
             </table>
@@ -609,7 +620,13 @@ else if (_loadedOnce && VisibleRows().Count == 0)
               .Append(pivot.Sum(x => x.Mixed)).Append(',').Append(pivot.Sum(x => x.Unknown)).Append(',')
               .Append(pivot.Sum(x => x.ScannedQty)).Append(',').Append(pivot.Sum(x => x.StoresQty));
             if (isUae) sb.Append(',').Append(pivot.Sum(x => x.UaeQty)).Append(',').Append(pivot.Sum(x => x.OmanQty)).Append(',').Append(pivot.Sum(x => x.Ex2Qty));
-            sb.Append(',').Append(pivot.Sum(x => x.MerchNeedMonth)).Append(',').Append(pivot.Sum(x => x.MerchNeedWeek)).Append(',').Append(pivot.Sum(x => x.MerchNeedDay));
+            // Merch Need is a per-(Country, Division) constant; a division can span
+            // multiple rows here (one per ProductionDay), so total each division's
+            // value exactly once rather than once per row.
+            var distinctDivisionMerchNeedCsv = pivot.GroupBy(x => (x.Country, x.Division)).Select(g => g.First()).ToList();
+            sb.Append(',').Append(distinctDivisionMerchNeedCsv.Sum(x => x.MerchNeedMonth))
+              .Append(',').Append(distinctDivisionMerchNeedCsv.Sum(x => x.MerchNeedWeek))
+              .Append(',').Append(distinctDivisionMerchNeedCsv.Sum(x => x.MerchNeedDay));
             sb.AppendLine();
         }
         else
