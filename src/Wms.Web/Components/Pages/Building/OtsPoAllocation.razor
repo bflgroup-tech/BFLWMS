@@ -161,19 +161,23 @@
             var fEOM  = fRows.Sum(r => r.TgtEOM);
             var fSOH  = fRows.Sum(r => r.SOHToday);
             var fWS   = fRows.Sum(r => r.WeekSales);
+            var fLeadIn = fRows.Sum(r => r.LeadIntransit);
+            var fLeadDc = fRows.Sum(r => r.LeadDCSOH);
             var fInT  = fRows.Sum(r => r.InTransit);
             var fEx2  = fRows.Sum(r => r.Ex2DcSoh);
             var fOTS  = fRows.Sum(r => r.OtsQtyToday);
             var fReq  = fRows.Sum(r => Math.Max(0, r.OtsQtyToday));
         }
-        <div style="display:grid; grid-template-columns: repeat(7, minmax(0,1fr)); gap:12px;">
-            @Kpi("EOM",          fEOM.ToString("N0"),  "#dbeafe", "#1e40af")
-            @Kpi("SOH",          fSOH.ToString("N0"),  "#dcfce7", "#166534")
-            @Kpi("Weekly Sales", fWS.ToString("N0"),   "#fef3c7", "#92400e")
-            @Kpi("InTransit",    fInT.ToString("N0"),  "#ffedd5", "#9a3412")
-            @Kpi("Ex2 DC SOH",   fEx2.ToString("N0"),  "#fce7f3", "#9d174d")
-            @Kpi("OTS",          fOTS.ToString("N0"),  fOTS < 0 ? "#fee2e2" : "#e0e7ff", fOTS < 0 ? "#991b1b" : "#3730a3")
-            @Kpi("OTS Reqd",     fReq.ToString("N0"),  "#ede9fe", "#5b21b6")
+        <div style="display:grid; grid-template-columns: repeat(9, minmax(0,1fr)); gap:12px;">
+            @Kpi("EOM",           fEOM.ToString("N0"),    "#dbeafe", "#1e40af")
+            @Kpi("SOH",           fSOH.ToString("N0"),    "#dcfce7", "#166534")
+            @Kpi("Weekly Sales",  fWS.ToString("N0"),     "#fef3c7", "#92400e")
+            @Kpi("Lead InTransit",fLeadIn.ToString("N0"), "#e0f2fe", "#075985")
+            @Kpi("Lead DC SOH",   fLeadDc.ToString("N0"), "#fef9c3", "#854d0e")
+            @Kpi("InTransit",     fInT.ToString("N0"),    "#ffedd5", "#9a3412")
+            @Kpi("Ex2 DC SOH",    fEx2.ToString("N0"),    "#fce7f3", "#9d174d")
+            @Kpi("OTS",           fOTS.ToString("N0"),    fOTS < 0 ? "#fee2e2" : "#e0e7ff", fOTS < 0 ? "#991b1b" : "#3730a3")
+            @Kpi("OTS Reqd",      fReq.ToString("N0"),    "#ede9fe", "#5b21b6")
         </div>
         @if (fRows.Count != _rows.Count)
         {
@@ -203,6 +207,8 @@
                         @SortHeader("SOHToday",        "SOH Today", null, true, title: "SUM(SOH) from racks.LPM_locstock for this (Store, Div)")
                         @SortHeader("NoOfLeadWeeks",   "No. of Lead Weeks", null, true, title: "WmsCountryOtsWeeks.Weeks for the store's Country — the number of weeks of lead the interpolation projects forward from PrevMonthEOM (defaults to 1 when missing)")
                         @SortHeader("WeekSales",       "Week Sales", null, true, title: WeekSalesHeaderTitle())
+                        @SortHeader("LeadIntransit",   "Lead InTransit", null, true, title: "P2EXPORT..vTransferDetail qty (via racks..InTransit_ExportShipment intransit='Y') whose LPMDt is on/before the 1st of the month that (today + LeadWeeks*7) lands in. Split across (Country, DivCode) stores via largest-remainder. UAE = 0.")
+                        @SortHeader("LeadDCSOH",       "Lead DC SOH",    null, true, title: "{DataName}..whboxitemexport qty whose LPMDt is on/before the same cutoff as Lead InTransit. Split across (Country, DivCode) stores via largest-remainder.")
                         @SortHeader("InTransit",       "InTransit", null, true, title: "(Ex2SOH + boxsoh) / storeCount(country); UAE = 0")
                         @SortHeader("Ex2DcSoh",        "Ex2 DC SOH", null, true, title: "r1whsoh / storeCount(country)")
                         @SortHeader("CountingWIP",     "Counting WIP", null, true, title: "SUM(AllocatedQty) for approved-but-not-completed containers per (Store, Div)")
@@ -232,6 +238,8 @@
                             <td style="text-align:right">@r.SOHToday.ToString("N0")</td>
                             <td style="text-align:right">@r.NoOfLeadWeeks</td>
                             <td style="text-align:right" title="@WeekSalesTooltip(r)">@r.WeekSales.ToString("N0")</td>
+                            <td style="text-align:right">@r.LeadIntransit.ToString("N0")</td>
+                            <td style="text-align:right">@r.LeadDCSOH.ToString("N0")</td>
                             <td style="text-align:right">@r.InTransit.ToString("N0")</td>
                             <td style="text-align:right">@r.Ex2DcSoh.ToString("N0")</td>
                             <td style="text-align:right">@r.CountingWIP.ToString("N0")</td>
@@ -251,6 +259,8 @@
                         var tCurEOW     = tRows.Sum(r => r.CurrentEOW);
                         var tSOH        = tRows.Sum(r => r.SOHToday);
                         var tWeekSales  = tRows.Sum(r => r.WeekSales);
+                        var tLeadIn     = tRows.Sum(r => r.LeadIntransit);
+                        var tLeadDc     = tRows.Sum(r => r.LeadDCSOH);
                         var tInTransit  = tRows.Sum(r => r.InTransit);
                         var tEx2        = tRows.Sum(r => r.Ex2DcSoh);
                         var tWIP        = tRows.Sum(r => r.CountingWIP);
@@ -267,6 +277,8 @@
                         <td style="text-align:right; padding:6px 12px; border-top:2px solid #d1d5db">@tSOH.ToString("N0")</td>
                         <td style="padding:6px 12px; border-top:2px solid #d1d5db"></td>
                         <td style="text-align:right; padding:6px 12px; border-top:2px solid #d1d5db">@tWeekSales.ToString("N0")</td>
+                        <td style="text-align:right; padding:6px 12px; border-top:2px solid #d1d5db">@tLeadIn.ToString("N0")</td>
+                        <td style="text-align:right; padding:6px 12px; border-top:2px solid #d1d5db">@tLeadDc.ToString("N0")</td>
                         <td style="text-align:right; padding:6px 12px; border-top:2px solid #d1d5db">@tInTransit.ToString("N0")</td>
                         <td style="text-align:right; padding:6px 12px; border-top:2px solid #d1d5db">@tEx2.ToString("N0")</td>
                         <td style="text-align:right; padding:6px 12px; border-top:2px solid #d1d5db">@tWIP.ToString("N0")</td>
@@ -498,7 +510,7 @@
     private bool   _sortAsc = true;
 
     // Column totals — recomputed whenever _rows changes.
-    private int _totTgtEOM, _totSOH, _totWeekSales, _totInTransit, _totEx2, _totWIP, _totOtsQty, _totOtsRequired;
+    private int _totTgtEOM, _totSOH, _totWeekSales, _totLeadIn, _totLeadDc, _totInTransit, _totEx2, _totWIP, _totOtsQty, _totOtsRequired;
 
     // Current fiscal week from LPM_OTS_Output (latest OTSDate.wk) — used by the
     // Week Sales tooltip to show the exact wk range that was summed.
@@ -532,6 +544,8 @@
         _totTgtEOM      = _rows.Sum(r => r.TgtEOM);
         _totSOH         = _rows.Sum(r => r.SOHToday);
         _totWeekSales   = _rows.Sum(r => r.WeekSales);
+        _totLeadIn      = _rows.Sum(r => r.LeadIntransit);
+        _totLeadDc      = _rows.Sum(r => r.LeadDCSOH);
         _totInTransit   = _rows.Sum(r => r.InTransit);
         _totEx2         = _rows.Sum(r => r.Ex2DcSoh);
         _totWIP         = _rows.Sum(r => r.CountingWIP);
@@ -759,6 +773,7 @@
             "Country","StoreID","Store Name","Divcode","Division","Volume Group",
             "EOM Month","Tgt EOM Month","Tgt EOM","Prev EOM Month","Prev Month EOM","Week Adjustment","Current EOW",
             "SOH Today","No. of Lead Weeks","Week Sales",
+            "Lead InTransit","Lead DC SOH",
             "InTransit","Ex2 DC SOH","Counting WIP","OTS Qty Today","OTS % Today","OTS Today Required"
         };
         for (int i = 0; i < headers.Length; i++) ws.Cell(1, i + 1).Value = headers[i];
@@ -782,12 +797,14 @@
             ws.Cell(row,14).Value  = r.SOHToday;
             ws.Cell(row,15).Value  = r.NoOfLeadWeeks;
             ws.Cell(row,16).Value  = r.WeekSales;
-            ws.Cell(row,17).Value  = r.InTransit;
-            ws.Cell(row,18).Value  = r.Ex2DcSoh;
-            ws.Cell(row,19).Value  = r.CountingWIP;
-            ws.Cell(row,20).Value  = r.OtsQtyToday;
-            ws.Cell(row,21).Value  = (int)Math.Round(r.OtsPercentToday);
-            ws.Cell(row,22).Value  = req > 0 ? req : 0;
+            ws.Cell(row,17).Value  = r.LeadIntransit;
+            ws.Cell(row,18).Value  = r.LeadDCSOH;
+            ws.Cell(row,19).Value  = r.InTransit;
+            ws.Cell(row,20).Value  = r.Ex2DcSoh;
+            ws.Cell(row,21).Value  = r.CountingWIP;
+            ws.Cell(row,22).Value  = r.OtsQtyToday;
+            ws.Cell(row,23).Value  = (int)Math.Round(r.OtsPercentToday);
+            ws.Cell(row,24).Value  = req > 0 ? req : 0;
             row++;
         }
         // Totals row (column indices match the header layout above)
@@ -797,11 +814,13 @@
         ws.Cell(row,13).Value  = SortedRows.Sum(r => r.CurrentEOW);
         ws.Cell(row,14).Value  = _totSOH;
         ws.Cell(row,16).Value  = _totWeekSales;
-        ws.Cell(row,17).Value  = _totInTransit;
-        ws.Cell(row,18).Value  = _totEx2;
-        ws.Cell(row,19).Value  = _totWIP;
-        ws.Cell(row,20).Value  = _totOtsQty;
-        ws.Cell(row,22).Value  = _totOtsRequired;
+        ws.Cell(row,17).Value  = _totLeadIn;
+        ws.Cell(row,18).Value  = _totLeadDc;
+        ws.Cell(row,19).Value  = _totInTransit;
+        ws.Cell(row,20).Value  = _totEx2;
+        ws.Cell(row,21).Value  = _totWIP;
+        ws.Cell(row,22).Value  = _totOtsQty;
+        ws.Cell(row,24).Value  = _totOtsRequired;
         ws.Row(row).Style.Font.Bold = true;
         ws.Columns().AdjustToContents();
         using var ms = new MemoryStream();
@@ -917,6 +936,8 @@
                 "SOHToday"        => r => r.SOHToday,
                 "NoOfLeadWeeks"   => r => r.NoOfLeadWeeks,
                 "WeekSales"       => r => r.WeekSales,
+                "LeadIntransit"   => r => r.LeadIntransit,
+                "LeadDCSOH"       => r => r.LeadDCSOH,
                 "InTransit"       => r => r.InTransit,
                 "Ex2DcSoh"        => r => r.Ex2DcSoh,
                 "CountingWIP"     => r => r.CountingWIP,
