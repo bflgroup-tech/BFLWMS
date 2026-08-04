@@ -13,6 +13,38 @@
 <style>
     .wsoh-country-select summary { list-style: none; }
     .wsoh-country-select summary::-webkit-details-marker { display: none; }
+    .wsoh-country-select summary {
+        transition: border-color .15s ease, box-shadow .15s ease;
+    }
+    .wsoh-country-select summary:hover {
+        border-color: var(--border-strong);
+    }
+    .wsoh-country-select details[open] summary {
+        border-color: var(--bfl-yellow);
+        box-shadow: 0 0 0 3px rgba(255, 209, 0, .18);
+    }
+    .wsoh-country-select .wsoh-arrow {
+        display: inline-block;
+        transition: transform .15s ease;
+    }
+    .wsoh-country-select details[open] .wsoh-arrow {
+        transform: rotate(180deg);
+    }
+    .wsoh-country-select .wsoh-option {
+        border-radius: 4px;
+        padding: 6px 8px;
+        margin: 0 -2px;
+        transition: background-color .1s ease;
+    }
+    .wsoh-country-select .wsoh-option:hover {
+        background: var(--bfl-yellow-lite);
+    }
+    .wsoh-country-select .wsoh-option input[type="checkbox"] {
+        width: 15px;
+        height: 15px;
+        accent-color: var(--bfl-yellow-hov);
+        cursor: pointer;
+    }
 
     .wsoh-box { border: 1px solid var(--border-default); border-radius: var(--r-sm); overflow: hidden; background: #fff; flex: 1; min-width: 220px; }
     .wsoh-box-header { background: var(--bfl-black); color: var(--bfl-yellow); font-family: var(--font-display); font-weight: 800; font-size: 11px; text-transform: uppercase; letter-spacing: .5px; padding: 9px 14px; text-align: center; }
@@ -42,14 +74,18 @@
         <div class="wsoh-country-select">
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COUNTRY (select any)</label>
             <details id="wsoh-country-dropdown" style="position:relative;">
-                <summary style="display:flex; align-items:center; justify-content:space-between; gap:8px; width:260px; height:36px; box-sizing:border-box; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white; cursor:pointer; user-select:none;">
+                <summary style="display:flex; align-items:center; justify-content:space-between; gap:8px; width:260px; height:36px; box-sizing:border-box; padding:8px 12px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; font-weight:600; background:white; cursor:pointer; user-select:none;">
                     <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">@CountrySelectionLabel</span>
-                    <span style="color:var(--text-secondary); font-size:10px; flex-shrink:0;">&#9660;</span>
+                    <span class="wsoh-arrow" style="color:var(--text-secondary); font-size:10px; flex-shrink:0;">&#9660;</span>
                 </summary>
-                <div style="position:absolute; top:100%; left:0; right:0; z-index:20; margin-top:4px; display:flex; flex-direction:column; gap:4px; max-height:220px; overflow-y:auto; border:1px solid var(--border-default); border-radius:var(--r-sm); padding:8px 10px; background:white; box-shadow:0 4px 12px rgba(0,0,0,0.15);">
+                <div style="position:absolute; top:100%; left:0; right:0; z-index:20; margin-top:6px; display:flex; flex-direction:column; gap:2px; max-height:220px; overflow-y:auto; border:1px solid var(--border-default); border-radius:8px; padding:8px; background:white; box-shadow:0 8px 20px rgba(0,0,0,0.14);">
+                    <label class="wsoh-option" style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:13px; font-weight:700; border-bottom:1px solid var(--border-default); padding-bottom:8px; margin-bottom:2px">
+                        <input type="checkbox" checked="@_countries.All(c => _selectedCountries.Contains(c))" @onchange="@(e => ToggleAllCountries((bool)e.Value!))" />
+                        Select all
+                    </label>
                     @foreach (var c in _countries)
                     {
-                        <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:13px">
+                        <label class="wsoh-option" style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:13px">
                             <input type="checkbox" checked="@_selectedCountries.Contains(c)" @onchange="@(e => ToggleCountry(c, (bool)e.Value!))" />
                             @c.ToUpper()
                         </label>
@@ -57,7 +93,7 @@
                 </div>
             </details>
         </div>
-        <button class="aiwms-btn aiwms-btn-primary" @onclick="LoadAsync" disabled="@(_loading || _selectedCountries.Count == 0)">@(_loading ? "Loading…" : "Load")</button>
+        <button class="aiwms-btn aiwms-btn-primary" style="height:36px; box-sizing:border-box" @onclick="LoadAsync" disabled="@(_loading || _selectedCountries.Count == 0)">@(_loading ? "Loading…" : "Load")</button>
     </div>
 </div>
 
@@ -237,6 +273,12 @@ else if (_loadedOnce)
     {
         if (isChecked) _selectedCountries.Add(country);
         else _selectedCountries.Remove(country);
+    }
+
+    private void ToggleAllCountries(bool isChecked)
+    {
+        if (isChecked) foreach (var c in _countries) _selectedCountries.Add(c);
+        else _selectedCountries.Clear();
     }
 
     private string CountrySelectionLabel
