@@ -868,8 +868,13 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         // TgtEOM per current spec:
         //   WkReduction = (PrevMonthEOM - TgtEOM) / weeksInMonth
         //   CurrentEOW  = PrevMonthEOM - (WkReduction * weeksElapsedSoFar)
-        //   OTS Qty     = CurrentEOW + WeekSales - SOH - InTransit - Ex2DC - CountingWIP
+        //   OTS Qty     = CurrentEOW + WeekSales - SOH - LeadIntransit - LeadDCSOH
         //   OTS %       = OTS Qty / CurrentEOW * 100  (0 when CurrentEOW <= 0)
+        // Only supply arriving inside the country's lead window counts (Lead
+        // InTransit + Lead DC SOH). For countries with no Lead tracking (UAE,
+        // OMAN, ECOM) both Leads are 0 -> OTS = CurrentEOW + WeekSales - SOH.
+        // InTransit / Ex2DcSoh / CountingWIP columns remain on the grid for
+        // reference but no longer feed the OTS shortfall.
         // Stores with PrevMonthEOM = 0 fall back to CurrentEOW = TgtEOM so the
         // formula reduces to today's behaviour for stores without history.
         //
@@ -1001,7 +1006,13 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                 currentEOW     = r.TgtEOM;   // fall back when no previous history
             }
 
-            var otsQty = currentEOW + ws - soh - inTransit - ex2dc - wip;
+            // OTS formula (v1.0.364+): subtract the LEAD-horizon-filtered
+            // supply (Lead InTransit + Lead DC SOH) instead of the raw totals.
+            // Only stock that arrives within the country's lead window counts
+            // toward meeting Current EOW. For countries excluded from the Lead
+            // prefetch (UAE, OMAN, ECOM), leadIntransit + leadDcSoh = 0 so the
+            // formula reduces to (CurrentEOW + WeekSales - SOH).
+            var otsQty = currentEOW + ws - soh - leadIntransit - leadDcSoh;
             var otsPct = currentEOW > 0 ? (double)otsQty / currentEOW * 100.0 : 0.0;
             results.Add(new OtsPoAllocationRow(
                 Country:         r.Country,

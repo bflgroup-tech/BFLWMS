@@ -212,7 +212,7 @@
                         @SortHeader("InTransit",       "InTransit", null, true, title: "(Ex2SOH + boxsoh) / storeCount(country); UAE = 0")
                         @SortHeader("Ex2DcSoh",        "Ex2 DC SOH", null, true, title: "r1whsoh / storeCount(country)")
                         @SortHeader("CountingWIP",     "Counting WIP", null, true, title: "SUM(AllocatedQty) for approved-but-not-completed containers per (Store, Div)")
-                        @SortHeader("OtsQtyToday",     "OTS Qty Today", null, true, title: "CurrentEOW + WeekSales − SOH − InTransit − Ex2DcSoh − CountingWIP")
+                        @SortHeader("OtsQtyToday",     "OTS Qty Today", null, true, title: "CurrentEOW + WeekSales − SOH − LeadIntransit − LeadDCSOH  (only lead-window supply counts; InTransit / Ex2DcSoh / CountingWIP are shown for reference but no longer subtracted)")
                         @SortHeader("OtsPercentToday", "OTS % Today", null, true, title: "OtsQtyToday / CurrentEOW × 100; 0 when CurrentEOW ≤ 0")
                         @SortHeader("OtsTodayRequired","OTS Today Required", null, true, title: "max(0, OtsQtyToday) — clipped to zero (negative OTS means over-stocked, no purchase needed)")
                     </tr>

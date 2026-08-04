@@ -20,7 +20,7 @@ public record OtsPoAllocationRow(
     int      InTransit,       // (Ex2SOH + boxsoh) / storeCount(country); UAE = 0
     int      Ex2DcSoh,        // r1whsoh / storeCount(country)
     int      CountingWIP,     // SUM(AllocatedQty) for approved-but-not-completed containers per (StoreID, DivCode)
-    int      OtsQtyToday,     // CurrentEOW + WeekSales - SOH - InTransit - Ex2DC - CountingWIP
+    int      OtsQtyToday,     // CurrentEOW + WeekSales - SOH - LeadIntransit - LeadDCSOH  (v1.0.364+)
     double   OtsPercentToday, // OtsQtyToday / CurrentEOW * 100; 0 when CurrentEOW <= 0
     string?  PrevEOMMonth,    // "MMM-yyyy" of the month PrevMonthEOM was read from (TgtEOMMonth - 1)
     int      PrevMonthEOM,    // TargetEOM from LPM_EOM_Output for PrevEOMMonth; 0 if missing
