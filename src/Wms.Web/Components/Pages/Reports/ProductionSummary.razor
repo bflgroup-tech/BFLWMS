@@ -14,6 +14,38 @@
 <style>
     .psr-country-select summary { list-style: none; }
     .psr-country-select summary::-webkit-details-marker { display: none; }
+    .psr-country-select summary {
+        transition: border-color .15s ease, box-shadow .15s ease;
+    }
+    .psr-country-select summary:hover {
+        border-color: var(--border-strong);
+    }
+    .psr-country-select details[open] summary {
+        border-color: var(--bfl-yellow);
+        box-shadow: 0 0 0 3px rgba(255, 209, 0, .18);
+    }
+    .psr-country-select .psr-arrow {
+        display: inline-block;
+        transition: transform .15s ease;
+    }
+    .psr-country-select details[open] .psr-arrow {
+        transform: rotate(180deg);
+    }
+    .psr-country-select .psr-option {
+        border-radius: 4px;
+        padding: 6px 8px;
+        margin: 0 -2px;
+        transition: background-color .1s ease;
+    }
+    .psr-country-select .psr-option:hover {
+        background: var(--bfl-yellow-lite);
+    }
+    .psr-country-select .psr-option input[type="checkbox"] {
+        width: 15px;
+        height: 15px;
+        accent-color: var(--bfl-yellow-hov);
+        cursor: pointer;
+    }
 </style>
 
 <div class="aiwms-page-header">
@@ -26,14 +58,14 @@
         <div class="psr-country-select">
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COUNTRY (select any) *</label>
             <details id="psr-country-dropdown" style="position:relative;">
-                <summary style="display:flex; align-items:center; justify-content:space-between; gap:8px; width:100%; height:36px; box-sizing:border-box; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white; cursor:pointer; user-select:none;">
+                <summary style="display:flex; align-items:center; justify-content:space-between; gap:8px; width:100%; height:36px; box-sizing:border-box; padding:8px 12px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; font-weight:600; background:white; cursor:pointer; user-select:none;">
                     <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">@CountrySelectionLabel</span>
-                    <span style="color:var(--text-secondary); font-size:10px; flex-shrink:0;">&#9660;</span>
+                    <span class="psr-arrow" style="color:var(--text-secondary); font-size:10px; flex-shrink:0;">&#9660;</span>
                 </summary>
-                <div style="position:absolute; top:100%; left:0; right:0; z-index:20; margin-top:4px; display:flex; flex-direction:column; gap:4px; max-height:220px; overflow-y:auto; border:1px solid var(--border-default); border-radius:var(--r-sm); padding:8px 10px; background:white; box-shadow:0 4px 12px rgba(0,0,0,0.15);">
+                <div style="position:absolute; top:100%; left:0; right:0; z-index:20; margin-top:6px; display:flex; flex-direction:column; gap:2px; max-height:220px; overflow-y:auto; border:1px solid var(--border-default); border-radius:8px; padding:8px; background:white; box-shadow:0 8px 20px rgba(0,0,0,0.14);">
                     @foreach (var c in _countries)
                     {
-                        <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:13px">
+                        <label class="psr-option" style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:13px">
                             <input type="checkbox" checked="@_selectedCountries.Contains(c)" @onchange="@(e => ToggleCountry(c, (bool)e.Value!))" />
                             @c
                             @if (!_configuredCountries.Contains(c))
