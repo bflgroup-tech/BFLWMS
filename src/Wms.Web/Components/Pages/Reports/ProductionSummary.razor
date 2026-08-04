@@ -63,6 +63,10 @@
                     <span class="psr-arrow" style="color:var(--text-secondary); font-size:10px; flex-shrink:0;">&#9660;</span>
                 </summary>
                 <div style="position:absolute; top:100%; left:0; right:0; z-index:20; margin-top:6px; display:flex; flex-direction:column; gap:2px; max-height:220px; overflow-y:auto; border:1px solid var(--border-default); border-radius:8px; padding:8px; background:white; box-shadow:0 8px 20px rgba(0,0,0,0.14);">
+                    <label class="psr-option" style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:13px; font-weight:700; border-bottom:1px solid var(--border-default); padding-bottom:8px; margin-bottom:2px">
+                        <input type="checkbox" checked="@_countries.All(c => _selectedCountries.Contains(c))" @onchange="@(e => ToggleAllCountries((bool)e.Value!))" />
+                        Select all
+                    </label>
                     @foreach (var c in _countries)
                     {
                         <label class="psr-option" style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:13px">
@@ -375,6 +379,12 @@ else if (_loadedOnce && VisibleRows().Count == 0)
     {
         if (isChecked) _selectedCountries.Add(country);
         else _selectedCountries.Remove(country);
+    }
+
+    private void ToggleAllCountries(bool isChecked)
+    {
+        if (isChecked) foreach (var c in _countries) _selectedCountries.Add(c);
+        else _selectedCountries.Clear();
     }
 
     private string CountrySelectionLabel
