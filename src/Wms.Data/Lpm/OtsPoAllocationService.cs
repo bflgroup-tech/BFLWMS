@@ -600,12 +600,14 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
             {
                 var cty = (ctyRaw ?? "").Trim().ToUpperInvariant();
                 if (string.IsNullOrEmpty(cty)) continue;
-                // ECOM has no physical transit + no country-DB WHBoxItemsExport
-                // table. Skip entirely so we don't try [ONLINE]..WHBoxItemsExport
-                // (invalid object). Matches the existing InTransit behaviour —
-                // ECOM naturally gets 0 there because LPM_Ex2LocationConfig has
-                // no ECOM row.
-                if (cty is "ECOM" or "ONLINE" or "ONLINEKSA") continue;
+                // Skip countries that don't need Lead InTransit / Lead DC SOH:
+                //   UAE, OMAN  -- excluded per operator spec (no lead qty tracked).
+                //   ECOM (+ its ONLINE/ONLINEKSA data-name aliases) -- no physical
+                //     transit + no country-DB WHBoxItemsExport table (would try
+                //     [ONLINE]..WHBoxItemsExport / [DATA2004]..WHBoxItemsExport
+                //     and hit "Invalid object name").
+                // These countries fall through with 0 in both Lead columns.
+                if (cty is "UAE" or "OMAN" or "ECOM" or "ONLINE" or "ONLINEKSA") continue;
 
                 // LeadIntransit — single-DB query, filtered by racks..InTransit_ExportShipment.country.
                 var itRows = await c.QueryAsync<(int DivCode, int Total)>(new CommandDefinition(@"
