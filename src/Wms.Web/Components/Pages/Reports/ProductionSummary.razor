@@ -174,8 +174,6 @@ else if (VisibleRows().Count > 0)
                         <th rowspan="2">Date</th>
                         @if (multiCountry) { <th rowspan="2">Country</th> }
                         <th rowspan="2">Division</th>
-                        <th rowspan="2" style="text-align:right">LPM</th>
-                        <th rowspan="2" style="text-align:right">Non-LPM</th>
                         @if (hasMixed) { <th rowspan="2" style="text-align:right">Mixed</th> }
                         <th rowspan="2" style="text-align:right">Unknown</th>
                         <th rowspan="2" style="text-align:right">Scanned Qty</th>
@@ -201,8 +199,6 @@ else if (VisibleRows().Count > 0)
                             <td>@p.ProductionDay.ToString("dd-MMM-yyyy")</td>
                             @if (multiCountry) { <td>@p.Country</td> }
                             <td>@p.Division</td>
-                            <td style="text-align:right">@p.Lpm.ToString("N0")</td>
-                            <td style="text-align:right">@p.NonLpm.ToString("N0")</td>
                             @if (hasMixed) { <td style="text-align:right">@p.Mixed.ToString("N0")</td> }
                             <td style="text-align:right">@p.Unknown.ToString("N0")</td>
                             <td style="text-align:right; font-weight:600">@p.ScannedQty.ToString("N0")</td>
@@ -220,8 +216,6 @@ else if (VisibleRows().Count > 0)
                     }
                     <tr style="font-weight:700; background:#fff7e0">
                         <td colspan="@(multiCountry ? 3 : 2)">TOTAL</td>
-                        <td style="text-align:right">@pivot.Sum(x => x.Lpm).ToString("N0")</td>
-                        <td style="text-align:right">@pivot.Sum(x => x.NonLpm).ToString("N0")</td>
                         @if (hasMixed) { <td style="text-align:right">@pivot.Sum(x => x.Mixed).ToString("N0")</td> }
                         <td style="text-align:right">@pivot.Sum(x => x.Unknown).ToString("N0")</td>
                         <td style="text-align:right">@pivot.Sum(x => x.ScannedQty).ToString("N0")</td>
