@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using Dapper;
 using Microsoft.Data.SqlClient;
 using Wms.Core;
@@ -200,7 +201,10 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         var sql = $@"
             SELECT Country, StoreID, StoreName, DivCode, Division, VolumeGroup, PriorityRank,
                    TgtEOMMonth,
-                   TgtEOM, SOHToday, NoOfLeadWeeks, WeekSales, InTransit, Ex2DcSoh,
+                   TgtEOM, SOHToday, NoOfLeadWeeks, WeekSales,
+                   ISNULL(LeadIntransit, 0) AS LeadIntransit,
+                   ISNULL(LeadDCSOH,     0) AS LeadDCSOH,
+                   InTransit, Ex2DcSoh,
                    CountingWIP, OtsQtyToday, OtsPercentToday,
                    PrevEOMMonth,
                    ISNULL(PrevMonthEOM,    0) AS PrevMonthEOM,
@@ -222,7 +226,9 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
             PriorityRank: r.PriorityRank, EOMMonth: eomLabel,
             TgtEOMMonth: r.TgtEOMMonth,
             TgtEOM: r.TgtEOM, SOHToday: r.SOHToday, NoOfLeadWeeks: r.NoOfLeadWeeks,
-            WeekSales: r.WeekSales, InTransit: r.InTransit, Ex2DcSoh: r.Ex2DcSoh,
+            WeekSales: r.WeekSales,
+            LeadIntransit: r.LeadIntransit, LeadDCSOH: r.LeadDCSOH,
+            InTransit: r.InTransit, Ex2DcSoh: r.Ex2DcSoh,
             CountingWIP: r.CountingWIP, OtsQtyToday: r.OtsQtyToday,
             OtsPercentToday: (double)r.OtsPercentToday,
             PrevEOMMonth: r.PrevEOMMonth,
@@ -290,6 +296,8 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
             dt.Columns.Add("SOHToday",        typeof(int));
             dt.Columns.Add("NoOfLeadWeeks",   typeof(int));
             dt.Columns.Add("WeekSales",       typeof(int));
+            dt.Columns.Add("LeadIntransit",   typeof(int));
+            dt.Columns.Add("LeadDCSOH",       typeof(int));
             dt.Columns.Add("InTransit",       typeof(int));
             dt.Columns.Add("Ex2DcSoh",        typeof(int));
             dt.Columns.Add("CountingWIP",     typeof(int));
@@ -311,6 +319,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                     (object?)r.PriorityRank ?? DBNull.Value,
                     (object?)r.TgtEOMMonth ?? DBNull.Value,
                     r.TgtEOM, r.SOHToday, r.NoOfLeadWeeks, r.WeekSales,
+                    r.LeadIntransit, r.LeadDCSOH,
                     r.InTransit, r.Ex2DcSoh, r.CountingWIP, r.OtsQtyToday,
                     (decimal)r.OtsPercentToday,
                     (object?)r.PrevEOMMonth ?? DBNull.Value,
@@ -555,6 +564,88 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
             return rows.ToDictionary(r => (r.Country, r.DivCode), r => (r.InTransitTotal, r.Ex2DcTotal));
         }, () => new Dictionary<(string, int), (int, int)>());
 
+        // 3b) LeadIntransit + LeadDCSOH per (Country, DivCode) — filtered by a
+        //     per-country LPMDt cutoff = 1st of the month that
+        //     (today + LeadWeeks*7 days) lands in. Executed once per country
+        //     because the cutoff (and, for LeadDCSOH, the source DB name) is
+        //     country-specific. Same UAE=0 policy as InTransit.
+        //
+        //     LeadIntransit source: P2EXPORT..vTransferDetail JOIN
+        //         datareporting.dbo.vupc_subclass, restricted to trfno in
+        //         racks..InTransit_ExportShipment WHERE country=@ct AND intransit='Y'.
+        //     LeadDCSOH source: [{DataName}]..WHBoxItemsExport JOIN vupc_subclass,
+        //         DataName looked up in bfldata.dbo.DataSettings per country.
+        var leadTask = SafeAsync(warnings, "LeadIntransit + LeadDCSOH", async () =>
+        {
+            var todayGst = DateTime.UtcNow.AddHours(4).Date;
+            var perCountryCutoff = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+            foreach (var (cty, weeks) in weeksByCountry)
+            {
+                var landing = todayGst.AddDays(weeks * 7);
+                perCountryCutoff[cty] = new DateTime(landing.Year, landing.Month, 1);
+            }
+            var leadDict = new Dictionary<(string Country, int DivCode), (int LeadIntransit, int LeadDcSoh)>();
+
+            await using var c = OpenOnPremBackup();
+            // DataName per country for the LeadDCSOH per-country query.
+            var dataNames = (await c.QueryAsync<(string Country, string DataName)>(new CommandDefinition(@"
+                SELECT UPPER(LTRIM(RTRIM(Country))) AS Country, DataName
+                  FROM bfldata.dbo.DataSettings WITH (NOLOCK)
+                 WHERE DataName IS NOT NULL AND LTRIM(RTRIM(DataName)) <> ''",
+                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
+                .GroupBy(r => r.Country)
+                .ToDictionary(g => g.Key, g => g.First().DataName, StringComparer.OrdinalIgnoreCase);
+
+            foreach (var (ctyRaw, cutoff) in perCountryCutoff)
+            {
+                var cty = (ctyRaw ?? "").Trim().ToUpperInvariant();
+                if (string.IsNullOrEmpty(cty)) continue;
+                // Skip countries that don't need Lead InTransit / Lead DC SOH:
+                //   UAE, OMAN  -- excluded per operator spec (no lead qty tracked).
+                //   ECOM (+ its ONLINE/ONLINEKSA data-name aliases) -- no physical
+                //     transit + no country-DB WHBoxItemsExport table (would try
+                //     [ONLINE]..WHBoxItemsExport / [DATA2004]..WHBoxItemsExport
+                //     and hit "Invalid object name").
+                // These countries fall through with 0 in both Lead columns.
+                if (cty is "UAE" or "OMAN" or "ECOM" or "ONLINE" or "ONLINEKSA") continue;
+
+                // LeadIntransit — single-DB query, filtered by racks..InTransit_ExportShipment.country.
+                var itRows = await c.QueryAsync<(int DivCode, int Total)>(new CommandDefinition(@"
+                    SELECT v.DivID AS DivCode, SUM(ISNULL(a.quantity, 0)) AS Total
+                      FROM P2EXPORT..vTransferDetail a WITH (NOLOCK)
+                      JOIN datareporting.dbo.vupc_subclass v WITH (NOLOCK) ON v.itemcode = a.ItemCode
+                     WHERE a.trfno IN (
+                         SELECT TrfNo FROM racks..InTransit_ExportShipment WITH (NOLOCK)
+                          WHERE country = @cty AND intransit = 'Y')
+                       AND a.lpmdt <= @cutoff
+                       AND v.DivID IS NOT NULL
+                     GROUP BY v.DivID",
+                    new { cty, cutoff },
+                    commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+                foreach (var r in itRows)
+                    leadDict[(cty, r.DivCode)] = (r.Total, 0);
+
+                // LeadDCSOH — per-country DB name lookup, skip when DataName missing.
+                if (!dataNames.TryGetValue(cty, out var dataName)) continue;
+                if (!Regex.IsMatch(dataName, @"^[A-Za-z0-9_]+$")) continue;
+                var dcRows = await c.QueryAsync<(int DivCode, int Total)>(new CommandDefinition($@"
+                    SELECT v.DivID AS DivCode, SUM(ISNULL(w.Qty, 0)) AS Total
+                      FROM [{dataName}]..WHBoxItemsExport w WITH (NOLOCK)
+                      JOIN datareporting.dbo.vupc_subclass v WITH (NOLOCK) ON v.itemcode = w.ItemCode
+                     WHERE w.LPMDt <= @cutoff
+                       AND v.DivID IS NOT NULL
+                     GROUP BY v.DivID",
+                    new { cutoff },
+                    commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+                foreach (var r in dcRows)
+                {
+                    var prev = leadDict.TryGetValue((cty, r.DivCode), out var existing) ? existing : (0, 0);
+                    leadDict[(cty, r.DivCode)] = (prev.Item1, r.Total);
+                }
+            }
+            return leadDict;
+        }, () => new Dictionary<(string, int), (int, int)>());
+
         // 4) Week Sales per (StoreID, DivCode) summed over next N weeks from currentWk.
         //    lpm_salestgtwk_stores gives per-store weekly sales; MFP OUTBOUND holds
         //    the authoritative country-division total. We use lpm's per-store share
@@ -763,9 +854,10 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
             return rows.ToDictionary(r => (r.Country ?? "", r.StoreID, r.DivCode), r => r.Qty);
         }, () => new Dictionary<(string, string, int), int>());
 
-        await Task.WhenAll(sohTask, ex2Task, weekSalesTask, storeCountTask, wipTask);
+        await Task.WhenAll(sohTask, ex2Task, leadTask, weekSalesTask, storeCountTask, wipTask);
         var sohByKey            = sohTask.Result;
         var ex2ByKey            = ex2Task.Result;
+        var leadByKey           = leadTask.Result;
         var weekSalesByKey      = weekSalesTask.Result;
         var storeCountByCountry = storeCountTask.Result;
         var wipByKey            = wipTask.Result;
@@ -776,8 +868,13 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         // TgtEOM per current spec:
         //   WkReduction = (PrevMonthEOM - TgtEOM) / weeksInMonth
         //   CurrentEOW  = PrevMonthEOM - (WkReduction * weeksElapsedSoFar)
-        //   OTS Qty     = CurrentEOW + WeekSales - SOH - InTransit - Ex2DC - CountingWIP
+        //   OTS Qty     = CurrentEOW + WeekSales - SOH - LeadIntransit - LeadDCSOH
         //   OTS %       = OTS Qty / CurrentEOW * 100  (0 when CurrentEOW <= 0)
+        // Only supply arriving inside the country's lead window counts (Lead
+        // InTransit + Lead DC SOH). For countries with no Lead tracking (UAE,
+        // OMAN, ECOM) both Leads are 0 -> OTS = CurrentEOW + WeekSales - SOH.
+        // InTransit / Ex2DcSoh / CountingWIP columns remain on the grid for
+        // reference but no longer feed the OTS shortfall.
         // Stores with PrevMonthEOM = 0 fall back to CurrentEOW = TgtEOM so the
         // formula reduces to today's behaviour for stores without history.
         //
@@ -826,30 +923,42 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         // exist in baseRows (i.e. have EOM data for the picked Month/Year) so
         // the leftover is guaranteed to reach a real store. UAE is skipped for
         // InTransit per prior spec.
-        var perRowInTransit = new Dictionary<(string Country, string StoreID, int DivCode), int>();
-        var perRowEx2Dc     = new Dictionary<(string Country, string StoreID, int DivCode), int>();
+        var perRowInTransit     = new Dictionary<(string Country, string StoreID, int DivCode), int>();
+        var perRowEx2Dc         = new Dictionary<(string Country, string StoreID, int DivCode), int>();
+        var perRowLeadIntransit = new Dictionary<(string Country, string StoreID, int DivCode), int>();
+        var perRowLeadDcSoh     = new Dictionary<(string Country, string StoreID, int DivCode), int>();
         foreach (var group in baseRows.GroupBy(b => ((b.Country ?? "").Trim().ToUpperInvariant(), b.DivCode)))
         {
             var (cKey, divCode) = group.Key;
-            if (!ex2ByKey.TryGetValue(group.Key, out var totals)) continue;
-            var (inTransitTotal, ex2DcTotal) = totals;
+            var haveEx2 = ex2ByKey.TryGetValue(group.Key, out var totals);
+            var haveLead = leadByKey.TryGetValue(group.Key, out var leadTotals);
+            if (!haveEx2 && !haveLead) continue;
+            var (inTransitTotal, ex2DcTotal) = haveEx2 ? totals : (0, 0);
+            var (leadInTotal, leadDcTotal)   = haveLead ? leadTotals : (0, 0);
             var isUae = string.Equals(cKey, "UAE", StringComparison.OrdinalIgnoreCase);
-            var effectiveInTransit = isUae ? 0 : inTransitTotal;
+            var effectiveInTransit     = isUae ? 0 : inTransitTotal;
+            var effectiveLeadIntransit = isUae ? 0 : leadInTotal;    // UAE=0, same policy
             var storesInGroup = group.ToList();
             var n = storesInGroup.Count;
             if (n == 0) continue;
             // Sort deterministically so leftover units land consistently.
             storesInGroup.Sort((a, b) => string.CompareOrdinal(a.StoreID, b.StoreID));
-            var itFloor = effectiveInTransit / n;
-            var itRem   = effectiveInTransit % n;
-            var e2Floor = ex2DcTotal        / n;
-            var e2Rem   = ex2DcTotal        % n;
+            var itFloor  = effectiveInTransit     / n;
+            var itRem    = effectiveInTransit     % n;
+            var e2Floor  = ex2DcTotal             / n;
+            var e2Rem    = ex2DcTotal             % n;
+            var liFloor  = effectiveLeadIntransit / n;
+            var liRem    = effectiveLeadIntransit % n;
+            var ldFloor  = leadDcTotal            / n;
+            var ldRem    = leadDcTotal            % n;
             for (int i = 0; i < n; i++)
             {
                 var s = storesInGroup[i];
                 var key = (s.Country, s.StoreID, s.DivCode);
-                perRowInTransit[key] = itFloor + (i < itRem ? 1 : 0);
-                perRowEx2Dc[key]     = e2Floor + (i < e2Rem ? 1 : 0);
+                perRowInTransit[key]     = itFloor + (i < itRem ? 1 : 0);
+                perRowEx2Dc[key]         = e2Floor + (i < e2Rem ? 1 : 0);
+                perRowLeadIntransit[key] = liFloor + (i < liRem ? 1 : 0);
+                perRowLeadDcSoh[key]     = ldFloor + (i < ldRem ? 1 : 0);
             }
         }
 
@@ -870,8 +979,10 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                 soh = sohByKey.TryGetValue((r.StoreID.Trim().ToUpperInvariant(), r.DivCode), out var s) ? s : 0;
             }
             var ws        = weekSalesByKey.TryGetValue((r.StoreID, r.DivCode), out var w) ? w : 0;
-            var inTransit = perRowInTransit.TryGetValue((r.Country, r.StoreID, r.DivCode), out var itPer) ? itPer : 0;
-            var ex2dc     = perRowEx2Dc.TryGetValue((r.Country, r.StoreID, r.DivCode), out var e2Per) ? e2Per : 0;
+            var inTransit    = perRowInTransit.TryGetValue((r.Country, r.StoreID, r.DivCode), out var itPer)     ? itPer     : 0;
+            var ex2dc        = perRowEx2Dc.TryGetValue((r.Country, r.StoreID, r.DivCode), out var e2Per)         ? e2Per     : 0;
+            var leadIntransit= perRowLeadIntransit.TryGetValue((r.Country, r.StoreID, r.DivCode), out var liPer) ? liPer     : 0;
+            var leadDcSoh    = perRowLeadDcSoh.TryGetValue((r.Country, r.StoreID, r.DivCode), out var ldPer)     ? ldPer     : 0;
             var wip = wipByKey.TryGetValue((r.Country, r.StoreID, r.DivCode), out var v) ? v : 0;
 
             // WeekAdjustment = per-week walk rate from PrevMonthEOM toward TgtEOM,
@@ -895,7 +1006,13 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                 currentEOW     = r.TgtEOM;   // fall back when no previous history
             }
 
-            var otsQty = currentEOW + ws - soh - inTransit - ex2dc - wip;
+            // OTS formula (v1.0.364+): subtract the LEAD-horizon-filtered
+            // supply (Lead InTransit + Lead DC SOH) instead of the raw totals.
+            // Only stock that arrives within the country's lead window counts
+            // toward meeting Current EOW. For countries excluded from the Lead
+            // prefetch (UAE, OMAN, ECOM), leadIntransit + leadDcSoh = 0 so the
+            // formula reduces to (CurrentEOW + WeekSales - SOH).
+            var otsQty = currentEOW + ws - soh - leadIntransit - leadDcSoh;
             var otsPct = currentEOW > 0 ? (double)otsQty / currentEOW * 100.0 : 0.0;
             results.Add(new OtsPoAllocationRow(
                 Country:         r.Country,
@@ -911,6 +1028,8 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                 SOHToday:        soh,
                 NoOfLeadWeeks:   r.NoOfLeadWeeks,
                 WeekSales:       ws,
+                LeadIntransit:   leadIntransit,
+                LeadDCSOH:       leadDcSoh,
                 InTransit:       inTransit,
                 Ex2DcSoh:        ex2dc,
                 CountingWIP:     wip,
@@ -965,6 +1084,8 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         public int      SOHToday        { get; set; }
         public int      NoOfLeadWeeks   { get; set; }
         public int      WeekSales       { get; set; }
+        public int      LeadIntransit   { get; set; }
+        public int      LeadDCSOH       { get; set; }
         public int      InTransit       { get; set; }
         public int      Ex2DcSoh        { get; set; }
         public int      CountingWIP     { get; set; }
