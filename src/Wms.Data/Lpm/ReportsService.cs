@@ -175,27 +175,28 @@ public class ReportsService(IOnPremConnectionResolver resolver)
     /// Merch Need (Month/Week/Day) for a country and selected week, from
     /// LPMSIM.dbo.tmpPlanningTarget (Country, Week, Division, Target). Read via
     /// OnPremBackup like LPMSIM_Batch — no per-country connection-string dance needed.
-    /// Week and Day currently read the same per-week Target sum; Month sums across the
-    /// 4-4-5 month bucket containing the selected week.
+    /// Week reads that week's Target sum; Day divides it by daysInWeek (7, unless the
+    /// selected week is the year's truncated final week); Month sums across the 4-4-5
+    /// month bucket containing the selected week.
     /// </summary>
-    public async Task<MerchNeedRow> GetMerchNeedAsync(string country, int week, CancellationToken ct = default)
+    public async Task<MerchNeedRow> GetMerchNeedAsync(string country, int week, int daysInWeek = 7, CancellationToken ct = default)
     {
         await using var c = OpenOnPremBackup();
         var monthWeeks = WeeksInSameMonth(week);
         var row = await c.QuerySingleOrDefaultAsync<MerchNeedRow>(new CommandDefinition(@"
             SELECT MerchNeedMonth = CAST(ROUND(ISNULL(SUM(CASE WHEN Week IN @monthWeeks THEN Target ELSE 0 END), 0), 0) AS BIGINT),
                    MerchNeedWeek  = CAST(ROUND(ISNULL(SUM(CASE WHEN Week = @week THEN Target ELSE 0 END), 0), 0) AS BIGINT),
-                   MerchNeedDay   = CAST(ROUND(ISNULL(SUM(CASE WHEN Week = @week THEN Target ELSE 0 END), 0), 0) AS BIGINT)
+                   MerchNeedDay   = CAST(ROUND(ISNULL(SUM(CASE WHEN Week = @week THEN Target ELSE 0 END), 0) / @daysInWeek, 0) AS BIGINT)
               FROM LPMSIM.dbo.tmpPlanningTarget
              WHERE Country = @country AND Week IN @monthWeeks",
-            new { country, week, monthWeeks }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            new { country, week, monthWeeks, daysInWeek }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         return row ?? new MerchNeedRow(0, 0, 0);
     }
 
     /// <summary>Merch Need (Month/Week/Day) per Division for a country and selected week,
     /// from LPMSIM.dbo.tmpPlanningTarget. DivCode is always 0 — this table has no DivCode
     /// column, only a Division name, and callers match on Division name, not DivCode.</summary>
-    public async Task<List<MerchNeedDivisionRow>> GetMerchNeedByDivisionAsync(string country, int week, CancellationToken ct = default)
+    public async Task<List<MerchNeedDivisionRow>> GetMerchNeedByDivisionAsync(string country, int week, int daysInWeek = 7, CancellationToken ct = default)
     {
         await using var c = OpenOnPremBackup();
         var monthWeeks = WeeksInSameMonth(week);
@@ -203,11 +204,11 @@ public class ReportsService(IOnPremConnectionResolver resolver)
             SELECT DivCode = 0, Division,
                    MerchNeedMonth = CAST(ROUND(ISNULL(SUM(CASE WHEN Week IN @monthWeeks THEN Target ELSE 0 END), 0), 0) AS BIGINT),
                    MerchNeedWeek  = CAST(ROUND(ISNULL(SUM(CASE WHEN Week = @week THEN Target ELSE 0 END), 0), 0) AS BIGINT),
-                   MerchNeedDay   = CAST(ROUND(ISNULL(SUM(CASE WHEN Week = @week THEN Target ELSE 0 END), 0), 0) AS BIGINT)
+                   MerchNeedDay   = CAST(ROUND(ISNULL(SUM(CASE WHEN Week = @week THEN Target ELSE 0 END), 0) / @daysInWeek, 0) AS BIGINT)
               FROM LPMSIM.dbo.tmpPlanningTarget
              WHERE Country = @country AND Week IN @monthWeeks
              GROUP BY Division",
-            new { country, week, monthWeeks }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            new { country, week, monthWeeks, daysInWeek }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         return rows.AsList();
     }
 
