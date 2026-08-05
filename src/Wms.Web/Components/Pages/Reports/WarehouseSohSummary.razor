@@ -327,7 +327,12 @@ else if (_loadedOnce)
     private static readonly Dictionary<string, List<WarehouseDummy>> _warehousesByCountry =
         new(StringComparer.OrdinalIgnoreCase)
         {
-            ["UAE"] = new() { new("TECHNO", true), new("JAFZA", true), new("YOTO", true), new("BlackBOX", false) },
+            ["UAE"]      = new() { new("TECHNO", true), new("JAFZA", true), new("YOTO", true), new("BlackBOX", false) },
+            ["KSA"]      = new() { new("KSA", true) },
+            ["Qatar"]    = new() { new("Qatar", true) },
+            ["Kuwait"]   = new() { new("Kuwait", true) },
+            ["Malaysia"] = new() { new("Malaysia", true) },
+            ["Bahrain"]  = new() { new("Bahrain", true) },
         };
 
     private sealed record AgeAlert(string Category, string Status, string StatusClass);
@@ -340,9 +345,30 @@ else if (_loadedOnce)
         new("Elapsed (LPM)",  "Critical", "critical"),
     };
 
-    private WhAgingUnits? _agingUnits;
+    private readonly Dictionary<string, WhAgingUnits> _agingUnitsByCountry = new(StringComparer.OrdinalIgnoreCase);
 
-    private long UnitsFor(string category) => _agingUnits switch
+    // Combines every selected country's Aging Inventory into one total, same as how
+    // the Warehouse-wise Performance Summary table already sums across countries.
+    private WhAgingUnits? CombinedAgingUnits
+    {
+        get
+        {
+            var values = _agingUnitsByCountry
+                .Where(kv => _selectedCountries.Contains(kv.Key))
+                .Select(kv => kv.Value)
+                .ToList();
+            return values.Count == 0
+                ? null
+                : new WhAgingUnits(
+                    values.Sum(v => v.Days1To30),
+                    values.Sum(v => v.Days30To60),
+                    values.Sum(v => v.Days60To90),
+                    values.Sum(v => v.DaysAbove90),
+                    values.Sum(v => v.ElapsedLpm));
+        }
+    }
+
+    private long UnitsFor(string category) => CombinedAgingUnits switch
     {
         null => 0,
         var u => category switch
@@ -367,10 +393,10 @@ else if (_loadedOnce)
         new(">90 Days", "#d03b3b"),
     };
 
-    // Same source as the Critical Alerts table (_agingUnits), rolled into the 4 bars
-    // this chart shows -- ">90 Days" combines DaysAbove90 and Elapsed (LPM) since this
-    // chart has no separate "Elapsed" bar.
-    private long UnitsForBucket(string label) => _agingUnits switch
+    // Same source as the Critical Alerts table (CombinedAgingUnits), rolled into the 4
+    // bars this chart shows -- ">90 Days" combines DaysAbove90 and Elapsed (LPM) since
+    // this chart has no separate "Elapsed" bar.
+    private long UnitsForBucket(string label) => CombinedAgingUnits switch
     {
         null => 0,
         var u => label switch
@@ -427,7 +453,7 @@ else if (_loadedOnce)
         _storageTotals.Clear();
         _stockByWarehouse.Clear();
         _storageByWarehouse.Clear();
-        _agingUnits = null;
+        _agingUnitsByCountry.Clear();
         await InvokeAsync(StateHasChanged);
         try
         {
@@ -439,13 +465,34 @@ else if (_loadedOnce)
                 _storageTotals[("UAE", true)]  = await SohSvc.GetStorageCapacityExcludingBlackboxAsync();
                 _storageTotals[("UAE", false)] = await SohSvc.GetStorageCapacityForBlackboxAsync();
 
-                _agingUnits = await SohSvc.GetAgingUnitsAsync();
+                _agingUnitsByCountry["UAE"] = await SohSvc.GetAgingUnitsAsync();
 
                 foreach (var wh in _warehousesByCountry.GetValueOrDefault("UAE", new()))
                 {
                     _stockByWarehouse[("UAE", wh.Name)]   = await SohSvc.GetStockOnHandForWarehouseAsync(wh.Name);
                     _storageByWarehouse[("UAE", wh.Name)] = await SohSvc.GetStorageCapacityForWarehouseAsync(wh.Name);
                 }
+            }
+
+            // Each of these is a single-facility country -- no per-warehouse split.
+            // Storage Capacity depends on BinRackMaster, which doesn't exist in these
+            // databases yet -- catch and default to 0 until it's created.
+            foreach (var country in _selectedCountries)
+            {
+                if (!WarehouseSohSummaryService.HasStockOnHandDatabase(country)) continue;
+                var stock = await SohSvc.GetStockOnHandForCountryAsync(country);
+                _groupTotals[(country, true)] = stock;
+                _stockByWarehouse[(country, country)] = stock;
+
+                try
+                {
+                    var storage = await SohSvc.GetStorageCapacityForCountryAsync(country);
+                    _storageTotals[(country, true)] = storage;
+                    _storageByWarehouse[(country, country)] = storage;
+                }
+                catch { /* BinRackMaster not created yet for this country -- leave at 0 */ }
+
+                _agingUnitsByCountry[country] = await SohSvc.GetAgingUnitsForCountryAsync(country);
             }
         }
         finally
