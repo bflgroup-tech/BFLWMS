@@ -56,9 +56,12 @@ public static class MenuKeys
         string? Category = null);
 
     /// <summary>
-    /// Source of truth for the menu inventory. Each entry's DefaultRoles
-    /// drives the "natural" access (current pre-grant behaviour); explicit
-    /// per-user grants in WmsUserMenuAccess are layered ON TOP.
+    /// Source of truth for the menu inventory. DefaultRoles is informational
+    /// only (shown next to each checkbox on the Menu Access admin screen as a
+    /// hint of who a role-based system would grant this to) — it does NOT
+    /// drive authorization. Actual access is decided solely by explicit
+    /// per-user grants in WmsUserMenuAccess (see MenuAccessHandler): a user
+    /// with zero grants sees nothing beyond the Admin bypass.
     /// </summary>
     public static readonly IReadOnlyList<MenuEntry> All = new[]
     {

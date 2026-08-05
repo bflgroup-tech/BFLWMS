@@ -83,7 +83,8 @@ public class WmsClaimsTransformer(
                     baseId.AddClaim(new Claim(baseId.RoleClaimType, ur.RoleCode));
             }
 
-            // Per-user explicit menu grants (additive to role-default access).
+            // Per-user explicit menu grants — the sole authorization allowlist
+            // for non-Admin users (see MenuAccessHandler); no role-based fallback.
             var grants = await db.UserMenuAccess
                 .Where(g => g.Username == email)
                 .Select(g => g.MenuKey)
