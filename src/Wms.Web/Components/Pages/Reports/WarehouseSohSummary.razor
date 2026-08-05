@@ -13,6 +13,38 @@
 <style>
     .wsoh-country-select summary { list-style: none; }
     .wsoh-country-select summary::-webkit-details-marker { display: none; }
+    .wsoh-country-select summary {
+        transition: border-color .15s ease, box-shadow .15s ease;
+    }
+    .wsoh-country-select summary:hover {
+        border-color: var(--border-strong);
+    }
+    .wsoh-country-select details[open] summary {
+        border-color: var(--bfl-yellow);
+        box-shadow: 0 0 0 3px rgba(255, 209, 0, .18);
+    }
+    .wsoh-country-select .wsoh-arrow {
+        display: inline-block;
+        transition: transform .15s ease;
+    }
+    .wsoh-country-select details[open] .wsoh-arrow {
+        transform: rotate(180deg);
+    }
+    .wsoh-country-select .wsoh-option {
+        border-radius: 4px;
+        padding: 6px 8px;
+        margin: 0 -2px;
+        transition: background-color .1s ease;
+    }
+    .wsoh-country-select .wsoh-option:hover {
+        background: var(--bfl-yellow-lite);
+    }
+    .wsoh-country-select .wsoh-option input[type="checkbox"] {
+        width: 15px;
+        height: 15px;
+        accent-color: var(--bfl-yellow-hov);
+        cursor: pointer;
+    }
 
     .wsoh-box { border: 1px solid var(--border-default); border-radius: var(--r-sm); overflow: hidden; background: #fff; flex: 1; min-width: 220px; }
     .wsoh-box-header { background: var(--bfl-black); color: var(--bfl-yellow); font-family: var(--font-display); font-weight: 800; font-size: 11px; text-transform: uppercase; letter-spacing: .5px; padding: 9px 14px; text-align: center; }
@@ -30,9 +62,11 @@
     .wsoh-agebar-row { display: grid; grid-template-columns: 90px 1fr 70px; align-items: center; gap: 10px; margin-bottom: 8px; font-size: 12px; }
     .wsoh-agebar-track { background: var(--bfl-grey-100); border-radius: 999px; height: 14px; overflow: hidden; }
     .wsoh-agebar-fill { height: 100%; border-radius: 999px; }
+
+    .wsoh-page-header h2 { font-size: 27px; }
 </style>
 
-<div class="aiwms-page-header">
+<div class="aiwms-page-header wsoh-page-header">
     <h2>Warehouse Stock On Hand</h2>
     <p>Warehouse Summary Report | Real-Time KPI Overview. Last Updated: [Auto-refresh] | Data Source: WMS Integration | Refresh Interval: Real-time.</p>
 </div>
@@ -42,14 +76,18 @@
         <div class="wsoh-country-select">
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COUNTRY (select any)</label>
             <details id="wsoh-country-dropdown" style="position:relative;">
-                <summary style="display:flex; align-items:center; justify-content:space-between; gap:8px; width:260px; height:36px; box-sizing:border-box; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white; cursor:pointer; user-select:none;">
+                <summary style="display:flex; align-items:center; justify-content:space-between; gap:8px; width:260px; height:36px; box-sizing:border-box; padding:8px 12px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; font-weight:600; background:white; cursor:pointer; user-select:none;">
                     <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">@CountrySelectionLabel</span>
-                    <span style="color:var(--text-secondary); font-size:10px; flex-shrink:0;">&#9660;</span>
+                    <span class="wsoh-arrow" style="color:var(--text-secondary); font-size:10px; flex-shrink:0;">&#9660;</span>
                 </summary>
-                <div style="position:absolute; top:100%; left:0; right:0; z-index:20; margin-top:4px; display:flex; flex-direction:column; gap:4px; max-height:220px; overflow-y:auto; border:1px solid var(--border-default); border-radius:var(--r-sm); padding:8px 10px; background:white; box-shadow:0 4px 12px rgba(0,0,0,0.15);">
+                <div style="position:absolute; top:100%; left:0; right:0; z-index:20; margin-top:6px; display:flex; flex-direction:column; gap:2px; max-height:220px; overflow-y:auto; border:1px solid var(--border-default); border-radius:8px; padding:8px; background:white; box-shadow:0 8px 20px rgba(0,0,0,0.14);">
+                    <label class="wsoh-option" style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:13px; font-weight:700; border-bottom:1px solid var(--border-default); padding-bottom:8px; margin-bottom:2px">
+                        <input type="checkbox" checked="@_countries.All(c => _selectedCountries.Contains(c))" @onchange="@(e => ToggleAllCountries((bool)e.Value!))" />
+                        Select all
+                    </label>
                     @foreach (var c in _countries)
                     {
-                        <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:13px">
+                        <label class="wsoh-option" style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:13px">
                             <input type="checkbox" checked="@_selectedCountries.Contains(c)" @onchange="@(e => ToggleCountry(c, (bool)e.Value!))" />
                             @c.ToUpper()
                         </label>
@@ -57,7 +95,7 @@
                 </div>
             </details>
         </div>
-        <button class="aiwms-btn aiwms-btn-primary" @onclick="LoadAsync" disabled="@(_loading || _selectedCountries.Count == 0)">@(_loading ? "Loading…" : "Load")</button>
+        <button class="aiwms-btn aiwms-btn-primary" style="height:36px; box-sizing:border-box" @onclick="LoadAsync" disabled="@(_loading || _selectedCountries.Count == 0)">@(_loading ? "Loading…" : "Load")</button>
     </div>
 </div>
 
@@ -144,29 +182,37 @@
                 <tbody>
                     @foreach (var wh in warehouses)
                     {
+                        var stock   = _stockByWarehouse.GetValueOrDefault((wh.Country, wh.Warehouse.Name));
+                        var storage = _storageByWarehouse.GetValueOrDefault((wh.Country, wh.Warehouse.Name));
                         <tr>
                             @if (multiCountry) { <td>@wh.Country.ToUpper()</td> }
-                            <td>@wh.Warehouse.Name</td>
-                            <td style="text-align:right">0</td>
-                            <td style="text-align:right">0</td>
-                            <td style="text-align:right">0</td>
-                            <td style="text-align:right">0</td>
-                            <td style="text-align:right">0</td>
-                            <td style="text-align:right">0</td>
-                            <td style="text-align:right">0</td>
-                            <td style="text-align:right">0%</td>
+                            <td>@wh.Warehouse.Name.ToUpper()</td>
+                            <td style="text-align:right">@((stock?.TotalQuantity ?? 0).ToString("N0"))</td>
+                            <td style="text-align:right">@((stock?.TotalBoxesStock ?? 0).ToString("N0"))</td>
+                            <td style="text-align:right">@((stock?.NumberOfBoxes ?? 0).ToString("N0"))</td>
+                            <td style="text-align:right">@((stock?.TotalPalletsStock ?? 0).ToString("N0"))</td>
+                            <td style="text-align:right">@((stock?.NumberOfPallets ?? 0).ToString("N0"))</td>
+                            <td style="text-align:right">@((storage?.FreeBoxRackLocations ?? 0).ToString("N0"))</td>
+                            <td style="text-align:right">@((storage?.FreePalletRackLocations ?? 0).ToString("N0"))</td>
+                            <td style="text-align:right">@(storage?.OverallUtilizationPct ?? 0)%</td>
                         </tr>
+                    }
+                    @{
+                        var storageRows = warehouses.Select(wh => _storageByWarehouse.GetValueOrDefault((wh.Country, wh.Warehouse.Name))).Where(s => s is not null).Select(s => s!).ToList();
+                        var totalRackLocations   = storageRows.Sum(s => s.TotalRackLocations);
+                        var totalFilledLocations = storageRows.Sum(s => s.FilledBoxLocations + s.FilledPalletLocations);
+                        var totalUtilizationPct  = totalRackLocations > 0 ? Math.Round(100.0 * totalFilledLocations / totalRackLocations, 1) : 0;
                     }
                     <tr style="font-weight:700; background:#fff7e0">
                         <td colspan="@(multiCountry ? 2 : 1)">TOTAL</td>
-                        <td style="text-align:right">0</td>
-                        <td style="text-align:right">0</td>
-                        <td style="text-align:right">0</td>
-                        <td style="text-align:right">0</td>
-                        <td style="text-align:right">0</td>
-                        <td style="text-align:right">0</td>
-                        <td style="text-align:right">0</td>
-                        <td style="text-align:right">0%</td>
+                        <td style="text-align:right">@(warehouses.Sum(wh => _stockByWarehouse.GetValueOrDefault((wh.Country, wh.Warehouse.Name))?.TotalQuantity ?? 0).ToString("N0"))</td>
+                        <td style="text-align:right">@(warehouses.Sum(wh => _stockByWarehouse.GetValueOrDefault((wh.Country, wh.Warehouse.Name))?.TotalBoxesStock ?? 0).ToString("N0"))</td>
+                        <td style="text-align:right">@(warehouses.Sum(wh => _stockByWarehouse.GetValueOrDefault((wh.Country, wh.Warehouse.Name))?.NumberOfBoxes ?? 0).ToString("N0"))</td>
+                        <td style="text-align:right">@(warehouses.Sum(wh => _stockByWarehouse.GetValueOrDefault((wh.Country, wh.Warehouse.Name))?.TotalPalletsStock ?? 0).ToString("N0"))</td>
+                        <td style="text-align:right">@(warehouses.Sum(wh => _stockByWarehouse.GetValueOrDefault((wh.Country, wh.Warehouse.Name))?.NumberOfPallets ?? 0).ToString("N0"))</td>
+                        <td style="text-align:right">@(storageRows.Sum(s => s.FreeBoxRackLocations).ToString("N0"))</td>
+                        <td style="text-align:right">@(storageRows.Sum(s => s.FreePalletRackLocations).ToString("N0"))</td>
+                        <td style="text-align:right">@(totalUtilizationPct)%</td>
                     </tr>
                 </tbody>
             </table>
@@ -200,17 +246,19 @@
 
             <div style="flex:1; min-width:320px;">
                 <div style="font-weight:700; font-size:13px; margin-bottom:10px;">Inventory Age Distribution</div>
+                @{
+                    var ageBucketMax = AgeBucketMax;
+                }
                 @foreach (var b in _ageBuckets)
                 {
+                    var bucketUnits = UnitsForBucket(b.Label);
+                    var bucketPct = ageBucketMax > 0 ? 100.0 * bucketUnits / ageBucketMax : 0;
                     <div class="wsoh-agebar-row">
                         <span style="color:var(--text-secondary)">@b.Label</span>
-                        <div class="wsoh-agebar-track"><div class="wsoh-agebar-fill" style="width:0%; background:@b.Color"></div></div>
-                        <span style="text-align:right">0</span>
+                        <div class="wsoh-agebar-track"><div class="wsoh-agebar-fill" style="width:@(bucketPct.ToString("F1"))%; background:@b.Color"></div></div>
+                        <span style="text-align:right">@bucketUnits.ToString("N0")</span>
                     </div>
                 }
-                <div style="display:flex; justify-content:space-between; font-size:11px; color:var(--text-secondary); margin-top:4px;">
-                    <span>0</span><span>50,000</span>
-                </div>
             </div>
         </div>
     </div>
@@ -233,10 +281,31 @@ else if (_loadedOnce)
     private readonly Dictionary<(string Country, bool HasPallets), WhStockOnHand> _groupTotals = new();
     private readonly Dictionary<(string Country, bool HasPallets), WhStorageCapacity> _storageTotals = new();
 
+    // Per-warehouse row for the Warehouse-wise Performance Summary table.
+    private readonly Dictionary<(string Country, string Warehouse), WhStockOnHand> _stockByWarehouse =
+        new(new CountryWarehouseComparer());
+    private readonly Dictionary<(string Country, string Warehouse), WhStorageCapacity> _storageByWarehouse =
+        new(new CountryWarehouseComparer());
+
+    private sealed class CountryWarehouseComparer : IEqualityComparer<(string Country, string Warehouse)>
+    {
+        public bool Equals((string Country, string Warehouse) a, (string Country, string Warehouse) b) =>
+            string.Equals(a.Country, b.Country, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(a.Warehouse, b.Warehouse, StringComparison.OrdinalIgnoreCase);
+        public int GetHashCode((string Country, string Warehouse) k) =>
+            HashCode.Combine(k.Country.ToUpperInvariant(), k.Warehouse.ToUpperInvariant());
+    }
+
     private void ToggleCountry(string country, bool isChecked)
     {
         if (isChecked) _selectedCountries.Add(country);
         else _selectedCountries.Remove(country);
+    }
+
+    private void ToggleAllCountries(bool isChecked)
+    {
+        if (isChecked) foreach (var c in _countries) _selectedCountries.Add(c);
+        else _selectedCountries.Clear();
     }
 
     private string CountrySelectionLabel
@@ -298,6 +367,24 @@ else if (_loadedOnce)
         new(">90 Days", "#d03b3b"),
     };
 
+    // Same source as the Critical Alerts table (_agingUnits), rolled into the 4 bars
+    // this chart shows -- ">90 Days" combines DaysAbove90 and Elapsed (LPM) since this
+    // chart has no separate "Elapsed" bar.
+    private long UnitsForBucket(string label) => _agingUnits switch
+    {
+        null => 0,
+        var u => label switch
+        {
+            "Current"  => u.Days1To30,
+            ">30 Days" => u.Days30To60,
+            ">60 Days" => u.Days60To90,
+            ">90 Days" => u.DaysAbove90 + u.ElapsedLpm,
+            _ => 0
+        }
+    };
+
+    private long AgeBucketMax => _ageBuckets.Select(b => UnitsForBucket(b.Label)).DefaultIfEmpty(0).Max();
+
     protected override async Task OnInitializedAsync()
     {
         await Me.EnsureLoadedAsync();
@@ -338,6 +425,8 @@ else if (_loadedOnce)
         _loading = true;
         _groupTotals.Clear();
         _storageTotals.Clear();
+        _stockByWarehouse.Clear();
+        _storageByWarehouse.Clear();
         _agingUnits = null;
         await InvokeAsync(StateHasChanged);
         try
@@ -351,6 +440,12 @@ else if (_loadedOnce)
                 _storageTotals[("UAE", false)] = await SohSvc.GetStorageCapacityForBlackboxAsync();
 
                 _agingUnits = await SohSvc.GetAgingUnitsAsync();
+
+                foreach (var wh in _warehousesByCountry.GetValueOrDefault("UAE", new()))
+                {
+                    _stockByWarehouse[("UAE", wh.Name)]   = await SohSvc.GetStockOnHandForWarehouseAsync(wh.Name);
+                    _storageByWarehouse[("UAE", wh.Name)] = await SohSvc.GetStorageCapacityForWarehouseAsync(wh.Name);
+                }
             }
         }
         finally
