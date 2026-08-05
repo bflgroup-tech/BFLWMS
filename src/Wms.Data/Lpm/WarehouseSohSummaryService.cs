@@ -316,4 +316,36 @@ public class WarehouseSohSummaryService(IOnPremConnectionResolver resolver)
         return new WhAgingUnits(
             rdr.GetInt64(0), rdr.GetInt64(1), rdr.GetInt64(2), rdr.GetInt64(3), rdr.GetInt64(4));
     }
+
+    /// <summary>Critical Alerts &amp; Aging Inventory units for a non-UAE country, from that
+    /// country's own {Database}.dbo.WHBoxItemsExport. LPMDt is a real DATE column here
+    /// (first-of-month), unlike UAE's varchar dd/MM/yyyy column, so buckets compare dates
+    /// directly instead of string-converting.</summary>
+    public async Task<WhAgingUnits> GetAgingUnitsForCountryAsync(string country, CancellationToken ct = default)
+    {
+        if (!CountryStockDatabase.TryGetValue(country, out var db))
+            throw new ArgumentException($"No WHBoxItemsExport database mapping for country '{country}'.", nameof(country));
+
+        await using var c = OpenOnPremBackup();
+        await using var cmd = c.CreateCommand();
+        cmd.CommandText = $@"
+            SET NOCOUNT ON;
+            DECLARE @m0 DATE = DATEFROMPARTS(YEAR(GETDATE()), MONTH(GETDATE()), 1);
+            DECLARE @m1 DATE = DATEADD(MONTH, 1, @m0);
+            DECLARE @m2 DATE = DATEADD(MONTH, 2, @m0);
+            DECLARE @m3 DATE = DATEADD(MONTH, 3, @m0);
+
+            SELECT
+                Days1To30   = CAST(ISNULL(SUM(CASE WHEN LPMDt = @m0 THEN Qty ELSE 0 END), 0) AS BIGINT),
+                Days30To60  = CAST(ISNULL(SUM(CASE WHEN LPMDt = @m1 THEN Qty ELSE 0 END), 0) AS BIGINT),
+                Days60To90  = CAST(ISNULL(SUM(CASE WHEN LPMDt = @m2 THEN Qty ELSE 0 END), 0) AS BIGINT),
+                DaysAbove90 = CAST(ISNULL(SUM(CASE WHEN LPMDt = @m3 THEN Qty ELSE 0 END), 0) AS BIGINT),
+                ElapsedLpm  = CAST(ISNULL(SUM(CASE WHEN LPMDt < @m0 THEN Qty ELSE 0 END), 0) AS BIGINT)
+              FROM {db}.dbo.WHBoxItemsExport";
+        cmd.CommandTimeout = CommandTimeoutSeconds;
+        await using var rdr = await cmd.ExecuteReaderAsync(ct);
+        await rdr.ReadAsync(ct);
+        return new WhAgingUnits(
+            rdr.GetInt64(0), rdr.GetInt64(1), rdr.GetInt64(2), rdr.GetInt64(3), rdr.GetInt64(4));
+    }
 }
