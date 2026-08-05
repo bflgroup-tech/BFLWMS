@@ -138,6 +138,32 @@ public class WarehouseSohSummaryService(IOnPremConnectionResolver resolver)
             rdr.GetInt64(0), rdr.GetInt64(1), rdr.GetInt64(2), rdr.GetInt64(3), rdr.GetInt64(4), rdr.GetInt64(5));
     }
 
+    /// <summary>Storage Capacity for a non-UAE country, from that country's own
+    /// {Database}.dbo.BinRackMaster (total slots) and dbo.BinRack (filled slots) --
+    /// same shape as UAE's BINRACK rack type, no separate pallet-rack table, so
+    /// everything here counts as "box" slots and the pallet slots stay 0.
+    /// BinRackMaster doesn't exist in these databases yet (pending), so this throws
+    /// until it's created -- callers should catch and default to zero.</summary>
+    public async Task<WhStorageCapacity> GetStorageCapacityForCountryAsync(string country, CancellationToken ct = default)
+    {
+        if (!CountryStockDatabase.TryGetValue(country, out var db))
+            throw new ArgumentException($"No BinRackMaster database mapping for country '{country}'.", nameof(country));
+
+        await using var c = OpenOnPremBackup();
+        await using var cmd = c.CreateCommand();
+        cmd.CommandText = $@"
+            SELECT
+                TotalRackLocations = CAST(ISNULL((SELECT COUNT(*) FROM {db}.dbo.BinRackMaster), 0) AS BIGINT),
+                FilledBoxLocations = CAST(ISNULL((SELECT COUNT(*) FROM {db}.dbo.BinRack), 0) AS BIGINT)";
+        cmd.CommandTimeout = CommandTimeoutSeconds;
+        await using var rdr = await cmd.ExecuteReaderAsync(ct);
+        await rdr.ReadAsync(ct);
+        var total  = rdr.GetInt64(0);
+        var filled = rdr.GetInt64(1);
+        var free   = Math.Max(0, total - filled);
+        return new WhStorageCapacity(total, free, filled, 0, 0);
+    }
+
     private async Task<WhStockOnHand> GetStockOnHandAsync(string whereClause, CancellationToken ct)
     {
         await using var c = OpenOnPremBackup();

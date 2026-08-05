@@ -454,14 +454,23 @@ else if (_loadedOnce)
             }
 
             // Each of these is a single-facility country -- no per-warehouse split, and no
-            // Storage Capacity / Aging Inventory source wired up for them yet, so those boxes
-            // stay at 0 until that's specified.
+            // Aging Inventory source wired up for them yet, so that box stays at 0.
+            // Storage Capacity depends on BinRackMaster, which doesn't exist in these
+            // databases yet -- catch and default to 0 until it's created.
             foreach (var country in _selectedCountries)
             {
                 if (!WarehouseSohSummaryService.HasStockOnHandDatabase(country)) continue;
                 var stock = await SohSvc.GetStockOnHandForCountryAsync(country);
                 _groupTotals[(country, true)] = stock;
                 _stockByWarehouse[(country, country)] = stock;
+
+                try
+                {
+                    var storage = await SohSvc.GetStorageCapacityForCountryAsync(country);
+                    _storageTotals[(country, true)] = storage;
+                    _storageByWarehouse[(country, country)] = storage;
+                }
+                catch { /* BinRackMaster not created yet for this country -- leave at 0 */ }
             }
         }
         finally
