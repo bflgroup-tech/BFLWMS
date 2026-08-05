@@ -182,14 +182,15 @@
                 <tbody>
                     @foreach (var wh in warehouses)
                     {
+                        var stock = _stockByWarehouse.GetValueOrDefault((wh.Country, wh.Warehouse.Name));
                         <tr>
                             @if (multiCountry) { <td>@wh.Country.ToUpper()</td> }
                             <td>@wh.Warehouse.Name</td>
-                            <td style="text-align:right">0</td>
-                            <td style="text-align:right">0</td>
-                            <td style="text-align:right">0</td>
-                            <td style="text-align:right">0</td>
-                            <td style="text-align:right">0</td>
+                            <td style="text-align:right">@((stock?.TotalQuantity ?? 0).ToString("N0"))</td>
+                            <td style="text-align:right">@((stock?.TotalBoxesStock ?? 0).ToString("N0"))</td>
+                            <td style="text-align:right">@((stock?.NumberOfBoxes ?? 0).ToString("N0"))</td>
+                            <td style="text-align:right">@((stock?.TotalPalletsStock ?? 0).ToString("N0"))</td>
+                            <td style="text-align:right">@((stock?.NumberOfPallets ?? 0).ToString("N0"))</td>
                             <td style="text-align:right">0</td>
                             <td style="text-align:right">0</td>
                             <td style="text-align:right">0%</td>
@@ -197,11 +198,11 @@
                     }
                     <tr style="font-weight:700; background:#fff7e0">
                         <td colspan="@(multiCountry ? 2 : 1)">TOTAL</td>
-                        <td style="text-align:right">0</td>
-                        <td style="text-align:right">0</td>
-                        <td style="text-align:right">0</td>
-                        <td style="text-align:right">0</td>
-                        <td style="text-align:right">0</td>
+                        <td style="text-align:right">@(warehouses.Sum(wh => _stockByWarehouse.GetValueOrDefault((wh.Country, wh.Warehouse.Name))?.TotalQuantity ?? 0).ToString("N0"))</td>
+                        <td style="text-align:right">@(warehouses.Sum(wh => _stockByWarehouse.GetValueOrDefault((wh.Country, wh.Warehouse.Name))?.TotalBoxesStock ?? 0).ToString("N0"))</td>
+                        <td style="text-align:right">@(warehouses.Sum(wh => _stockByWarehouse.GetValueOrDefault((wh.Country, wh.Warehouse.Name))?.NumberOfBoxes ?? 0).ToString("N0"))</td>
+                        <td style="text-align:right">@(warehouses.Sum(wh => _stockByWarehouse.GetValueOrDefault((wh.Country, wh.Warehouse.Name))?.TotalPalletsStock ?? 0).ToString("N0"))</td>
+                        <td style="text-align:right">@(warehouses.Sum(wh => _stockByWarehouse.GetValueOrDefault((wh.Country, wh.Warehouse.Name))?.NumberOfPallets ?? 0).ToString("N0"))</td>
                         <td style="text-align:right">0</td>
                         <td style="text-align:right">0</td>
                         <td style="text-align:right">0%</td>
@@ -270,6 +271,19 @@ else if (_loadedOnce)
     // grouping the section headings use.
     private readonly Dictionary<(string Country, bool HasPallets), WhStockOnHand> _groupTotals = new();
     private readonly Dictionary<(string Country, bool HasPallets), WhStorageCapacity> _storageTotals = new();
+
+    // Per-warehouse row for the Warehouse-wise Performance Summary table.
+    private readonly Dictionary<(string Country, string Warehouse), WhStockOnHand> _stockByWarehouse =
+        new(new CountryWarehouseComparer());
+
+    private sealed class CountryWarehouseComparer : IEqualityComparer<(string Country, string Warehouse)>
+    {
+        public bool Equals((string Country, string Warehouse) a, (string Country, string Warehouse) b) =>
+            string.Equals(a.Country, b.Country, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(a.Warehouse, b.Warehouse, StringComparison.OrdinalIgnoreCase);
+        public int GetHashCode((string Country, string Warehouse) k) =>
+            HashCode.Combine(k.Country.ToUpperInvariant(), k.Warehouse.ToUpperInvariant());
+    }
 
     private void ToggleCountry(string country, bool isChecked)
     {
@@ -382,6 +396,7 @@ else if (_loadedOnce)
         _loading = true;
         _groupTotals.Clear();
         _storageTotals.Clear();
+        _stockByWarehouse.Clear();
         _agingUnits = null;
         await InvokeAsync(StateHasChanged);
         try
@@ -395,6 +410,11 @@ else if (_loadedOnce)
                 _storageTotals[("UAE", false)] = await SohSvc.GetStorageCapacityForBlackboxAsync();
 
                 _agingUnits = await SohSvc.GetAgingUnitsAsync();
+
+                foreach (var wh in _warehousesByCountry.GetValueOrDefault("UAE", new()))
+                {
+                    _stockByWarehouse[("UAE", wh.Name)] = await SohSvc.GetStockOnHandForWarehouseAsync(wh.Name);
+                }
             }
         }
         finally

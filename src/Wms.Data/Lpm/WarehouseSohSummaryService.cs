@@ -72,6 +72,32 @@ public class WarehouseSohSummaryService(IOnPremConnectionResolver resolver)
     public Task<WhStockOnHand> GetStockOnHandForBlackboxAsync(CancellationToken ct = default) =>
         GetStockOnHandAsync("Warehouse = 'BLACKBOX'", ct);
 
+    /// <summary>Stock On Hand for a single exact Warehouse value (e.g. 'TECHNO', 'JAFZA', 'YOTO').
+    /// Note: WHBoxItems also has sub-codes like 'TECHNO-E'/'YOTO-BU'/'LFL-WH' that an exact match
+    /// here won't include -- those are folded into the TECHNO/JAFZA/YOTO combined group total
+    /// (Warehouse &lt;&gt; 'BLACKBOX') but not into any single named warehouse's row.</summary>
+    public async Task<WhStockOnHand> GetStockOnHandForWarehouseAsync(string warehouse, CancellationToken ct = default)
+    {
+        await using var c = OpenOnPremBackup();
+        await using var cmd = c.CreateCommand();
+        cmd.CommandText = @"
+            SELECT
+                TotalQuantity     = CAST(ISNULL(SUM(qty), 0) AS BIGINT),
+                TotalBoxesStock   = CAST(ISNULL(SUM(CASE WHEN BoxNo <> '' THEN qty ELSE 0 END), 0) AS BIGINT),
+                NumberOfBoxes     = CAST(COUNT(DISTINCT CASE WHEN BoxNo <> '' THEN BoxNo END) AS BIGINT),
+                TotalPalletsStock = CAST(ISNULL(SUM(CASE WHEN PalletNo <> '' THEN qty ELSE 0 END), 0) AS BIGINT),
+                NumberOfPallets   = CAST(COUNT(DISTINCT CASE WHEN PalletNo <> '' THEN PalletNo END) AS BIGINT),
+                TotalActiveSkus   = CAST(COUNT(DISTINCT ItemCode) AS BIGINT)
+              FROM RACKS.dbo.WHBoxItems
+             WHERE Warehouse = @warehouse";
+        cmd.Parameters.Add(new SqlParameter("@warehouse", warehouse));
+        cmd.CommandTimeout = CommandTimeoutSeconds;
+        await using var rdr = await cmd.ExecuteReaderAsync(ct);
+        await rdr.ReadAsync(ct);
+        return new WhStockOnHand(
+            rdr.GetInt64(0), rdr.GetInt64(1), rdr.GetInt64(2), rdr.GetInt64(3), rdr.GetInt64(4), rdr.GetInt64(5));
+    }
+
     private async Task<WhStockOnHand> GetStockOnHandAsync(string whereClause, CancellationToken ct)
     {
         await using var c = OpenOnPremBackup();
