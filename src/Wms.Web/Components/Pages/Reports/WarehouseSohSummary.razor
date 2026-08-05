@@ -327,7 +327,12 @@ else if (_loadedOnce)
     private static readonly Dictionary<string, List<WarehouseDummy>> _warehousesByCountry =
         new(StringComparer.OrdinalIgnoreCase)
         {
-            ["UAE"] = new() { new("TECHNO", true), new("JAFZA", true), new("YOTO", true), new("BlackBOX", false) },
+            ["UAE"]      = new() { new("TECHNO", true), new("JAFZA", true), new("YOTO", true), new("BlackBOX", false) },
+            ["KSA"]      = new() { new("KSA", true) },
+            ["Qatar"]    = new() { new("Qatar", true) },
+            ["Kuwait"]   = new() { new("Kuwait", true) },
+            ["Malaysia"] = new() { new("Malaysia", true) },
+            ["Bahrain"]  = new() { new("Bahrain", true) },
         };
 
     private sealed record AgeAlert(string Category, string Status, string StatusClass);
@@ -446,6 +451,17 @@ else if (_loadedOnce)
                     _stockByWarehouse[("UAE", wh.Name)]   = await SohSvc.GetStockOnHandForWarehouseAsync(wh.Name);
                     _storageByWarehouse[("UAE", wh.Name)] = await SohSvc.GetStorageCapacityForWarehouseAsync(wh.Name);
                 }
+            }
+
+            // Each of these is a single-facility country -- no per-warehouse split, and no
+            // Storage Capacity / Aging Inventory source wired up for them yet, so those boxes
+            // stay at 0 until that's specified.
+            foreach (var country in _selectedCountries)
+            {
+                if (!WarehouseSohSummaryService.HasStockOnHandDatabase(country)) continue;
+                var stock = await SohSvc.GetStockOnHandForCountryAsync(country);
+                _groupTotals[(country, true)] = stock;
+                _stockByWarehouse[(country, country)] = stock;
             }
         }
         finally

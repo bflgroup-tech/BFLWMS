@@ -98,6 +98,46 @@ public class WarehouseSohSummaryService(IOnPremConnectionResolver resolver)
             rdr.GetInt64(0), rdr.GetInt64(1), rdr.GetInt64(2), rdr.GetInt64(3), rdr.GetInt64(4), rdr.GetInt64(5));
     }
 
+    // Maps a SIM country name to the OnPremBackup (same server, 3-part naming) database
+    // holding that country's own WHBoxItemsExport table -- each is a single warehouse
+    // facility, unlike UAE's multi-warehouse RACKS.dbo.WHBoxItems.
+    private static readonly Dictionary<string, string> CountryStockDatabase = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["KSA"]      = "BFLKSA",
+        ["Qatar"]    = "BFLQATAR",
+        ["Kuwait"]   = "BFLKUWAIT",
+        ["Malaysia"] = "BFLMYS",
+        ["Bahrain"]  = "BFLBAHRAIN",
+    };
+
+    public static bool HasStockOnHandDatabase(string country) => CountryStockDatabase.ContainsKey(country);
+
+    /// <summary>Stock On Hand for a non-UAE country, from that country's own
+    /// {Database}.dbo.WHBoxItemsExport. No per-warehouse split -- each of these
+    /// countries has a single warehouse facility, so this is the country's whole total.</summary>
+    public async Task<WhStockOnHand> GetStockOnHandForCountryAsync(string country, CancellationToken ct = default)
+    {
+        if (!CountryStockDatabase.TryGetValue(country, out var db))
+            throw new ArgumentException($"No WHBoxItemsExport database mapping for country '{country}'.", nameof(country));
+
+        await using var c = OpenOnPremBackup();
+        await using var cmd = c.CreateCommand();
+        cmd.CommandText = $@"
+            SELECT
+                TotalQuantity     = CAST(ISNULL(SUM(Qty), 0) AS BIGINT),
+                TotalBoxesStock   = CAST(ISNULL(SUM(CASE WHEN BoxNo <> '' THEN Qty ELSE 0 END), 0) AS BIGINT),
+                NumberOfBoxes     = CAST(COUNT(DISTINCT CASE WHEN BoxNo <> '' THEN BoxNo END) AS BIGINT),
+                TotalPalletsStock = CAST(ISNULL(SUM(CASE WHEN PalletNo <> '' THEN Qty ELSE 0 END), 0) AS BIGINT),
+                NumberOfPallets   = CAST(COUNT(DISTINCT CASE WHEN PalletNo <> '' THEN PalletNo END) AS BIGINT),
+                TotalActiveSkus   = CAST(COUNT(DISTINCT ItemCode) AS BIGINT)
+              FROM {db}.dbo.WHBoxItemsExport";
+        cmd.CommandTimeout = CommandTimeoutSeconds;
+        await using var rdr = await cmd.ExecuteReaderAsync(ct);
+        await rdr.ReadAsync(ct);
+        return new WhStockOnHand(
+            rdr.GetInt64(0), rdr.GetInt64(1), rdr.GetInt64(2), rdr.GetInt64(3), rdr.GetInt64(4), rdr.GetInt64(5));
+    }
+
     private async Task<WhStockOnHand> GetStockOnHandAsync(string whereClause, CancellationToken ct)
     {
         await using var c = OpenOnPremBackup();
