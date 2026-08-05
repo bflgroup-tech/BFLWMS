@@ -98,6 +98,72 @@ public class WarehouseSohSummaryService(IOnPremConnectionResolver resolver)
             rdr.GetInt64(0), rdr.GetInt64(1), rdr.GetInt64(2), rdr.GetInt64(3), rdr.GetInt64(4), rdr.GetInt64(5));
     }
 
+    // Maps a SIM country name to the OnPremBackup (same server, 3-part naming) database
+    // holding that country's own WHBoxItemsExport table -- each is a single warehouse
+    // facility, unlike UAE's multi-warehouse RACKS.dbo.WHBoxItems.
+    private static readonly Dictionary<string, string> CountryStockDatabase = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["KSA"]      = "BFLKSA",
+        ["Qatar"]    = "BFLQATAR",
+        ["Kuwait"]   = "BFLKUWAIT",
+        ["Malaysia"] = "BFLMYS",
+        ["Bahrain"]  = "BFLBAHRAIN",
+    };
+
+    public static bool HasStockOnHandDatabase(string country) => CountryStockDatabase.ContainsKey(country);
+
+    /// <summary>Stock On Hand for a non-UAE country, from that country's own
+    /// {Database}.dbo.WHBoxItemsExport. No per-warehouse split -- each of these
+    /// countries has a single warehouse facility, so this is the country's whole total.</summary>
+    public async Task<WhStockOnHand> GetStockOnHandForCountryAsync(string country, CancellationToken ct = default)
+    {
+        if (!CountryStockDatabase.TryGetValue(country, out var db))
+            throw new ArgumentException($"No WHBoxItemsExport database mapping for country '{country}'.", nameof(country));
+
+        await using var c = OpenOnPremBackup();
+        await using var cmd = c.CreateCommand();
+        cmd.CommandText = $@"
+            SELECT
+                TotalQuantity     = CAST(ISNULL(SUM(Qty), 0) AS BIGINT),
+                TotalBoxesStock   = CAST(ISNULL(SUM(CASE WHEN BoxNo <> '' THEN Qty ELSE 0 END), 0) AS BIGINT),
+                NumberOfBoxes     = CAST(COUNT(DISTINCT CASE WHEN BoxNo <> '' THEN BoxNo END) AS BIGINT),
+                TotalPalletsStock = CAST(ISNULL(SUM(CASE WHEN PalletNo <> '' THEN Qty ELSE 0 END), 0) AS BIGINT),
+                NumberOfPallets   = CAST(COUNT(DISTINCT CASE WHEN PalletNo <> '' THEN PalletNo END) AS BIGINT),
+                TotalActiveSkus   = CAST(COUNT(DISTINCT ItemCode) AS BIGINT)
+              FROM {db}.dbo.WHBoxItemsExport";
+        cmd.CommandTimeout = CommandTimeoutSeconds;
+        await using var rdr = await cmd.ExecuteReaderAsync(ct);
+        await rdr.ReadAsync(ct);
+        return new WhStockOnHand(
+            rdr.GetInt64(0), rdr.GetInt64(1), rdr.GetInt64(2), rdr.GetInt64(3), rdr.GetInt64(4), rdr.GetInt64(5));
+    }
+
+    /// <summary>Storage Capacity for a non-UAE country, from that country's own
+    /// {Database}.dbo.BinRackMaster (total slots) and dbo.BinRack (filled slots) --
+    /// same shape as UAE's BINRACK rack type, no separate pallet-rack table, so
+    /// everything here counts as "box" slots and the pallet slots stay 0.
+    /// BinRackMaster doesn't exist in these databases yet (pending), so this throws
+    /// until it's created -- callers should catch and default to zero.</summary>
+    public async Task<WhStorageCapacity> GetStorageCapacityForCountryAsync(string country, CancellationToken ct = default)
+    {
+        if (!CountryStockDatabase.TryGetValue(country, out var db))
+            throw new ArgumentException($"No BinRackMaster database mapping for country '{country}'.", nameof(country));
+
+        await using var c = OpenOnPremBackup();
+        await using var cmd = c.CreateCommand();
+        cmd.CommandText = $@"
+            SELECT
+                TotalRackLocations = CAST(ISNULL((SELECT COUNT(*) FROM {db}.dbo.BinRackMaster), 0) AS BIGINT),
+                FilledBoxLocations = CAST(ISNULL((SELECT COUNT(*) FROM {db}.dbo.BinRack), 0) AS BIGINT)";
+        cmd.CommandTimeout = CommandTimeoutSeconds;
+        await using var rdr = await cmd.ExecuteReaderAsync(ct);
+        await rdr.ReadAsync(ct);
+        var total  = rdr.GetInt64(0);
+        var filled = rdr.GetInt64(1);
+        var free   = Math.Max(0, total - filled);
+        return new WhStorageCapacity(total, free, filled, 0, 0);
+    }
+
     private async Task<WhStockOnHand> GetStockOnHandAsync(string whereClause, CancellationToken ct)
     {
         await using var c = OpenOnPremBackup();
@@ -244,6 +310,38 @@ public class WarehouseSohSummaryService(IOnPremConnectionResolver resolver)
                 DaysAbove90 = CAST(ISNULL(SUM(CASE WHEN LPMDt = @lpm_above_90 THEN qty ELSE 0 END), 0) AS BIGINT),
                 ElapsedLpm  = CAST(ISNULL(SUM(CASE WHEN LPMDt < @lpm_1_30    THEN qty ELSE 0 END), 0) AS BIGINT)
               FROM RACKS.dbo.WHBoxItems";
+        cmd.CommandTimeout = CommandTimeoutSeconds;
+        await using var rdr = await cmd.ExecuteReaderAsync(ct);
+        await rdr.ReadAsync(ct);
+        return new WhAgingUnits(
+            rdr.GetInt64(0), rdr.GetInt64(1), rdr.GetInt64(2), rdr.GetInt64(3), rdr.GetInt64(4));
+    }
+
+    /// <summary>Critical Alerts &amp; Aging Inventory units for a non-UAE country, from that
+    /// country's own {Database}.dbo.WHBoxItemsExport. LPMDt is a real DATE column here
+    /// (first-of-month), unlike UAE's varchar dd/MM/yyyy column, so buckets compare dates
+    /// directly instead of string-converting.</summary>
+    public async Task<WhAgingUnits> GetAgingUnitsForCountryAsync(string country, CancellationToken ct = default)
+    {
+        if (!CountryStockDatabase.TryGetValue(country, out var db))
+            throw new ArgumentException($"No WHBoxItemsExport database mapping for country '{country}'.", nameof(country));
+
+        await using var c = OpenOnPremBackup();
+        await using var cmd = c.CreateCommand();
+        cmd.CommandText = $@"
+            SET NOCOUNT ON;
+            DECLARE @m0 DATE = DATEFROMPARTS(YEAR(GETDATE()), MONTH(GETDATE()), 1);
+            DECLARE @m1 DATE = DATEADD(MONTH, 1, @m0);
+            DECLARE @m2 DATE = DATEADD(MONTH, 2, @m0);
+            DECLARE @m3 DATE = DATEADD(MONTH, 3, @m0);
+
+            SELECT
+                Days1To30   = CAST(ISNULL(SUM(CASE WHEN LPMDt = @m0 THEN Qty ELSE 0 END), 0) AS BIGINT),
+                Days30To60  = CAST(ISNULL(SUM(CASE WHEN LPMDt = @m1 THEN Qty ELSE 0 END), 0) AS BIGINT),
+                Days60To90  = CAST(ISNULL(SUM(CASE WHEN LPMDt = @m2 THEN Qty ELSE 0 END), 0) AS BIGINT),
+                DaysAbove90 = CAST(ISNULL(SUM(CASE WHEN LPMDt = @m3 THEN Qty ELSE 0 END), 0) AS BIGINT),
+                ElapsedLpm  = CAST(ISNULL(SUM(CASE WHEN LPMDt < @m0 THEN Qty ELSE 0 END), 0) AS BIGINT)
+              FROM {db}.dbo.WHBoxItemsExport";
         cmd.CommandTimeout = CommandTimeoutSeconds;
         await using var rdr = await cmd.ExecuteReaderAsync(ct);
         await rdr.ReadAsync(ct);
