@@ -246,16 +246,21 @@
 
             <div style="flex:1; min-width:320px;">
                 <div style="font-weight:700; font-size:13px; margin-bottom:10px;">Inventory Age Distribution</div>
+                @{
+                    var ageBucketMax = AgeBucketMax;
+                }
                 @foreach (var b in _ageBuckets)
                 {
+                    var bucketUnits = UnitsForBucket(b.Label);
+                    var bucketPct = ageBucketMax > 0 ? 100.0 * bucketUnits / ageBucketMax : 0;
                     <div class="wsoh-agebar-row">
                         <span style="color:var(--text-secondary)">@b.Label</span>
-                        <div class="wsoh-agebar-track"><div class="wsoh-agebar-fill" style="width:0%; background:@b.Color"></div></div>
-                        <span style="text-align:right">0</span>
+                        <div class="wsoh-agebar-track"><div class="wsoh-agebar-fill" style="width:@(bucketPct.ToString("F1"))%; background:@b.Color"></div></div>
+                        <span style="text-align:right">@bucketUnits.ToString("N0")</span>
                     </div>
                 }
                 <div style="display:flex; justify-content:space-between; font-size:11px; color:var(--text-secondary); margin-top:4px;">
-                    <span>0</span><span>50,000</span>
+                    <span>0</span><span>@ageBucketMax.ToString("N0")</span>
                 </div>
             </div>
         </div>
@@ -364,6 +369,24 @@ else if (_loadedOnce)
         new(">60 Days", "#ec835a"),
         new(">90 Days", "#d03b3b"),
     };
+
+    // Same source as the Critical Alerts table (_agingUnits), rolled into the 4 bars
+    // this chart shows -- ">90 Days" combines DaysAbove90 and Elapsed (LPM) since this
+    // chart has no separate "Elapsed" bar.
+    private long UnitsForBucket(string label) => _agingUnits switch
+    {
+        null => 0,
+        var u => label switch
+        {
+            "Current"  => u.Days1To30,
+            ">30 Days" => u.Days30To60,
+            ">60 Days" => u.Days60To90,
+            ">90 Days" => u.DaysAbove90 + u.ElapsedLpm,
+            _ => 0
+        }
+    };
+
+    private long AgeBucketMax => _ageBuckets.Select(b => UnitsForBucket(b.Label)).DefaultIfEmpty(0).Max();
 
     protected override async Task OnInitializedAsync()
     {
