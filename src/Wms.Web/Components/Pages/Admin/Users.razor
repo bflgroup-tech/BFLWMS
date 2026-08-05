@@ -115,7 +115,69 @@
 </div>
 
 <div class="aiwms-section">
-    <div class="aiwms-card-header">Menu Access — exact whitelist when any menu is ticked (otherwise role defaults apply)</div>
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:@(_showAllAccess ? "12px" : "0")">
+        <div class="aiwms-card-header" style="margin:0">All Users — Access Overview</div>
+        <button class="aiwms-btn aiwms-btn-secondary" @onclick="ToggleAllAccessViewAsync">@(_showAllAccess ? "Hide" : "View All Access")</button>
+    </div>
+    @if (_showAllAccess)
+    {
+        <div style="margin-bottom:12px; max-width:360px">
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">SEARCH (USERNAME / ROLE / MENU / COUNTRY)</label>
+            <input @bind="_accessSearch" @bind:event="oninput" placeholder="Type to filter..." style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
+        </div>
+
+        <div style="overflow-x:auto">
+        <table class="aiwms-table aiwms-table-dense">
+            <thead>
+                <tr><th style="width:200px">Username</th><th style="width:160px">Roles</th><th>Menu Access</th><th>Country Access</th></tr>
+            </thead>
+            <tbody>
+                @foreach (var u in FilteredAccessUsers())
+                {
+                    <tr>
+                        <td>@u.Username</td>
+                        <td>@string.Join(", ", u.UserRoles.Select(r => r.RoleCode))</td>
+                        <td style="word-break:break-word; font-size:12px">@(_allMenuGrants.TryGetValue(u.Username, out var mk) && mk.Count > 0 ? string.Join(", ", mk) : "(none)")</td>
+                        <td style="word-break:break-word; font-size:12px">@(_allCountryGrants.TryGetValue(u.Username, out var cg) && cg.Count > 0 ? string.Join(", ", cg) : "(none)")</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+        </div>
+        <div style="font-size:12px; color:var(--text-secondary); margin-top:8px">@FilteredAccessUsers().Count of @_users.Count user(s)</div>
+    }
+</div>
+
+<div class="aiwms-section">
+    <div class="aiwms-card-header">Copy Access — replaces the target user's Menu + Country Access with the source user's</div>
+    <div style="display:flex; gap:10px; align-items:end; flex-wrap:wrap">
+        <div>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COPY FROM</label>
+            <select @bind="_copyFromUser" style="padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white; min-width:240px">
+                <option value="">-- Select user --</option>
+                @foreach (var u in _users) { <option value="@u.Username">@u.Username</option> }
+            </select>
+        </div>
+        <div>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COPY TO</label>
+            <select @bind="_copyToUser" style="padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white; min-width:240px">
+                <option value="">-- Select user --</option>
+                @foreach (var u in _users) { <option value="@u.Username">@u.Username</option> }
+            </select>
+        </div>
+        <button class="aiwms-btn aiwms-btn-primary" @onclick="CopyAccessAsync"
+                disabled="@(string.IsNullOrEmpty(_copyFromUser) || string.IsNullOrEmpty(_copyToUser) || _copyFromUser == _copyToUser)">
+            Copy Access
+        </button>
+    </div>
+    @if (!string.IsNullOrEmpty(_copyFromUser) && !string.IsNullOrEmpty(_copyToUser) && _copyFromUser == _copyToUser)
+    {
+        <div class="aiwms-alert error" style="margin-top:10px">Source and target must be different users.</div>
+    }
+</div>
+
+<div class="aiwms-section">
+    <div class="aiwms-card-header">Menu Access — exact whitelist; a user with no grants sees nothing (Admin role bypasses this list)</div>
     <div style="display:flex; gap:10px; align-items:end; margin-bottom:12px">
         <div>
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">USER</label>
@@ -334,6 +396,105 @@
         await Reload();
     }
 
+    // ---------------- All-access overview ----------------
+    private bool _showAllAccess;
+    private string _accessSearch = "";
+    private Dictionary<string, List<string>> _allMenuGrants = new(StringComparer.OrdinalIgnoreCase);
+    private Dictionary<string, List<string>> _allCountryGrants = new(StringComparer.OrdinalIgnoreCase);
+
+    // Matches username, role, or any granted menu/country name — so typing e.g.
+    // a report's display name surfaces every user who currently has it granted.
+    private List<WmsUser> FilteredAccessUsers()
+    {
+        var term = _accessSearch.Trim();
+        if (term.Length == 0) return _users;
+        return _users.Where(u =>
+            Matches(u.Username, term) ||
+            u.UserRoles.Any(r => Matches(r.RoleCode, term)) ||
+            (_allMenuGrants.TryGetValue(u.Username, out var mk) && mk.Any(k => Matches(k, term))) ||
+            (_allCountryGrants.TryGetValue(u.Username, out var cg) && cg.Any(c => Matches(c, term)))
+        ).ToList();
+    }
+
+    private static bool Matches(string? value, string term) =>
+        !string.IsNullOrEmpty(value) && value.Contains(term, StringComparison.OrdinalIgnoreCase);
+
+    private async Task ToggleAllAccessViewAsync()
+    {
+        _showAllAccess = !_showAllAccess;
+        if (_showAllAccess) await RefreshAllAccessSnapshotAsync();
+    }
+
+    // Same "Category / Label" text the Menu Access checklist above uses per item —
+    // matches what a user actually sees in the left-nav, not the internal MenuKey.
+    private static readonly Dictionary<string, string> _menuLabelByKey = MenuKeys.All.ToDictionary(
+        m => m.Key,
+        m => m.Category is not null ? $"{m.Category} / {m.Label}" : m.Label,
+        StringComparer.OrdinalIgnoreCase);
+
+    // Loads every user's grants in two queries (not one per row) — called on
+    // first "View All Access" and again after any Save/Copy so the overview
+    // never shows stale data if left open across an edit.
+    private async Task RefreshAllAccessSnapshotAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var menuRows = await db.UserMenuAccess.AsNoTracking().ToListAsync();
+        _allMenuGrants = menuRows.GroupBy(g => g.Username, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key,
+                g => g.Select(x => _menuLabelByKey.GetValueOrDefault(x.MenuKey, x.MenuKey)).OrderBy(x => x).ToList(),
+                StringComparer.OrdinalIgnoreCase);
+        var countryRows = await db.UserCountryAccess.AsNoTracking().ToListAsync();
+        _allCountryGrants = countryRows.GroupBy(g => g.Username, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.Select(x => x.Country).OrderBy(x => x).ToList(), StringComparer.OrdinalIgnoreCase);
+    }
+
+    // ---------------- Copy access ----------------
+    private string _copyFromUser = "";
+    private string _copyToUser = "";
+
+    // Makes the target's grants exactly equal the source's (add what's missing,
+    // remove what the target has that the source doesn't) rather than merging —
+    // "copy access" reads as "make B's access match A's", not "add A's on top".
+    private async Task CopyAccessAsync()
+    {
+        if (string.IsNullOrEmpty(_copyFromUser) || string.IsNullOrEmpty(_copyToUser) || _copyFromUser == _copyToUser) return;
+
+        await using var db = await DbFactory.CreateDbContextAsync();
+
+        var sourceMenuKeys = await db.UserMenuAccess.AsNoTracking()
+            .Where(g => g.Username == _copyFromUser).Select(g => g.MenuKey).ToListAsync();
+        var sourceMenuSet = sourceMenuKeys.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var targetMenuRows = await db.UserMenuAccess.Where(g => g.Username == _copyToUser).ToListAsync();
+        var targetMenuKeys = targetMenuRows.Select(g => g.MenuKey).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var k in sourceMenuSet.Where(k => !targetMenuKeys.Contains(k)))
+            db.UserMenuAccess.Add(new WmsUserMenuAccess {
+                Username = _copyToUser, MenuKey = k, GrantedTS = DateTime.Now, GrantedBy = Me.Name });
+        foreach (var row in targetMenuRows.Where(r => !sourceMenuSet.Contains(r.MenuKey)))
+            db.UserMenuAccess.Remove(row);
+
+        var sourceCountries = await db.UserCountryAccess.AsNoTracking()
+            .Where(a => a.Username == _copyFromUser).Select(a => a.Country).ToListAsync();
+        var sourceCountrySet = sourceCountries.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var targetCountryRows = await db.UserCountryAccess.Where(a => a.Username == _copyToUser).ToListAsync();
+        var targetCountries = targetCountryRows.Select(a => a.Country).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var c in sourceCountrySet.Where(c => !targetCountries.Contains(c)))
+            db.UserCountryAccess.Add(new WmsUserCountryAccess {
+                Username = _copyToUser, Country = c, GrantedTS = DateTime.Now, GrantedBy = Me.Name });
+        foreach (var row in targetCountryRows.Where(r => !sourceCountrySet.Contains(r.Country)))
+            db.UserCountryAccess.Remove(row);
+
+        await db.SaveChangesAsync();
+        Cache.Remove(AuthStateCurrentUser.ProfileCacheKey(_copyToUser));
+        Cache.Remove(AuthStateCurrentUser.CountryAccessCacheKey(_copyToUser));
+
+        // Keep any currently-open per-user panels in sync with what was just copied.
+        if (_menuUser == _copyToUser) await LoadMenuGrantsAsync();
+        if (_countryUser == _copyToUser) await LoadCountryGrantsAsync();
+        if (_showAllAccess) await RefreshAllAccessSnapshotAsync();
+
+        Snack.Add($"Copied access from {_copyFromUser} to {_copyToUser} ({sourceMenuSet.Count} menu grants, {sourceCountrySet.Count} countries).", Severity.Success);
+    }
+
     // ---------------- Menu access ----------------
     private string _menuUser = "";
     private HashSet<string> _menuGrants = new();
@@ -376,6 +537,7 @@
             db.UserMenuAccess.Remove(e);
         await db.SaveChangesAsync();
         Cache.Remove(AuthStateCurrentUser.ProfileCacheKey(_menuUser));
+        if (_showAllAccess) await RefreshAllAccessSnapshotAsync();
         Snack.Add($"Menu access saved for {_menuUser} ({_menuGrants.Count} grants).", Severity.Success);
     }
 
@@ -419,6 +581,7 @@
             db.UserCountryAccess.Remove(e);
         await db.SaveChangesAsync();
         Cache.Remove(AuthStateCurrentUser.CountryAccessCacheKey(_countryUser));
+        if (_showAllAccess) await RefreshAllAccessSnapshotAsync();
         Snack.Add($"Country access saved for {_countryUser} ({_countryGrants.Count} countries).", Severity.Success);
     }
 }
