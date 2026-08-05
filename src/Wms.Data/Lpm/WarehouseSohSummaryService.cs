@@ -194,6 +194,34 @@ public class WarehouseSohSummaryService(IOnPremConnectionResolver resolver)
             rdr.GetInt64(0), rdr.GetInt64(1), rdr.GetInt64(2), 0, 0);
     }
 
+    /// <summary>Storage Capacity for a single exact Warehouse value (e.g. 'TECHNO', 'JAFZA',
+    /// 'YOTO', 'BlackBOX' -- case-insensitive against #racklocation's 'BLACKBOX' row). Same
+    /// caveat as GetStockOnHandForWarehouseAsync: #racklocation's WAREHOUSE-type sub-codes
+    /// ('TECHNO-E', 'YOTO-BU', 'YOTO-SF') aren't included in an exact match on the parent name.
+    /// Works for BlackBOX too -- it only ever has one BINRACK-type row, so Box picks it up and
+    /// Pallet naturally comes back 0, matching GetStorageCapacityForBlackboxAsync's shape.</summary>
+    public async Task<WhStorageCapacity> GetStorageCapacityForWarehouseAsync(string warehouse, CancellationToken ct = default)
+    {
+        await using var c = OpenOnPremBackup();
+        await using var cmd = c.CreateCommand();
+        cmd.CommandText = RackLocationSetupSql + @"
+            SELECT
+                TotalRackLocations      = CAST(ISNULL(SUM(totalcapacity), 0) AS BIGINT),
+                FreeBoxRackLocations    = CAST(ISNULL(SUM(CASE WHEN racktype = 'BINRACK' THEN totalcapacity - used ELSE 0 END), 0) AS BIGINT),
+                FilledBoxLocations      = CAST(ISNULL(SUM(CASE WHEN racktype = 'BINRACK' THEN used ELSE 0 END), 0) AS BIGINT),
+                FreePalletRackLocations = CAST(ISNULL(SUM(CASE WHEN racktype <> 'BINRACK' THEN totalcapacity - used ELSE 0 END), 0) AS BIGINT),
+                FilledPalletLocations   = CAST(ISNULL(SUM(CASE WHEN racktype <> 'BINRACK' THEN used ELSE 0 END), 0) AS BIGINT)
+              FROM #racklocation
+             WHERE warehouse = @warehouse;
+            DROP TABLE #racklocation;";
+        cmd.Parameters.Add(new SqlParameter("@warehouse", warehouse));
+        cmd.CommandTimeout = CommandTimeoutSeconds;
+        await using var rdr = await cmd.ExecuteReaderAsync(ct);
+        await rdr.ReadAsync(ct);
+        return new WhStorageCapacity(
+            rdr.GetInt64(0), rdr.GetInt64(1), rdr.GetInt64(2), rdr.GetInt64(3), rdr.GetInt64(4));
+    }
+
     /// <summary>Critical Alerts &amp; Aging Inventory units, bucketed by LPM month. LPMDt is stored
     /// as a dd/MM/yyyy string of the LPM batch's first-of-month date; buckets compare against
     /// the current month's first-of-month (and +1/+2/+3 months) in that same string format.</summary>

@@ -182,7 +182,8 @@
                 <tbody>
                     @foreach (var wh in warehouses)
                     {
-                        var stock = _stockByWarehouse.GetValueOrDefault((wh.Country, wh.Warehouse.Name));
+                        var stock   = _stockByWarehouse.GetValueOrDefault((wh.Country, wh.Warehouse.Name));
+                        var storage = _storageByWarehouse.GetValueOrDefault((wh.Country, wh.Warehouse.Name));
                         <tr>
                             @if (multiCountry) { <td>@wh.Country.ToUpper()</td> }
                             <td>@wh.Warehouse.Name.ToUpper()</td>
@@ -191,10 +192,16 @@
                             <td style="text-align:right">@((stock?.NumberOfBoxes ?? 0).ToString("N0"))</td>
                             <td style="text-align:right">@((stock?.TotalPalletsStock ?? 0).ToString("N0"))</td>
                             <td style="text-align:right">@((stock?.NumberOfPallets ?? 0).ToString("N0"))</td>
-                            <td style="text-align:right">0</td>
-                            <td style="text-align:right">0</td>
-                            <td style="text-align:right">0%</td>
+                            <td style="text-align:right">@((storage?.FreeBoxRackLocations ?? 0).ToString("N0"))</td>
+                            <td style="text-align:right">@((storage?.FreePalletRackLocations ?? 0).ToString("N0"))</td>
+                            <td style="text-align:right">@(storage?.OverallUtilizationPct ?? 0)%</td>
                         </tr>
+                    }
+                    @{
+                        var storageRows = warehouses.Select(wh => _storageByWarehouse.GetValueOrDefault((wh.Country, wh.Warehouse.Name))).Where(s => s is not null).Select(s => s!).ToList();
+                        var totalRackLocations   = storageRows.Sum(s => s.TotalRackLocations);
+                        var totalFilledLocations = storageRows.Sum(s => s.FilledBoxLocations + s.FilledPalletLocations);
+                        var totalUtilizationPct  = totalRackLocations > 0 ? Math.Round(100.0 * totalFilledLocations / totalRackLocations, 1) : 0;
                     }
                     <tr style="font-weight:700; background:#fff7e0">
                         <td colspan="@(multiCountry ? 2 : 1)">TOTAL</td>
@@ -203,9 +210,9 @@
                         <td style="text-align:right">@(warehouses.Sum(wh => _stockByWarehouse.GetValueOrDefault((wh.Country, wh.Warehouse.Name))?.NumberOfBoxes ?? 0).ToString("N0"))</td>
                         <td style="text-align:right">@(warehouses.Sum(wh => _stockByWarehouse.GetValueOrDefault((wh.Country, wh.Warehouse.Name))?.TotalPalletsStock ?? 0).ToString("N0"))</td>
                         <td style="text-align:right">@(warehouses.Sum(wh => _stockByWarehouse.GetValueOrDefault((wh.Country, wh.Warehouse.Name))?.NumberOfPallets ?? 0).ToString("N0"))</td>
-                        <td style="text-align:right">0</td>
-                        <td style="text-align:right">0</td>
-                        <td style="text-align:right">0%</td>
+                        <td style="text-align:right">@(storageRows.Sum(s => s.FreeBoxRackLocations).ToString("N0"))</td>
+                        <td style="text-align:right">@(storageRows.Sum(s => s.FreePalletRackLocations).ToString("N0"))</td>
+                        <td style="text-align:right">@(totalUtilizationPct)%</td>
                     </tr>
                 </tbody>
             </table>
@@ -274,6 +281,8 @@ else if (_loadedOnce)
 
     // Per-warehouse row for the Warehouse-wise Performance Summary table.
     private readonly Dictionary<(string Country, string Warehouse), WhStockOnHand> _stockByWarehouse =
+        new(new CountryWarehouseComparer());
+    private readonly Dictionary<(string Country, string Warehouse), WhStorageCapacity> _storageByWarehouse =
         new(new CountryWarehouseComparer());
 
     private sealed class CountryWarehouseComparer : IEqualityComparer<(string Country, string Warehouse)>
@@ -397,6 +406,7 @@ else if (_loadedOnce)
         _groupTotals.Clear();
         _storageTotals.Clear();
         _stockByWarehouse.Clear();
+        _storageByWarehouse.Clear();
         _agingUnits = null;
         await InvokeAsync(StateHasChanged);
         try
@@ -413,7 +423,8 @@ else if (_loadedOnce)
 
                 foreach (var wh in _warehousesByCountry.GetValueOrDefault("UAE", new()))
                 {
-                    _stockByWarehouse[("UAE", wh.Name)] = await SohSvc.GetStockOnHandForWarehouseAsync(wh.Name);
+                    _stockByWarehouse[("UAE", wh.Name)]   = await SohSvc.GetStockOnHandForWarehouseAsync(wh.Name);
+                    _storageByWarehouse[("UAE", wh.Name)] = await SohSvc.GetStorageCapacityForWarehouseAsync(wh.Name);
                 }
             }
         }
