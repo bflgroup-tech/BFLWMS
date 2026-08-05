@@ -9,7 +9,7 @@
 @inject IOnPremConnectionResolver Resolver
 @inject Microsoft.JSInterop.IJSRuntime JS
 
-<PageTitle>WMS â€” Production Summary Report</PageTitle>
+<PageTitle>WMS — Production Summary Report</PageTitle>
 
 <style>
     .psr-country-select summary { list-style: none; }
@@ -50,7 +50,7 @@
 
 <div class="aiwms-page-header">
     <h2>Production Summary Report</h2>
-    <p>Per-batch view of items scanned through QC (<code>usa.dbo.amechecking</code>), split by LPM vs Non-LPM via <code>LPMSIM_Batch.Sources</code>. Each picked date is one WH production day: <strong>06:00 GST â†’ 06:00 GST next day</strong>.</p>
+    <p>Per-batch view of items scanned through QC (<code>usa.dbo.amechecking</code>), split by LPM vs Non-LPM via <code>LPMSIM_Batch.Sources</code>. Each picked date is one WH production day: <strong>06:00 GST → 06:00 GST next day</strong>.</p>
 </div>
 
 <div class="aiwms-section">
@@ -98,7 +98,7 @@
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">TO</label>
             <input type="date" @bind="_to" @bind:format="yyyy-MM-dd" max="@DateTime.Today.ToString("yyyy-MM-dd")" style="width:100%; height:36px; box-sizing:border-box; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
         </div>
-        <button class="aiwms-btn aiwms-btn-primary" style="height:36px; box-sizing:border-box" @onclick="LoadAsync" disabled="@(_loading || !CanLoad)">@(_loading ? "Loadingâ€¦" : "Load")</button>
+        <button class="aiwms-btn aiwms-btn-primary" style="height:36px; box-sizing:border-box" @onclick="LoadAsync" disabled="@(_loading || !CanLoad)">@(_loading ? "Loading…" : "Load")</button>
         <button class="aiwms-btn aiwms-btn-secondary" style="height:36px; box-sizing:border-box" @onclick="ExportCsvAsync" disabled="@(!HasAnyVisibleRows || _loading)">Export to Excel</button>
     </div>
 
@@ -112,7 +112,7 @@
 {
     <div class="aiwms-section" style="padding:0; overflow:hidden">
         <MudProgressLinear Color="Color.Primary" Indeterminate="true" Size="Size.Medium" />
-        <div style="padding:14px; font-style:italic; color:var(--text-secondary)">@(_loadingMsg ?? "Loadingâ€¦")</div>
+        <div style="padding:14px; font-style:italic; color:var(--text-secondary)">@(_loadingMsg ?? "Loading…")</div>
     </div>
 }
 else if (VisibleRows().Count > 0)
@@ -576,8 +576,8 @@ else if (_loadedOnce && VisibleRows().Count == 0)
             {
                 var country = countries[i];
                 _loadingMsg = string.Equals(country, "UAE", StringComparison.OrdinalIgnoreCase)
-                    ? $"Reading scans from UAE masterâ€¦ ({i + 1}/{countries.Count})"
-                    : $"Connecting to {country} server, reading scans, then enriching against LPMSIM_Batchâ€¦ ({i + 1}/{countries.Count})";
+                    ? $"Reading scans from UAE master… ({i + 1}/{countries.Count})"
+                    : $"Connecting to {country} server, reading scans, then enriching against LPMSIM_Batch… ({i + 1}/{countries.Count})";
                 await InvokeAsync(StateHasChanged);
 
                 var result = await Svc.GetProductionCheckingAsync(country, _from, _to);
