@@ -6,6 +6,7 @@
 @using MudBlazor
 @attribute [Authorize(Policy = MenuKeys.RPT_LPM_WH_STOCK)]
 @inject ReportsService Svc
+@inject ICurrentUser CurrentUser
 @inject Microsoft.JSInterop.IJSRuntime JS
 
 <PageTitle>WMS — LPM WH Stock Report</PageTitle>
@@ -290,7 +291,11 @@ else if (_cells.Count > 0)
         }
         catch { _palletCats = new() { "ELIGIBLE" }; }
 
-        try { _allCountries = await Svc.GetCountriesAsync(); }
+        try
+        {
+            await CurrentUser.EnsureLoadedAsync();
+            _allCountries = CurrentUser.FilterCountries(await Svc.GetCountriesAsync()).ToList();
+        }
         catch { _allCountries = new(); }
     }
 
@@ -299,7 +304,14 @@ else if (_cells.Count > 0)
         _loading = true; _message = ""; _sortKey = null; StateHasChanged();
         try
         {
-            _cells = await Svc.GetLpmWhStockAsync(_palletCat, _countryFilter);
+            // GetLpmWhStockAsync treats null as "genuinely unrestricted" and any non-null
+            // list (even empty) as "restrict to exactly this" — so null is only correct
+            // for a genuine Admin with no manual selection; anyone else's empty
+            // _countryFilter must fall back to their allowed set (_allCountries),
+            // not silently query every country.
+            IEnumerable<string>? effectiveCountries = _countryFilter.Count > 0 ? _countryFilter
+                : CurrentUser.HasAllCountriesAccess ? null : _allCountries;
+            _cells = await Svc.GetLpmWhStockAsync(_palletCat, effectiveCountries);
             var present = _cells.Select(c => c.Country).ToHashSet(StringComparer.OrdinalIgnoreCase);
             _countryFilter = _countryFilter.Where(present.Contains).ToHashSet();
             _loadedOnce = true;

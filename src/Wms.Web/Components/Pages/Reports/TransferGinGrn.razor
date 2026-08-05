@@ -250,14 +250,17 @@
         try
         {
             await CurrentUser.EnsureLoadedAsync();
-            _countries = await Svc.GetCountriesAsync();
+            // Restrict to the user's granted WmsUserCountryAccess countries (Admin sees
+            // all) — replaces the old "UAE home country picks any country, everyone
+            // else is locked to their own home country" rule, which ignored the actual
+            // per-user country grants entirely.
+            _countries = CurrentUser.FilterCountries(await Svc.GetCountriesAsync()).ToList();
 
-            _canSelectMultiple = CurrentUser.HasAllCountriesAccess ||
-                string.Equals(CurrentUser.Country, "UAE", StringComparison.OrdinalIgnoreCase);
+            _canSelectMultiple = CurrentUser.HasAllCountriesAccess || _countries.Count > 1;
 
             if (!_canSelectMultiple)
             {
-                _lockedCountry = CurrentUser.Country ?? "";
+                _lockedCountry = _countries.FirstOrDefault() ?? "";
                 _country = _lockedCountry;
             }
             else if (!string.IsNullOrWhiteSpace(CurrentUser.Country) && _countries.Contains(CurrentUser.Country!))
@@ -325,7 +328,10 @@
             }
             else if (_country == BflGroupValue)
             {
-                countries = null; // every country
+                // null = no filter, only valid for a genuine all-countries (Admin) user —
+                // a non-Admin multi-country user's "BFL Group" means everything THEY can
+                // see, i.e. their already-filtered _countries list, not literally every country.
+                countries = CurrentUser.HasAllCountriesAccess ? null : _countries.ToList();
             }
             else
             {
