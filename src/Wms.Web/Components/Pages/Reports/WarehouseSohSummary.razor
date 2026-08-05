@@ -185,7 +185,7 @@
                         var stock = _stockByWarehouse.GetValueOrDefault((wh.Country, wh.Warehouse.Name));
                         <tr>
                             @if (multiCountry) { <td>@wh.Country.ToUpper()</td> }
-                            <td>@wh.Warehouse.Name</td>
+                            <td>@wh.Warehouse.Name.ToUpper()</td>
                             <td style="text-align:right">@((stock?.TotalQuantity ?? 0).ToString("N0"))</td>
                             <td style="text-align:right">@((stock?.TotalBoxesStock ?? 0).ToString("N0"))</td>
                             <td style="text-align:right">@((stock?.NumberOfBoxes ?? 0).ToString("N0"))</td>
