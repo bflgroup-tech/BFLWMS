@@ -7,6 +7,7 @@
 @attribute [Authorize(Policy = MenuKeys.RPT_COUNTING_COMPLETION)]
 @inject ReportsService Svc
 @inject CountingCompletionTodayService TodaySvc
+@inject ICurrentUser CurrentUser
 @inject IJSRuntime JS
 
 <PageTitle>WMS - Counting Completion Report</PageTitle>
@@ -601,13 +602,26 @@ else if (_view == "Detailed" && _detailRows.Count > 0)
     private List<string> EffectiveCountries =>
         _selectedCountries.Count > 0 ? _selectedCountries.ToList() : _countries;
 
+    // For the SQL-backed Summary/Allocation/Detail calls: those treat a null argument
+    // as "genuinely unrestricted" and any non-null list (even empty) as "restrict to
+    // exactly this". Only pass null when the user actually has all-countries access AND
+    // hasn't manually narrowed the picker — otherwise always pass a concrete list, so a
+    // zero-grant user's empty _countries correctly yields zero rows instead of every
+    // country's data.
+    private IEnumerable<string>? EffectiveCountriesOrNull =>
+        _selectedCountries.Count > 0 ? _selectedCountries
+        : CurrentUser.HasAllCountriesAccess ? null
+        : _countries;
+
     protected override async Task OnInitializedAsync()
     {
         try
         {
+            await CurrentUser.EnsureLoadedAsync();
             var list = await Svc.GetCountriesAsync();
             var excluded = new[] { "Ex2Locations", "Ecom" };
-            _countries = list.Where(c => !excluded.Contains(c, StringComparer.OrdinalIgnoreCase)).ToList();
+            var allowed = list.Where(c => !excluded.Contains(c, StringComparer.OrdinalIgnoreCase));
+            _countries = CurrentUser.FilterCountries(allowed).ToList();
         }
         catch { /* fall back to empty list if the lookup fails */ }
     }
@@ -657,17 +671,17 @@ else if (_view == "Detailed" && _detailRows.Count > 0)
             }
             else if (_view == "Summary")
             {
-                _summaryRows = await Svc.GetCountingCompletionSummaryAsync(_selectedCountries, _from, _to, _contNoFilter, _warehouseFilter);
+                _summaryRows = await Svc.GetCountingCompletionSummaryAsync(EffectiveCountriesOrNull, _from, _to, _contNoFilter, _warehouseFilter);
                 if (_summaryRows.Count == 0) _message = "No rows for the selected filters.";
             }
             else if (_view == "Allocation")
             {
-                _allocRows = await Svc.GetCountingAllocationAsync(_selectedCountries, _from, _to, _contNoFilter, _warehouseFilter);
+                _allocRows = await Svc.GetCountingAllocationAsync(EffectiveCountriesOrNull, _from, _to, _contNoFilter, _warehouseFilter);
                 if (_allocRows.Count == 0) _message = "No rows for the selected filters.";
             }
             else
             {
-                _detailRows = await Svc.GetCountingDetailAsync(_selectedCountries, _from, _to, _contNoFilter, _warehouseFilter);
+                _detailRows = await Svc.GetCountingDetailAsync(EffectiveCountriesOrNull, _from, _to, _contNoFilter, _warehouseFilter);
                 if (_detailRows.Count == 0) _message = "No rows for the selected filters.";
             }
         }

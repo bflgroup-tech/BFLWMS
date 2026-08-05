@@ -7,6 +7,7 @@
 @attribute [Authorize(Policy = MenuKeys.RPT_PRODUCTION_SUMMARY)]
 @inject ReportsService Svc
 @inject IOnPremConnectionResolver Resolver
+@inject ICurrentUser CurrentUser
 @inject Microsoft.JSInterop.IJSRuntime JS
 
 <PageTitle>WMS â€” Production Summary Report</PageTitle>
@@ -347,10 +348,14 @@ else if (_loadedOnce && VisibleRows().Count == 0)
     {
         try
         {
+            await CurrentUser.EnsureLoadedAsync();
             var list = await Svc.GetCountriesAsync();
             var excluded = new[] { "ECOM", "Ex2Locations", "Oman" };
             list = list.Where(c => !excluded.Contains(c, StringComparer.OrdinalIgnoreCase)).ToList();
-            if (list.Count > 0) _countries = list;
+            // Only fall back to the hard-coded UAE seed when the lookup itself came back
+            // empty (fetch problem) — a legitimately empty *filtered* result (user has no
+            // country grants) must stay empty, not silently re-widen to "UAE".
+            if (list.Count > 0) _countries = CurrentUser.FilterCountries(list).ToList();
         }
         catch { /* fall back to the hard-coded UAE seed if the lookup fails */ }
 

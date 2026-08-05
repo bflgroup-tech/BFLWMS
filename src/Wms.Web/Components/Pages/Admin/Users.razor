@@ -21,38 +21,48 @@
     <p>Active users and their assigned roles. Country + Warehouse are required (drives audit trail in lpm.* tables).</p>
 </div>
 
-<div class="aiwms-section">
+<div class="aiwms-section" style="background:#FFFCF0; border:1px solid #EDE0B8;">
     <div class="aiwms-card-header">Add / update user</div>
-    <div class="aiwms-form-row">
-        <label>Username</label>
-        <input @bind="_newUser" placeholder="BFLDomain\username" autocomplete="off" />
+    <div style="display:flex; gap:12px; align-items:end; flex-wrap:wrap">
+        <div>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">USERNAME</label>
+            <input @bind="_newUser" placeholder="BFLDomain\username" autocomplete="off" style="padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white; min-width:220px" />
+        </div>
+        <div>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COUNTRY</label>
+            <select @bind="_newCountry" @bind:after="OnNewCountryChanged" style="padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white; min-width:150px">
+                <option value="">-- Select --</option>
+                @foreach (var c in _countries) { <option value="@c">@c</option> }
+            </select>
+        </div>
+        <div>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">WAREHOUSE</label>
+            <select @bind="_newWarehouse" style="padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white; min-width:150px">
+                <option value="">-- Select --</option>
+                @foreach (var w in WHForCountry(_newCountry)) { <option value="@w.Warehouse">@w.Warehouse</option> }
+            </select>
+        </div>
+        <div>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">ROLE</label>
+            <select @bind="_newRole" style="padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white; min-width:150px">
+                @foreach (var r in _roles) { <option value="@r.RoleCode">@r.RoleName</option> }
+            </select>
+        </div>
+        <button class="aiwms-btn aiwms-btn-primary" @onclick="AddUser" disabled="@(string.IsNullOrEmpty(_newUser) || string.IsNullOrEmpty(_newCountry) || string.IsNullOrEmpty(_newWarehouse))">Save</button>
     </div>
-    <div class="aiwms-form-row">
-        <label>Country</label>
-        <select @bind="_newCountry" @bind:after="OnNewCountryChanged">
-            <option value="">-- Select --</option>
-            @foreach (var c in _countries) { <option value="@c">@c</option> }
-        </select>
-    </div>
-    <div class="aiwms-form-row">
-        <label>Warehouse</label>
-        <select @bind="_newWarehouse">
-            <option value="">-- Select --</option>
-            @foreach (var w in WHForCountry(_newCountry)) { <option value="@w.Warehouse">@w.Warehouse</option> }
-        </select>
-    </div>
-    <div class="aiwms-form-row">
-        <label>Role</label>
-        <select @bind="_newRole">
-            @foreach (var r in _roles) { <option value="@r.RoleCode">@r.RoleName</option> }
-        </select>
-    </div>
-    <div style="margin-top:8px"><button class="aiwms-btn aiwms-btn-primary" @onclick="AddUser" disabled="@(string.IsNullOrEmpty(_newUser) || string.IsNullOrEmpty(_newCountry) || string.IsNullOrEmpty(_newWarehouse))">Save</button></div>
     @if (!string.IsNullOrEmpty(_err)) { <div class="aiwms-alert error" style="margin-top:10px">@_err</div> }
 </div>
 
-<div class="aiwms-section">
-    <div class="aiwms-card-header">All users</div>
+<div class="aiwms-section" style="background:#FFF9E6; border:1px solid #F0E0A0;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:@(_usersListVisible ? "12px" : "0")">
+        <div class="aiwms-card-header" style="margin:0; cursor:pointer;" @onclick="() => _usersListVisible = !_usersListVisible">All users</div>
+        @if (_usersListVisible)
+        {
+            <button class="aiwms-btn" style="background:#0E6E7A; color:white; border:none;" @onclick="() => _usersListVisible = false">Minimize</button>
+        }
+    </div>
+    @if (_usersListVisible)
+    {
     <table class="aiwms-table">
         <thead>
             <tr><th>Username</th><th>Country</th><th>Warehouse</th><th>Active</th><th>Roles</th><th>Created</th><th style="width:220px"></th></tr>
@@ -112,12 +122,16 @@
             }
         </tbody>
     </table>
+    }
 </div>
 
-<div class="aiwms-section">
+<div class="aiwms-section" style="background:#FFFCF0; border:1px solid #EDE0B8;">
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:@(_showAllAccess ? "12px" : "0")">
-        <div class="aiwms-card-header" style="margin:0">All Users — Access Overview</div>
-        <button class="aiwms-btn aiwms-btn-secondary" @onclick="ToggleAllAccessViewAsync">@(_showAllAccess ? "Hide" : "View All Access")</button>
+        <div class="aiwms-card-header" style="margin:0; cursor:pointer;" @onclick="ToggleAllAccessViewAsync">All Users — Access Overview</div>
+        @if (_showAllAccess)
+        {
+            <button class="aiwms-btn" style="background:#0E6E7A; color:white; border:none;" @onclick="ToggleAllAccessViewAsync">Minimize</button>
+        }
     </div>
     @if (_showAllAccess)
     {
@@ -148,7 +162,7 @@
     }
 </div>
 
-<div class="aiwms-section">
+<div class="aiwms-section" style="background:#FFF9E6; border:1px solid #F0E0A0;">
     <div class="aiwms-card-header">Copy Access — replaces the target user's Menu + Country Access with the source user's</div>
     <div style="display:flex; gap:10px; align-items:end; flex-wrap:wrap">
         <div>
@@ -176,7 +190,7 @@
     }
 </div>
 
-<div class="aiwms-section">
+<div class="aiwms-section" style="background:#FFFCF0; border:1px solid #EDE0B8;">
     <div class="aiwms-card-header">Menu Access — exact whitelist; a user with no grants sees nothing (Admin role bypasses this list)</div>
     <div style="display:flex; gap:10px; align-items:end; margin-bottom:12px">
         <div>
@@ -222,7 +236,7 @@
     }
 </div>
 
-<div class="aiwms-section">
+<div class="aiwms-section" style="background:#FFF9E6; border:1px solid #F0E0A0;">
     <div class="aiwms-card-header">Country Access — countries whose data this user can see in reports/pages. Admin role bypasses this list.</div>
     <div style="display:flex; gap:10px; align-items:end; margin-bottom:12px">
         <div>
@@ -264,6 +278,7 @@
 
 @code {
     private List<WmsUser> _users = new();
+    private bool _usersListVisible = true;
     private List<WmsRole> _roles = new();
     private List<WmsWHMaster> _whs = new();
     private List<string> _countries = new();
