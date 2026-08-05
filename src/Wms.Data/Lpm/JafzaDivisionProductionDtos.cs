@@ -62,6 +62,29 @@ public record JafzaExportProductionRow(
     int      Qty);
 
 /// <summary>
+/// JAFZA Box GRN Production — Summary. One row per (TrnDate, Division),
+/// Qty = SUM(ScannedQty) from BFLDATA.dbo.SuppBoxItemGrnDetail joined to
+/// BFLDATA.dbo.SuppBoxItemGrnHeader on SrNo (Warehouse = 'JAFZA'). Division
+/// comes from HODATA.dbo.ItemMaster.GroupCode via ItemCode, then
+/// USA.dbo.USAPriority.DivisionY via GroupCode.
+/// </summary>
+public record JafzaBoxGrnSummaryRow(
+    DateTime TrnDate,
+    string   Division,
+    int      Qty);
+
+/// <summary>
+/// JAFZA Box GRN Production — Detailed. One row per (TrnDate, ItemCode,
+/// GroupCode, Division).
+/// </summary>
+public record JafzaBoxGrnDetailRow(
+    DateTime TrnDate,
+    string   ItemCode,
+    string?  GroupCode,
+    string   Division,
+    int      Qty);
+
+/// <summary>
 /// Business-week option for the JAFZA Production Report's Week filter, from
 /// LPMSIM.dbo.BFL_MFP_OUTBOUND_T1's fiscal (year, week) pair. That table
 /// carries no per-week date column at all (only a batch-load createts shared

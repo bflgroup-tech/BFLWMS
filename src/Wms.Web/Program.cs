@@ -93,6 +93,7 @@ public class Program
         builder.Services.AddScoped<JafzaDivisionProductionService>();
         builder.Services.AddScoped<JafzaRoboProductionService>();
         builder.Services.AddScoped<JafzaExportProductionService>();
+        builder.Services.AddScoped<JafzaBoxGrnProductionService>();
         builder.Services.AddScoped<OtsPoAllocationService>();
 
         // Robotics chute-mapping/status APIs used by the Chute Mapping page.
