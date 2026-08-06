@@ -212,6 +212,16 @@ public class WarehouseSohSummaryService(IOnPremConnectionResolver resolver)
         UPDATE #racklocation SET totalcapacity = capacity * 100 WHERE racktype = 'WAREHOUSE' AND warehouse IN ('YOTO');
         UPDATE #racklocation SET used = (SELECT COUNT(*) FROM racks.dbo.tmpwhracks WHERE PalletNo1 <> '' OR PalletNo2 <> '') WHERE racktype = 'TMPWH';
         UPDATE #racklocation SET used = (SELECT COUNT(*) FROM racks.dbo.BinRack WHERE Warehouse = a.warehouse) FROM #racklocation a WHERE racktype = 'BINRACK';
+        -- BUG FIX: WAREHOUSE-type rows (TECHNO-E/YOTO/YOTO-BU/YOTO-SF) never had `used`
+        -- populated at all, so Free Pallet Rack always showed the full total capacity
+        -- and Utilization ignored their occupancy entirely. WarehouseRackDet is the
+        -- filled-cell detail table for WarehouseRacks' total capacity -- every row there
+        -- already represents an occupied cell (verified: no blank PalletNo1/PalletNo2).
+        UPDATE #racklocation SET used = (SELECT COUNT(*) FROM racks.dbo.WarehouseRackDet WHERE Warehouse = a.warehouse) FROM #racklocation a WHERE racktype = 'WAREHOUSE';
+        -- Same bug, same fix, for TECHNORACK: TechnoRackDet is TechnoRacks' filled-cell
+        -- detail table -- no Warehouse column since it's implicitly TECHNO-only, same as
+        -- TechnoRacks itself.
+        UPDATE #racklocation SET used = (SELECT COUNT(*) FROM racks.dbo.TechnoRackDet) WHERE racktype = 'TECHNORACK';
         ";
 
     /// <summary>Storage Capacity for TECHNO/JAFZA/YOTO combined -- everything except BlackBOX.
