@@ -91,7 +91,7 @@ public static class MenuKeys
         new MenuEntry(RPT_WAREHOUSE_BOXES,   "Reports",             "Warehouse Boxes",           "reports/warehouse-boxes",   new[] { Roles.Admin, Roles.Reports }),
         new MenuEntry(RPT_TRANSFER_GIN_GRN,  "Reports",             "Transfer/GIN/GRN History",  "reports/transfer-gin-grn",  new[] { Roles.Admin, Roles.Reports }, "Outbound"),
         new MenuEntry(RPT_COUNTING_COMPLETION,"Reports",            "Counting Completion Report","reports/counting-completion",new[] { Roles.Admin, Roles.Reports }),
-        new MenuEntry(RPT_JAFZA_DIVISION_PROD,"Reports",            "JAFZA Production Report(Manual/Robo/Export)",  "reports/jafza-division-production",new[] { Roles.Admin, Roles.Reports }),
+        new MenuEntry(RPT_JAFZA_DIVISION_PROD,"Reports",            "JAFZA Production Report",  "reports/jafza-division-production",new[] { Roles.Admin, Roles.Reports }),
         new MenuEntry(RPT_SHIPMENT_STATUS,   "Reports",             "Shipment Status",           "reports/shipment-status",  new[] { Roles.Admin, Roles.Reports }, "Inbound"),
         new MenuEntry(RPT_WAREHOUSE_SOH_SUMMARY, "Reports",         "Warehouse SOH Summary",     "reports/warehouse-soh-summary", new[] { Roles.Admin, Roles.Reports }),
         new MenuEntry(RPT_SYNC_DATA_COUNT,   "IT",                 "Sync Data Count",           "reports/sync-data-count",   new[] { Roles.Admin, Roles.Reports }),
