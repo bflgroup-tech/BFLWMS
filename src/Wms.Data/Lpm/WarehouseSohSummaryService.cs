@@ -136,12 +136,16 @@ public class WarehouseSohSummaryService(IOnPremConnectionResolver resolver)
     }
 
     /// <summary>Storage Capacity for a non-UAE country, from that country's own
-    /// {DataName}.dbo.BinRackMaster (total slots) and dbo.BinRack (filled slots) --
-    /// DataName resolved via WhBoxItemsSource, same as Stock On Hand above. Same shape
-    /// as UAE's BINRACK rack type, no separate pallet-rack table, so everything here
-    /// counts as "box" slots and the pallet slots stay 0. BinRackMaster doesn't exist
-    /// in these databases yet (pending), so this throws until it's created -- callers
-    /// should catch and default to zero.</summary>
+    /// {DataName}.dbo.BinRackMaster (total slots, one row per physical Barcode) and
+    /// dbo.BinRack (filled slots -- DataName resolved via WhBoxItemsSource, same as
+    /// Stock On Hand above). Free/Filled are computed by matching BinRackMaster's
+    /// Barcode against BinRack's distinct Location, not a plain COUNT(*) difference --
+    /// BinRack can carry duplicate/stale Location rows that don't map 1:1 onto physical
+    /// slots, which previously produced nonsensical results like &gt;100% utilization.
+    /// Same shape as UAE's BINRACK rack type, no separate pallet-rack table, so
+    /// everything here counts as "box" slots and the pallet slots stay 0. BinRackMaster
+    /// doesn't exist in these databases yet for every country (pending), so this throws
+    /// until it's created there -- callers should catch and default to zero.</summary>
     public async Task<WhStorageCapacity> GetStorageCapacityForCountryAsync(string country, CancellationToken ct = default)
     {
         await using var c = OpenOnPremBackup();
@@ -151,15 +155,16 @@ public class WarehouseSohSummaryService(IOnPremConnectionResolver resolver)
         await using var cmd = c.CreateCommand();
         cmd.CommandText = $@"
             SELECT
-                TotalRackLocations = CAST(ISNULL((SELECT COUNT(*) FROM [{dataName}].dbo.BinRackMaster), 0) AS BIGINT),
-                FilledBoxLocations = CAST(ISNULL((SELECT COUNT(*) FROM [{dataName}].dbo.BinRack), 0) AS BIGINT)";
+                TotalRackLocations   = CAST(ISNULL((SELECT COUNT(*) FROM [{dataName}].dbo.BinRackMaster), 0) AS BIGINT),
+                FreeBoxRackLocations = CAST(ISNULL((SELECT COUNT(*) FROM [{dataName}].dbo.BinRackMaster
+                                                      WHERE Barcode NOT IN (SELECT DISTINCT Location FROM [{dataName}].dbo.BinRack)), 0) AS BIGINT),
+                FilledBoxLocations   = CAST(ISNULL((SELECT COUNT(*) FROM [{dataName}].dbo.BinRackMaster
+                                                      WHERE Barcode IN (SELECT DISTINCT Location FROM [{dataName}].dbo.BinRack)), 0) AS BIGINT)";
         cmd.CommandTimeout = CommandTimeoutSeconds;
         await using var rdr = await cmd.ExecuteReaderAsync(ct);
         await rdr.ReadAsync(ct);
-        var total  = rdr.GetInt64(0);
-        var filled = rdr.GetInt64(1);
-        var free   = Math.Max(0, total - filled);
-        return new WhStorageCapacity(total, free, filled, 0, 0);
+        return new WhStorageCapacity(
+            rdr.GetInt64(0), rdr.GetInt64(1), rdr.GetInt64(2), 0, 0);
     }
 
     private async Task<WhStockOnHand> GetStockOnHandAsync(string whereClause, CancellationToken ct)
