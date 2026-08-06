@@ -1,4 +1,5 @@
 using System.Data;
+using System.Linq;
 using Wms.Data.Configuration;
 using Dapper;
 using Microsoft.Data.SqlClient;
@@ -785,9 +786,10 @@ public class ReportsService(IOnPremConnectionResolver resolver)
     /// UAE-wide total, not that country's own).
     /// </summary>
     public async Task<ProductionCheckingResult> GetProductionCheckingAsync(
-        string country, DateTime fromDate, DateTime toDateInclusive, string? warehouse = null, CancellationToken ct = default)
+        string country, DateTime fromDate, DateTime toDateInclusive, IEnumerable<string>? warehouses = null, CancellationToken ct = default)
     {
-        var warehouseFilter = string.IsNullOrWhiteSpace(warehouse) ? null : warehouse.Trim();
+        var warehouseList = warehouses?.Where(w => !string.IsNullOrWhiteSpace(w)).Select(w => w.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).ToList()
+            ?? new List<string>();
         // 1.14.268 (LPMSIM) — for any non-UAE country with a {Country}_DB_ConnectionString
         // configured, read scans directly from that server and bulk-copy them onto the
         // central UAE backup connection for the LPMSIM_Batch / Datareporting enrichment.
@@ -818,6 +820,15 @@ public class ReportsService(IOnPremConnectionResolver resolver)
         var rows    = new List<ProductionCheckingRow>();
         var summary = new List<ProductionCheckingSummaryRow>();
         int overallStoreQty = 0;
+
+        var warehouseParamNames = Enumerable.Range(0, warehouseList.Count).Select(i => $"@wh{i}").ToList();
+        var warehouseFilterSql = warehouseList.Count == 0
+            ? ""
+            : $@"
+DELETE s
+  FROM #Scans s
+  LEFT JOIN #ScanWh wh ON wh.Contno = s.Contno
+ WHERE ISNULL(wh.Warehouse, 'JAFZA') NOT IN ({string.Join(", ", warehouseParamNames)});";
 
         await using var conn = OpenOnPremBackup();
         await using (var cmd = conn.CreateCommand())
@@ -873,12 +884,9 @@ SELECT b.Contno, wh.Warehouse
 CREATE CLUSTERED INDEX IX_ScanWh ON #ScanWh (Contno);
 
 -- 1c) Warehouse filter (UAE only, matching Counting Completion's convention of
--- defaulting an unresolved container's warehouse to JAFZA).
-IF @warehouseFilter IS NOT NULL
-DELETE s
-  FROM #Scans s
-  LEFT JOIN #ScanWh wh ON wh.Contno = s.Contno
- WHERE ISNULL(wh.Warehouse, 'JAFZA') <> @warehouseFilter;
+-- defaulting an unresolved container's warehouse to JAFZA). Selected warehouses
+-- are passed in as one @wh{n} parameter each (multi-select).
+" + warehouseFilterSql + @"
 
 -- 2) Country gate. Delete wrong-country batches; keep orphans & nulls as Unknown.
 DELETE s
@@ -958,7 +966,8 @@ DROP TABLE #Scans, #BatchKind, #ItemDiv, #ScanWh;";
             cmd.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@from",                fromInclusive));
             cmd.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@toExclusive",         toExclusive));
             cmd.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@country",             country));
-            cmd.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@warehouseFilter",      (object?)warehouseFilter ?? DBNull.Value));
+            for (int i = 0; i < warehouseList.Count; i++)
+                cmd.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter($"@wh{i}", warehouseList[i]));
 
             await using var rdr = await cmd.ExecuteReaderAsync(ct);
             while (await rdr.ReadAsync(ct))
