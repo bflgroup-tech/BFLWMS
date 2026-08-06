@@ -72,16 +72,28 @@ public class WarehouseSohSummaryService(IOnPremConnectionResolver resolver)
     public Task<WhStockOnHand> GetStockOnHandForBlackboxAsync(CancellationToken ct = default) =>
         GetStockOnHandAsync("Warehouse = 'BLACKBOX'", ct);
 
-    /// <summary>Stock On Hand for a single exact Warehouse value (e.g. 'TECHNO', 'JAFZA', 'YOTO').
-    /// Note: WHBoxItems also has sub-codes like 'TECHNO-E'/'YOTO-BU'/'LFL-WH' that an exact match
-    /// here won't include -- those are folded into the TECHNO/JAFZA/YOTO combined group total
-    /// (Warehouse &lt;&gt; 'BLACKBOX') but not into any single named warehouse's row.</summary>
-    public async Task<WhStockOnHand> GetStockOnHandForWarehouseAsync(string warehouse, CancellationToken ct = default)
+    // Sub-codes folded into their parent warehouse for display -- TECHNO-E is part of
+    // TECHNO, YOTO-BU is part of YOTO. LFL-WH/3PLF&B stay as their own rows since they
+    // aren't sub-codes of any of the 4 main warehouses.
+    private const string WarehouseGroupCaseSql = @"
+        CASE WHEN ISNULL(Warehouse, '') = ''  THEN 'TECHNO'
+             WHEN Warehouse = 'TECHNO-E'      THEN 'TECHNO'
+             WHEN Warehouse = 'YOTO-BU'       THEN 'YOTO'
+             ELSE Warehouse
+        END";
+
+    /// <summary>Stock On Hand grouped by Warehouse, one row per distinct group in
+    /// RACKS.dbo.WHBoxItems -- blank/NULL Warehouse rows are folded into TECHNO instead
+    /// of being silently excluded (as an exact-match WHERE Warehouse = 'TECHNO' would
+    /// do), and TECHNO-E/YOTO-BU are folded into their parent TECHNO/YOTO. LFL-WH and
+    /// 3PLF&amp;B still come back as their own distinct rows.</summary>
+    public async Task<List<(string Warehouse, WhStockOnHand Stock)>> GetStockOnHandByWarehouseAsync(CancellationToken ct = default)
     {
         await using var c = OpenOnPremBackup();
         await using var cmd = c.CreateCommand();
-        cmd.CommandText = @"
+        cmd.CommandText = $@"
             SELECT
+                Warehouse = {WarehouseGroupCaseSql},
                 TotalQuantity     = CAST(ISNULL(SUM(qty), 0) AS BIGINT),
                 TotalBoxesStock   = CAST(ISNULL(SUM(CASE WHEN BoxNo <> '' THEN qty ELSE 0 END), 0) AS BIGINT),
                 NumberOfBoxes     = CAST(COUNT(DISTINCT CASE WHEN BoxNo <> '' THEN BoxNo END) AS BIGINT),
@@ -89,38 +101,33 @@ public class WarehouseSohSummaryService(IOnPremConnectionResolver resolver)
                 NumberOfPallets   = CAST(COUNT(DISTINCT CASE WHEN PalletNo <> '' THEN PalletNo END) AS BIGINT),
                 TotalActiveSkus   = CAST(COUNT(DISTINCT ItemCode) AS BIGINT)
               FROM RACKS.dbo.WHBoxItems
-             WHERE Warehouse = @warehouse";
-        cmd.Parameters.Add(new SqlParameter("@warehouse", warehouse));
+             GROUP BY {WarehouseGroupCaseSql}
+             ORDER BY 1";
         cmd.CommandTimeout = CommandTimeoutSeconds;
         await using var rdr = await cmd.ExecuteReaderAsync(ct);
-        await rdr.ReadAsync(ct);
-        return new WhStockOnHand(
-            rdr.GetInt64(0), rdr.GetInt64(1), rdr.GetInt64(2), rdr.GetInt64(3), rdr.GetInt64(4), rdr.GetInt64(5));
+        var result = new List<(string Warehouse, WhStockOnHand Stock)>();
+        while (await rdr.ReadAsync(ct))
+        {
+            result.Add((
+                rdr.GetString(0),
+                new WhStockOnHand(
+                    rdr.GetInt64(1), rdr.GetInt64(2), rdr.GetInt64(3), rdr.GetInt64(4), rdr.GetInt64(5), rdr.GetInt64(6))));
+        }
+        return result;
     }
 
-    // Maps a SIM country name to the OnPremBackup (same server, 3-part naming) database
-    // holding that country's own WHBoxItemsExport table -- each is a single warehouse
-    // facility, unlike UAE's multi-warehouse RACKS.dbo.WHBoxItems.
-    private static readonly Dictionary<string, string> CountryStockDatabase = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ["KSA"]      = "BFLKSA",
-        ["Qatar"]    = "BFLQATAR",
-        ["Kuwait"]   = "BFLKUWAIT",
-        ["Malaysia"] = "BFLMYS",
-        ["Bahrain"]  = "BFLBAHRAIN",
-    };
-
-    public static bool HasStockOnHandDatabase(string country) => CountryStockDatabase.ContainsKey(country);
-
     /// <summary>Stock On Hand for a non-UAE country, from that country's own
-    /// {Database}.dbo.WHBoxItemsExport. No per-warehouse split -- each of these
-    /// countries has a single warehouse facility, so this is the country's whole total.</summary>
+    /// {DataName}.dbo.WHBoxItemsExport -- DataName resolved the same way the Warehouse
+    /// Box Details report does (WhBoxItemsSource, via bfldata.dbo.DataSettings.DataName),
+    /// instead of a hardcoded country->database map. No per-warehouse split -- each of
+    /// these countries has a single warehouse facility, so this is the country's whole
+    /// total. Throws if no DataName is configured for this country -- callers should
+    /// catch and skip it.</summary>
     public async Task<WhStockOnHand> GetStockOnHandForCountryAsync(string country, CancellationToken ct = default)
     {
-        if (!CountryStockDatabase.TryGetValue(country, out var db))
-            throw new ArgumentException($"No WHBoxItemsExport database mapping for country '{country}'.", nameof(country));
-
         await using var c = OpenOnPremBackup();
+        var src = await WhBoxItemsSource.ResolveAsync(c, country, ct);
+
         await using var cmd = c.CreateCommand();
         cmd.CommandText = $@"
             SELECT
@@ -130,7 +137,7 @@ public class WarehouseSohSummaryService(IOnPremConnectionResolver resolver)
                 TotalPalletsStock = CAST(ISNULL(SUM(CASE WHEN PalletNo <> '' THEN Qty ELSE 0 END), 0) AS BIGINT),
                 NumberOfPallets   = CAST(COUNT(DISTINCT CASE WHEN PalletNo <> '' THEN PalletNo END) AS BIGINT),
                 TotalActiveSkus   = CAST(COUNT(DISTINCT ItemCode) AS BIGINT)
-              FROM {db}.dbo.WHBoxItemsExport";
+              FROM {src}";
         cmd.CommandTimeout = CommandTimeoutSeconds;
         await using var rdr = await cmd.ExecuteReaderAsync(ct);
         await rdr.ReadAsync(ct);
@@ -139,29 +146,35 @@ public class WarehouseSohSummaryService(IOnPremConnectionResolver resolver)
     }
 
     /// <summary>Storage Capacity for a non-UAE country, from that country's own
-    /// {Database}.dbo.BinRackMaster (total slots) and dbo.BinRack (filled slots) --
-    /// same shape as UAE's BINRACK rack type, no separate pallet-rack table, so
-    /// everything here counts as "box" slots and the pallet slots stay 0.
-    /// BinRackMaster doesn't exist in these databases yet (pending), so this throws
-    /// until it's created -- callers should catch and default to zero.</summary>
+    /// {DataName}.dbo.BinRackMaster (total slots, one row per physical Barcode) and
+    /// dbo.BinRack (filled slots -- DataName resolved via WhBoxItemsSource, same as
+    /// Stock On Hand above). Free/Filled are computed by matching BinRackMaster's
+    /// Barcode against BinRack's distinct Location, not a plain COUNT(*) difference --
+    /// BinRack can carry duplicate/stale Location rows that don't map 1:1 onto physical
+    /// slots, which previously produced nonsensical results like &gt;100% utilization.
+    /// Same shape as UAE's BINRACK rack type, no separate pallet-rack table, so
+    /// everything here counts as "box" slots and the pallet slots stay 0. BinRackMaster
+    /// doesn't exist in these databases yet for every country (pending), so this throws
+    /// until it's created there -- callers should catch and default to zero.</summary>
     public async Task<WhStorageCapacity> GetStorageCapacityForCountryAsync(string country, CancellationToken ct = default)
     {
-        if (!CountryStockDatabase.TryGetValue(country, out var db))
-            throw new ArgumentException($"No BinRackMaster database mapping for country '{country}'.", nameof(country));
-
         await using var c = OpenOnPremBackup();
+        var dataName = await WhBoxItemsSource.ResolveDataNameAsync(c, country, ct)
+            ?? throw new ArgumentException($"'{country}' resolves to the UAE source, not a per-country database.", nameof(country));
+
         await using var cmd = c.CreateCommand();
         cmd.CommandText = $@"
             SELECT
-                TotalRackLocations = CAST(ISNULL((SELECT COUNT(*) FROM {db}.dbo.BinRackMaster), 0) AS BIGINT),
-                FilledBoxLocations = CAST(ISNULL((SELECT COUNT(*) FROM {db}.dbo.BinRack), 0) AS BIGINT)";
+                TotalRackLocations   = CAST(ISNULL((SELECT COUNT(*) FROM [{dataName}].dbo.BinRackMaster), 0) AS BIGINT),
+                FreeBoxRackLocations = CAST(ISNULL((SELECT COUNT(*) FROM [{dataName}].dbo.BinRackMaster
+                                                      WHERE Barcode NOT IN (SELECT DISTINCT Location FROM [{dataName}].dbo.BinRack)), 0) AS BIGINT),
+                FilledBoxLocations   = CAST(ISNULL((SELECT COUNT(*) FROM [{dataName}].dbo.BinRackMaster
+                                                      WHERE Barcode IN (SELECT DISTINCT Location FROM [{dataName}].dbo.BinRack)), 0) AS BIGINT)";
         cmd.CommandTimeout = CommandTimeoutSeconds;
         await using var rdr = await cmd.ExecuteReaderAsync(ct);
         await rdr.ReadAsync(ct);
-        var total  = rdr.GetInt64(0);
-        var filled = rdr.GetInt64(1);
-        var free   = Math.Max(0, total - filled);
-        return new WhStorageCapacity(total, free, filled, 0, 0);
+        return new WhStorageCapacity(
+            rdr.GetInt64(0), rdr.GetInt64(1), rdr.GetInt64(2), 0, 0);
     }
 
     private async Task<WhStockOnHand> GetStockOnHandAsync(string whereClause, CancellationToken ct)
@@ -214,6 +227,16 @@ public class WarehouseSohSummaryService(IOnPremConnectionResolver resolver)
         UPDATE #racklocation SET totalcapacity = capacity * 100 WHERE racktype = 'WAREHOUSE' AND warehouse IN ('YOTO');
         UPDATE #racklocation SET used = (SELECT COUNT(*) FROM racks.dbo.tmpwhracks WHERE PalletNo1 <> '' OR PalletNo2 <> '') WHERE racktype = 'TMPWH';
         UPDATE #racklocation SET used = (SELECT COUNT(*) FROM racks.dbo.BinRack WHERE Warehouse = a.warehouse) FROM #racklocation a WHERE racktype = 'BINRACK';
+        -- BUG FIX: WAREHOUSE-type rows (TECHNO-E/YOTO/YOTO-BU/YOTO-SF) never had `used`
+        -- populated at all, so Free Pallet Rack always showed the full total capacity
+        -- and Utilization ignored their occupancy entirely. WarehouseRackDet is the
+        -- filled-cell detail table for WarehouseRacks' total capacity -- every row there
+        -- already represents an occupied cell (verified: no blank PalletNo1/PalletNo2).
+        UPDATE #racklocation SET used = (SELECT COUNT(*) FROM racks.dbo.WarehouseRackDet WHERE Warehouse = a.warehouse) FROM #racklocation a WHERE racktype = 'WAREHOUSE';
+        -- Same bug, same fix, for TECHNORACK: TechnoRackDet is TechnoRacks' filled-cell
+        -- detail table -- no Warehouse column since it's implicitly TECHNO-only, same as
+        -- TechnoRacks itself.
+        UPDATE #racklocation SET used = (SELECT COUNT(*) FROM racks.dbo.TechnoRackDet) WHERE racktype = 'TECHNORACK';
         ";
 
     /// <summary>Storage Capacity for TECHNO/JAFZA/YOTO combined -- everything except BlackBOX.
@@ -260,12 +283,13 @@ public class WarehouseSohSummaryService(IOnPremConnectionResolver resolver)
             rdr.GetInt64(0), rdr.GetInt64(1), rdr.GetInt64(2), 0, 0);
     }
 
-    /// <summary>Storage Capacity for a single exact Warehouse value (e.g. 'TECHNO', 'JAFZA',
-    /// 'YOTO', 'BlackBOX' -- case-insensitive against #racklocation's 'BLACKBOX' row). Same
-    /// caveat as GetStockOnHandForWarehouseAsync: #racklocation's WAREHOUSE-type sub-codes
-    /// ('TECHNO-E', 'YOTO-BU', 'YOTO-SF') aren't included in an exact match on the parent name.
-    /// Works for BlackBOX too -- it only ever has one BINRACK-type row, so Box picks it up and
-    /// Pallet naturally comes back 0, matching GetStorageCapacityForBlackboxAsync's shape.</summary>
+    /// <summary>Storage Capacity for a warehouse group (e.g. 'TECHNO', 'JAFZA', 'YOTO',
+    /// 'BlackBOX' -- case-insensitive against #racklocation's 'BLACKBOX' row). TECHNO-E's
+    /// and YOTO-BU's #racklocation rows are folded into TECHNO/YOTO respectively (same
+    /// grouping as GetStockOnHandByWarehouseAsync), so passing 'TECHNO' or 'YOTO' picks up
+    /// their sub-code rows too. Works for BlackBOX too -- it only ever has one BINRACK-type
+    /// row, so Box picks it up and Pallet naturally comes back 0, matching
+    /// GetStorageCapacityForBlackboxAsync's shape.</summary>
     public async Task<WhStorageCapacity> GetStorageCapacityForWarehouseAsync(string warehouse, CancellationToken ct = default)
     {
         await using var c = OpenOnPremBackup();
@@ -278,7 +302,10 @@ public class WarehouseSohSummaryService(IOnPremConnectionResolver resolver)
                 FreePalletRackLocations = CAST(ISNULL(SUM(CASE WHEN racktype <> 'BINRACK' THEN totalcapacity - used ELSE 0 END), 0) AS BIGINT),
                 FilledPalletLocations   = CAST(ISNULL(SUM(CASE WHEN racktype <> 'BINRACK' THEN used ELSE 0 END), 0) AS BIGINT)
               FROM #racklocation
-             WHERE warehouse = @warehouse;
+             WHERE (CASE WHEN warehouse = 'TECHNO-E' THEN 'TECHNO'
+                         WHEN warehouse = 'YOTO-BU'  THEN 'YOTO'
+                         ELSE warehouse
+                    END) = @warehouse;
             DROP TABLE #racklocation;";
         cmd.Parameters.Add(new SqlParameter("@warehouse", warehouse));
         cmd.CommandTimeout = CommandTimeoutSeconds;
@@ -318,15 +345,15 @@ public class WarehouseSohSummaryService(IOnPremConnectionResolver resolver)
     }
 
     /// <summary>Critical Alerts &amp; Aging Inventory units for a non-UAE country, from that
-    /// country's own {Database}.dbo.WHBoxItemsExport. LPMDt is a real DATE column here
+    /// country's own {DataName}.dbo.WHBoxItemsExport (DataName resolved via
+    /// WhBoxItemsSource, same as Stock On Hand). LPMDt is a real DATE column here
     /// (first-of-month), unlike UAE's varchar dd/MM/yyyy column, so buckets compare dates
     /// directly instead of string-converting.</summary>
     public async Task<WhAgingUnits> GetAgingUnitsForCountryAsync(string country, CancellationToken ct = default)
     {
-        if (!CountryStockDatabase.TryGetValue(country, out var db))
-            throw new ArgumentException($"No WHBoxItemsExport database mapping for country '{country}'.", nameof(country));
-
         await using var c = OpenOnPremBackup();
+        var src = await WhBoxItemsSource.ResolveAsync(c, country, ct);
+
         await using var cmd = c.CreateCommand();
         cmd.CommandText = $@"
             SET NOCOUNT ON;
@@ -341,7 +368,7 @@ public class WarehouseSohSummaryService(IOnPremConnectionResolver resolver)
                 Days60To90  = CAST(ISNULL(SUM(CASE WHEN LPMDt = @m2 THEN Qty ELSE 0 END), 0) AS BIGINT),
                 DaysAbove90 = CAST(ISNULL(SUM(CASE WHEN LPMDt = @m3 THEN Qty ELSE 0 END), 0) AS BIGINT),
                 ElapsedLpm  = CAST(ISNULL(SUM(CASE WHEN LPMDt < @m0 THEN Qty ELSE 0 END), 0) AS BIGINT)
-              FROM {db}.dbo.WHBoxItemsExport";
+              FROM {src}";
         cmd.CommandTimeout = CommandTimeoutSeconds;
         await using var rdr = await cmd.ExecuteReaderAsync(ct);
         await rdr.ReadAsync(ct);

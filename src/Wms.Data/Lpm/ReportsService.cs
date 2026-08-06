@@ -785,8 +785,9 @@ public class ReportsService(IOnPremConnectionResolver resolver)
     /// UAE-wide total, not that country's own).
     /// </summary>
     public async Task<ProductionCheckingResult> GetProductionCheckingAsync(
-        string country, DateTime fromDate, DateTime toDateInclusive, CancellationToken ct = default)
+        string country, DateTime fromDate, DateTime toDateInclusive, string? warehouse = null, CancellationToken ct = default)
     {
+        var warehouseFilter = string.IsNullOrWhiteSpace(warehouse) ? null : warehouse.Trim();
         // 1.14.268 (LPMSIM) — for any non-UAE country with a {Country}_DB_ConnectionString
         // configured, read scans directly from that server and bulk-copy them onto the
         // central UAE backup connection for the LPMSIM_Batch / Datareporting enrichment.
@@ -856,6 +857,28 @@ SELECT
    AND CAST(c.TrnDate AS datetime) + CAST(c.Time1 AS datetime) <  @toExclusive;
 
 CREATE CLUSTERED INDEX IX_Scans ON #Scans (BatchNo, Itemcode);
+
+-- 1b) Warehouse (UAE only: JAFZA/TECHNO) resolved once per Contno via Online.dbo.Photochecking.
+-- Same OUTER APPLY TOP 1 technique as Counting Completion Report -- a container can have
+-- 100k+ scan rows there, so this avoids aggregating over every matching row.
+IF OBJECT_ID('tempdb..#ScanWh') IS NOT NULL DROP TABLE #ScanWh;
+SELECT b.Contno, wh.Warehouse
+  INTO #ScanWh
+  FROM (SELECT DISTINCT Contno FROM #Scans WHERE Contno <> '') b
+  OUTER APPLY (
+      SELECT TOP 1 p.Warehouse
+        FROM Online.dbo.Photochecking p WITH (NOLOCK, FORCESEEK)
+       WHERE p.ContNo = b.Contno AND p.Warehouse IS NOT NULL AND p.Warehouse <> ''
+  ) wh;
+CREATE CLUSTERED INDEX IX_ScanWh ON #ScanWh (Contno);
+
+-- 1c) Warehouse filter (UAE only, matching Counting Completion's convention of
+-- defaulting an unresolved container's warehouse to JAFZA).
+IF @warehouseFilter IS NOT NULL
+DELETE s
+  FROM #Scans s
+  LEFT JOIN #ScanWh wh ON wh.Contno = s.Contno
+ WHERE ISNULL(wh.Warehouse, 'JAFZA') <> @warehouseFilter;
 
 -- 2) Country gate. Delete wrong-country batches; keep orphans & nulls as Unknown.
 DELETE s
@@ -929,12 +952,13 @@ SELECT
 -- 7) Overall Store Qty scalar.
 SELECT OverallStoreQty = SUM(CASE WHEN Result IN (0, 13) THEN 1 ELSE 0 END) FROM #Scans;
 
-DROP TABLE #Scans, #BatchKind, #ItemDiv;";
+DROP TABLE #Scans, #BatchKind, #ItemDiv, #ScanWh;";
             cmd.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@fromDateOnly",        fromDateOnly));
             cmd.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@toDateExclusiveOnly", toDateExclusiveOnly));
             cmd.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@from",                fromInclusive));
             cmd.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@toExclusive",         toExclusive));
             cmd.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@country",             country));
+            cmd.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@warehouseFilter",      (object?)warehouseFilter ?? DBNull.Value));
 
             await using var rdr = await cmd.ExecuteReaderAsync(ct);
             while (await rdr.ReadAsync(ct))
