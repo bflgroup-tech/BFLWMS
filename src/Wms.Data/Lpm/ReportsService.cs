@@ -821,10 +821,22 @@ public class ReportsService(IOnPremConnectionResolver resolver)
         var summary = new List<ProductionCheckingSummaryRow>();
         int overallStoreQty = 0;
 
-        var warehouseParamNames = Enumerable.Range(0, warehouseList.Count).Select(i => $"@wh{i}").ToList();
-        var warehouseFilterSql = warehouseList.Count == 0
-            ? ""
-            : $@"
+        // EX2LOCATIONS isn't a Warehouse value at all (Online.dbo.Photochecking has no such
+        // warehouse) -- it means "ShopName belongs to an Ex2Locations-exported shop". When
+        // it's ticked, it takes over the filter entirely and any other warehouse selections
+        // (e.g. TECHNO) are ignored, since the two mechanisms are mutually exclusive.
+        var isEx2Selected     = warehouseList.Any(w => string.Equals(w, "EX2LOCATIONS", StringComparison.OrdinalIgnoreCase));
+        var warehouseCodeList = isEx2Selected ? new List<string>() : warehouseList;
+
+        var warehouseParamNames = Enumerable.Range(0, warehouseCodeList.Count).Select(i => $"@wh{i}").ToList();
+        var warehouseFilterSql = isEx2Selected
+            ? @"
+DELETE s
+  FROM #Scans s
+ WHERE s.ShopName NOT IN (SELECT ShopName FROM bfldata.dbo.DataSettings WHERE ExportActive = 'Y');"
+            : warehouseCodeList.Count == 0
+                ? ""
+                : $@"
 DELETE s
   FROM #Scans s
   LEFT JOIN #ScanWh wh ON wh.Contno = s.Contno
@@ -883,9 +895,10 @@ SELECT b.Contno, wh.Warehouse
   ) wh;
 CREATE CLUSTERED INDEX IX_ScanWh ON #ScanWh (Contno);
 
--- 1c) Warehouse filter (UAE only, matching Counting Completion's convention of
--- defaulting an unresolved container's warehouse to JAFZA). Selected warehouses
--- are passed in as one @wh{n} parameter each (multi-select).
+-- 1c) Warehouse filter (UAE only). Either a Warehouse-code filter (matching Counting
+-- Completion's convention of defaulting an unresolved container's warehouse to JAFZA,
+-- selected codes passed in as one @wh{n} parameter each) or, if EX2LOCATIONS is
+-- selected, a ShopName-based filter instead (see C# above for why they're exclusive).
 " + warehouseFilterSql + @"
 
 -- 2) Country gate. Delete wrong-country batches; keep orphans & nulls as Unknown.
@@ -966,8 +979,8 @@ DROP TABLE #Scans, #BatchKind, #ItemDiv, #ScanWh;";
             cmd.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@from",                fromInclusive));
             cmd.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@toExclusive",         toExclusive));
             cmd.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@country",             country));
-            for (int i = 0; i < warehouseList.Count; i++)
-                cmd.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter($"@wh{i}", warehouseList[i]));
+            for (int i = 0; i < warehouseCodeList.Count; i++)
+                cmd.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter($"@wh{i}", warehouseCodeList[i]));
 
             await using var rdr = await cmd.ExecuteReaderAsync(ct);
             while (await rdr.ReadAsync(ct))
