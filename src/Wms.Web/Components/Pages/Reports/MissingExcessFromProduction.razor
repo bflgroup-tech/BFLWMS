@@ -5,6 +5,7 @@
 @using Wms.Data.Lpm
 @attribute [Authorize(Policy = MenuKeys.RPT_MISSING_EXCESS)]
 @inject ReportsService Svc
+@inject ICurrentUser CurrentUser
 @inject Microsoft.JSInterop.IJSRuntime JS
 
 <PageTitle>WMS â€” Missing / Excess Items from Production</PageTitle>
@@ -191,7 +192,11 @@ else if (_loaded && _view == "ItemSummary")
 
     protected override async Task OnInitializedAsync()
     {
-        try { _countries = await Svc.GetCountriesAsync(); }
+        try
+        {
+            await CurrentUser.EnsureLoadedAsync();
+            _countries = CurrentUser.FilterCountries(await Svc.GetCountriesAsync()).ToList();
+        }
         catch (Exception ex) { ShowError($"Failed to load countries: {ex.Message}"); }
     }
 

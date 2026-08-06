@@ -6,6 +6,7 @@
 @using MudBlazor
 @attribute [Authorize(Policy = MenuKeys.RPT_WAREHOUSE_BOXES)]
 @inject WarehouseBoxesService Svc
+@inject ICurrentUser CurrentUser
 @inject Microsoft.JSInterop.IJSRuntime JS
 
 <PageTitle>WMS - Warehouse Box Details</PageTitle>
@@ -442,7 +443,13 @@ else if (_groupBy == "Brand" && _brandRows.Count > 0)
     {
         try
         {
-            _countries        = await Svc.GetCountriesAsync();
+            await CurrentUser.EnsureLoadedAsync();
+            _countries        = CurrentUser.FilterCountries(await Svc.GetCountriesAsync()).ToList();
+            // _country defaults to "UAE" — if that's not in the user's allowed set,
+            // fall back to their first allowed country instead of silently querying
+            // a country they don't have access to.
+            if (!_countries.Contains(_country, StringComparer.OrdinalIgnoreCase))
+                _country = _countries.FirstOrDefault() ?? "";
             _typeNames        = await Svc.GetTypeNamesAsync();
             _palletCategories = await Svc.GetPalletCategoriesAsync();
             _divisions        = await Svc.GetDivisionsAsync();

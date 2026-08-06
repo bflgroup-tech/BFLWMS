@@ -250,7 +250,10 @@ public class ReportsService(IOnPremConnectionResolver resolver)
         string? warehouse = null, CancellationToken ct = default)
     {
         var countryList = countries?.Where(s => !string.IsNullOrWhiteSpace(s)).ToArray() ?? Array.Empty<string>();
-        var noCountryFilter = countryList.Length == 0;
+        // null (no argument at all) means "genuinely unrestricted" — an empty-but-non-null
+        // list must NOT fall back to "show everything", since that's exactly what a
+        // deny-by-default caller passes for a user with zero country grants.
+        var noCountryFilter = countries is null;
         var contNoFilter = string.IsNullOrWhiteSpace(contNo) ? null : contNo.Trim();
         var warehouseFilter = string.IsNullOrWhiteSpace(warehouse) ? null : warehouse.Trim();
 
@@ -384,7 +387,10 @@ public class ReportsService(IOnPremConnectionResolver resolver)
         string? warehouse = null, CancellationToken ct = default)
     {
         var countryList = countries?.Where(s => !string.IsNullOrWhiteSpace(s)).ToArray() ?? Array.Empty<string>();
-        var noCountryFilter = countryList.Length == 0;
+        // null (no argument at all) means "genuinely unrestricted" — an empty-but-non-null
+        // list must NOT fall back to "show everything", since that's exactly what a
+        // deny-by-default caller passes for a user with zero country grants.
+        var noCountryFilter = countries is null;
         var contNoFilter = string.IsNullOrWhiteSpace(contNo) ? null : contNo.Trim();
         var warehouseFilter = string.IsNullOrWhiteSpace(warehouse) ? null : warehouse.Trim();
 
@@ -573,7 +579,10 @@ public class ReportsService(IOnPremConnectionResolver resolver)
         string? warehouse = null, CancellationToken ct = default)
     {
         var countryList = countries?.Where(s => !string.IsNullOrWhiteSpace(s)).ToArray() ?? Array.Empty<string>();
-        var noCountryFilter = countryList.Length == 0;
+        // null (no argument at all) means "genuinely unrestricted" — an empty-but-non-null
+        // list must NOT fall back to "show everything", since that's exactly what a
+        // deny-by-default caller passes for a user with zero country grants.
+        var noCountryFilter = countries is null;
         var contNoFilter = string.IsNullOrWhiteSpace(contNo) ? null : contNo.Trim();
         var warehouseFilter = string.IsNullOrWhiteSpace(warehouse) ? null : warehouse.Trim();
 
@@ -1279,7 +1288,10 @@ DROP TABLE #Scans, #BatchKind, #ItemDiv;";
         var pc = string.IsNullOrWhiteSpace(palletCategory) ? "ELIGIBLE" : palletCategory.Trim();
         var only = onlyCountries?.Where(s => !string.IsNullOrWhiteSpace(s))
                                   .Select(s => s.Trim()).ToArray();
-        var hasCountryFilter = only is { Length: > 0 };
+        // null (no argument at all) means "genuinely unrestricted" — an empty-but-non-null
+        // list must NOT fall back to "show everything", since that's exactly what a
+        // deny-by-default caller passes for a user with zero country grants.
+        var hasCountryFilter = onlyCountries is not null;
 
         // Single read from the pre-aggregated snapshot. Snapshot is keyed on
         // (PalletCategory, Country, Division, Brand, Season, Year1, Month1) — the
