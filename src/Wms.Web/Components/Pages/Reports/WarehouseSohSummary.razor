@@ -101,7 +101,9 @@
 
 @{
     var warehouses = _selectedCountries
-        .SelectMany(c => _warehousesByCountry.GetValueOrDefault(c, new()).Select(w => (Country: c, Warehouse: w)))
+        .SelectMany(c => string.Equals(c, "UAE", StringComparison.OrdinalIgnoreCase)
+            ? _warehousesByCountry.GetValueOrDefault(c, new()).Select(w => (Country: c, Warehouse: w))
+            : new[] { (Country: c, Warehouse: new WarehouseDummy(c, true)) })
         .ToList();
     var multiCountry = _selectedCountries.Count > 1;
 }
@@ -324,15 +326,14 @@ else if (_loadedOnce)
 
     private sealed record WarehouseDummy(string Name, bool HasPallets);
 
+    // UAE is the only country with a real multi-warehouse split; every other selected
+    // country gets a single dummy warehouse (named after itself) generated on the fly --
+    // see the `warehouses` computed list below -- since its DataName-resolved database
+    // is a single facility.
     private static readonly Dictionary<string, List<WarehouseDummy>> _warehousesByCountry =
         new(StringComparer.OrdinalIgnoreCase)
         {
-            ["UAE"]      = new() { new("TECHNO", true), new("JAFZA", true), new("YOTO", true), new("BlackBOX", false) },
-            ["KSA"]      = new() { new("KSA", true) },
-            ["Qatar"]    = new() { new("Qatar", true) },
-            ["Kuwait"]   = new() { new("Kuwait", true) },
-            ["Malaysia"] = new() { new("Malaysia", true) },
-            ["Bahrain"]  = new() { new("Bahrain", true) },
+            ["UAE"] = new() { new("TECHNO", true), new("JAFZA", true), new("YOTO", true), new("BlackBOX", false) },
         };
 
     private sealed record AgeAlert(string Category, string Status, string StatusClass);
@@ -474,16 +475,24 @@ else if (_loadedOnce)
                 }
             }
 
-            // Each of these is a single-facility country -- no per-warehouse split.
-            // Storage Capacity depends on BinRackMaster, which doesn't exist in these
-            // databases yet -- catch and default to 0 until it's created.
+            // Each of these is a single-facility country -- no per-warehouse split. DataName
+            // is resolved dynamically per country (WhBoxItemsSource, via
+            // bfldata.dbo.DataSettings.DataName) instead of a hardcoded list, so attempt
+            // every selected non-UAE country and skip ones with nothing configured there.
             foreach (var country in _selectedCountries)
             {
-                if (!WarehouseSohSummaryService.HasStockOnHandDatabase(country)) continue;
-                var stock = await SohSvc.GetStockOnHandForCountryAsync(country);
-                _groupTotals[(country, true)] = stock;
-                _stockByWarehouse[(country, country)] = stock;
+                if (string.Equals(country, "UAE", StringComparison.OrdinalIgnoreCase)) continue;
 
+                try
+                {
+                    var stock = await SohSvc.GetStockOnHandForCountryAsync(country);
+                    _groupTotals[(country, true)] = stock;
+                    _stockByWarehouse[(country, country)] = stock;
+                }
+                catch { continue; /* no DataName configured for this country -- skip it entirely */ }
+
+                // Storage Capacity depends on BinRackMaster, which doesn't exist in these
+                // databases yet -- catch and default to 0 until it's created.
                 try
                 {
                     var storage = await SohSvc.GetStorageCapacityForCountryAsync(country);
@@ -492,7 +501,8 @@ else if (_loadedOnce)
                 }
                 catch { /* BinRackMaster not created yet for this country -- leave at 0 */ }
 
-                _agingUnitsByCountry[country] = await SohSvc.GetAgingUnitsForCountryAsync(country);
+                try { _agingUnitsByCountry[country] = await SohSvc.GetAgingUnitsForCountryAsync(country); }
+                catch { /* leave unset -- combined aging total just won't include this country */ }
             }
         }
         finally
