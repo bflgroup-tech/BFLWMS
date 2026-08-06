@@ -790,6 +790,16 @@ public class ReportsService(IOnPremConnectionResolver resolver)
     {
         var warehouseList = warehouses?.Where(w => !string.IsNullOrWhiteSpace(w)).Select(w => w.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).ToList()
             ?? new List<string>();
+        // "Select all" ticks every option (currently TECHNO + EX2LOCATIONS) -- that means
+        // "show everything", same as no filter at all, not "TECHNO minus Ex2Locations shops
+        // plus Ex2Locations shops" (which would cancel out to everything anyway, but via two
+        // mutually-exclusive code paths that aren't meant to run together).
+        if (warehouseList.Count > 0 &&
+            new HashSet<string>(warehouseList, StringComparer.OrdinalIgnoreCase)
+                .SetEquals(new[] { "TECHNO", "EX2LOCATIONS" }))
+        {
+            warehouseList = new List<string>();
+        }
         // 1.14.268 (LPMSIM) — for any non-UAE country with a {Country}_DB_ConnectionString
         // configured, read scans directly from that server and bulk-copy them onto the
         // central UAE backup connection for the LPMSIM_Batch / Datareporting enrichment.
