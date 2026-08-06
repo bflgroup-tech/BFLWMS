@@ -62,26 +62,27 @@ public record JafzaExportProductionRow(
     int      Qty);
 
 /// <summary>
-/// JAFZA Box GRN Production — Summary. One row per (TrnDate, Division),
-/// Qty = SUM(ScannedQty) from BFLDATA.dbo.SuppBoxItemGrnDetail joined to
-/// BFLDATA.dbo.SuppBoxItemGrnHeader on SrNo (Warehouse = 'JAFZA'). Division
-/// comes from HODATA.dbo.ItemMaster.GroupCode via ItemCode, then
-/// USA.dbo.USAPriority.DivisionY via GroupCode.
+/// JAFZA Box GRN Production — Summary. One row per (TrnDate, Division):
+/// BoxCount = COUNT(DISTINCT BoxNo), Qty = SUM(Qty), from
+/// USA.dbo.vUPCBoxDet (WHouse = 'JAFZA', Remarks = 'Box GRN'). Division
+/// comes from USA.dbo.USAPriority.DivisionY via the view's own GroupCode.
 /// </summary>
 public record JafzaBoxGrnSummaryRow(
     DateTime TrnDate,
     string   Division,
+    int      BoxCount,
     int      Qty);
 
 /// <summary>
 /// JAFZA Box GRN Production — Detailed. One row per (TrnDate, ItemCode,
-/// GroupCode, Division).
+/// GroupCode, Division): BoxCount = COUNT(DISTINCT BoxNo) for that item.
 /// </summary>
 public record JafzaBoxGrnDetailRow(
     DateTime TrnDate,
     string   ItemCode,
     string?  GroupCode,
     string   Division,
+    int      BoxCount,
     int      Qty);
 
 /// <summary>
