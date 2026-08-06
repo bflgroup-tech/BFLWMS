@@ -163,6 +163,16 @@
         }
     </div>
 
+    // Every distinct warehouse code actually returned by the DB for a selected
+    // country. For UAE this includes the sub-codes TECHNO-E, YOTO-BU, LFL-WH and
+    // 3PLF&B as their own rows, not folded into their parent warehouse, since
+    // _stockByWarehouse is populated directly from GetStockOnHandByWarehouseAsync's
+    // full result. This is intentionally a wider list than the warehouses variable
+    // above, which only drives the 4 main TECHNO/JAFZA/YOTO/BlackBOX cards.
+    var perfRows = _stockByWarehouse.Keys
+        .Where(k => _selectedCountries.Contains(k.Country))
+        .OrderBy(k => k.Country).ThenBy(k => k.Warehouse)
+        .ToList();
     <div class="aiwms-section" style="padding:0; overflow:hidden">
         <div class="wsoh-box-header" style="border-radius:0">Warehouse-wise Performance Summary</div>
         <div style="overflow-x:auto">
@@ -182,13 +192,13 @@
                     </tr>
                 </thead>
                 <tbody>
-                    @foreach (var wh in warehouses)
+                    @foreach (var k in perfRows)
                     {
-                        var stock   = _stockByWarehouse.GetValueOrDefault((wh.Country, wh.Warehouse.Name));
-                        var storage = _storageByWarehouse.GetValueOrDefault((wh.Country, wh.Warehouse.Name));
+                        var stock   = _stockByWarehouse.GetValueOrDefault(k);
+                        var storage = _storageByWarehouse.GetValueOrDefault(k);
                         <tr>
-                            @if (multiCountry) { <td>@wh.Country.ToUpper()</td> }
-                            <td>@wh.Warehouse.Name.ToUpper()</td>
+                            @if (multiCountry) { <td>@k.Country.ToUpper()</td> }
+                            <td>@k.Warehouse.ToUpper()</td>
                             <td style="text-align:right">@((stock?.TotalQuantity ?? 0).ToString("N0"))</td>
                             <td style="text-align:right">@((stock?.TotalBoxesStock ?? 0).ToString("N0"))</td>
                             <td style="text-align:right">@((stock?.NumberOfBoxes ?? 0).ToString("N0"))</td>
@@ -200,18 +210,18 @@
                         </tr>
                     }
                     @{
-                        var storageRows = warehouses.Select(wh => _storageByWarehouse.GetValueOrDefault((wh.Country, wh.Warehouse.Name))).Where(s => s is not null).Select(s => s!).ToList();
+                        var storageRows = perfRows.Select(k => _storageByWarehouse.GetValueOrDefault(k)).Where(s => s is not null).Select(s => s!).ToList();
                         var totalRackLocations   = storageRows.Sum(s => s.TotalRackLocations);
                         var totalFilledLocations = storageRows.Sum(s => s.FilledBoxLocations + s.FilledPalletLocations);
                         var totalUtilizationPct  = totalRackLocations > 0 ? Math.Round(100.0 * totalFilledLocations / totalRackLocations, 1) : 0;
                     }
                     <tr style="font-weight:700; background:#fff7e0">
                         <td colspan="@(multiCountry ? 2 : 1)">TOTAL</td>
-                        <td style="text-align:right">@(warehouses.Sum(wh => _stockByWarehouse.GetValueOrDefault((wh.Country, wh.Warehouse.Name))?.TotalQuantity ?? 0).ToString("N0"))</td>
-                        <td style="text-align:right">@(warehouses.Sum(wh => _stockByWarehouse.GetValueOrDefault((wh.Country, wh.Warehouse.Name))?.TotalBoxesStock ?? 0).ToString("N0"))</td>
-                        <td style="text-align:right">@(warehouses.Sum(wh => _stockByWarehouse.GetValueOrDefault((wh.Country, wh.Warehouse.Name))?.NumberOfBoxes ?? 0).ToString("N0"))</td>
-                        <td style="text-align:right">@(warehouses.Sum(wh => _stockByWarehouse.GetValueOrDefault((wh.Country, wh.Warehouse.Name))?.TotalPalletsStock ?? 0).ToString("N0"))</td>
-                        <td style="text-align:right">@(warehouses.Sum(wh => _stockByWarehouse.GetValueOrDefault((wh.Country, wh.Warehouse.Name))?.NumberOfPallets ?? 0).ToString("N0"))</td>
+                        <td style="text-align:right">@(perfRows.Sum(k => _stockByWarehouse.GetValueOrDefault(k)?.TotalQuantity ?? 0).ToString("N0"))</td>
+                        <td style="text-align:right">@(perfRows.Sum(k => _stockByWarehouse.GetValueOrDefault(k)?.TotalBoxesStock ?? 0).ToString("N0"))</td>
+                        <td style="text-align:right">@(perfRows.Sum(k => _stockByWarehouse.GetValueOrDefault(k)?.NumberOfBoxes ?? 0).ToString("N0"))</td>
+                        <td style="text-align:right">@(perfRows.Sum(k => _stockByWarehouse.GetValueOrDefault(k)?.TotalPalletsStock ?? 0).ToString("N0"))</td>
+                        <td style="text-align:right">@(perfRows.Sum(k => _stockByWarehouse.GetValueOrDefault(k)?.NumberOfPallets ?? 0).ToString("N0"))</td>
                         <td style="text-align:right">@(storageRows.Sum(s => s.FreeBoxRackLocations).ToString("N0"))</td>
                         <td style="text-align:right">@(storageRows.Sum(s => s.FreePalletRackLocations).ToString("N0"))</td>
                         <td style="text-align:right">@(totalUtilizationPct)%</td>
@@ -468,14 +478,19 @@ else if (_loadedOnce)
 
                 _agingUnitsByCountry["UAE"] = await SohSvc.GetAgingUnitsAsync();
 
-                foreach (var (wh, stock) in await SohSvc.GetStockOnHandByWarehouseAsync())
+                var uaeStock = await SohSvc.GetStockOnHandByWarehouseAsync();
+                foreach (var (wh, stock) in uaeStock)
                 {
                     _stockByWarehouse[("UAE", wh)] = stock;
                 }
 
-                foreach (var wh in _warehousesByCountry.GetValueOrDefault("UAE", new()))
+                // Storage Capacity per exact warehouse code, including the sub-codes
+                // (TECHNO-E, YOTO-BU, LFL-WH, ...) -- #racklocation's warehouse column
+                // has these as distinct entries too, so an exact match works the same
+                // way it does for TECHNO/JAFZA/YOTO/BlackBOX.
+                foreach (var (wh, _) in uaeStock)
                 {
-                    _storageByWarehouse[("UAE", wh.Name)] = await SohSvc.GetStorageCapacityForWarehouseAsync(wh.Name);
+                    _storageByWarehouse[("UAE", wh)] = await SohSvc.GetStorageCapacityForWarehouseAsync(wh);
                 }
             }
 
