@@ -8,10 +8,11 @@ namespace Wms.Data.Lpm;
 /// JAFZA Division-wise Production Report. Ported from a legacy VB.NET desktop
 /// query against Online.dbo.PhotoChecking (Warehouse = 'JAFZA').
 ///
-/// The legacy query ran in two passes because scans before 05:00 belong to
-/// the PREVIOUS production day's shift:
-///   1) TrnDate rows where LEFT(Time1,2) NOT IN ('00'..'04') — kept as-is.
-///   2) TrnDate rows where LEFT(Time1,2) IN ('00'..'04') — TrnDate shifted
+/// The legacy query ran in two passes because scans before a shift-boundary
+/// hour belong to the PREVIOUS production day's shift (the legacy VB.NET
+/// query used 05:00; the shift now runs 03:00-to-03:00 per business request):
+///   1) TrnDate rows where LEFT(Time1,2) NOT IN ('00'..'02') — kept as-is.
+///   2) TrnDate rows where LEFT(Time1,2) IN ('00'..'02') — TrnDate shifted
 ///      back one day.
 /// Both passes are UNIONed here into one #JafzaBase temp table (same idea,
 /// just without the legacy per-username dynamic table name — Dapper already
@@ -97,7 +98,7 @@ public class JafzaDivisionProductionService(IOnPremConnectionResolver resolver)
           FROM Online.dbo.PhotoChecking WITH (NOLOCK)
          WHERE Warehouse = 'JAFZA'
            AND TrnDate >= @from AND TrnDate <= @to
-           AND LEFT(Time1, 2) NOT IN ('00','01','02','03','04')
+           AND LEFT(Time1, 2) NOT IN ('00','01','02')
            AND (@username IS NULL OR CheckedBy = @username)
          GROUP BY TrnDate, UPC, CheckedBy, GroupCode, Time1, LPMdt, OraPONo;
 
@@ -106,7 +107,7 @@ public class JafzaDivisionProductionService(IOnPremConnectionResolver resolver)
           FROM Online.dbo.PhotoChecking WITH (NOLOCK)
          WHERE Warehouse = 'JAFZA'
            AND TrnDate > @from AND TrnDate <= DATEADD(day, 1, @to)
-           AND LEFT(Time1, 2) IN ('00','01','02','03','04')
+           AND LEFT(Time1, 2) IN ('00','01','02')
            AND (@username IS NULL OR CheckedBy = @username)
          GROUP BY TrnDate, UPC, CheckedBy, GroupCode, Time1, LPMdt, OraPONo;
 

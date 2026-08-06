@@ -21,8 +21,8 @@ namespace Wms.Data.Lpm;
 ///
 /// Legacy logic, preserved as closely as possible:
 ///   1) One row per (TrnDate, ItemCode, EmpCode/username), Qty = COUNT(*).
-///      Scans before 05:00 belong to the previous day (TrnDate -= 1 when
-///      LEFT(TrnTime,2) IN ('00'..'04')) — same shift-boundary rule as the
+///      Scans before 03:00 belong to the previous day (TrnDate -= 1 when
+///      LEFT(TrnTime,2) IN ('00'..'02')) — same shift-boundary rule as the
 ///      Manual report — folded into the same GROUP BY so TrnTime itself
 ///      doesn't need to survive past this query.
 ///   2) EmpName: not ported. 'ROBO%' logins display as-is; everything else
@@ -63,14 +63,14 @@ public class JafzaRoboProductionService(IOnPremConnectionResolver resolver)
 
     private const string RawQuerySql = @"
         SELECT
-            TrnDate = CASE WHEN LEFT(TrnTime, 2) IN ('00','01','02','03','04') THEN DATEADD(day, -1, TrnDate) ELSE TrnDate END,
+            TrnDate = CASE WHEN LEFT(TrnTime, 2) IN ('00','01','02') THEN DATEADD(day, -1, TrnDate) ELSE TrnDate END,
             ItemCode = itemcode,
             EmpCode  = username,
             Qty      = COUNT(*)
           FROM ROBOTICS.dbo.PairingConformationDetail
          WHERE TrnDate BETWEEN @from AND @to
            AND (@username IS NULL OR username = @username)
-         GROUP BY CASE WHEN LEFT(TrnTime, 2) IN ('00','01','02','03','04') THEN DATEADD(day, -1, TrnDate) ELSE TrnDate END,
+         GROUP BY CASE WHEN LEFT(TrnTime, 2) IN ('00','01','02') THEN DATEADD(day, -1, TrnDate) ELSE TrnDate END,
                   itemcode, username";
 
     private async Task<List<RawPairRow>> FetchRawAsync(
