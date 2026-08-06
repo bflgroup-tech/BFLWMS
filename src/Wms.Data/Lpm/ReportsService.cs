@@ -917,7 +917,7 @@ SELECT
     UaeStoreQty  = SUM(CASE WHEN s.Result IN (0, 13) AND ds.SIMCountry = 'UAE'          THEN 1 ELSE 0 END),
     OmanStoreQty = SUM(CASE WHEN s.Result IN (0, 13) AND ds.SIMCountry = 'Oman'         THEN 1 ELSE 0 END),
     Ex2StoreQty  = SUM(CASE WHEN s.Result IN (0, 13) AND ds.SIMCountry = 'Ex2Locations' THEN 1 ELSE 0 END),
-    Ex2TotalScanned = SUM(CASE WHEN ds.SIMCountry = 'Ex2Locations' THEN 1 ELSE 0 END)
+    Ex2TotalScanned = COUNT_BIG(CASE WHEN ds.SIMCountry = 'Ex2Locations' THEN 1 END)
   FROM #Scans s
   LEFT JOIN #BatchKind         bk  ON bk.LPMBatchNo = s.BatchNo
   LEFT JOIN #ItemDiv           idv ON idv.itemcode  = s.Itemcode
@@ -1226,7 +1226,7 @@ SELECT
     UaeStoreQty  = SUM(CASE WHEN s.Result IN (0, 13) AND ds.SIMCountry = 'UAE'          THEN 1 ELSE 0 END),
     OmanStoreQty = SUM(CASE WHEN s.Result IN (0, 13) AND ds.SIMCountry = 'Oman'         THEN 1 ELSE 0 END),
     Ex2StoreQty  = SUM(CASE WHEN s.Result IN (0, 13) AND ds.SIMCountry = 'Ex2Locations' THEN 1 ELSE 0 END),
-    Ex2TotalScanned = SUM(CASE WHEN ds.SIMCountry = 'Ex2Locations' THEN 1 ELSE 0 END)
+    Ex2TotalScanned = COUNT_BIG(CASE WHEN ds.SIMCountry = 'Ex2Locations' THEN 1 END)
   FROM #Scans s
   LEFT JOIN #BatchKind         bk  ON bk.LPMBatchNo = s.BatchNo
   LEFT JOIN #ItemDiv           idv ON idv.itemcode  = s.Itemcode
