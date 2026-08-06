@@ -168,6 +168,19 @@ else if (VisibleRows().Count > 0)
                         @MetricCard("Merch Need (Week)",  cs.MerchNeedWeek.ToString("N0"),  "#ffedd5", "#9a3412", false)
                         @MetricCard("Merch Need (Day)",   cs.MerchNeedDay.ToString("N0"),   "#ffedd5", "#9a3412", false)
                     </div>
+                    @if (string.Equals(cs.Country, "UAE", StringComparison.OrdinalIgnoreCase))
+                    {
+                        <div style="font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary); margin:10px 0 6px 12px;">EX2LOCATIONS</div>
+                        <div style="display:grid; grid-template-columns: repeat(7, 1fr); gap:12px; margin-left:12px;">
+                            @MetricCard("Store Qty",      cs.Ex2StoreQty.ToString("N0"),     "#fdf2f8", "#9d174d", false)
+                            @MetricCard("Transfer Qty",   "—",  "#ccfbf1", "#0f766e", false)
+                            @MetricCard("Total Scanned",  cs.Ex2TotalScanned.ToString("N0"), "#dbeafe", "#1e40af", false)
+                            @MetricCard("Unknown",        cs.Ex2Unknown.ToString("N0"),      "#fef3c7", "#92400e", false)
+                            @MetricCard("Merch Need (Month)", "—", "#ffedd5", "#9a3412", false)
+                            @MetricCard("Merch Need (Week)",  "—", "#ffedd5", "#9a3412", false)
+                            @MetricCard("Merch Need (Day)",   "—", "#ffedd5", "#9a3412", false)
+                        </div>
+                    }
                 </div>
             }
         </div>
@@ -418,7 +431,7 @@ else if (_loadedOnce && VisibleRows().Count == 0)
 
     private sealed record CountrySummaryRow(
         string Country, DateTime ProductionDay, string Kind, string Division,
-        long TotalScanned, int StoreQty, int UaeStoreQty, int OmanStoreQty, int Ex2StoreQty);
+        long TotalScanned, int StoreQty, int UaeStoreQty, int OmanStoreQty, int Ex2StoreQty, long Ex2TotalScanned);
 
     private List<CountryRow>        _rows = new();
     private List<CountrySummaryRow> _summary = new();
@@ -473,23 +486,37 @@ else if (_loadedOnce && VisibleRows().Count == 0)
 
     private sealed record CountrySummaryTotals(
         string Country, long StoreQty, long TransferQty, long TotalScanned, long Lpm, long NonLpm, long Unknown,
-        long MerchNeedMonth, long MerchNeedWeek, long MerchNeedDay);
+        long MerchNeedMonth, long MerchNeedWeek, long MerchNeedDay,
+        long Ex2StoreQty, long Ex2TotalScanned, long Ex2Unknown);
 
-    private List<CountrySummaryTotals> CountrySummaries(List<CountryRow> rows) =>
-        rows.GroupBy(r => r.Country)
-            .Select(g => new CountrySummaryTotals(
-                g.Key,
-                g.Sum(r => r.StoreQty),
-                _transferQtyByCountry.GetValueOrDefault(g.Key),
-                g.Sum(r => r.TotalScanned),
-                g.Where(r => r.Kind == "LPM").Sum(r => r.TotalScanned),
-                g.Where(r => r.Kind == "Non-LPM").Sum(r => r.TotalScanned),
-                g.Where(r => r.Kind == "Unknown").Sum(r => r.TotalScanned),
-                _merchNeedByCountry.GetValueOrDefault(g.Key)?.MerchNeedMonth ?? 0,
-                _merchNeedByCountry.GetValueOrDefault(g.Key)?.MerchNeedWeek  ?? 0,
-                _merchNeedByCountry.GetValueOrDefault(g.Key)?.MerchNeedDay   ?? 0))
+    private List<CountrySummaryTotals> CountrySummaries(List<CountryRow> rows)
+    {
+        var summaryByCountry = VisibleSummary()
+            .GroupBy(s => s.Country, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.OrdinalIgnoreCase);
+
+        return rows.GroupBy(r => r.Country)
+            .Select(g =>
+            {
+                var sRows = summaryByCountry.GetValueOrDefault(g.Key) ?? new();
+                return new CountrySummaryTotals(
+                    g.Key,
+                    g.Sum(r => r.StoreQty),
+                    _transferQtyByCountry.GetValueOrDefault(g.Key),
+                    g.Sum(r => r.TotalScanned),
+                    g.Where(r => r.Kind == "LPM").Sum(r => r.TotalScanned),
+                    g.Where(r => r.Kind == "Non-LPM").Sum(r => r.TotalScanned),
+                    g.Where(r => r.Kind == "Unknown").Sum(r => r.TotalScanned),
+                    _merchNeedByCountry.GetValueOrDefault(g.Key)?.MerchNeedMonth ?? 0,
+                    _merchNeedByCountry.GetValueOrDefault(g.Key)?.MerchNeedWeek  ?? 0,
+                    _merchNeedByCountry.GetValueOrDefault(g.Key)?.MerchNeedDay   ?? 0,
+                    sRows.Sum(s => (long)s.Ex2StoreQty),
+                    sRows.Sum(s => s.Ex2TotalScanned),
+                    sRows.Where(s => s.Kind == "Unknown").Sum(s => s.Ex2TotalScanned));
+            })
             .OrderBy(c => c.Country)
             .ToList();
+    }
 
     private sealed record DivisionPivotRow(
         string Country, DateTime ProductionDay, string Division,
@@ -596,7 +623,7 @@ else if (_loadedOnce && VisibleRows().Count == 0)
                     country, r.ProductionDay, r.BatchNo, r.Kind, r.Division, r.TotalScanned, r.StoreQty)));
                 _summary.AddRange(result.Summary.Select(s => new CountrySummaryRow(
                     country, s.ProductionDay, s.Kind, s.Division, s.TotalScanned, s.StoreQty,
-                    s.UaeStoreQty, s.OmanStoreQty, s.Ex2StoreQty)));
+                    s.UaeStoreQty, s.OmanStoreQty, s.Ex2StoreQty, s.Ex2TotalScanned)));
                 _overallStoreQty += result.OverallStoreQty;
                 _transferQty     += result.TransferQty;
                 _transferQtyByCountry[country] = result.TransferQty;

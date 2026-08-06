@@ -916,7 +916,8 @@ SELECT
     StoreQty     = SUM(CASE WHEN s.Result IN (0, 13) THEN 1 ELSE 0 END),
     UaeStoreQty  = SUM(CASE WHEN s.Result IN (0, 13) AND ds.SIMCountry = 'UAE'          THEN 1 ELSE 0 END),
     OmanStoreQty = SUM(CASE WHEN s.Result IN (0, 13) AND ds.SIMCountry = 'Oman'         THEN 1 ELSE 0 END),
-    Ex2StoreQty  = SUM(CASE WHEN s.Result IN (0, 13) AND ds.SIMCountry = 'Ex2Locations' THEN 1 ELSE 0 END)
+    Ex2StoreQty  = SUM(CASE WHEN s.Result IN (0, 13) AND ds.SIMCountry = 'Ex2Locations' THEN 1 ELSE 0 END),
+    Ex2TotalScanned = SUM(CASE WHEN ds.SIMCountry = 'Ex2Locations' THEN 1 ELSE 0 END)
   FROM #Scans s
   LEFT JOIN #BatchKind         bk  ON bk.LPMBatchNo = s.BatchNo
   LEFT JOIN #ItemDiv           idv ON idv.itemcode  = s.Itemcode
@@ -959,7 +960,8 @@ DROP TABLE #Scans, #BatchKind, #ItemDiv;";
                         StoreQty:      rdr.IsDBNull(4) ? 0 : rdr.GetInt32(4),
                         UaeStoreQty:   rdr.IsDBNull(5) ? 0 : rdr.GetInt32(5),
                         OmanStoreQty:  rdr.IsDBNull(6) ? 0 : rdr.GetInt32(6),
-                        Ex2StoreQty:   rdr.IsDBNull(7) ? 0 : rdr.GetInt32(7)));
+                        Ex2StoreQty:   rdr.IsDBNull(7) ? 0 : rdr.GetInt32(7),
+                        Ex2TotalScanned: rdr.IsDBNull(8) ? 0 : rdr.GetInt64(8)));
                 }
             }
             if (await rdr.NextResultAsync(ct) && await rdr.ReadAsync(ct))
@@ -1100,7 +1102,8 @@ DROP TABLE #Scans, #BatchKind, #ItemDiv;";
                         StoreQty:      rdr.IsDBNull(4) ? 0  : rdr.GetInt32(4),
                         UaeStoreQty:   rdr.IsDBNull(5) ? 0  : rdr.GetInt32(5),
                         OmanStoreQty:  rdr.IsDBNull(6) ? 0  : rdr.GetInt32(6),
-                        Ex2StoreQty:   rdr.IsDBNull(7) ? 0  : rdr.GetInt32(7)));
+                        Ex2StoreQty:   rdr.IsDBNull(7) ? 0  : rdr.GetInt32(7),
+                        Ex2TotalScanned: rdr.IsDBNull(8) ? 0L : rdr.GetInt64(8)));
                 }
             }
             if (await rdr.NextResultAsync(ct) && await rdr.ReadAsync(ct))
@@ -1222,7 +1225,8 @@ SELECT
     StoreQty     = SUM(CASE WHEN s.Result IN (0, 13) THEN 1 ELSE 0 END),
     UaeStoreQty  = SUM(CASE WHEN s.Result IN (0, 13) AND ds.SIMCountry = 'UAE'          THEN 1 ELSE 0 END),
     OmanStoreQty = SUM(CASE WHEN s.Result IN (0, 13) AND ds.SIMCountry = 'Oman'         THEN 1 ELSE 0 END),
-    Ex2StoreQty  = SUM(CASE WHEN s.Result IN (0, 13) AND ds.SIMCountry = 'Ex2Locations' THEN 1 ELSE 0 END)
+    Ex2StoreQty  = SUM(CASE WHEN s.Result IN (0, 13) AND ds.SIMCountry = 'Ex2Locations' THEN 1 ELSE 0 END),
+    Ex2TotalScanned = SUM(CASE WHEN ds.SIMCountry = 'Ex2Locations' THEN 1 ELSE 0 END)
   FROM #Scans s
   LEFT JOIN #BatchKind         bk  ON bk.LPMBatchNo = s.BatchNo
   LEFT JOIN #ItemDiv           idv ON idv.itemcode  = s.Itemcode
