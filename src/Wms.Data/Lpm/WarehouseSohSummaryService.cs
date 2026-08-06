@@ -72,18 +72,28 @@ public class WarehouseSohSummaryService(IOnPremConnectionResolver resolver)
     public Task<WhStockOnHand> GetStockOnHandForBlackboxAsync(CancellationToken ct = default) =>
         GetStockOnHandAsync("Warehouse = 'BLACKBOX'", ct);
 
-    /// <summary>Stock On Hand grouped by Warehouse, one row per distinct value in
+    // Sub-codes folded into their parent warehouse for display -- TECHNO-E is part of
+    // TECHNO, YOTO-BU is part of YOTO. LFL-WH/3PLF&B stay as their own rows since they
+    // aren't sub-codes of any of the 4 main warehouses.
+    private const string WarehouseGroupCaseSql = @"
+        CASE WHEN ISNULL(Warehouse, '') = ''  THEN 'TECHNO'
+             WHEN Warehouse = 'TECHNO-E'      THEN 'TECHNO'
+             WHEN Warehouse = 'YOTO-BU'       THEN 'YOTO'
+             ELSE Warehouse
+        END";
+
+    /// <summary>Stock On Hand grouped by Warehouse, one row per distinct group in
     /// RACKS.dbo.WHBoxItems -- blank/NULL Warehouse rows are folded into TECHNO instead
     /// of being silently excluded (as an exact-match WHERE Warehouse = 'TECHNO' would
-    /// do). Sub-codes like 'TECHNO-E'/'YOTO-BU'/'LFL-WH' still come back as their own
-    /// distinct rows, not folded into their parent warehouse.</summary>
+    /// do), and TECHNO-E/YOTO-BU are folded into their parent TECHNO/YOTO. LFL-WH and
+    /// 3PLF&amp;B still come back as their own distinct rows.</summary>
     public async Task<List<(string Warehouse, WhStockOnHand Stock)>> GetStockOnHandByWarehouseAsync(CancellationToken ct = default)
     {
         await using var c = OpenOnPremBackup();
         await using var cmd = c.CreateCommand();
-        cmd.CommandText = @"
+        cmd.CommandText = $@"
             SELECT
-                Warehouse = CASE WHEN ISNULL(Warehouse, '') = '' THEN 'TECHNO' ELSE Warehouse END,
+                Warehouse = {WarehouseGroupCaseSql},
                 TotalQuantity     = CAST(ISNULL(SUM(qty), 0) AS BIGINT),
                 TotalBoxesStock   = CAST(ISNULL(SUM(CASE WHEN BoxNo <> '' THEN qty ELSE 0 END), 0) AS BIGINT),
                 NumberOfBoxes     = CAST(COUNT(DISTINCT CASE WHEN BoxNo <> '' THEN BoxNo END) AS BIGINT),
@@ -91,7 +101,7 @@ public class WarehouseSohSummaryService(IOnPremConnectionResolver resolver)
                 NumberOfPallets   = CAST(COUNT(DISTINCT CASE WHEN PalletNo <> '' THEN PalletNo END) AS BIGINT),
                 TotalActiveSkus   = CAST(COUNT(DISTINCT ItemCode) AS BIGINT)
               FROM RACKS.dbo.WHBoxItems
-             GROUP BY CASE WHEN ISNULL(Warehouse, '') = '' THEN 'TECHNO' ELSE Warehouse END
+             GROUP BY {WarehouseGroupCaseSql}
              ORDER BY 1";
         cmd.CommandTimeout = CommandTimeoutSeconds;
         await using var rdr = await cmd.ExecuteReaderAsync(ct);
@@ -273,12 +283,13 @@ public class WarehouseSohSummaryService(IOnPremConnectionResolver resolver)
             rdr.GetInt64(0), rdr.GetInt64(1), rdr.GetInt64(2), 0, 0);
     }
 
-    /// <summary>Storage Capacity for a single exact Warehouse value (e.g. 'TECHNO', 'JAFZA',
-    /// 'YOTO', 'BlackBOX' -- case-insensitive against #racklocation's 'BLACKBOX' row). Same
-    /// caveat as GetStockOnHandForWarehouseAsync: #racklocation's WAREHOUSE-type sub-codes
-    /// ('TECHNO-E', 'YOTO-BU', 'YOTO-SF') aren't included in an exact match on the parent name.
-    /// Works for BlackBOX too -- it only ever has one BINRACK-type row, so Box picks it up and
-    /// Pallet naturally comes back 0, matching GetStorageCapacityForBlackboxAsync's shape.</summary>
+    /// <summary>Storage Capacity for a warehouse group (e.g. 'TECHNO', 'JAFZA', 'YOTO',
+    /// 'BlackBOX' -- case-insensitive against #racklocation's 'BLACKBOX' row). TECHNO-E's
+    /// and YOTO-BU's #racklocation rows are folded into TECHNO/YOTO respectively (same
+    /// grouping as GetStockOnHandByWarehouseAsync), so passing 'TECHNO' or 'YOTO' picks up
+    /// their sub-code rows too. Works for BlackBOX too -- it only ever has one BINRACK-type
+    /// row, so Box picks it up and Pallet naturally comes back 0, matching
+    /// GetStorageCapacityForBlackboxAsync's shape.</summary>
     public async Task<WhStorageCapacity> GetStorageCapacityForWarehouseAsync(string warehouse, CancellationToken ct = default)
     {
         await using var c = OpenOnPremBackup();
@@ -291,7 +302,10 @@ public class WarehouseSohSummaryService(IOnPremConnectionResolver resolver)
                 FreePalletRackLocations = CAST(ISNULL(SUM(CASE WHEN racktype <> 'BINRACK' THEN totalcapacity - used ELSE 0 END), 0) AS BIGINT),
                 FilledPalletLocations   = CAST(ISNULL(SUM(CASE WHEN racktype <> 'BINRACK' THEN used ELSE 0 END), 0) AS BIGINT)
               FROM #racklocation
-             WHERE warehouse = @warehouse;
+             WHERE (CASE WHEN warehouse = 'TECHNO-E' THEN 'TECHNO'
+                         WHEN warehouse = 'YOTO-BU'  THEN 'YOTO'
+                         ELSE warehouse
+                    END) = @warehouse;
             DROP TABLE #racklocation;";
         cmd.Parameters.Add(new SqlParameter("@warehouse", warehouse));
         cmd.CommandTimeout = CommandTimeoutSeconds;
