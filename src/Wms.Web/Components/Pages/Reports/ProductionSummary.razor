@@ -55,7 +55,7 @@
 </div>
 
 <div class="aiwms-section">
-    <div style="display:grid; grid-template-columns: 1fr 1fr 1fr 1fr 1fr auto auto; gap:12px; align-items:end;">
+    <div style="display:grid; grid-template-columns: 1fr 1fr 1fr 1fr auto auto; gap:12px; align-items:end;">
         <div class="psr-country-select">
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COUNTRY (select any) *</label>
             <details id="psr-country-dropdown" style="position:relative;">
@@ -81,15 +81,6 @@
                     }
                 </div>
             </details>
-        </div>
-        <div>
-            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">WAREHOUSE (UAE only)</label>
-            <select @bind="_warehouseFilter" style="width:100%; height:36px; box-sizing:border-box; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;">
-                <option value="">All</option>
-                <option value="JAFZA">JAFZA</option>
-                <option value="TECHNO">TECHNO</option>
-                <option value="EX2LOCATIONS">EX2LOCATIONS</option>
-            </select>
         </div>
         <div>
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">WEEK</label>
@@ -344,7 +335,6 @@ else if (_loadedOnce && VisibleRows().Count == 0)
     // a configured {Country}_DB_ConnectionString or GetProductionCheckingAsync silently returns 0 rows.
     private HashSet<string> _configuredCountries = new(StringComparer.OrdinalIgnoreCase) { "UAE" };
     private string _selectedWeek = ComputeCurrentWeekNumber();
-    private string _warehouseFilter = "";
     private DateTime _from = ComputeCurrentWeekRange().Start;
     private DateTime _to   = ComputeCurrentWeekRange().End;
     private string _view = "Summary";
@@ -595,7 +585,7 @@ else if (_loadedOnce && VisibleRows().Count == 0)
                     : $"Connecting to {country} server, reading scans, then enriching against LPMSIM_Batch… ({i + 1}/{countries.Count})";
                 await InvokeAsync(StateHasChanged);
 
-                var result = await Svc.GetProductionCheckingAsync(country, _from, _to, _warehouseFilter);
+                var result = await Svc.GetProductionCheckingAsync(country, _from, _to);
                 _rows.AddRange(result.Rows.Select(r => new CountryRow(
                     country, r.ProductionDay, r.BatchNo, r.Kind, r.Division, r.TotalScanned, r.StoreQty)));
                 _summary.AddRange(result.Summary.Select(s => new CountrySummaryRow(
