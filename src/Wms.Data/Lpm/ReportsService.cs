@@ -822,21 +822,21 @@ public class ReportsService(IOnPremConnectionResolver resolver)
         int overallStoreQty = 0;
 
         // EX2LOCATIONS isn't a Warehouse value at all (Online.dbo.Photochecking has no such
-        // warehouse) -- it means "ShopName belongs to an Ex2Locations-exported shop". When
-        // it's ticked, it takes over the filter entirely and any other warehouse selections
-        // (e.g. TECHNO) are ignored, since the two mechanisms are mutually exclusive.
+        // warehouse) -- it means "ShopName belongs to an Ex2Locations-exported shop", applied
+        // directly on the initial amechecking pull. When it's ticked, it takes over the
+        // filter entirely and any other warehouse selections (e.g. TECHNO) are ignored, since
+        // the two mechanisms are mutually exclusive.
         var isEx2Selected     = warehouseList.Any(w => string.Equals(w, "EX2LOCATIONS", StringComparison.OrdinalIgnoreCase));
         var warehouseCodeList = isEx2Selected ? new List<string>() : warehouseList;
 
+        var ex2FilterSql = isEx2Selected
+            ? "\n   AND c.ShopName IN (SELECT ShopName FROM bfldata.dbo.DataSettings WHERE ExportActive = 'Y')"
+            : "";
+
         var warehouseParamNames = Enumerable.Range(0, warehouseCodeList.Count).Select(i => $"@wh{i}").ToList();
-        var warehouseFilterSql = isEx2Selected
-            ? @"
-DELETE s
-  FROM #Scans s
- WHERE s.ShopName NOT IN (SELECT ShopName FROM bfldata.dbo.DataSettings WHERE ExportActive = 'Y');"
-            : warehouseCodeList.Count == 0
-                ? ""
-                : $@"
+        var warehouseFilterSql = warehouseCodeList.Count == 0
+            ? ""
+            : $@"
 DELETE s
   FROM #Scans s
   LEFT JOIN #ScanWh wh ON wh.Contno = s.Contno
@@ -877,7 +877,7 @@ SELECT
  WHERE c.TrnDate >= @fromDateOnly
    AND c.TrnDate <  @toDateExclusiveOnly
    AND CAST(c.TrnDate AS datetime) + CAST(c.Time1 AS datetime) >= @from
-   AND CAST(c.TrnDate AS datetime) + CAST(c.Time1 AS datetime) <  @toExclusive;
+   AND CAST(c.TrnDate AS datetime) + CAST(c.Time1 AS datetime) <  @toExclusive" + ex2FilterSql + @";
 
 CREATE CLUSTERED INDEX IX_Scans ON #Scans (BatchNo, Itemcode);
 
@@ -895,10 +895,10 @@ SELECT b.Contno, wh.Warehouse
   ) wh;
 CREATE CLUSTERED INDEX IX_ScanWh ON #ScanWh (Contno);
 
--- 1c) Warehouse filter (UAE only). Either a Warehouse-code filter (matching Counting
--- Completion's convention of defaulting an unresolved container's warehouse to JAFZA,
--- selected codes passed in as one @wh{n} parameter each) or, if EX2LOCATIONS is
--- selected, a ShopName-based filter instead (see C# above for why they're exclusive).
+-- 1c) Warehouse-code filter (UAE only, skipped entirely when EX2LOCATIONS is selected --
+-- see C# above -- since that's a ShopName-based filter applied in step 1 instead).
+-- Matches Counting Completion's convention of defaulting an unresolved container's
+-- warehouse to JAFZA. Selected codes passed in as one @wh{n} parameter each.
 " + warehouseFilterSql + @"
 
 -- 2) Country gate. Delete wrong-country batches; keep orphans & nulls as Unknown.
