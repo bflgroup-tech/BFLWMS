@@ -1,5 +1,4 @@
 using System.Data;
-using System.Linq;
 using Wms.Data.Configuration;
 using Dapper;
 using Microsoft.Data.SqlClient;
@@ -786,20 +785,9 @@ public class ReportsService(IOnPremConnectionResolver resolver)
     /// UAE-wide total, not that country's own).
     /// </summary>
     public async Task<ProductionCheckingResult> GetProductionCheckingAsync(
-        string country, DateTime fromDate, DateTime toDateInclusive, IEnumerable<string>? warehouses = null, CancellationToken ct = default)
+        string country, DateTime fromDate, DateTime toDateInclusive, string? warehouse = null, CancellationToken ct = default)
     {
-        var warehouseList = warehouses?.Where(w => !string.IsNullOrWhiteSpace(w)).Select(w => w.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).ToList()
-            ?? new List<string>();
-        // "Select all" ticks every option (currently TECHNO + EX2LOCATIONS) -- that means
-        // "show everything", same as no filter at all, not "TECHNO minus Ex2Locations shops
-        // plus Ex2Locations shops" (which would cancel out to everything anyway, but via two
-        // mutually-exclusive code paths that aren't meant to run together).
-        if (warehouseList.Count > 0 &&
-            new HashSet<string>(warehouseList, StringComparer.OrdinalIgnoreCase)
-                .SetEquals(new[] { "TECHNO", "EX2LOCATIONS" }))
-        {
-            warehouseList = new List<string>();
-        }
+        var warehouseFilter = string.IsNullOrWhiteSpace(warehouse) ? null : warehouse.Trim();
         // 1.14.268 (LPMSIM) — for any non-UAE country with a {Country}_DB_ConnectionString
         // configured, read scans directly from that server and bulk-copy them onto the
         // central UAE backup connection for the LPMSIM_Batch / Datareporting enrichment.
@@ -830,32 +818,6 @@ public class ReportsService(IOnPremConnectionResolver resolver)
         var rows    = new List<ProductionCheckingRow>();
         var summary = new List<ProductionCheckingSummaryRow>();
         int overallStoreQty = 0;
-
-        // EX2LOCATIONS isn't a Warehouse value at all (Online.dbo.Photochecking has no such
-        // warehouse) -- it means "ShopName belongs to an Ex2Locations-exported shop", applied
-        // directly on the initial amechecking pull. When it's ticked, it takes over the
-        // filter entirely and any other warehouse selections (e.g. TECHNO) are ignored, since
-        // the two mechanisms are mutually exclusive. Conversely, when TECHNO is selected
-        // (and EX2LOCATIONS isn't), Ex2Locations shops are explicitly excluded -- on top of
-        // the Warehouse-code filter below -- so the two views don't overlap.
-        var isEx2Selected     = warehouseList.Any(w => string.Equals(w, "EX2LOCATIONS", StringComparison.OrdinalIgnoreCase));
-        var isTechnoSelected  = warehouseList.Any(w => string.Equals(w, "TECHNO", StringComparison.OrdinalIgnoreCase));
-        var warehouseCodeList = isEx2Selected ? new List<string>() : warehouseList;
-
-        var shopNameFilterSql = isEx2Selected
-            ? "\n   AND c.ShopName IN (SELECT ShopName FROM bfldata.dbo.DataSettings WHERE ExportActive = 'Y')"
-            : isTechnoSelected
-                ? "\n   AND c.ShopName NOT IN (SELECT ShopName FROM bfldata.dbo.DataSettings WHERE ExportActive = 'Y')"
-                : "";
-
-        var warehouseParamNames = Enumerable.Range(0, warehouseCodeList.Count).Select(i => $"@wh{i}").ToList();
-        var warehouseFilterSql = warehouseCodeList.Count == 0
-            ? ""
-            : $@"
-DELETE s
-  FROM #Scans s
-  LEFT JOIN #ScanWh wh ON wh.Contno = s.Contno
- WHERE ISNULL(wh.Warehouse, 'JAFZA') NOT IN ({string.Join(", ", warehouseParamNames)});";
 
         await using var conn = OpenOnPremBackup();
         await using (var cmd = conn.CreateCommand())
@@ -892,7 +854,7 @@ SELECT
  WHERE c.TrnDate >= @fromDateOnly
    AND c.TrnDate <  @toDateExclusiveOnly
    AND CAST(c.TrnDate AS datetime) + CAST(c.Time1 AS datetime) >= @from
-   AND CAST(c.TrnDate AS datetime) + CAST(c.Time1 AS datetime) <  @toExclusive" + shopNameFilterSql + @";
+   AND CAST(c.TrnDate AS datetime) + CAST(c.Time1 AS datetime) <  @toExclusive;
 
 CREATE CLUSTERED INDEX IX_Scans ON #Scans (BatchNo, Itemcode);
 
@@ -910,11 +872,13 @@ SELECT b.Contno, wh.Warehouse
   ) wh;
 CREATE CLUSTERED INDEX IX_ScanWh ON #ScanWh (Contno);
 
--- 1c) Warehouse-code filter (UAE only, skipped entirely when EX2LOCATIONS is selected --
--- see C# above -- since that's a ShopName-based filter applied in step 1 instead).
--- Matches Counting Completion's convention of defaulting an unresolved container's
--- warehouse to JAFZA. Selected codes passed in as one @wh{n} parameter each.
-" + warehouseFilterSql + @"
+-- 1c) Warehouse filter (UAE only, matching Counting Completion's convention of
+-- defaulting an unresolved container's warehouse to JAFZA).
+IF @warehouseFilter IS NOT NULL
+DELETE s
+  FROM #Scans s
+  LEFT JOIN #ScanWh wh ON wh.Contno = s.Contno
+ WHERE ISNULL(wh.Warehouse, 'JAFZA') <> @warehouseFilter;
 
 -- 2) Country gate. Delete wrong-country batches; keep orphans & nulls as Unknown.
 DELETE s
@@ -994,8 +958,7 @@ DROP TABLE #Scans, #BatchKind, #ItemDiv, #ScanWh;";
             cmd.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@from",                fromInclusive));
             cmd.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@toExclusive",         toExclusive));
             cmd.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@country",             country));
-            for (int i = 0; i < warehouseCodeList.Count; i++)
-                cmd.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter($"@wh{i}", warehouseCodeList[i]));
+            cmd.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@warehouseFilter",      (object?)warehouseFilter ?? DBNull.Value));
 
             await using var rdr = await cmd.ExecuteReaderAsync(ct);
             while (await rdr.ReadAsync(ct))

@@ -82,27 +82,14 @@
                 </div>
             </details>
         </div>
-        <div class="psr-country-select">
+        <div>
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">WAREHOUSE (UAE only)</label>
-            <details id="psr-warehouse-dropdown" style="position:relative;">
-                <summary style="display:flex; align-items:center; justify-content:space-between; gap:8px; width:100%; height:36px; box-sizing:border-box; padding:8px 12px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; font-weight:600; background:white; cursor:pointer; user-select:none;">
-                    <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">@WarehouseSelectionLabel</span>
-                    <span class="psr-arrow" style="color:var(--text-secondary); font-size:10px; flex-shrink:0;">&#9660;</span>
-                </summary>
-                <div style="position:absolute; top:100%; left:0; right:0; z-index:20; margin-top:6px; display:flex; flex-direction:column; gap:2px; max-height:220px; overflow-y:auto; border:1px solid var(--border-default); border-radius:8px; padding:8px; background:white; box-shadow:0 8px 20px rgba(0,0,0,0.14);">
-                    <label class="psr-option" style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:13px; font-weight:700; border-bottom:1px solid var(--border-default); padding-bottom:8px; margin-bottom:2px">
-                        <input type="checkbox" checked="@_warehouseOptions.All(w => _selectedWarehouses.Contains(w))" @onchange="@(e => ToggleAllWarehouses((bool)e.Value!))" />
-                        Select all
-                    </label>
-                    @foreach (var w in _warehouseOptions)
-                    {
-                        <label class="psr-option" style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:13px">
-                            <input type="checkbox" checked="@_selectedWarehouses.Contains(w)" @onchange="@(e => ToggleWarehouse(w, (bool)e.Value!))" />
-                            @w
-                        </label>
-                    }
-                </div>
-            </details>
+            <select @bind="_warehouseFilter" style="width:100%; height:36px; box-sizing:border-box; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;">
+                <option value="">All</option>
+                <option value="JAFZA">JAFZA</option>
+                <option value="TECHNO">TECHNO</option>
+                <option value="EX2LOCATIONS">EX2LOCATIONS</option>
+            </select>
         </div>
         <div>
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">WEEK</label>
@@ -357,8 +344,7 @@ else if (_loadedOnce && VisibleRows().Count == 0)
     // a configured {Country}_DB_ConnectionString or GetProductionCheckingAsync silently returns 0 rows.
     private HashSet<string> _configuredCountries = new(StringComparer.OrdinalIgnoreCase) { "UAE" };
     private string _selectedWeek = ComputeCurrentWeekNumber();
-    private List<string> _warehouseOptions = new() { "TECHNO", "EX2LOCATIONS" };
-    private HashSet<string> _selectedWarehouses = new(StringComparer.OrdinalIgnoreCase);
+    private string _warehouseFilter = "";
     private DateTime _from = ComputeCurrentWeekRange().Start;
     private DateTime _to   = ComputeCurrentWeekRange().End;
     private string _view = "Summary";
@@ -398,10 +384,8 @@ else if (_loadedOnce && VisibleRows().Count == 0)
                 if (window.__psrCountryDropdownBound) return;
                 window.__psrCountryDropdownBound = true;
                 document.addEventListener('click', function (e) {
-                    ['psr-country-dropdown', 'psr-warehouse-dropdown'].forEach(function (id) {
-                        var d = document.getElementById(id);
-                        if (d && d.open && !d.contains(e.target)) d.removeAttribute('open');
-                    });
+                    var d = document.getElementById('psr-country-dropdown');
+                    if (d && d.open && !d.contains(e.target)) d.removeAttribute('open');
                 });
             })();");
     }
@@ -428,32 +412,6 @@ else if (_loadedOnce && VisibleRows().Count == 0)
                 0 => "Select countries...",
                 <= 2 => string.Join(", ", picked),
                 _ => $"{picked.Count} countries selected"
-            };
-        }
-    }
-
-    private void ToggleWarehouse(string warehouse, bool isChecked)
-    {
-        if (isChecked) _selectedWarehouses.Add(warehouse);
-        else _selectedWarehouses.Remove(warehouse);
-    }
-
-    private void ToggleAllWarehouses(bool isChecked)
-    {
-        if (isChecked) foreach (var w in _warehouseOptions) _selectedWarehouses.Add(w);
-        else _selectedWarehouses.Clear();
-    }
-
-    private string WarehouseSelectionLabel
-    {
-        get
-        {
-            var picked = _warehouseOptions.Where(w => _selectedWarehouses.Contains(w)).ToList();
-            return picked.Count switch
-            {
-                0 => "All",
-                <= 2 => string.Join(", ", picked),
-                _ => $"{picked.Count} selected"
             };
         }
     }
@@ -637,7 +595,7 @@ else if (_loadedOnce && VisibleRows().Count == 0)
                     : $"Connecting to {country} server, reading scans, then enriching against LPMSIM_Batch… ({i + 1}/{countries.Count})";
                 await InvokeAsync(StateHasChanged);
 
-                var result = await Svc.GetProductionCheckingAsync(country, _from, _to, _selectedWarehouses);
+                var result = await Svc.GetProductionCheckingAsync(country, _from, _to, _warehouseFilter);
                 _rows.AddRange(result.Rows.Select(r => new CountryRow(
                     country, r.ProductionDay, r.BatchNo, r.Kind, r.Division, r.TotalScanned, r.StoreQty)));
                 _summary.AddRange(result.Summary.Select(s => new CountrySummaryRow(
