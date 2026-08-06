@@ -72,16 +72,18 @@ public class WarehouseSohSummaryService(IOnPremConnectionResolver resolver)
     public Task<WhStockOnHand> GetStockOnHandForBlackboxAsync(CancellationToken ct = default) =>
         GetStockOnHandAsync("Warehouse = 'BLACKBOX'", ct);
 
-    /// <summary>Stock On Hand for a single exact Warehouse value (e.g. 'TECHNO', 'JAFZA', 'YOTO').
-    /// Note: WHBoxItems also has sub-codes like 'TECHNO-E'/'YOTO-BU'/'LFL-WH' that an exact match
-    /// here won't include -- those are folded into the TECHNO/JAFZA/YOTO combined group total
-    /// (Warehouse &lt;&gt; 'BLACKBOX') but not into any single named warehouse's row.</summary>
-    public async Task<WhStockOnHand> GetStockOnHandForWarehouseAsync(string warehouse, CancellationToken ct = default)
+    /// <summary>Stock On Hand grouped by Warehouse, one row per distinct value in
+    /// RACKS.dbo.WHBoxItems -- blank/NULL Warehouse rows are folded into TECHNO instead
+    /// of being silently excluded (as an exact-match WHERE Warehouse = 'TECHNO' would
+    /// do). Sub-codes like 'TECHNO-E'/'YOTO-BU'/'LFL-WH' still come back as their own
+    /// distinct rows, not folded into their parent warehouse.</summary>
+    public async Task<List<(string Warehouse, WhStockOnHand Stock)>> GetStockOnHandByWarehouseAsync(CancellationToken ct = default)
     {
         await using var c = OpenOnPremBackup();
         await using var cmd = c.CreateCommand();
         cmd.CommandText = @"
             SELECT
+                Warehouse = CASE WHEN ISNULL(Warehouse, '') = '' THEN 'TECHNO' ELSE Warehouse END,
                 TotalQuantity     = CAST(ISNULL(SUM(qty), 0) AS BIGINT),
                 TotalBoxesStock   = CAST(ISNULL(SUM(CASE WHEN BoxNo <> '' THEN qty ELSE 0 END), 0) AS BIGINT),
                 NumberOfBoxes     = CAST(COUNT(DISTINCT CASE WHEN BoxNo <> '' THEN BoxNo END) AS BIGINT),
@@ -89,13 +91,19 @@ public class WarehouseSohSummaryService(IOnPremConnectionResolver resolver)
                 NumberOfPallets   = CAST(COUNT(DISTINCT CASE WHEN PalletNo <> '' THEN PalletNo END) AS BIGINT),
                 TotalActiveSkus   = CAST(COUNT(DISTINCT ItemCode) AS BIGINT)
               FROM RACKS.dbo.WHBoxItems
-             WHERE Warehouse = @warehouse";
-        cmd.Parameters.Add(new SqlParameter("@warehouse", warehouse));
+             GROUP BY CASE WHEN ISNULL(Warehouse, '') = '' THEN 'TECHNO' ELSE Warehouse END
+             ORDER BY 1";
         cmd.CommandTimeout = CommandTimeoutSeconds;
         await using var rdr = await cmd.ExecuteReaderAsync(ct);
-        await rdr.ReadAsync(ct);
-        return new WhStockOnHand(
-            rdr.GetInt64(0), rdr.GetInt64(1), rdr.GetInt64(2), rdr.GetInt64(3), rdr.GetInt64(4), rdr.GetInt64(5));
+        var result = new List<(string Warehouse, WhStockOnHand Stock)>();
+        while (await rdr.ReadAsync(ct))
+        {
+            result.Add((
+                rdr.GetString(0),
+                new WhStockOnHand(
+                    rdr.GetInt64(1), rdr.GetInt64(2), rdr.GetInt64(3), rdr.GetInt64(4), rdr.GetInt64(5), rdr.GetInt64(6))));
+        }
+        return result;
     }
 
     /// <summary>Stock On Hand for a non-UAE country, from that country's own

@@ -468,9 +468,13 @@ else if (_loadedOnce)
 
                 _agingUnitsByCountry["UAE"] = await SohSvc.GetAgingUnitsAsync();
 
+                foreach (var (wh, stock) in await SohSvc.GetStockOnHandByWarehouseAsync())
+                {
+                    _stockByWarehouse[("UAE", wh)] = stock;
+                }
+
                 foreach (var wh in _warehousesByCountry.GetValueOrDefault("UAE", new()))
                 {
-                    _stockByWarehouse[("UAE", wh.Name)]   = await SohSvc.GetStockOnHandForWarehouseAsync(wh.Name);
                     _storageByWarehouse[("UAE", wh.Name)] = await SohSvc.GetStorageCapacityForWarehouseAsync(wh.Name);
                 }
             }
