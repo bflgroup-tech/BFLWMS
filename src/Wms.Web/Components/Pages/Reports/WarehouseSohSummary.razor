@@ -101,7 +101,9 @@
 
 @{
     var warehouses = _selectedCountries
-        .SelectMany(c => _warehousesByCountry.GetValueOrDefault(c, new()).Select(w => (Country: c, Warehouse: w)))
+        .SelectMany(c => string.Equals(c, "UAE", StringComparison.OrdinalIgnoreCase)
+            ? _warehousesByCountry.GetValueOrDefault(c, new()).Select(w => (Country: c, Warehouse: w))
+            : new[] { (Country: c, Warehouse: new WarehouseDummy(c, true)) })
         .ToList();
     var multiCountry = _selectedCountries.Count > 1;
 }
@@ -161,6 +163,16 @@
         }
     </div>
 
+    // Every distinct warehouse code actually returned by the DB for a selected
+    // country. For UAE this includes the sub-codes TECHNO-E, YOTO-BU, LFL-WH and
+    // 3PLF&B as their own rows, not folded into their parent warehouse, since
+    // _stockByWarehouse is populated directly from GetStockOnHandByWarehouseAsync's
+    // full result. This is intentionally a wider list than the warehouses variable
+    // above, which only drives the 4 main TECHNO/JAFZA/YOTO/BlackBOX cards.
+    var perfRows = _stockByWarehouse.Keys
+        .Where(k => _selectedCountries.Contains(k.Country))
+        .OrderBy(k => k.Country).ThenBy(k => k.Warehouse)
+        .ToList();
     <div class="aiwms-section" style="padding:0; overflow:hidden">
         <div class="wsoh-box-header" style="border-radius:0">Warehouse-wise Performance Summary</div>
         <div style="overflow-x:auto">
@@ -180,13 +192,13 @@
                     </tr>
                 </thead>
                 <tbody>
-                    @foreach (var wh in warehouses)
+                    @foreach (var k in perfRows)
                     {
-                        var stock   = _stockByWarehouse.GetValueOrDefault((wh.Country, wh.Warehouse.Name));
-                        var storage = _storageByWarehouse.GetValueOrDefault((wh.Country, wh.Warehouse.Name));
+                        var stock   = _stockByWarehouse.GetValueOrDefault(k);
+                        var storage = _storageByWarehouse.GetValueOrDefault(k);
                         <tr>
-                            @if (multiCountry) { <td>@wh.Country.ToUpper()</td> }
-                            <td>@wh.Warehouse.Name.ToUpper()</td>
+                            @if (multiCountry) { <td>@k.Country.ToUpper()</td> }
+                            <td>@k.Warehouse.ToUpper()</td>
                             <td style="text-align:right">@((stock?.TotalQuantity ?? 0).ToString("N0"))</td>
                             <td style="text-align:right">@((stock?.TotalBoxesStock ?? 0).ToString("N0"))</td>
                             <td style="text-align:right">@((stock?.NumberOfBoxes ?? 0).ToString("N0"))</td>
@@ -198,18 +210,18 @@
                         </tr>
                     }
                     @{
-                        var storageRows = warehouses.Select(wh => _storageByWarehouse.GetValueOrDefault((wh.Country, wh.Warehouse.Name))).Where(s => s is not null).Select(s => s!).ToList();
+                        var storageRows = perfRows.Select(k => _storageByWarehouse.GetValueOrDefault(k)).Where(s => s is not null).Select(s => s!).ToList();
                         var totalRackLocations   = storageRows.Sum(s => s.TotalRackLocations);
                         var totalFilledLocations = storageRows.Sum(s => s.FilledBoxLocations + s.FilledPalletLocations);
                         var totalUtilizationPct  = totalRackLocations > 0 ? Math.Round(100.0 * totalFilledLocations / totalRackLocations, 1) : 0;
                     }
                     <tr style="font-weight:700; background:#fff7e0">
                         <td colspan="@(multiCountry ? 2 : 1)">TOTAL</td>
-                        <td style="text-align:right">@(warehouses.Sum(wh => _stockByWarehouse.GetValueOrDefault((wh.Country, wh.Warehouse.Name))?.TotalQuantity ?? 0).ToString("N0"))</td>
-                        <td style="text-align:right">@(warehouses.Sum(wh => _stockByWarehouse.GetValueOrDefault((wh.Country, wh.Warehouse.Name))?.TotalBoxesStock ?? 0).ToString("N0"))</td>
-                        <td style="text-align:right">@(warehouses.Sum(wh => _stockByWarehouse.GetValueOrDefault((wh.Country, wh.Warehouse.Name))?.NumberOfBoxes ?? 0).ToString("N0"))</td>
-                        <td style="text-align:right">@(warehouses.Sum(wh => _stockByWarehouse.GetValueOrDefault((wh.Country, wh.Warehouse.Name))?.TotalPalletsStock ?? 0).ToString("N0"))</td>
-                        <td style="text-align:right">@(warehouses.Sum(wh => _stockByWarehouse.GetValueOrDefault((wh.Country, wh.Warehouse.Name))?.NumberOfPallets ?? 0).ToString("N0"))</td>
+                        <td style="text-align:right">@(perfRows.Sum(k => _stockByWarehouse.GetValueOrDefault(k)?.TotalQuantity ?? 0).ToString("N0"))</td>
+                        <td style="text-align:right">@(perfRows.Sum(k => _stockByWarehouse.GetValueOrDefault(k)?.TotalBoxesStock ?? 0).ToString("N0"))</td>
+                        <td style="text-align:right">@(perfRows.Sum(k => _stockByWarehouse.GetValueOrDefault(k)?.NumberOfBoxes ?? 0).ToString("N0"))</td>
+                        <td style="text-align:right">@(perfRows.Sum(k => _stockByWarehouse.GetValueOrDefault(k)?.TotalPalletsStock ?? 0).ToString("N0"))</td>
+                        <td style="text-align:right">@(perfRows.Sum(k => _stockByWarehouse.GetValueOrDefault(k)?.NumberOfPallets ?? 0).ToString("N0"))</td>
                         <td style="text-align:right">@(storageRows.Sum(s => s.FreeBoxRackLocations).ToString("N0"))</td>
                         <td style="text-align:right">@(storageRows.Sum(s => s.FreePalletRackLocations).ToString("N0"))</td>
                         <td style="text-align:right">@(totalUtilizationPct)%</td>
@@ -324,15 +336,14 @@ else if (_loadedOnce)
 
     private sealed record WarehouseDummy(string Name, bool HasPallets);
 
+    // UAE is the only country with a real multi-warehouse split; every other selected
+    // country gets a single dummy warehouse (named after itself) generated on the fly --
+    // see the `warehouses` computed list below -- since its DataName-resolved database
+    // is a single facility.
     private static readonly Dictionary<string, List<WarehouseDummy>> _warehousesByCountry =
         new(StringComparer.OrdinalIgnoreCase)
         {
-            ["UAE"]      = new() { new("TECHNO", true), new("JAFZA", true), new("YOTO", true), new("BlackBOX", false) },
-            ["KSA"]      = new() { new("KSA", true) },
-            ["Qatar"]    = new() { new("Qatar", true) },
-            ["Kuwait"]   = new() { new("Kuwait", true) },
-            ["Malaysia"] = new() { new("Malaysia", true) },
-            ["Bahrain"]  = new() { new("Bahrain", true) },
+            ["UAE"] = new() { new("TECHNO", true), new("JAFZA", true), new("YOTO", true), new("BlackBOX", false) },
         };
 
     private sealed record AgeAlert(string Category, string Status, string StatusClass);
@@ -467,23 +478,40 @@ else if (_loadedOnce)
 
                 _agingUnitsByCountry["UAE"] = await SohSvc.GetAgingUnitsAsync();
 
-                foreach (var wh in _warehousesByCountry.GetValueOrDefault("UAE", new()))
+                var uaeStock = await SohSvc.GetStockOnHandByWarehouseAsync();
+                foreach (var (wh, stock) in uaeStock)
                 {
-                    _stockByWarehouse[("UAE", wh.Name)]   = await SohSvc.GetStockOnHandForWarehouseAsync(wh.Name);
-                    _storageByWarehouse[("UAE", wh.Name)] = await SohSvc.GetStorageCapacityForWarehouseAsync(wh.Name);
+                    _stockByWarehouse[("UAE", wh)] = stock;
+                }
+
+                // Storage Capacity per exact warehouse code, including the sub-codes
+                // (TECHNO-E, YOTO-BU, LFL-WH, ...) -- #racklocation's warehouse column
+                // has these as distinct entries too, so an exact match works the same
+                // way it does for TECHNO/JAFZA/YOTO/BlackBOX.
+                foreach (var (wh, _) in uaeStock)
+                {
+                    _storageByWarehouse[("UAE", wh)] = await SohSvc.GetStorageCapacityForWarehouseAsync(wh);
                 }
             }
 
-            // Each of these is a single-facility country -- no per-warehouse split.
-            // Storage Capacity depends on BinRackMaster, which doesn't exist in these
-            // databases yet -- catch and default to 0 until it's created.
+            // Each of these is a single-facility country -- no per-warehouse split. DataName
+            // is resolved dynamically per country (WhBoxItemsSource, via
+            // bfldata.dbo.DataSettings.DataName) instead of a hardcoded list, so attempt
+            // every selected non-UAE country and skip ones with nothing configured there.
             foreach (var country in _selectedCountries)
             {
-                if (!WarehouseSohSummaryService.HasStockOnHandDatabase(country)) continue;
-                var stock = await SohSvc.GetStockOnHandForCountryAsync(country);
-                _groupTotals[(country, true)] = stock;
-                _stockByWarehouse[(country, country)] = stock;
+                if (string.Equals(country, "UAE", StringComparison.OrdinalIgnoreCase)) continue;
 
+                try
+                {
+                    var stock = await SohSvc.GetStockOnHandForCountryAsync(country);
+                    _groupTotals[(country, true)] = stock;
+                    _stockByWarehouse[(country, country)] = stock;
+                }
+                catch { continue; /* no DataName configured for this country -- skip it entirely */ }
+
+                // Storage Capacity depends on BinRackMaster, which doesn't exist in these
+                // databases yet -- catch and default to 0 until it's created.
                 try
                 {
                     var storage = await SohSvc.GetStorageCapacityForCountryAsync(country);
@@ -492,7 +520,8 @@ else if (_loadedOnce)
                 }
                 catch { /* BinRackMaster not created yet for this country -- leave at 0 */ }
 
-                _agingUnitsByCountry[country] = await SohSvc.GetAgingUnitsForCountryAsync(country);
+                try { _agingUnitsByCountry[country] = await SohSvc.GetAgingUnitsForCountryAsync(country); }
+                catch { /* leave unset -- combined aging total just won't include this country */ }
             }
         }
         finally
