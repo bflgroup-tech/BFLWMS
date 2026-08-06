@@ -825,13 +825,18 @@ public class ReportsService(IOnPremConnectionResolver resolver)
         // warehouse) -- it means "ShopName belongs to an Ex2Locations-exported shop", applied
         // directly on the initial amechecking pull. When it's ticked, it takes over the
         // filter entirely and any other warehouse selections (e.g. TECHNO) are ignored, since
-        // the two mechanisms are mutually exclusive.
+        // the two mechanisms are mutually exclusive. Conversely, when TECHNO is selected
+        // (and EX2LOCATIONS isn't), Ex2Locations shops are explicitly excluded -- on top of
+        // the Warehouse-code filter below -- so the two views don't overlap.
         var isEx2Selected     = warehouseList.Any(w => string.Equals(w, "EX2LOCATIONS", StringComparison.OrdinalIgnoreCase));
+        var isTechnoSelected  = warehouseList.Any(w => string.Equals(w, "TECHNO", StringComparison.OrdinalIgnoreCase));
         var warehouseCodeList = isEx2Selected ? new List<string>() : warehouseList;
 
-        var ex2FilterSql = isEx2Selected
+        var shopNameFilterSql = isEx2Selected
             ? "\n   AND c.ShopName IN (SELECT ShopName FROM bfldata.dbo.DataSettings WHERE ExportActive = 'Y')"
-            : "";
+            : isTechnoSelected
+                ? "\n   AND c.ShopName NOT IN (SELECT ShopName FROM bfldata.dbo.DataSettings WHERE ExportActive = 'Y')"
+                : "";
 
         var warehouseParamNames = Enumerable.Range(0, warehouseCodeList.Count).Select(i => $"@wh{i}").ToList();
         var warehouseFilterSql = warehouseCodeList.Count == 0
@@ -877,7 +882,7 @@ SELECT
  WHERE c.TrnDate >= @fromDateOnly
    AND c.TrnDate <  @toDateExclusiveOnly
    AND CAST(c.TrnDate AS datetime) + CAST(c.Time1 AS datetime) >= @from
-   AND CAST(c.TrnDate AS datetime) + CAST(c.Time1 AS datetime) <  @toExclusive" + ex2FilterSql + @";
+   AND CAST(c.TrnDate AS datetime) + CAST(c.Time1 AS datetime) <  @toExclusive" + shopNameFilterSql + @";
 
 CREATE CLUSTERED INDEX IX_Scans ON #Scans (BatchNo, Itemcode);
 
