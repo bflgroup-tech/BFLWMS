@@ -8,12 +8,13 @@ namespace Wms.Data.Lpm;
 /// JAFZA Division-wise Production Report. Ported from a legacy VB.NET desktop
 /// query against Online.dbo.PhotoChecking (Warehouse = 'JAFZA').
 ///
-/// The legacy query ran in two passes because scans before a shift-boundary
-/// hour belong to the PREVIOUS production day's shift (the legacy VB.NET
-/// query used 05:00; the shift now runs 03:00-to-03:00 per business request):
-///   1) TrnDate rows where LEFT(Time1,2) NOT IN ('00'..'02') — kept as-is.
-///   2) TrnDate rows where LEFT(Time1,2) IN ('00'..'02') — TrnDate shifted
-///      back one day.
+/// The legacy query ran in two passes because scans at or before the shift
+/// boundary belong to the PREVIOUS production day's shift (the legacy
+/// VB.NET query used 05:00; the shift now runs 03:00-to-03:00 per business
+/// request — exactly 03:00:00 counts as the previous day, 03:00:01 onward
+/// counts as today):
+///   1) TrnDate rows where Time1 > '03:00:00' — kept as-is.
+///   2) TrnDate rows where Time1 <= '03:00:00' — TrnDate shifted back one day.
 /// Both passes are UNIONed here into one #JafzaBase temp table (same idea,
 /// just without the legacy per-username dynamic table name — Dapper already
 /// gives each request its own connection/session).
@@ -98,7 +99,7 @@ public class JafzaDivisionProductionService(IOnPremConnectionResolver resolver)
           FROM Online.dbo.PhotoChecking WITH (NOLOCK)
          WHERE Warehouse = 'JAFZA'
            AND TrnDate >= @from AND TrnDate <= @to
-           AND LEFT(Time1, 2) NOT IN ('00','01','02')
+           AND Time1 > '03:00:00'
            AND (@username IS NULL OR CheckedBy = @username)
          GROUP BY TrnDate, UPC, CheckedBy, GroupCode, Time1, LPMdt, OraPONo;
 
@@ -107,7 +108,7 @@ public class JafzaDivisionProductionService(IOnPremConnectionResolver resolver)
           FROM Online.dbo.PhotoChecking WITH (NOLOCK)
          WHERE Warehouse = 'JAFZA'
            AND TrnDate > @from AND TrnDate <= DATEADD(day, 1, @to)
-           AND LEFT(Time1, 2) IN ('00','01','02')
+           AND Time1 <= '03:00:00'
            AND (@username IS NULL OR CheckedBy = @username)
          GROUP BY TrnDate, UPC, CheckedBy, GroupCode, Time1, LPMdt, OraPONo;
 
