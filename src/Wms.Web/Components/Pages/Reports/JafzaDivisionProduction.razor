@@ -12,17 +12,17 @@
 @inject IJSRuntime JS
 @inject ILogger<JafzaDivisionProduction> Logger
 
-<PageTitle>WMS - JAFZA Production Report(Manual/Robo/Export)</PageTitle>
+<PageTitle>WMS - JAFZA Production Report</PageTitle>
 
 <div class="aiwms-page-header">
-    <h2>JAFZA Production Report(Manual/Robo/Export)</h2>
+    <h2>JAFZA Production Report</h2>
     @if (_source == "Manual")
     {
-        <p>Photo-checking production from Online.dbo.PhotoChecking (Warehouse = JAFZA). Scans before 05:00 count toward the previous day's shift. Date range is limited to 7 days.</p>
+        <p>Photo-checking production from Online.dbo.PhotoChecking (Warehouse = JAFZA). Scans before 03:00 count toward the previous day's shift. Date range is limited to 7 days.</p>
     }
     else if (_source == "Robo")
     {
-        <p>Robo pairing production from ROBOTICS.dbo.PairingConformationDetail (JafazaRoboDb). Scans before 05:00 count toward the previous day's shift. Date range is limited to 7 days.</p>
+        <p>Robo pairing production from ROBOTICS.dbo.PairingConformationDetail (JafazaRoboDb). Scans before 03:00 count toward the previous day's shift. Date range is limited to 7 days.</p>
     }
     else if (_source == "Export")
     {
@@ -414,10 +414,14 @@ else if (_source == "BoxGrn")
     @if (_view == "Summary" && _boxGrnSummaryRows.Count > 0)
     {
         <div class="aiwms-section">
-            <div style="display:grid; grid-template-columns: repeat(2, 1fr); gap:12px;">
+            <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:12px;">
                 <div style="background:#FFF4E0; border-radius:var(--r-sm); padding:12px 16px;">
                     <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:#8A5A12">Total Divisions</div>
                     <div style="font-size:1.4rem; font-weight:800; color:#8A5A12">@FilteredBoxGrnSummaryRows().Select(r => r.Division).Distinct(StringComparer.OrdinalIgnoreCase).Count().ToString("N0")</div>
+                </div>
+                <div style="background:#E6F7F0; border-radius:var(--r-sm); padding:12px 16px;">
+                    <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:#1F6E4C">Total Boxes</div>
+                    <div style="font-size:1.4rem; font-weight:800; color:#1F6E4C">@FilteredBoxGrnSummaryRows().Sum(r => r.BoxCount).ToString("N0")</div>
                 </div>
                 <div style="background:#EFEAFB; border-radius:var(--r-sm); padding:12px 16px;">
                     <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:#4E3B96">Total Qty</div>
@@ -440,12 +444,14 @@ else if (_source == "BoxGrn")
                 <colgroup>
                     <col style="width:140px" />
                     <col style="width:260px" />
-                    <col style="width:140px" />
+                    <col style="width:120px" />
+                    <col style="width:120px" />
                 </colgroup>
                 <thead>
                     <tr>
                         <th>Trn Date</th>
                         <th>Division</th>
+                        <th style="text-align:center">Boxes</th>
                         <th style="text-align:center">Qty</th>
                     </tr>
                 </thead>
@@ -455,6 +461,7 @@ else if (_source == "BoxGrn")
                         <tr>
                             <td>@FmtDate(r.TrnDate)</td>
                             <td style="word-break:break-word">@r.Division</td>
+                            <td style="text-align:center">@r.BoxCount.ToString("N0")</td>
                             <td style="text-align:center">@r.Qty.ToString("N0")</td>
                         </tr>
                     }
@@ -466,10 +473,14 @@ else if (_source == "BoxGrn")
     else if (_view == "Detailed" && _boxGrnDetailRows.Count > 0)
     {
         <div class="aiwms-section">
-            <div style="display:grid; grid-template-columns: repeat(2, 1fr); gap:12px;">
+            <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:12px;">
                 <div style="background:#FFF4E0; border-radius:var(--r-sm); padding:12px 16px;">
                     <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:#8A5A12">Total Items</div>
                     <div style="font-size:1.4rem; font-weight:800; color:#8A5A12">@FilteredBoxGrnDetailRows().Count.ToString("N0")</div>
+                </div>
+                <div style="background:#E6F7F0; border-radius:var(--r-sm); padding:12px 16px;">
+                    <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:#1F6E4C">Total Boxes</div>
+                    <div style="font-size:1.4rem; font-weight:800; color:#1F6E4C">@FilteredBoxGrnDetailRows().Sum(r => r.BoxCount).ToString("N0")</div>
                 </div>
                 <div style="background:#EFEAFB; border-radius:var(--r-sm); padding:12px 16px;">
                     <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:#4E3B96">Total Qty</div>
@@ -493,8 +504,9 @@ else if (_source == "BoxGrn")
                     <col style="width:110px" />
                     <col style="width:150px" />
                     <col style="width:100px" />
-                    <col style="width:200px" />
-                    <col style="width:110px" />
+                    <col style="width:180px" />
+                    <col style="width:100px" />
+                    <col style="width:100px" />
                 </colgroup>
                 <thead>
                     <tr>
@@ -502,6 +514,7 @@ else if (_source == "BoxGrn")
                         <th>Item Code</th>
                         <th>Group Code</th>
                         <th>Division</th>
+                        <th style="text-align:center">Boxes</th>
                         <th style="text-align:center">Qty</th>
                     </tr>
                 </thead>
@@ -513,6 +526,7 @@ else if (_source == "BoxGrn")
                             <td style="font-family:var(--font-mono)">@r.ItemCode</td>
                             <td>@r.GroupCode</td>
                             <td style="word-break:break-word">@r.Division</td>
+                            <td style="text-align:center">@r.BoxCount.ToString("N0")</td>
                             <td style="text-align:center">@r.Qty.ToString("N0")</td>
                         </tr>
                     }
@@ -631,7 +645,7 @@ else if (_source == "Export" && _exportRows.Count > 0)
     // which Source is currently selected, refreshed alongside every Load so
     // they always reflect the current From/To (Username only affects Manual/Robo).
     private bool _totalsLoading;
-    private int _manualTotal, _roboTotal, _exportTotal, _boxGrnTotal;
+    private int _manualTotal, _roboTotal, _exportTotal, _boxGrnTotal, _boxGrnBoxCountTotal;
 
     private bool IsRangeValid => _from <= _to && (_to - _from).TotalDays <= 6;
 
@@ -767,7 +781,8 @@ else if (_source == "Export" && _exportRows.Count > 0)
                 LoadOneTotalAsync("Manual", () => Svc.GetTotalQtyAsync(_from, _to, _username, _selectedDivisions), v => _manualTotal = v),
                 LoadOneTotalAsync("Robo",   () => RoboSvc.GetTotalQtyAsync(_from, _to, _username, _selectedDivisions), v => _roboTotal = v),
                 LoadOneTotalAsync("Export", () => ExportSvc.GetTotalQtyAsync(_from, _to, _selectedDivisions), v => _exportTotal = v),
-                LoadOneTotalAsync("BoxGrn", () => BoxGrnSvc.GetTotalQtyAsync(_from, _to, _selectedDivisions), v => _boxGrnTotal = v));
+                LoadOneTotalAsync("BoxGrn", () => BoxGrnSvc.GetTotalQtyAsync(_from, _to, _selectedDivisions), v => _boxGrnTotal = v),
+                LoadOneTotalAsync("BoxGrnBoxes", () => BoxGrnSvc.GetTotalBoxCountAsync(_from, _to, _selectedDivisions), v => _boxGrnBoxCountTotal = v));
         }
         finally
         {
@@ -883,7 +898,7 @@ else if (_source == "Export" && _exportRows.Count > 0)
             else if (_source == "BoxGrn" && _view == "Summary")
             {
                 var ws = wb.AddWorksheet("Summary (Box GRN)");
-                string[] headers = { "Trn Date", "Division", "Qty" };
+                string[] headers = { "Trn Date", "Division", "Boxes", "Qty" };
                 for (int i = 0; i < headers.Length; i++) ws.Cell(1, i + 1).Value = headers[i];
                 ws.Row(1).Style.Font.Bold = true;
 
@@ -892,7 +907,8 @@ else if (_source == "Export" && _exportRows.Count > 0)
                 {
                     ws.Cell(row, 1).Value = FmtDate(r.TrnDate);
                     ws.Cell(row, 2).Value = r.Division;
-                    ws.Cell(row, 3).Value = r.Qty;
+                    ws.Cell(row, 3).Value = r.BoxCount;
+                    ws.Cell(row, 4).Value = r.Qty;
                     row++;
                 }
                 ws.Columns().AdjustToContents();
@@ -901,7 +917,7 @@ else if (_source == "Export" && _exportRows.Count > 0)
             else if (_source == "BoxGrn")
             {
                 var ws = wb.AddWorksheet("Detailed (Box GRN)");
-                string[] headers = { "Trn Date", "Item Code", "Group Code", "Division", "Qty" };
+                string[] headers = { "Trn Date", "Item Code", "Group Code", "Division", "Boxes", "Qty" };
                 for (int i = 0; i < headers.Length; i++) ws.Cell(1, i + 1).Value = headers[i];
                 ws.Row(1).Style.Font.Bold = true;
 
@@ -912,7 +928,8 @@ else if (_source == "Export" && _exportRows.Count > 0)
                     ws.Cell(row, 2).Value = r.ItemCode;
                     ws.Cell(row, 3).Value = r.GroupCode;
                     ws.Cell(row, 4).Value = r.Division;
-                    ws.Cell(row, 5).Value = r.Qty;
+                    ws.Cell(row, 5).Value = r.BoxCount;
+                    ws.Cell(row, 6).Value = r.Qty;
                     row++;
                 }
                 ws.Columns().AdjustToContents();

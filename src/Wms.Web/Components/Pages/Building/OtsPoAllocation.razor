@@ -61,8 +61,8 @@
         </button>
         <button class="aiwms-btn aiwms-btn-secondary" @onclick="ExportExcelAsync" disabled="@(_rows.Count == 0 || _busy)">Export Excel</button>
         <button class="aiwms-btn aiwms-btn-primary" @onclick="GenerateVolumeGroupAsync"
-                disabled="@(!CanGenerate)"
-                title="@(CanGenerate ? "Populate dbo.StoreDivGrade for the picked Month/Year (grade per store × division)" : "Generate is only enabled when Country = BFLGroup and RunDate = today")">
+                disabled="@(!CanGenerateVolumeGroup)"
+                title="@(CanGenerateVolumeGroup ? (string.Equals(_country, OtsPoAllocationService.BflGroup, StringComparison.OrdinalIgnoreCase) ? "Populate dbo.StoreDivGrade for all countries (Month/Year)" : $"Populate dbo.LPM_StoreDivGrade_Country for {_country} (Month/Year) using LPM_VolumeGroupRange_Country bands") : "RunDate must be today")">
             @(_busy && _busyKind == "vg-gen" ? "Generating…" : "Generate Volume Group")
         </button>
         <button class="aiwms-btn aiwms-btn-secondary" @onclick="ViewVolumeGroupsAsync"
@@ -558,6 +558,16 @@
         && string.Equals(_country, OtsPoAllocationService.BflGroup, StringComparison.OrdinalIgnoreCase)
         && SelectedRunDate == _today;
 
+    // Generate Volume Group is broader than the OTS Generate — it accepts any
+    // country. BflGroup writes to dbo.StoreDivGrade (global); a specific country
+    // writes to dbo.LPM_StoreDivGrade_Country using LPM_VolumeGroupRange_Country
+    // bands filtered by that country. RunDate must still equal today so the
+    // grade snapshot lines up with today's OTS run.
+    private bool CanGenerateVolumeGroup =>
+        !_busy && _month != 0 && _year != 0
+        && !string.IsNullOrWhiteSpace(_country)
+        && SelectedRunDate == _today;
+
     private DateTime SelectedRunDate =>
         DateTime.TryParse(_runDateStr, out var d) ? d.Date : _today;
 
@@ -705,11 +715,11 @@
 
     private async Task GenerateVolumeGroupAsync()
     {
-        if (!CanGenerate) return;
+        if (!CanGenerateVolumeGroup) return;
         _busy = true; _busyKind = "vg-gen"; _message = ""; _isError = false;
         try
         {
-            var n = await Svc.GenerateStoreDivGradesAsync(_month, _year);
+            var n = await Svc.GenerateStoreDivGradesAsync(_month, _year, _country);
             _message = $"Generated {n:N0} StoreDivGrade row(s) for {_month}/{_year}. Click 'View Volume Groups' to see them.";
         }
         catch (Exception ex) { ShowError($"Generate Volume Group failed: {ex.Message}"); }
@@ -721,7 +731,7 @@
         _busy = true; _busyKind = "vg-view"; _message = ""; _isError = false;
         try
         {
-            _vgRows = await Svc.GetStoreDivGradesAsync(_month, _year);
+            _vgRows = await Svc.GetStoreDivGradesAsync(_month, _year, _country);
             _vgShow = true;
             if (_vgRows.Count == 0)
                 _message = $"No StoreDivGrade rows for {_month}/{_year}. Click 'Generate Volume Group' first.";
