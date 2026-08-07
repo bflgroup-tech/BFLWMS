@@ -170,7 +170,7 @@ else if (VisibleRows().Count > 0)
                     </div>
                     @if (string.Equals(cs.Country, "UAE", StringComparison.OrdinalIgnoreCase))
                     {
-                        <div style="margin:10px 0 0 12px; padding-top:10px; border-top:1px dashed var(--border-default);">
+                        <div style="margin:10px 12px 0 12px; padding-top:10px; border-top:1px dashed var(--border-default);">
                             <div style="display:grid; grid-template-columns: repeat(7, 1fr); gap:12px;">
                                 @ShopCard("UA", "UAE Shops",   visibleSummary.Sum(s => s.UaeStoreQty).ToString("N0"),  "#166534")
                                 @ShopCard("OM", "Oman Shops",  visibleSummary.Sum(s => s.OmanStoreQty).ToString("N0"), "#166534")
