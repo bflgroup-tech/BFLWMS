@@ -171,7 +171,6 @@ else if (VisibleRows().Count > 0)
                     @if (string.Equals(cs.Country, "UAE", StringComparison.OrdinalIgnoreCase))
                     {
                         <div style="margin:10px 0 0 12px; padding-top:10px; border-top:1px dashed var(--border-default);">
-                            <div style="font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary); margin-bottom:6px;">By Shop</div>
                             <div style="display:grid; grid-template-columns: repeat(7, 1fr); gap:12px;">
                                 @ShopCard("UAE Shops",   visibleSummary.Sum(s => s.UaeStoreQty).ToString("N0"),  "#3730a3")
                                 @ShopCard("Oman Shops",  visibleSummary.Sum(s => s.OmanStoreQty).ToString("N0"), "#166534")
