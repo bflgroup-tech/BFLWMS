@@ -1111,20 +1111,39 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
     //                                              (IsSpecial = 0 rows only)
     // Idempotent: DELETE existing rows for (Month, Year) then bulk insert.
     // ==============================================================
-    public async Task<int> GenerateStoreDivGradesAsync(int month, int year, CancellationToken ct = default)
+    public async Task<int> GenerateStoreDivGradesAsync(int month, int year, string? country = null, CancellationToken ct = default)
     {
+        // country == null OR BflGroup -> GLOBAL run (existing behaviour):
+        //   bands from  dbo.LPM_VolumeGroupRange
+        //   weights via dbo.LPM_WeeklyWeights WHERE Country = 'UAE'
+        //   persist to  dbo.StoreDivGrade  (delete WHERE Month1=@m AND Year1=@y)
+        // country == a specific country (e.g. 'BAHRAIN', 'KSA') -> PER-COUNTRY run:
+        //   bands from  dbo.LPM_VolumeGroupRange_Country WHERE Country = @country
+        //   weights via dbo.LPM_WeeklyWeights           WHERE Country = @country
+        //   filter baseRows to that country only
+        //   persist to  dbo.LPM_StoreDivGrade_Country
+        //               (delete WHERE Country=@country AND Month1=@m AND Year1=@y)
+        var isPerCountry = !string.IsNullOrWhiteSpace(country)
+                           && !string.Equals(country, BflGroup, StringComparison.OrdinalIgnoreCase);
+        var countryFilter = isPerCountry ? country!.Trim() : null;
+        var bandsTable    = isPerCountry ? "dbo.LPM_VolumeGroupRange_Country" : "dbo.LPM_VolumeGroupRange";
+        var gradeTable    = isPerCountry ? "dbo.LPM_StoreDivGrade_Country"    : "dbo.StoreDivGrade";
+        var weightsCountry = isPerCountry ? countryFilter! : "UAE";
+
         await using var c = OpenOnPremBackup();
 
         // 1a) Base set — one row per (Country, StoreID, DivCode) to grade.
         //     Country comes from LPM_EOM_Output; the sales amount used for
         //     grading is now sourced from the weighted weekly rollup below.
-        var baseRows = (await c.QueryAsync<(string Country, string StoreID, int DivCode, decimal? SalesAmt)>(new CommandDefinition(@"
+        //     Per-country run filters baseRows to the picked country.
+        var baseRows = (await c.QueryAsync<(string Country, string StoreID, int DivCode, decimal? SalesAmt)>(new CommandDefinition($@"
             SELECT Country, StoreID, DivCode, CAST(NULL AS DECIMAL(18,2)) AS SalesAmt
               FROM dbo.LPM_EOM_Output WITH (NOLOCK)
              WHERE Month1 = @m AND Year1 = @y
                AND Country IS NOT NULL AND LTRIM(RTRIM(Country)) <> ''
-               AND Country <> 'Ex2Locations'",
-            new { m = month, y = year },
+               AND Country <> 'Ex2Locations'
+               {(isPerCountry ? "AND Country = @ct" : "")}",
+            new { m = month, y = year, ct = countryFilter },
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).ToList();
 
         if (baseRows.Count == 0) return 0;
@@ -1148,20 +1167,21 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         // 1c) Refresh MonthlyWeightage on every LPM_Weekly_SalesAmt row from
         //     LPM_WeeklyWeights (per-week WeightPct, keyed by (Country, Year, Week))
         //     so the stored value stays a single-source recon check for the current
-        //     Generate run. Rows without a matching (Year, Week) config row get
-        //     MonthlyWeightage = NULL and drop out of the SUM below. Country
-        //     filter locks to 'UAE' — the sole country populated in the current
-        //     config; extend here if per-country rules land later. UpdatedTS
-        //     stamped in GST.
+        //     Generate run. Rows without a matching (Country, Year, Week) config
+        //     row get MonthlyWeightage = NULL and drop out of the SUM below.
+        //     Country filter uses the picked country in a per-country run,
+        //     'UAE' otherwise (BflGroup run — the sole country populated in the
+        //     shared config). UpdatedTS stamped in GST.
         await c.ExecuteAsync(new CommandDefinition(@"
             UPDATE ws
                SET MonthlyWeightage = ww.WeightPct,
                    UpdatedTS = DATEADD(hour, 4, SYSUTCDATETIME())
               FROM dbo.LPM_Weekly_SalesAmt ws
               LEFT JOIN dbo.LPM_WeeklyWeights ww WITH (NOLOCK)
-                     ON ww.Country = 'UAE'
+                     ON ww.Country = @wcty
                     AND ww.Year1   = ws.Year1
                     AND ww.Week    = ws.Week",
+            new { wcty = weightsCountry },
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
 
         // 1d) Per (StoreID, DivCode), sum SalesAmt * MonthlyWeightage over
@@ -1212,11 +1232,14 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         )).ToList();
 
         // 2) Non-special (B..I) grade bands, ordered widest first for stable matching.
-        var bands = (await c.QueryAsync<(string VolumeGroup, decimal? FromPct, decimal? ToPct)>(new CommandDefinition(@"
+        //    Per-country run reads from LPM_VolumeGroupRange_Country filtered by the picked country.
+        var bands = (await c.QueryAsync<(string VolumeGroup, decimal? FromPct, decimal? ToPct)>(new CommandDefinition($@"
             SELECT VolumeGroup, AvgSalesPctFrom, AvgSalesPctTo
-              FROM dbo.LPM_VolumeGroupRange WITH (NOLOCK)
+              FROM {bandsTable} WITH (NOLOCK)
              WHERE IsSpecial = 0
+               {(isPerCountry ? "AND Country = @ct" : "")}
              ORDER BY SortOrder",
+            new { ct = countryFilter },
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).ToList();
 
         // 3) Compute avg per DivCode across all non-ECOM rows with SalesAmt > 0.
@@ -1298,8 +1321,9 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         try
         {
             await c.ExecuteAsync(new CommandDefinition(
-                "DELETE FROM dbo.StoreDivGrade WHERE Month1 = @m AND Year1 = @y",
-                new { m = month, y = year }, transaction: tx,
+                $"DELETE FROM {gradeTable} WHERE Month1 = @m AND Year1 = @y" +
+                (isPerCountry ? " AND Country = @ct" : ""),
+                new { m = month, y = year, ct = countryFilter }, transaction: tx,
                 commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
 
             var dt = new System.Data.DataTable();
@@ -1328,7 +1352,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
 
             using var bulk = new SqlBulkCopy(c, SqlBulkCopyOptions.Default, tx)
             {
-                DestinationTableName = "dbo.StoreDivGrade",
+                DestinationTableName = gradeTable,
                 BatchSize            = 1000,
                 BulkCopyTimeout      = CommandTimeoutSeconds,
             };
