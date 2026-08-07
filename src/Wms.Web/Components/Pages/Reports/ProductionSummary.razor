@@ -158,13 +158,12 @@ else if (VisibleRows().Count > 0)
             @foreach (var cs in CountrySummaries(visibleRows))
             {
                 <div style="margin-bottom:14px; border:1px solid var(--border-default); border-radius:var(--r-sm); padding:14px;">
-                    <div style="text-align:center; font-size:16px; font-weight:800; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary); margin-bottom:10px;">@cs.Country</div>
-                    <div style="display:grid; grid-template-columns: repeat(7, 1fr); gap:12px;">
+                    <div style="text-align:left; font-size:16px; font-weight:800; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary); margin-bottom:10px;">@cs.Country</div>
+                    <div style="display:grid; grid-template-columns: repeat(6, 1fr); gap:12px;">
                         @MetricCard("Store Qty",      cs.StoreQty.ToString("N0"),     "#fdf2f8", "#9d174d", false)
                         @MetricCard("Transfer Qty",   cs.TransferQty.ToString("N0"),  "#ccfbf1", "#0f766e", false)
                         @MetricCard("Total Scanned",  cs.TotalScanned.ToString("N0"), "#dbeafe", "#1e40af", false)
                         @MetricCard("Unknown",        cs.Unknown.ToString("N0"),      "#fef3c7", "#92400e", false)
-                        @MetricCard("Merch Need (Month)", cs.MerchNeedMonth.ToString("N0"), "#ffedd5", "#9a3412", false)
                         @MetricCard("Merch Need (Week)",  cs.MerchNeedWeek.ToString("N0"),  "#ffedd5", "#9a3412", false)
                         @MetricCard("Merch Need (Day)",   cs.MerchNeedDay.ToString("N0"),   "#ffedd5", "#9a3412", false)
                     </div>
