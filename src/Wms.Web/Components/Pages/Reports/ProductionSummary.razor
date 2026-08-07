@@ -170,15 +170,14 @@ else if (VisibleRows().Count > 0)
                     </div>
                     @if (string.Equals(cs.Country, "UAE", StringComparison.OrdinalIgnoreCase))
                     {
-                        <div style="font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary); margin:10px 0 6px 12px;">EX2LOCATIONS</div>
                         <div style="display:grid; grid-template-columns: repeat(7, 1fr); gap:12px; margin-left:12px;">
-                            @MetricCard("Store Qty",      cs.Ex2StoreQty.ToString("N0"),     "#fdf2f8", "#9d174d", false)
-                            @MetricCard("Transfer Qty",   "—",  "#ccfbf1", "#0f766e", false)
-                            @MetricCard("Total Scanned",  cs.Ex2TotalScanned.ToString("N0"), "#dbeafe", "#1e40af", false)
-                            @MetricCard("Unknown",        cs.Ex2Unknown.ToString("N0"),      "#fef3c7", "#92400e", false)
-                            @MetricCard("Merch Need (Month)", "—", "#ffedd5", "#9a3412", false)
-                            @MetricCard("Merch Need (Week)",  "—", "#ffedd5", "#9a3412", false)
-                            @MetricCard("Merch Need (Day)",   "—", "#ffedd5", "#9a3412", false)
+                            @MetricCard("UAE Shops",      "—", "#fdf2f8", "#9d174d", false)
+                            @MetricCard("Oman Shops",     "—", "#ccfbf1", "#0f766e", false)
+                            @MetricCard("EX2KSA",         "—", "#dbeafe", "#1e40af", false)
+                            @MetricCard("EX2QATAR",       "—", "#fef3c7", "#92400e", false)
+                            @MetricCard("EX2BAHRAIN",     "—", "#ffedd5", "#9a3412", false)
+                            @MetricCard("EX2KUWAIT",      "—", "#ffedd5", "#9a3412", false)
+                            @MetricCard("EX2MALAYSIA",    "—", "#ffedd5", "#9a3412", false)
                         </div>
                     }
                 </div>
