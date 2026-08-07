@@ -21,10 +21,11 @@ namespace Wms.Data.Lpm;
 ///
 /// Legacy logic, preserved as closely as possible:
 ///   1) One row per (TrnDate, ItemCode, EmpCode/username), Qty = COUNT(*).
-///      Scans before 03:00 belong to the previous day (TrnDate -= 1 when
-///      LEFT(TrnTime,2) IN ('00'..'02')) — same shift-boundary rule as the
-///      Manual report — folded into the same GROUP BY so TrnTime itself
-///      doesn't need to survive past this query.
+///      Scans at or before 03:00:00 belong to the previous day (TrnDate -= 1
+///      when TrnTime <= '03:00:00'; 03:00:01 onward stays on the current
+///      day) — same shift-boundary rule as the Manual report — folded into
+///      the same GROUP BY so TrnTime itself doesn't need to survive past
+///      this query.
 ///   2) EmpName: not ported. 'ROBO%' logins display as-is; everything else
 ///      falls back to the raw empcode/username. The legacy FABSMAIN.dbo.[user]
 ///      and PAYROLL.dbo.Employee lookups are NOT ported — FABSMAIN exists on
@@ -61,17 +62,30 @@ public class JafzaRoboProductionService(IOnPremConnectionResolver resolver)
 
     private record RawPairRow(DateTime TrnDate, string ItemCode, string EmpCode, int Qty);
 
+    // Fetches one day past @to so @to's own total can pick up the following day's
+    // pre-3am rows shifting back onto it, then the outer SELECT narrows back down
+    // to [@from, @to] — this also drops @from's own pre-3am rows once they've been
+    // relabeled onto @from-1, which is outside the requested range. Without this
+    // two-step widen-then-narrow, a single-day (or range-ending-today) query would
+    // both miss the next day's shifted-in contribution AND still count its own
+    // shifted-OUT early rows under the wrong (mislabeled) date — same widen/narrow
+    // pattern Manual, Export, and Box GRN already use.
     private const string RawQuerySql = @"
-        SELECT
-            TrnDate = CASE WHEN LEFT(TrnTime, 2) IN ('00','01','02') THEN DATEADD(day, -1, TrnDate) ELSE TrnDate END,
-            ItemCode = itemcode,
-            EmpCode  = username,
-            Qty      = COUNT(*)
-          FROM ROBOTICS.dbo.PairingConformationDetail
-         WHERE TrnDate BETWEEN @from AND @to
-           AND (@username IS NULL OR username = @username)
-         GROUP BY CASE WHEN LEFT(TrnTime, 2) IN ('00','01','02') THEN DATEADD(day, -1, TrnDate) ELSE TrnDate END,
-                  itemcode, username";
+        ;WITH Shifted AS (
+            SELECT
+                TrnDate = CASE WHEN TrnTime <= '03:00:00' THEN DATEADD(day, -1, TrnDate) ELSE TrnDate END,
+                ItemCode = itemcode,
+                EmpCode  = username,
+                Qty      = COUNT(*)
+              FROM ROBOTICS.dbo.PairingConformationDetail
+             WHERE TrnDate BETWEEN @from AND DATEADD(day, 1, @to)
+               AND (@username IS NULL OR username = @username)
+             GROUP BY CASE WHEN TrnTime <= '03:00:00' THEN DATEADD(day, -1, TrnDate) ELSE TrnDate END,
+                      itemcode, username
+        )
+        SELECT TrnDate, ItemCode, EmpCode, Qty
+          FROM Shifted
+         WHERE TrnDate BETWEEN @from AND @to";
 
     private async Task<List<RawPairRow>> FetchRawAsync(
         DateTime fromDate, DateTime toDate, string? usernameFilter, CancellationToken ct)

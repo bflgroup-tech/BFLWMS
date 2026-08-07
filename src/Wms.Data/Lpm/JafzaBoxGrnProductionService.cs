@@ -12,12 +12,13 @@ namespace Wms.Data.Lpm;
 /// via ItemCode, then USA.dbo.USAPriority.DivisionY via that GroupCode — rows
 /// with no matching/blank Division are dropped, same as those reports.
 ///
-/// Same shift-boundary rule as Manual/Robo: a row before 03:00 (LEFT(Time1,2)
-/// IN ('00','01','02')) belongs to the PREVIOUS day's shift. The raw fetch
-/// window is widened one day past @to to catch next-day early-morning rows
-/// that shift back into range, then narrowed back to [@from, @to] in C#
-/// after the shift is applied — done here instead of Manual's two-pass SQL
-/// UNION since this service already aggregates in C#, not SQL.
+/// Same shift-boundary rule as Manual/Robo: a row at or before 03:00:00
+/// (Time1 <= "03:00:00") belongs to the PREVIOUS day's shift; 03:00:01
+/// onward stays on the current day. The raw fetch window is widened one
+/// day past @to to catch next-day early-morning rows that shift back into
+/// range, then narrowed back to [@from, @to] in C# after the shift is
+/// applied — done here instead of Manual's two-pass SQL UNION since this
+/// service already aggregates in C#, not SQL.
 /// </summary>
 public class JafzaBoxGrnProductionService(IOnPremConnectionResolver resolver)
 {
@@ -49,7 +50,7 @@ public class JafzaBoxGrnProductionService(IOnPremConnectionResolver resolver)
            AND v.TrnDate >= @from AND v.TrnDate <= @toPlusOne";
 
     private static bool IsPreShiftHour(string? time1) =>
-        time1 is { Length: >= 2 } && (time1[..2] is "00" or "01" or "02");
+        time1 is not null && string.CompareOrdinal(time1, "03:00:00") <= 0;
 
     private async Task<List<RawRow>> FetchRawAsync(DateTime fromDate, DateTime toDate, CancellationToken ct)
     {
