@@ -171,13 +171,13 @@ else if (VisibleRows().Count > 0)
                     @if (string.Equals(cs.Country, "UAE", StringComparison.OrdinalIgnoreCase))
                     {
                         <div style="display:flex; flex-wrap:wrap; gap:8px; margin:8px 0 0 12px;">
-                            @ShopChip("UAE Shops",   "—")
-                            @ShopChip("Oman Shops",  "—")
-                            @ShopChip("EX2KSA",      "—")
-                            @ShopChip("EX2QATAR",    "—")
-                            @ShopChip("EX2BAHRAIN",  "—")
-                            @ShopChip("EX2KUWAIT",   "—")
-                            @ShopChip("EX2MALAYSIA", "—")
+                            @ShopChip("UAE Shops",   visibleSummary.Sum(s => s.UaeStoreQty).ToString("N0"))
+                            @ShopChip("Oman Shops",  visibleSummary.Sum(s => s.OmanStoreQty).ToString("N0"))
+                            @ShopChip("EX2KSA",      VisibleEx2ShopQty("KSA").ToString("N0"))
+                            @ShopChip("EX2QATAR",    VisibleEx2ShopQty("QATAR").ToString("N0"))
+                            @ShopChip("EX2BAHRAIN",  VisibleEx2ShopQty("BAHRAIN").ToString("N0"))
+                            @ShopChip("EX2KUWAIT",   VisibleEx2ShopQty("KUWAIT").ToString("N0"))
+                            @ShopChip("EX2MALAYSIA", VisibleEx2ShopQty("MALAYSIA").ToString("N0"))
                         </div>
                     }
                 </div>
@@ -439,6 +439,16 @@ else if (_loadedOnce && VisibleRows().Count == 0)
     private Dictionary<string, long> _transferQtyByCountry = new(StringComparer.OrdinalIgnoreCase);
     private Dictionary<string, MerchNeedRow> _merchNeedByCountry = new(StringComparer.OrdinalIgnoreCase);
     private Dictionary<string, List<MerchNeedDivisionRow>> _merchNeedByCountryDivision = new(StringComparer.OrdinalIgnoreCase);
+    private Dictionary<string, List<Ex2ShopRow>> _ex2ShopsByCountry = new(StringComparer.OrdinalIgnoreCase);
+
+    // Sum of Ex2Shops StoreQty across every visible country's data, for one actual
+    // Ex2Locations country (e.g. "KSA", "QATAR") -- see Ex2ShopRow.Country.
+    private int VisibleEx2ShopQty(string shopCountry) =>
+        _ex2ShopsByCountry
+            .Where(kv => _selectedCountries.Contains(kv.Key))
+            .SelectMany(kv => kv.Value)
+            .Where(s => string.Equals(s.Country, shopCountry, StringComparison.OrdinalIgnoreCase))
+            .Sum(s => s.StoreQty);
 
     private (long Month, long Week, long Day) MerchNeedFor(string country, string division)
     {
@@ -598,7 +608,7 @@ else if (_loadedOnce && VisibleRows().Count == 0)
     {
         if (!CanLoad) return;
         _loading = true; _message = ""; _loadedOnce = false;
-        _rows.Clear(); _summary.Clear(); _overallStoreQty = 0; _transferQty = 0; _transferQtyByCountry.Clear(); _merchNeedByCountry.Clear(); _merchNeedByCountryDivision.Clear();
+        _rows.Clear(); _summary.Clear(); _overallStoreQty = 0; _transferQty = 0; _transferQtyByCountry.Clear(); _merchNeedByCountry.Clear(); _merchNeedByCountryDivision.Clear(); _ex2ShopsByCountry.Clear();
         await InvokeAsync(StateHasChanged);
         try
         {
@@ -626,6 +636,7 @@ else if (_loadedOnce && VisibleRows().Count == 0)
                 _overallStoreQty += result.OverallStoreQty;
                 _transferQty     += result.TransferQty;
                 _transferQtyByCountry[country] = result.TransferQty;
+                _ex2ShopsByCountry[country] = result.Ex2Shops;
 
                 // Merch Need reads LPMSIM.dbo.tmpPlanningTarget directly, keyed off the
                 // selected week (4-4-5 month bucket) — independent of the per-country scan
