@@ -27,11 +27,17 @@ jobs:
         id: ver
         run: echo "value=1.0.${{ github.run_number }}" >> $GITHUB_OUTPUT
 
+      - name: Compute latest PR number
+        id: pr
+        run: |
+          PR_NUM=$(git log -1 --pretty=%s | grep -oE '#[0-9]+$' | tr -d '#')
+          echo "value=${PR_NUM:-unknown}" >> $GITHUB_OUTPUT
+
       - name: Build with dotnet
-        run: dotnet build --configuration Release -p:Version=${{ steps.ver.outputs.value }}
+        run: dotnet build --configuration Release -p:Version=${{ steps.ver.outputs.value }} -p:LatestPrNumber=${{ steps.pr.outputs.value }}
 
       - name: dotnet publish
-        run: dotnet publish -c Release -o ${{env.DOTNET_ROOT}}/myapp -p:Version=${{ steps.ver.outputs.value }}
+        run: dotnet publish -c Release -o ${{env.DOTNET_ROOT}}/myapp -p:Version=${{ steps.ver.outputs.value }} -p:LatestPrNumber=${{ steps.pr.outputs.value }}
 
       - name: Upload artifact for deployment job
         uses: actions/upload-artifact@v4
