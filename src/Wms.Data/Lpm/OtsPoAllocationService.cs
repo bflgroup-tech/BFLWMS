@@ -1374,10 +1374,19 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
     /// <summary>Read persisted StoreDivGrade rows for a picked (Month, Year),
     /// joined to Division master + DataSettings for names. Used by the
     /// "View Volume Groups" dialog on the OTS PO Allocation page.</summary>
-    public async Task<List<StoreDivGradeRow>> GetStoreDivGradesAsync(int month, int year, CancellationToken ct = default)
+    public async Task<List<StoreDivGradeRow>> GetStoreDivGradesAsync(int month, int year, string? country = null, CancellationToken ct = default)
     {
+        // Country selector:
+        //   null / BflGroup       -> read from dbo.StoreDivGrade (all countries)
+        //   specific country      -> read from dbo.LPM_StoreDivGrade_Country WHERE Country = @c
+        var isPerCountry = !string.IsNullOrWhiteSpace(country)
+                           && !string.Equals(country, BflGroup, StringComparison.OrdinalIgnoreCase);
+        var countryFilter = isPerCountry ? country!.Trim() : null;
+        var gradeTable    = isPerCountry ? "dbo.LPM_StoreDivGrade_Country" : "dbo.StoreDivGrade";
+        var countryClause = isPerCountry ? "AND g.Country = @ct" : "";
+
         await using var c = OpenOnPremBackup();
-        var rows = await c.QueryAsync<StoreDivGradeRow>(new CommandDefinition(@"
+        var rows = await c.QueryAsync<StoreDivGradeRow>(new CommandDefinition($@"
             ;WITH storeNames AS (
                 SELECT StoreID, PBFullname,
                        rn = ROW_NUMBER() OVER (PARTITION BY StoreID ORDER BY PBFullname)
@@ -1388,12 +1397,13 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                    sn.PBFullname AS StoreName,
                    g.DivCode, dv.Division AS Division,
                    g.SalesAmt, g.AvgSalesAmt, g.AvgSalesPct, g.Grade
-              FROM dbo.StoreDivGrade g WITH (NOLOCK)
+              FROM {gradeTable} g WITH (NOLOCK)
               LEFT JOIN LPMSIM.dbo.Division dv WITH (NOLOCK) ON dv.DivCode = g.DivCode
               LEFT JOIN storeNames sn ON sn.StoreID = g.StoreID AND sn.rn = 1
              WHERE g.Month1 = @m AND g.Year1 = @y
+               {countryClause}
              ORDER BY g.Country, g.StoreID, g.DivCode",
-            new { m = month, y = year },
+            new { m = month, y = year, ct = countryFilter },
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         return rows.AsList();
     }

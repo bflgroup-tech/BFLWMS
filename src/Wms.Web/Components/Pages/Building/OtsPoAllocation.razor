@@ -731,7 +731,7 @@
         _busy = true; _busyKind = "vg-view"; _message = ""; _isError = false;
         try
         {
-            _vgRows = await Svc.GetStoreDivGradesAsync(_month, _year);
+            _vgRows = await Svc.GetStoreDivGradesAsync(_month, _year, _country);
             _vgShow = true;
             if (_vgRows.Count == 0)
                 _message = $"No StoreDivGrade rows for {_month}/{_year}. Click 'Generate Volume Group' first.";
