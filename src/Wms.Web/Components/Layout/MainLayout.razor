@@ -35,6 +35,12 @@
                     <div class="aiwms-server-db">
                         <a href="MicrosoftIdentity/Account/SignOut" style="color:inherit">Sign out</a>
                     </div>
+                    @if (role == "Admin")
+                    {
+                        <div class="aiwms-server-db" title="Latest merged PR deployed to this environment">
+                            Latest PR: @(_latestPrNumber == "dev" ? "dev build" : $"#{_latestPrNumber}")
+                        </div>
+                    }
                 </Authorized>
             </AuthorizeView>
         </div>
@@ -60,6 +66,12 @@
         Assembly.GetExecutingAssembly()
             .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion?.Split('+')[0]
         ?? Assembly.GetExecutingAssembly().GetName().Version?.ToString(3)
+        ?? "dev";
+
+    private static readonly string _latestPrNumber =
+        Assembly.GetExecutingAssembly()
+            .GetCustomAttributes<AssemblyMetadataAttribute>()
+            .FirstOrDefault(a => a.Key == "LatestPrNumber")?.Value
         ?? "dev";
 
     private readonly MudTheme _theme = new()

@@ -6,11 +6,16 @@
     <RootNamespace>Wms.Web</RootNamespace>
     <UserSecretsId>4b8d3a42-cc08-411c-9a33-3c84ef8f4c19</UserSecretsId>
     <!-- CI overrides this with -p:Version=1.0.${{ github.run_number }} -->
-    <Version>1.0.379</Version>
+    <Version>1.0.380</Version>
+    <!-- CI overrides this with -p:LatestPrNumber=<PR number extracted from the squash-merge commit message> -->
+    <LatestPrNumber>dev</LatestPrNumber>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\Wms.Core\Wms.Core.csproj" />
     <ProjectReference Include="..\Wms.Data\Wms.Data.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <AssemblyMetadata Include="LatestPrNumber" Value="$(LatestPrNumber)" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.Identity.Web" Version="3.10.0" />
