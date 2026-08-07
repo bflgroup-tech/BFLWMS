@@ -156,7 +156,12 @@ else if (VisibleRows().Count > 0)
             @foreach (var cs in CountrySummaries(visibleRows))
             {
                 <div style="margin-bottom:14px; border:1px solid var(--border-default); border-radius:var(--r-sm); padding:14px;">
-                    <div style="text-align:left; font-size:16px; font-weight:800; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary); margin-bottom:10px;">@cs.Country</div>
+                    <div style="display:flex; align-items:baseline; justify-content:space-between; margin-bottom:10px;">
+                        <div style="font-size:16px; font-weight:800; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary);">@cs.Country</div>
+                        <div style="font-size:16px; font-weight:800; text-transform:uppercase; letter-spacing:1px; color:#dc2626;">
+                            Merch Need % @((cs.MerchNeedWeek > 0 ? (double)cs.StoreQty / cs.MerchNeedWeek * 100 : 0).ToString("N1"))%
+                        </div>
+                    </div>
                     <div style="display:grid; grid-template-columns: repeat(6, 1fr); gap:12px;">
                         @MetricCard("Store Qty",      cs.StoreQty.ToString("N0"),     "#fdf2f8", "#9d174d", false)
                         @MetricCard("Transfer Qty",   cs.TransferQty.ToString("N0"),  "#ccfbf1", "#0f766e", false)
