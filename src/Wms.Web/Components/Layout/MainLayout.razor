@@ -38,7 +38,7 @@
                     @if (role == "Admin")
                     {
                         <div class="aiwms-server-db" title="Latest merged PR deployed to this environment">
-                            Latest PR: @(_latestPrNumber == "dev" ? "dev build" : $"#{_latestPrNumber}")
+                            PR#@_latestPrNumber
                         </div>
                     }
                 </Authorized>
