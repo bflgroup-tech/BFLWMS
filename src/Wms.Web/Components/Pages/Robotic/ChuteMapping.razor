@@ -171,7 +171,7 @@
                 var cols     = Sections.Length * ((showUp ? 1 : 0) + (showDown ? 1 : 0));
                 var colPct   = $"{100.0 / cols:F4}%";
                 // When filter is on, pack each column's disabled cells to the top
-                var _pc = new Dictionary<string, List<(string? Id, int? Status, string? ShopId, string? ShopName, string? TotId)>>();
+                var _pc = new Dictionary<string, List<(string? Id, int? Status, string? ShopId, string? ShopName, string? TotId, int PendingQty)>>();
                 if (_showDisabledOnly)
                 {
                     foreach (var _s in Sections)
@@ -218,10 +218,10 @@
                                 @foreach (var sec in Sections)
                                 {
                                     var up = _showDisabledOnly
-                                        ? (_pc.TryGetValue($"{sec}:UP",   out var _ul) && _ri < _ul.Count ? _ul[_ri] : (null, null, null, null, null))
+                                        ? (_pc.TryGetValue($"{sec}:UP",   out var _ul) && _ri < _ul.Count ? _ul[_ri] : (null, null, null, null, null, 0))
                                         : GetCell(sec, _rowKey!, "UP");
                                     var dn = _showDisabledOnly
-                                        ? (_pc.TryGetValue($"{sec}:DOWN", out var _dl) && _ri < _dl.Count ? _dl[_ri] : (null, null, null, null, null))
+                                        ? (_pc.TryGetValue($"{sec}:DOWN", out var _dl) && _ri < _dl.Count ? _dl[_ri] : (null, null, null, null, null, 0))
                                         : GetCell(sec, _rowKey!, "DOWN");
                                     @if (showUp)
                                     {
@@ -249,7 +249,10 @@
                                                             </button>
                                                         </div>
                                                     </div>
-                                                    <div style="font-size:10px;font-weight:700;color:var(--card-label,#64748b);margin-bottom:8px">@up.TotId</div>
+                                                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+                                                        <span style="font-size:10px;font-weight:700;color:var(--card-label,#64748b)">@up.TotId</span>
+                                                        <span style="font-size:10px;font-weight:900;color:@(up.PendingQty > 0 ? "#ef4444" : "var(--card-label,#64748b)")">Qty : @up.PendingQty</span>
+                                                    </div>
                                                     <div style="display:flex;gap:10px;margin-bottom:3px">
                                                         <div style="font-size:9px;color:var(--card-label,#64748b);text-transform:uppercase;letter-spacing:.4px;white-space:nowrap">Shop ID</div>
                                                         <div style="font-size:9px;color:var(--card-label,#64748b);text-transform:uppercase;letter-spacing:.4px">Shop Name</div>
@@ -313,7 +316,10 @@
                                                             </button>
                                                         </div>
                                                     </div>
-                                                    <div style="font-size:10px;font-weight:700;color:var(--card-label,#64748b);margin-bottom:8px">@dn.TotId</div>
+                                                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+                                                        <span style="font-size:10px;font-weight:700;color:var(--card-label,#64748b)">@dn.TotId</span>
+                                                        <span style="font-size:10px;font-weight:900;color:@(dn.PendingQty > 0 ? "#ef4444" : "var(--card-label,#64748b)")">Qty : @dn.PendingQty</span>
+                                                    </div>
                                                     <div style="display:flex;gap:10px;margin-bottom:3px">
                                                         <div style="font-size:9px;color:var(--card-label,#64748b);text-transform:uppercase;letter-spacing:.4px;white-space:nowrap">Shop ID</div>
                                                         <div style="font-size:9px;color:var(--card-label,#64748b);text-transform:uppercase;letter-spacing:.4px">Shop Name</div>
@@ -383,7 +389,7 @@
     private bool   _loading;
     private List<ChuteConfigRow> _rows = [];
 
-    private Dictionary<char, Dictionary<string, Dictionary<string, (string Id, int? Status, string? ShopId, string? ShopName, string? TotId)>>> _grid = new();
+    private Dictionary<char, Dictionary<string, Dictionary<string, (string Id, int? Status, string? ShopId, string? ShopName, string? TotId, int PendingQty)>>> _grid = new();
 
     private static readonly System.Text.RegularExpressions.Regex _rx =
         new(@"([A-Ea-e])(\d{3})", System.Text.RegularExpressions.RegexOptions.Compiled);
@@ -395,6 +401,7 @@
     private string  _dragShopName = "";
     private Dictionary<string, (string ShopId, string ShopName)> _cellOverrides = new();
     private Dictionary<string, int> _allocatedCounts = new();
+    private Dictionary<string, int> _pendingQties = new();
     private CancellationTokenSource? _searchCts;
     private List<ShopNameRow> _shopNames = [];
     private string? _highlightShopId;
@@ -499,9 +506,11 @@
             int layerNum = _layer == "Double" ? 2 : 1;
             var gridTask   = Chute.GetChuteConfigAsync(_warehouse, layerNum);
             var countTask  = Chute.GetAllocatedChuteCountsAsync(_warehouse);
-            await Task.WhenAll(gridTask, countTask);
+            var qtyTask    = Chute.GetChutePendingQtiesAsync(_warehouse);
+            await Task.WhenAll(gridTask, countTask, qtyTask);
             _rows            = gridTask.Result;
             _allocatedCounts = countTask.Result;
+            _pendingQties    = qtyTask.Result;
             BuildGrid();
         }
         catch (Exception ex)
@@ -526,17 +535,18 @@
             string dir    = string.Equals(row.Direction, "DOWN", StringComparison.OrdinalIgnoreCase) ? "DOWN" : "UP";
             if (!_grid.ContainsKey(sec))         _grid[sec]         = new();
             if (!_grid[sec].ContainsKey(rowNum)) _grid[sec][rowNum] = new();
-            _grid[sec][rowNum][dir] = (row.ChuteId, row.Status, row.ShopId, row.ShopName, row.TotId);
+            _grid[sec][rowNum][dir] = (row.ChuteId, row.Status, row.ShopId, row.ShopName, row.TotId,
+                _pendingQties.GetValueOrDefault(row.ChuteId, 0));
         }
     }
 
-    private (string? Id, int? Status, string? ShopId, string? ShopName, string? TotId) GetCell(char section, string row, string direction)
+    private (string? Id, int? Status, string? ShopId, string? ShopName, string? TotId, int PendingQty) GetCell(char section, string row, string direction)
     {
         if (_grid.TryGetValue(section, out var s) &&
             s.TryGetValue(row, out var r) &&
             r.TryGetValue(direction, out var cell))
             return cell;
-        return (null, null, null, null, null);
+        return (null, null, null, null, null, 0);
     }
 
     private async Task SaveCellAsync(string? chuteId)
