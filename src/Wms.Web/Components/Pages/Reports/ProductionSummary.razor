@@ -172,13 +172,13 @@ else if (VisibleRows().Count > 0)
                     {
                         <div style="margin:10px 0 0 12px; padding-top:10px; border-top:1px dashed var(--border-default);">
                             <div style="display:grid; grid-template-columns: repeat(7, 1fr); gap:12px;">
-                                @ShopCard("UAE Shops",   visibleSummary.Sum(s => s.UaeStoreQty).ToString("N0"),  "#3730a3")
-                                @ShopCard("Oman Shops",  visibleSummary.Sum(s => s.OmanStoreQty).ToString("N0"), "#166534")
-                                @ShopCard("EX2KSA",      VisibleEx2ShopQty("KSA").ToString("N0"),      "#6d28d9")
-                                @ShopCard("EX2QATAR",    VisibleEx2ShopQty("QATAR").ToString("N0"),    "#6d28d9")
-                                @ShopCard("EX2BAHRAIN",  VisibleEx2ShopQty("BAHRAIN").ToString("N0"),   "#6d28d9")
-                                @ShopCard("EX2KUWAIT",   VisibleEx2ShopQty("KUWAIT").ToString("N0"),    "#6d28d9")
-                                @ShopCard("EX2MALAYSIA", VisibleEx2ShopQty("MALAYSIA").ToString("N0"),  "#6d28d9")
+                                @ShopCard("UA", "UAE Shops",   visibleSummary.Sum(s => s.UaeStoreQty).ToString("N0"),  "#3730a3")
+                                @ShopCard("OM", "Oman Shops",  visibleSummary.Sum(s => s.OmanStoreQty).ToString("N0"), "#166534")
+                                @ShopCard("KS", "EX2KSA",      VisibleEx2ShopQty("KSA").ToString("N0"),      "#6d28d9")
+                                @ShopCard("QA", "EX2QATAR",    VisibleEx2ShopQty("QATAR").ToString("N0"),    "#6d28d9")
+                                @ShopCard("BH", "EX2BAHRAIN",  VisibleEx2ShopQty("BAHRAIN").ToString("N0"),   "#6d28d9")
+                                @ShopCard("KW", "EX2KUWAIT",   VisibleEx2ShopQty("KUWAIT").ToString("N0"),    "#6d28d9")
+                                @ShopCard("MY", "EX2MALAYSIA", VisibleEx2ShopQty("MALAYSIA").ToString("N0"),  "#6d28d9")
                             </div>
                         </div>
                     }
@@ -758,11 +758,14 @@ else if (_loadedOnce && VisibleRows().Count == 0)
         </div>
     };
 
-    private RenderFragment ShopCard(string label, string value, string fg) => __builder =>
+    private RenderFragment ShopCard(string badgeCode, string label, string value, string fg) => __builder =>
     {
-        <div style="background:white; color:@fg; padding:12px 16px; border-radius:var(--r-sm); border:1px solid var(--border-default); border-left:4px solid @fg; box-shadow:0 1px 3px rgba(0,0,0,0.06); text-align:center; display:flex; flex-direction:column; align-items:center; justify-content:center;">
-            <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">@label</div>
-            <div style="font-size:1.2rem; font-weight:700">@value</div>
+        <div style="background:white; padding:10px 14px; border-radius:var(--r-sm); border:1px solid var(--border-default); box-shadow:0 1px 3px rgba(0,0,0,0.06); display:flex; align-items:center; gap:10px;">
+            <div style="flex-shrink:0; width:34px; height:34px; border-radius:50%; background:@fg; color:white; display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:800; letter-spacing:.5px;">@badgeCode</div>
+            <div style="display:flex; flex-direction:column; min-width:0;">
+                <div style="font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.5px; color:var(--text-secondary); white-space:nowrap;">@label</div>
+                <div style="font-size:1.1rem; font-weight:700; color:@fg;">@value</div>
+            </div>
         </div>
     };
 
