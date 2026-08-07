@@ -126,14 +126,13 @@ else if (VisibleRows().Count > 0)
     var visibleStoreQty    = visibleRows.Sum(r => r.StoreQty);
     var visibleTransferQty = _transferQtyByCountry.Where(kv => _selectedCountries.Contains(kv.Key)).Sum(kv => kv.Value);
     var visibleMerchNeed   = _merchNeedByCountry.Where(kv => _selectedCountries.Contains(kv.Key)).Select(kv => kv.Value).ToList();
-    var merchNeedMonth     = visibleMerchNeed.Sum(m => m.MerchNeedMonth);
     var merchNeedWeek      = visibleMerchNeed.Sum(m => m.MerchNeedWeek);
     var merchNeedDay       = visibleMerchNeed.Sum(m => m.MerchNeedDay);
     var isUaeVisible       = _selectedCountries.Contains("UAE");
     var visibleEx2Qty      = visibleSummary.Sum(s => s.Ex2StoreQty);
 
     <div class="aiwms-section">
-        <div style="display:grid; grid-template-columns: repeat(@(isUaeVisible ? 8 : 7), 1fr); gap:12px;">
+        <div style="display:grid; grid-template-columns: repeat(@(isUaeVisible ? 7 : 6), 1fr); gap:12px;">
             @MetricCard("Store Qty",      visibleStoreQty.ToString("N0"), "#fdf2f8", "#9d174d", false)
             @if (visibleTransferQty > 0)
             {
@@ -145,7 +144,6 @@ else if (VisibleRows().Count > 0)
             {
                 @MetricCard("EX2LOCATIONS", visibleEx2Qty.ToString("N0"), "#ede9fe", "#5b21b6", false)
             }
-            @MetricCard("Merch Need (Month)", merchNeedMonth.ToString("N0"), "#ffedd5", "#9a3412", false)
             @MetricCard("Merch Need (Week)",  merchNeedWeek.ToString("N0"),  "#ffedd5", "#9a3412", false)
             @MetricCard("Merch Need (Day)",   merchNeedDay.ToString("N0"),   "#ffedd5", "#9a3412", false)
         </div>
@@ -157,14 +155,20 @@ else if (VisibleRows().Count > 0)
             <div class="aiwms-card-header">By Country</div>
             @foreach (var cs in CountrySummaries(visibleRows))
             {
+                var merchNeedPct = cs.MerchNeedWeek > 0 ? (double)cs.StoreQty / cs.MerchNeedWeek * 100 : 0;
+                var merchNeedPctColor = merchNeedPct >= 100 ? "#15803d" : "#dc2626";
                 <div style="margin-bottom:14px; border:1px solid var(--border-default); border-radius:var(--r-sm); padding:14px;">
-                    <div style="text-align:center; font-size:16px; font-weight:800; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary); margin-bottom:10px;">@cs.Country</div>
-                    <div style="display:grid; grid-template-columns: repeat(7, 1fr); gap:12px;">
+                    <div style="display:flex; align-items:baseline; justify-content:space-between; margin-bottom:10px;">
+                        <div style="font-size:16px; font-weight:800; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary);">@cs.Country</div>
+                        <div style="font-size:16px; font-weight:800; text-transform:uppercase; letter-spacing:1px; color:@merchNeedPctColor;">
+                            Merch Need % @merchNeedPct.ToString("N1")%
+                        </div>
+                    </div>
+                    <div style="display:grid; grid-template-columns: repeat(6, 1fr); gap:12px;">
                         @MetricCard("Store Qty",      cs.StoreQty.ToString("N0"),     "#fdf2f8", "#9d174d", false)
                         @MetricCard("Transfer Qty",   cs.TransferQty.ToString("N0"),  "#ccfbf1", "#0f766e", false)
                         @MetricCard("Total Scanned",  cs.TotalScanned.ToString("N0"), "#dbeafe", "#1e40af", false)
                         @MetricCard("Unknown",        cs.Unknown.ToString("N0"),      "#fef3c7", "#92400e", false)
-                        @MetricCard("Merch Need (Month)", cs.MerchNeedMonth.ToString("N0"), "#ffedd5", "#9a3412", false)
                         @MetricCard("Merch Need (Week)",  cs.MerchNeedWeek.ToString("N0"),  "#ffedd5", "#9a3412", false)
                         @MetricCard("Merch Need (Day)",   cs.MerchNeedDay.ToString("N0"),   "#ffedd5", "#9a3412", false)
                     </div>
