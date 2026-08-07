@@ -21,12 +21,20 @@ public sealed record ProductionCheckingSummaryRow(
     int      Ex2StoreQty,
     long     Ex2TotalScanned);
 
+/// <summary>Store Qty for a single Ex2Locations shop, by its actual Country
+/// (bfldata.dbo.DataSettings.Country -- KSA/QATAR/BAHRAIN/KUWAIT/MALAYSIA),
+/// not the shared "Ex2Locations" SIMCountry bucket.</summary>
+public sealed record Ex2ShopRow(
+    string Country,
+    int    StoreQty);
+
 /// <summary>Bundle of detailed rows + summary rows + scalars returned in one go.</summary>
 public sealed record ProductionCheckingResult(
     List<ProductionCheckingRow>        Rows,
     List<ProductionCheckingSummaryRow> Summary,
     int                                 OverallStoreQty,
-    long                                TransferQty);
+    long                                TransferQty,
+    List<Ex2ShopRow>                   Ex2Shops);
 
 /// <summary>Merch Need (Month/Week/Day) totals for a country's current calendar month, from LPM_EOM_Output.</summary>
 public sealed record MerchNeedRow(
