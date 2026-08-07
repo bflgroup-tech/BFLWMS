@@ -126,14 +126,13 @@ else if (VisibleRows().Count > 0)
     var visibleStoreQty    = visibleRows.Sum(r => r.StoreQty);
     var visibleTransferQty = _transferQtyByCountry.Where(kv => _selectedCountries.Contains(kv.Key)).Sum(kv => kv.Value);
     var visibleMerchNeed   = _merchNeedByCountry.Where(kv => _selectedCountries.Contains(kv.Key)).Select(kv => kv.Value).ToList();
-    var merchNeedMonth     = visibleMerchNeed.Sum(m => m.MerchNeedMonth);
     var merchNeedWeek      = visibleMerchNeed.Sum(m => m.MerchNeedWeek);
     var merchNeedDay       = visibleMerchNeed.Sum(m => m.MerchNeedDay);
     var isUaeVisible       = _selectedCountries.Contains("UAE");
     var visibleEx2Qty      = visibleSummary.Sum(s => s.Ex2StoreQty);
 
     <div class="aiwms-section">
-        <div style="display:grid; grid-template-columns: repeat(@(isUaeVisible ? 8 : 7), 1fr); gap:12px;">
+        <div style="display:grid; grid-template-columns: repeat(@(isUaeVisible ? 7 : 6), 1fr); gap:12px;">
             @MetricCard("Store Qty",      visibleStoreQty.ToString("N0"), "#fdf2f8", "#9d174d", false)
             @if (visibleTransferQty > 0)
             {
@@ -145,7 +144,6 @@ else if (VisibleRows().Count > 0)
             {
                 @MetricCard("EX2LOCATIONS", visibleEx2Qty.ToString("N0"), "#ede9fe", "#5b21b6", false)
             }
-            @MetricCard("Merch Need (Month)", merchNeedMonth.ToString("N0"), "#ffedd5", "#9a3412", false)
             @MetricCard("Merch Need (Week)",  merchNeedWeek.ToString("N0"),  "#ffedd5", "#9a3412", false)
             @MetricCard("Merch Need (Day)",   merchNeedDay.ToString("N0"),   "#ffedd5", "#9a3412", false)
         </div>
