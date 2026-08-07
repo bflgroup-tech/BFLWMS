@@ -785,9 +785,8 @@ public class ReportsService(IOnPremConnectionResolver resolver)
     /// UAE-wide total, not that country's own).
     /// </summary>
     public async Task<ProductionCheckingResult> GetProductionCheckingAsync(
-        string country, DateTime fromDate, DateTime toDateInclusive, string? warehouse = null, CancellationToken ct = default)
+        string country, DateTime fromDate, DateTime toDateInclusive, CancellationToken ct = default)
     {
-        var warehouseFilter = string.IsNullOrWhiteSpace(warehouse) ? null : warehouse.Trim();
         // 1.14.268 (LPMSIM) — for any non-UAE country with a {Country}_DB_ConnectionString
         // configured, read scans directly from that server and bulk-copy them onto the
         // central UAE backup connection for the LPMSIM_Batch / Datareporting enrichment.
@@ -858,28 +857,6 @@ SELECT
 
 CREATE CLUSTERED INDEX IX_Scans ON #Scans (BatchNo, Itemcode);
 
--- 1b) Warehouse (UAE only: JAFZA/TECHNO) resolved once per Contno via Online.dbo.Photochecking.
--- Same OUTER APPLY TOP 1 technique as Counting Completion Report -- a container can have
--- 100k+ scan rows there, so this avoids aggregating over every matching row.
-IF OBJECT_ID('tempdb..#ScanWh') IS NOT NULL DROP TABLE #ScanWh;
-SELECT b.Contno, wh.Warehouse
-  INTO #ScanWh
-  FROM (SELECT DISTINCT Contno FROM #Scans WHERE Contno <> '') b
-  OUTER APPLY (
-      SELECT TOP 1 p.Warehouse
-        FROM Online.dbo.Photochecking p WITH (NOLOCK, FORCESEEK)
-       WHERE p.ContNo = b.Contno AND p.Warehouse IS NOT NULL AND p.Warehouse <> ''
-  ) wh;
-CREATE CLUSTERED INDEX IX_ScanWh ON #ScanWh (Contno);
-
--- 1c) Warehouse filter (UAE only, matching Counting Completion's convention of
--- defaulting an unresolved container's warehouse to JAFZA).
-IF @warehouseFilter IS NOT NULL
-DELETE s
-  FROM #Scans s
-  LEFT JOIN #ScanWh wh ON wh.Contno = s.Contno
- WHERE ISNULL(wh.Warehouse, 'JAFZA') <> @warehouseFilter;
-
 -- 2) Country gate. Delete wrong-country batches; keep orphans & nulls as Unknown.
 DELETE s
   FROM #Scans s
@@ -939,7 +916,8 @@ SELECT
     StoreQty     = SUM(CASE WHEN s.Result IN (0, 13) THEN 1 ELSE 0 END),
     UaeStoreQty  = SUM(CASE WHEN s.Result IN (0, 13) AND ds.SIMCountry = 'UAE'          THEN 1 ELSE 0 END),
     OmanStoreQty = SUM(CASE WHEN s.Result IN (0, 13) AND ds.SIMCountry = 'Oman'         THEN 1 ELSE 0 END),
-    Ex2StoreQty  = SUM(CASE WHEN s.Result IN (0, 13) AND ds.SIMCountry = 'Ex2Locations' THEN 1 ELSE 0 END)
+    Ex2StoreQty  = SUM(CASE WHEN s.Result IN (0, 13) AND ds.SIMCountry = 'Ex2Locations' THEN 1 ELSE 0 END),
+    Ex2TotalScanned = COUNT_BIG(CASE WHEN ds.SIMCountry = 'Ex2Locations' THEN 1 END)
   FROM #Scans s
   LEFT JOIN #BatchKind         bk  ON bk.LPMBatchNo = s.BatchNo
   LEFT JOIN #ItemDiv           idv ON idv.itemcode  = s.Itemcode
@@ -952,13 +930,12 @@ SELECT
 -- 7) Overall Store Qty scalar.
 SELECT OverallStoreQty = SUM(CASE WHEN Result IN (0, 13) THEN 1 ELSE 0 END) FROM #Scans;
 
-DROP TABLE #Scans, #BatchKind, #ItemDiv, #ScanWh;";
+DROP TABLE #Scans, #BatchKind, #ItemDiv;";
             cmd.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@fromDateOnly",        fromDateOnly));
             cmd.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@toDateExclusiveOnly", toDateExclusiveOnly));
             cmd.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@from",                fromInclusive));
             cmd.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@toExclusive",         toExclusive));
             cmd.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@country",             country));
-            cmd.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@warehouseFilter",      (object?)warehouseFilter ?? DBNull.Value));
 
             await using var rdr = await cmd.ExecuteReaderAsync(ct);
             while (await rdr.ReadAsync(ct))
@@ -983,7 +960,8 @@ DROP TABLE #Scans, #BatchKind, #ItemDiv, #ScanWh;";
                         StoreQty:      rdr.IsDBNull(4) ? 0 : rdr.GetInt32(4),
                         UaeStoreQty:   rdr.IsDBNull(5) ? 0 : rdr.GetInt32(5),
                         OmanStoreQty:  rdr.IsDBNull(6) ? 0 : rdr.GetInt32(6),
-                        Ex2StoreQty:   rdr.IsDBNull(7) ? 0 : rdr.GetInt32(7)));
+                        Ex2StoreQty:   rdr.IsDBNull(7) ? 0 : rdr.GetInt32(7),
+                        Ex2TotalScanned: rdr.IsDBNull(8) ? 0 : rdr.GetInt64(8)));
                 }
             }
             if (await rdr.NextResultAsync(ct) && await rdr.ReadAsync(ct))
@@ -1124,7 +1102,8 @@ DROP TABLE #Scans, #BatchKind, #ItemDiv, #ScanWh;";
                         StoreQty:      rdr.IsDBNull(4) ? 0  : rdr.GetInt32(4),
                         UaeStoreQty:   rdr.IsDBNull(5) ? 0  : rdr.GetInt32(5),
                         OmanStoreQty:  rdr.IsDBNull(6) ? 0  : rdr.GetInt32(6),
-                        Ex2StoreQty:   rdr.IsDBNull(7) ? 0  : rdr.GetInt32(7)));
+                        Ex2StoreQty:   rdr.IsDBNull(7) ? 0  : rdr.GetInt32(7),
+                        Ex2TotalScanned: rdr.IsDBNull(8) ? 0L : rdr.GetInt64(8)));
                 }
             }
             if (await rdr.NextResultAsync(ct) && await rdr.ReadAsync(ct))
@@ -1246,7 +1225,8 @@ SELECT
     StoreQty     = SUM(CASE WHEN s.Result IN (0, 13) THEN 1 ELSE 0 END),
     UaeStoreQty  = SUM(CASE WHEN s.Result IN (0, 13) AND ds.SIMCountry = 'UAE'          THEN 1 ELSE 0 END),
     OmanStoreQty = SUM(CASE WHEN s.Result IN (0, 13) AND ds.SIMCountry = 'Oman'         THEN 1 ELSE 0 END),
-    Ex2StoreQty  = SUM(CASE WHEN s.Result IN (0, 13) AND ds.SIMCountry = 'Ex2Locations' THEN 1 ELSE 0 END)
+    Ex2StoreQty  = SUM(CASE WHEN s.Result IN (0, 13) AND ds.SIMCountry = 'Ex2Locations' THEN 1 ELSE 0 END),
+    Ex2TotalScanned = COUNT_BIG(CASE WHEN ds.SIMCountry = 'Ex2Locations' THEN 1 END)
   FROM #Scans s
   LEFT JOIN #BatchKind         bk  ON bk.LPMBatchNo = s.BatchNo
   LEFT JOIN #ItemDiv           idv ON idv.itemcode  = s.Itemcode

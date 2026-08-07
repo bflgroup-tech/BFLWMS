@@ -18,7 +18,8 @@ public sealed record ProductionCheckingSummaryRow(
     int      StoreQty,
     int      UaeStoreQty,
     int      OmanStoreQty,
-    int      Ex2StoreQty);
+    int      Ex2StoreQty,
+    long     Ex2TotalScanned);
 
 /// <summary>Bundle of detailed rows + summary rows + scalars returned in one go.</summary>
 public sealed record ProductionCheckingResult(
