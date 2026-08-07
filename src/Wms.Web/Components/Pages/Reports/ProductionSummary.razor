@@ -525,7 +525,8 @@ else if (_loadedOnce && VisibleRows().Count == 0)
                     sRows.Sum(s => s.Ex2TotalScanned),
                     sRows.Where(s => s.Kind == "Unknown").Sum(s => s.Ex2TotalScanned));
             })
-            .OrderBy(c => c.Country)
+            .OrderBy(c => string.Equals(c.Country, "UAE", StringComparison.OrdinalIgnoreCase) ? 0 : 1)
+            .ThenBy(c => c.Country)
             .ToList();
     }
 
