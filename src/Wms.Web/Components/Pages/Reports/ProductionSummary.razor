@@ -172,7 +172,7 @@ else if (VisibleRows().Count > 0)
                     {
                         <div style="margin:10px 0 0 12px; padding-top:10px; border-top:1px dashed var(--border-default);">
                             <div style="display:grid; grid-template-columns: repeat(7, 1fr); gap:12px;">
-                                @ShopCard("UA", "UAE Shops",   visibleSummary.Sum(s => s.UaeStoreQty).ToString("N0"),  "#3730a3")
+                                @ShopCard("UA", "UAE Shops",   visibleSummary.Sum(s => s.UaeStoreQty).ToString("N0"),  "#166534")
                                 @ShopCard("OM", "Oman Shops",  visibleSummary.Sum(s => s.OmanStoreQty).ToString("N0"), "#166534")
                                 @ShopCard("KS", "EX2KSA",      VisibleEx2ShopQty("KSA").ToString("N0"),      "#6d28d9")
                                 @ShopCard("QA", "EX2QATAR",    VisibleEx2ShopQty("QATAR").ToString("N0"),    "#6d28d9")
