@@ -802,7 +802,7 @@ public class ReportsService(IOnPremConnectionResolver resolver)
                 // Best-effort fallback: central OnPremBackup's copy (UAE-wide, not this country's).
                 await using var backupConn = OpenOnPremBackup();
                 var noScanTransferQty = await GetTransferQtyAsync(backupConn, uaeOnly: false, fromDate, toDateInclusive, ct);
-                return new ProductionCheckingResult(new(), new(), 0, noScanTransferQty);
+                return new ProductionCheckingResult(new(), new(), 0, noScanTransferQty, new());
             }
             return await GetProductionCheckingViaConnStringAsync(country, cs, fromDate, toDateInclusive, ct);
         }
@@ -814,8 +814,9 @@ public class ReportsService(IOnPremConnectionResolver resolver)
         var fromDateOnly        = fromDate.Date;
         var toDateExclusiveOnly = toDateInclusive.Date.AddDays(2);
 
-        var rows    = new List<ProductionCheckingRow>();
-        var summary = new List<ProductionCheckingSummaryRow>();
+        var rows      = new List<ProductionCheckingRow>();
+        var summary   = new List<ProductionCheckingSummaryRow>();
+        var ex2Shops  = new List<Ex2ShopRow>();
         int overallStoreQty = 0;
 
         await using var conn = OpenOnPremBackup();
@@ -930,6 +931,14 @@ SELECT
 -- 7) Overall Store Qty scalar.
 SELECT OverallStoreQty = SUM(CASE WHEN Result IN (0, 13) THEN 1 ELSE 0 END) FROM #Scans;
 
+-- 8) Ex2Locations per-shop breakdown, by the shop's actual Country (KSA/QATAR/BAHRAIN/
+-- KUWAIT/MALAYSIA) rather than the shared 'Ex2Locations' SIMCountry bucket.
+SELECT ds.Country,
+       StoreQty = SUM(CASE WHEN s.Result IN (0, 13) THEN 1 ELSE 0 END)
+  FROM #Scans s
+  INNER JOIN bfldata.dbo.DataSettings ds ON ds.ShopName = s.ShopName AND ds.SIMCountry = 'Ex2Locations'
+ GROUP BY ds.Country;
+
 DROP TABLE #Scans, #BatchKind, #ItemDiv;";
             cmd.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@fromDateOnly",        fromDateOnly));
             cmd.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@toDateExclusiveOnly", toDateExclusiveOnly));
@@ -968,6 +977,15 @@ DROP TABLE #Scans, #BatchKind, #ItemDiv;";
             {
                 overallStoreQty = rdr.IsDBNull(0) ? 0 : rdr.GetInt32(0);
             }
+            if (await rdr.NextResultAsync(ct))
+            {
+                while (await rdr.ReadAsync(ct))
+                {
+                    ex2Shops.Add(new Ex2ShopRow(
+                        Country:  rdr.IsDBNull(0) ? "" : rdr.GetString(0),
+                        StoreQty: rdr.IsDBNull(1) ? 0  : rdr.GetInt32(1)));
+                }
+            }
         }
 
         // Transfer Qty — separate query, bfldata source. UAE keeps the Warehouse='TECHNO'
@@ -975,7 +993,7 @@ DROP TABLE #Scans, #BatchKind, #ItemDiv;";
         // the filter is dropped and the raw (UAE-wide) total is returned instead.
         var transferQty = await GetTransferQtyAsync(conn, uaeOnly: true, fromDate, toDateInclusive, ct);
 
-        return new ProductionCheckingResult(rows, summary, overallStoreQty, transferQty);
+        return new ProductionCheckingResult(rows, summary, overallStoreQty, transferQty, ex2Shops);
     }
 
     // bfldata.dbo.DailyCountCategoryTrf has no Country column — only a UAE-warehouse
@@ -1054,7 +1072,7 @@ DROP TABLE #Scans, #BatchKind, #ItemDiv;";
         await using var conn = OpenOnPremBackup();
 
         if (scanTable.Rows.Count == 0)
-            return new ProductionCheckingResult(rows, summary, 0, transferQty);
+            return new ProductionCheckingResult(rows, summary, 0, transferQty, new());
 
         await using (var createCmd = conn.CreateCommand())
         {
@@ -1110,7 +1128,7 @@ DROP TABLE #Scans, #BatchKind, #ItemDiv;";
                 overallStoreQty = rdr.IsDBNull(0) ? 0 : rdr.GetInt32(0);
         }
 
-        return new ProductionCheckingResult(rows, summary, overallStoreQty, transferQty);
+        return new ProductionCheckingResult(rows, summary, overallStoreQty, transferQty, new());
     }
 
     private static DataTable BuildScanDataTable()

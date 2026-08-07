@@ -151,7 +151,7 @@ else if (VisibleRows().Count > 0)
         </div>
     </div>
 
-    @if (_selectedCountries.Count > 1)
+    @if (_selectedCountries.Count > 0)
     {
         <div class="aiwms-section">
             <div class="aiwms-card-header">By Country</div>
@@ -170,15 +170,16 @@ else if (VisibleRows().Count > 0)
                     </div>
                     @if (string.Equals(cs.Country, "UAE", StringComparison.OrdinalIgnoreCase))
                     {
-                        <div style="font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary); margin:10px 0 6px 12px;">EX2LOCATIONS</div>
-                        <div style="display:grid; grid-template-columns: repeat(7, 1fr); gap:12px; margin-left:12px;">
-                            @MetricCard("Store Qty",      cs.Ex2StoreQty.ToString("N0"),     "#fdf2f8", "#9d174d", false)
-                            @MetricCard("Transfer Qty",   "—",  "#ccfbf1", "#0f766e", false)
-                            @MetricCard("Total Scanned",  cs.Ex2TotalScanned.ToString("N0"), "#dbeafe", "#1e40af", false)
-                            @MetricCard("Unknown",        cs.Ex2Unknown.ToString("N0"),      "#fef3c7", "#92400e", false)
-                            @MetricCard("Merch Need (Month)", "—", "#ffedd5", "#9a3412", false)
-                            @MetricCard("Merch Need (Week)",  "—", "#ffedd5", "#9a3412", false)
-                            @MetricCard("Merch Need (Day)",   "—", "#ffedd5", "#9a3412", false)
+                        <div style="margin:10px 12px 0 12px; padding-top:10px; border-top:1px dashed var(--border-default);">
+                            <div style="display:grid; grid-template-columns: repeat(7, 1fr); gap:12px;">
+                                @ShopCard("UA", "UAE Shops",   visibleSummary.Sum(s => s.UaeStoreQty).ToString("N0"),  "#166534")
+                                @ShopCard("OM", "Oman Shops",  visibleSummary.Sum(s => s.OmanStoreQty).ToString("N0"), "#166534")
+                                @ShopCard("KS", "EX2KSA",      VisibleEx2ShopQty("KSA").ToString("N0"),      "#6d28d9")
+                                @ShopCard("QA", "EX2QATAR",    VisibleEx2ShopQty("QATAR").ToString("N0"),    "#6d28d9")
+                                @ShopCard("BH", "EX2BAHRAIN",  VisibleEx2ShopQty("BAHRAIN").ToString("N0"),   "#6d28d9")
+                                @ShopCard("KW", "EX2KUWAIT",   VisibleEx2ShopQty("KUWAIT").ToString("N0"),    "#6d28d9")
+                                @ShopCard("MY", "EX2MALAYSIA", VisibleEx2ShopQty("MALAYSIA").ToString("N0"),  "#6d28d9")
+                            </div>
                         </div>
                     }
                 </div>
@@ -440,6 +441,16 @@ else if (_loadedOnce && VisibleRows().Count == 0)
     private Dictionary<string, long> _transferQtyByCountry = new(StringComparer.OrdinalIgnoreCase);
     private Dictionary<string, MerchNeedRow> _merchNeedByCountry = new(StringComparer.OrdinalIgnoreCase);
     private Dictionary<string, List<MerchNeedDivisionRow>> _merchNeedByCountryDivision = new(StringComparer.OrdinalIgnoreCase);
+    private Dictionary<string, List<Ex2ShopRow>> _ex2ShopsByCountry = new(StringComparer.OrdinalIgnoreCase);
+
+    // Sum of Ex2Shops StoreQty across every visible country's data, for one actual
+    // Ex2Locations country (e.g. "KSA", "QATAR") -- see Ex2ShopRow.Country.
+    private int VisibleEx2ShopQty(string shopCountry) =>
+        _ex2ShopsByCountry
+            .Where(kv => _selectedCountries.Contains(kv.Key))
+            .SelectMany(kv => kv.Value)
+            .Where(s => string.Equals(s.Country, shopCountry, StringComparison.OrdinalIgnoreCase))
+            .Sum(s => s.StoreQty);
 
     private (long Month, long Week, long Day) MerchNeedFor(string country, string division)
     {
@@ -599,7 +610,7 @@ else if (_loadedOnce && VisibleRows().Count == 0)
     {
         if (!CanLoad) return;
         _loading = true; _message = ""; _loadedOnce = false;
-        _rows.Clear(); _summary.Clear(); _overallStoreQty = 0; _transferQty = 0; _transferQtyByCountry.Clear(); _merchNeedByCountry.Clear(); _merchNeedByCountryDivision.Clear();
+        _rows.Clear(); _summary.Clear(); _overallStoreQty = 0; _transferQty = 0; _transferQtyByCountry.Clear(); _merchNeedByCountry.Clear(); _merchNeedByCountryDivision.Clear(); _ex2ShopsByCountry.Clear();
         await InvokeAsync(StateHasChanged);
         try
         {
@@ -627,6 +638,7 @@ else if (_loadedOnce && VisibleRows().Count == 0)
                 _overallStoreQty += result.OverallStoreQty;
                 _transferQty     += result.TransferQty;
                 _transferQtyByCountry[country] = result.TransferQty;
+                _ex2ShopsByCountry[country] = result.Ex2Shops;
 
                 // Merch Need reads LPMSIM.dbo.tmpPlanningTarget directly, keyed off the
                 // selected week (4-4-5 month bucket) — independent of the per-country scan
@@ -743,6 +755,17 @@ else if (_loadedOnce && VisibleRows().Count == 0)
         <div style="background:@bg; color:@fg; padding:12px 16px; border-radius:var(--r-sm); border:1px solid #00000010; text-align:center; display:flex; flex-direction:column; align-items:center; justify-content:center;">
             <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px">@label</div>
             <div style="font-size:@(big ? "1.6rem" : "1.2rem"); font-weight:@(big ? "900" : "700")">@value</div>
+        </div>
+    };
+
+    private RenderFragment ShopCard(string badgeCode, string label, string value, string fg) => __builder =>
+    {
+        <div style="background:white; padding:10px 14px; border-radius:var(--r-sm); border:1px solid var(--border-default); box-shadow:0 1px 3px rgba(0,0,0,0.06); display:flex; align-items:center; gap:10px;">
+            <div style="flex-shrink:0; width:34px; height:34px; border-radius:50%; background:@fg; color:white; display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:800; letter-spacing:.5px;">@badgeCode</div>
+            <div style="display:flex; flex-direction:column; min-width:0;">
+                <div style="font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.5px; color:var(--text-secondary); white-space:nowrap;">@label</div>
+                <div style="font-size:1.1rem; font-weight:700; color:@fg;">@value</div>
+            </div>
         </div>
     };
 

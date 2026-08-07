@@ -6,17 +6,33 @@
     <RootNamespace>Wms.Web</RootNamespace>
     <UserSecretsId>4b8d3a42-cc08-411c-9a33-3c84ef8f4c19</UserSecretsId>
     <!-- CI overrides this with -p:Version=1.0.${{ github.run_number }} -->
-    <Version>1.0.380</Version>
-    <!-- CI overrides this with -p:LatestPrNumber=<PR number extracted from the squash-merge commit message> -->
-    <LatestPrNumber>dev</LatestPrNumber>
+    <Version>1.0.392</Version>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\Wms.Core\Wms.Core.csproj" />
     <ProjectReference Include="..\Wms.Data\Wms.Data.csproj" />
   </ItemGroup>
-  <ItemGroup>
-    <AssemblyMetadata Include="LatestPrNumber" Value="$(LatestPrNumber)" />
-  </ItemGroup>
+  <!--
+    LatestPrNumber: CI passes -p:LatestPrNumber=<PR number from the squash-merge commit
+    message>. When not supplied (local/dev builds), fall back to reading it straight out
+    of the local git log so the sidebar badge still shows a real number instead of a
+    placeholder.
+  -->
+  <Target Name="ComputeLatestPrNumber" BeforeTargets="GenerateAssemblyInfo">
+    <Exec Condition="'$(LatestPrNumber)' == ''"
+          Command="git log -1 --pretty=%25s"
+          ConsoleToMSBuild="true" StandardOutputImportance="low" ContinueOnError="true">
+      <Output TaskParameter="ConsoleOutput" PropertyName="_GitLastCommitMessage" />
+    </Exec>
+    <PropertyGroup Condition="'$(LatestPrNumber)' == ''">
+      <_ComputedPrNumber>$([System.Text.RegularExpressions.Regex]::Match($(_GitLastCommitMessage), '#(\d+)$').Groups[1].Value)</_ComputedPrNumber>
+      <LatestPrNumber Condition="'$(_ComputedPrNumber)' != ''">$(_ComputedPrNumber)</LatestPrNumber>
+      <LatestPrNumber Condition="'$(LatestPrNumber)' == ''">unknown</LatestPrNumber>
+    </PropertyGroup>
+    <ItemGroup>
+      <AssemblyMetadata Include="LatestPrNumber" Value="$(LatestPrNumber)" />
+    </ItemGroup>
+  </Target>
   <ItemGroup>
     <PackageReference Include="Microsoft.Identity.Web" Version="3.10.0" />
     <PackageReference Include="Microsoft.Identity.Web.UI" Version="3.5.0" />
