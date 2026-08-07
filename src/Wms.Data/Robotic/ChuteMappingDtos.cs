@@ -13,3 +13,5 @@ public record ShopNameRow(int? RoboShopId, string? ShopName, int Qty)
 }
 
 public record ChuteCountRow(string? ShopId, int ChuteCount);
+
+public record ChutePendingQtyRow(string ChuteId, int PendingQty);

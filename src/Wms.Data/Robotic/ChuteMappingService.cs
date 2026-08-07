@@ -59,6 +59,19 @@ public class ChuteMappingService(
         return qty ?? 0;
     }
 
+    public async Task<Dictionary<string, int>> GetChutePendingQtiesAsync(string warehouse, CancellationToken ct = default)
+    {
+        await using var robo = OpenRobo(warehouse);
+        await robo.OpenAsync(ct);
+        var rows = await robo.QueryAsync<ChutePendingQtyRow>(new CommandDefinition(
+            @"SELECT ChuiteId AS ChuteId, ISNULL(SUM(qty), 0) AS PendingQty
+              FROM ROBOTICS.dbo.SortingConformationDetail
+              WHERE TransferNo = ''
+              GROUP BY ChuiteId",
+            commandTimeout: 15, cancellationToken: ct));
+        return rows.ToDictionary(r => r.ChuteId, r => r.PendingQty);
+    }
+
     public async Task<string> SaveChuteMappingAsync(string warehouse, string chuteId, string shopId, string shopName, CancellationToken ct = default)
     {
         var cfg  = GetWarehouseConfig(warehouse);
