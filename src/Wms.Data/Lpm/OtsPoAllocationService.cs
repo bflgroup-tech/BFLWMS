@@ -1126,7 +1126,9 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         var isPerCountry = !string.IsNullOrWhiteSpace(country)
                            && !string.Equals(country, BflGroup, StringComparison.OrdinalIgnoreCase);
         var countryFilter = isPerCountry ? country!.Trim() : null;
-        var bandsTable    = isPerCountry ? "dbo.LPM_VolumeGroupRange_Country" : "dbo.LPM_VolumeGroupRange";
+        // Bands source is ALWAYS the per-country table now — old dbo.LPM_VolumeGroupRange
+        // is deprecated. BFLGroup run reads the row where Country='BFLGROUP'.
+        var bandsCountry  = isPerCountry ? countryFilter! : "BFLGROUP";
         var gradeTable    = isPerCountry ? "dbo.LPM_StoreDivGrade_Country"    : "dbo.StoreDivGrade";
         var weightsCountry = isPerCountry ? countryFilter! : "UAE";
 
@@ -1232,14 +1234,15 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         )).ToList();
 
         // 2) Non-special (B..I) grade bands, ordered widest first for stable matching.
-        //    Per-country run reads from LPM_VolumeGroupRange_Country filtered by the picked country.
-        var bands = (await c.QueryAsync<(string VolumeGroup, decimal? FromPct, decimal? ToPct)>(new CommandDefinition($@"
+        //    Always sourced from LPM_VolumeGroupRange_Country now — BFLGroup uses
+        //    the Country='BFLGROUP' row, per-country runs use the picked country.
+        var bands = (await c.QueryAsync<(string VolumeGroup, decimal? FromPct, decimal? ToPct)>(new CommandDefinition(@"
             SELECT VolumeGroup, AvgSalesPctFrom, AvgSalesPctTo
-              FROM {bandsTable} WITH (NOLOCK)
+              FROM dbo.LPM_VolumeGroupRange_Country WITH (NOLOCK)
              WHERE IsSpecial = 0
-               {(isPerCountry ? "AND Country = @ct" : "")}
+               AND Country = @ct
              ORDER BY SortOrder",
-            new { ct = countryFilter },
+            new { ct = bandsCountry },
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).ToList();
 
         // 3) Compute avg per DivCode across all non-ECOM rows with SalesAmt > 0.
