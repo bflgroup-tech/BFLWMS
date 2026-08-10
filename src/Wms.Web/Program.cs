@@ -95,6 +95,7 @@ public class Program
         builder.Services.AddScoped<JafzaExportProductionService>();
         builder.Services.AddScoped<JafzaBoxGrnProductionService>();
         builder.Services.AddScoped<OtsPoAllocationService>();
+        builder.Services.AddScoped<TcmImportService>();
 
         // Robotics chute-mapping/status APIs used by the Chute Mapping page.
         builder.Services.Configure<Wms.Data.Robotic.RoboticApiOptions>(

@@ -1,7 +1,13 @@
 @page "/tcm-laboratory"
 @rendermode RenderMode.InteractiveServer
+@using ClosedXML.Excel
 @using Microsoft.AspNetCore.Components.Forms
+@using Wms.Core
+@using Wms.Data.Lpm
 @attribute [Authorize(Policy = Wms.Core.MenuKeys.TCM_LABORATORY)]
+@inject TcmImportService ImportSvc
+@inject ICurrentUser Me
+@inject ISnackbar Snack
 
 <PageTitle>WMS — Upload TCM File</PageTitle>
 
@@ -13,84 +19,173 @@
 <div class="aiwms-section">
     <div class="aiwms-card-header">TCM Import</div>
 
-    <div style="display:flex; gap:16px; align-items:flex-start">
-        <div style="flex:1">
-            <div style="display:grid; grid-template-columns: repeat(4, 160px); gap:10px">
-                <div>
-                    <label class="aiwms-input-lbl">CONTAINER NO *</label>
-                    <input class="aiwms-input" @bind="_containerNo" placeholder="e.g. 7781" />
-                </div>
-                <div>
-                    <label class="aiwms-input-lbl">REF. NO *</label>
-                    <input class="aiwms-input" @bind="_refNo" placeholder="e.g. JFS" />
-                </div>
-                <div>
-                    <label class="aiwms-input-lbl">LAB TYPE *</label>
-                    <select class="aiwms-input" @bind="_labType">
-                        <option value="">(pick)</option>
-                        <option value="Mix">Mix</option>
-                        <option value="Phases">Phases</option>
-                        <option value="Bulky">Bulky</option>
-                        <option value="Phases-Sorted">Phases-Sorted</option>
-                    </select>
-                </div>
-                <div>
-                    <label class="aiwms-input-lbl">PHASE %</label>
-                    <input class="aiwms-input" type="number" step="0.0001" @bind="_phasePct" />
-                </div>
+    <div>
+        <label class="aiwms-input-lbl">EXCEL FILE *</label>
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:10px">
+            <div style="display:flex; align-items:center; gap:10px">
+                <label class="aiwms-btn aiwms-btn-secondary" style="white-space:nowrap; cursor:pointer; margin:0">
+                    Choose File
+                    <InputFile OnChange="OnExcelFileSelected" accept=".xlsx" style="display:none" />
+                </label>
+                <span style="font-size:12px; color:var(--text-muted)">
+                    @(string.IsNullOrEmpty(_uploadedExcelFileName) ? "No file selected." : _uploadedExcelFileName)
+                </span>
             </div>
-
-            <div style="margin-top:14px">
-                <label class="aiwms-input-lbl">EXCEL FILE *</label>
-                <div style="display:flex; align-items:center; gap:10px">
-                    <label class="aiwms-btn aiwms-btn-secondary" style="white-space:nowrap; cursor:pointer; margin:0">
-                        Choose File
-                        <InputFile OnChange="OnExcelFileSelected" accept=".xlsx" style="display:none" />
-                    </label>
-                    <span style="font-size:12px; color:var(--text-muted)">
-                        @(string.IsNullOrEmpty(_uploadedExcelFileName) ? "No file selected." : _uploadedExcelFileName)
-                    </span>
-                </div>
-            </div>
-
-            <div style="margin-top:16px">
-                <button class="aiwms-btn aiwms-btn-primary" disabled title="Coming soon">Import Data</button>
+            <div style="display:flex; gap:10px">
+                <button class="aiwms-btn aiwms-btn-primary" @onclick="ImportDataAsync" disabled="@(_selectedFile is null || _busy)">
+                    @(_busy ? "Parsing..." : "Import Data")
+                </button>
+                <button class="aiwms-btn aiwms-btn-secondary" @onclick="Reset" disabled="@_busy">Reset</button>
             </div>
         </div>
+    </div>
 
-        <div style="flex-shrink:0; width:460px; border:1px solid var(--border); border-radius:4px; overflow:hidden">
-            <table class="aiwms-table" style="width:100%; margin:0">
-                <thead>
-                    <tr><th colspan="2">Profit Margin</th></tr>
-                </thead>
-                <tbody>
-                    <tr>
-                        <td style="white-space:nowrap">Supplier Cost</td>
-                        <td><input class="aiwms-input" type="number" step="0.0001" @bind="SupplierCostText" style="width:190px; text-align:right; font-weight:700; font-size:15px" /></td>
-                    </tr>
-                    <tr>
-                        <td style="white-space:nowrap">FC rate for Cost</td>
-                        <td><input class="aiwms-input" type="number" step="0.0001" @bind="FcRateForCostText" style="width:190px; text-align:right; font-weight:700; font-size:15px" /></td>
-                    </tr>
-                    <tr>
-                        <td style="white-space:nowrap">Additional Expenses %</td>
-                        <td><input class="aiwms-input" type="number" step="0.0001" @bind="AdditionalExpensesPctText" style="width:190px; text-align:right; font-weight:700; font-size:15px" /></td>
-                    </tr>
-                </tbody>
-            </table>
+    <div style="margin-top:14px; display:flex; align-items:end; justify-content:space-between; gap:10px">
+        <div style="display:grid; grid-template-columns: repeat(5, 160px); gap:10px">
+            <div>
+                <label class="aiwms-input-lbl">CONTAINER NO *</label>
+                <input class="aiwms-input" @bind="_containerNo" placeholder="e.g. 7781" />
+            </div>
+            <div>
+                <label class="aiwms-input-lbl">REF. NO *</label>
+                <input class="aiwms-input" @bind="_refNo" placeholder="e.g. JFS" />
+            </div>
+            <div>
+                <label class="aiwms-input-lbl">LAB TYPE *</label>
+                <select class="aiwms-input" @bind="_labType" @bind:after="OnLabTypeChanged">
+                    <option value="Mix">Mix</option>
+                    <option value="Phases">Phases</option>
+                    <option value="Bulky">Bulky</option>
+                    <option value="Phases-Sorted">Phases-Sorted</option>
+                </select>
+            </div>
+            <div>
+                <label class="aiwms-input-lbl">PHASE %</label>
+                <input class="aiwms-input" type="number" step="0.0001" @bind="_phasePct" disabled="@(_labType != "Phases")" />
+            </div>
+            <div>
+                <label class="aiwms-input-lbl">WAREHOUSE</label>
+                <input class="aiwms-input" @bind="_warehouse" />
+            </div>
+        </div>
+        <div style="display:flex; gap:10px">
+            <button class="aiwms-btn aiwms-btn-secondary" disabled="@(_rows.Count == 0)">Pallet Summary</button>
+            <button class="aiwms-btn aiwms-btn-secondary" disabled="@(_rows.Count == 0)">Update Lab Approval</button>
         </div>
     </div>
 </div>
 
+<div class="aiwms-section" style="padding:0">
+    <div style="display:flex; gap:2px; border-bottom:1px solid var(--border-default); padding:0 12px">
+        @foreach (var tab in new[] { "Details", "Itemtype", "Profit Margin" })
+        {
+            <button @onclick="@(() => _activeTab = tab)" disabled="@(_rows.Count == 0)"
+                    style="@TabButtonStyle(tab)">
+                @tab
+            </button>
+        }
+    </div>
+
+    <div style="padding:16px">
+        @if (_activeTab == "Details")
+        {
+            @if (_rows.Count == 0)
+            {
+                <div class="aiwms-alert info">No data imported yet. Choose an Excel file and click Import Data.</div>
+            }
+            else
+            {
+                <div style="margin-bottom:10px; font-size:12px; font-weight:700; color:var(--text-secondary)">@_rows.Count row(s)</div>
+                <div style="max-height:520px; overflow:auto">
+                    <table class="aiwms-table aiwms-table-dense" style="font-size:11px">
+                        <thead style="position:sticky; top:0; background:white; z-index:1">
+                            <tr>
+                                @foreach (var col in DetailsColumns)
+                                {
+                                    <th style="@(IsNumericColumn(col.Key) ? "text-align:right" : "")">@ColumnDisplayHeader(col)</th>
+                                }
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var row in _rows)
+                            {
+                                <tr>
+                                    @foreach (var col in DetailsColumns)
+                                    {
+                                        <td style="@(IsNumericColumn(col.Key) ? "text-align:right" : "")">@row.GetValueOrDefault(col.Key, "")</td>
+                                    }
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        }
+        else if (_activeTab == "Itemtype")
+        {
+            <div class="aiwms-alert info">Coming soon.</div>
+        }
+        else
+        {
+            <div style="width:460px; border:1px solid var(--border); border-radius:4px; overflow:hidden">
+                <table class="aiwms-table" style="width:100%; margin:0">
+                    <thead>
+                        <tr><th colspan="2">Profit Margin</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td style="white-space:nowrap">Supplier Cost</td>
+                            <td><input class="aiwms-input" type="number" step="0.0001" @bind="SupplierCostText" style="width:190px; text-align:right; font-weight:700; font-size:15px" /></td>
+                        </tr>
+                        <tr>
+                            <td style="white-space:nowrap">FC rate for Cost</td>
+                            <td><input class="aiwms-input" type="number" step="0.0001" @bind="FcRateForCostText" style="width:190px; text-align:right; font-weight:700; font-size:15px" /></td>
+                        </tr>
+                        <tr>
+                            <td style="white-space:nowrap">Additional Expenses %</td>
+                            <td><input class="aiwms-input" type="number" step="0.0001" @bind="AdditionalExpensesPctText" style="width:190px; text-align:right; font-weight:700; font-size:15px" /></td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        }
+    </div>
+</div>
+
 @code {
+    protected override async Task OnInitializedAsync() => await Me.EnsureLoadedAsync();
+
     private string _containerNo = "";
     private string _refNo = "";
-    private string _labType = "";
-    private decimal? _phasePct;
+    private string _labType = "Mix";
+    private decimal? _phasePct = 0m;
+    private string _warehouse = "";
+
+    private void OnLabTypeChanged()
+    {
+        if (_labType != "Phases") _phasePct = 0m;
+    }
     private decimal _supplierCost = 0.0000m;
     private decimal _fcRateForCost = 5.0000m;
     private decimal _additionalExpensesPct = 0.0000m;
     private string _uploadedExcelFileName = "";
+    private IBrowserFile? _selectedFile;
+    private bool _busy;
+    private List<TcmMatchedColumn> _columns = new();
+    private List<Dictionary<string, string>> _rows = new();
+    private string _activeTab = "Details";
+
+    private string TabButtonStyle(string tab)
+    {
+        var active = _activeTab == tab;
+        if (_rows.Count == 0)
+            return "background:none; border:none; cursor:not-allowed; padding:10px 16px; font-size:13px;"
+                + " font-weight:600; color:var(--text-muted); opacity:0.5; border-bottom:2px solid transparent; margin-bottom:-1px;";
+        return "background:none; border:none; cursor:pointer; padding:10px 16px; font-size:13px;"
+            + (active
+                ? " font-weight:700; color:var(--text-primary); border-bottom:2px solid var(--bfl-yellow); margin-bottom:-1px;"
+                : " font-weight:600; color:var(--text-secondary); border-bottom:2px solid transparent; margin-bottom:-1px;");
+    }
 
     // Bound instead of the raw decimal fields so the field always redisplays
     // 4 decimal places on blur (decimal.ToString() drops trailing zeros the
@@ -113,8 +208,199 @@
         set { if (decimal.TryParse(value, out var v)) _additionalExpensesPct = v; }
     }
 
+    private void Reset()
+    {
+        _containerNo = "";
+        _refNo = "";
+        _labType = "Mix";
+        _phasePct = 0m;
+        _warehouse = "";
+        _selectedFile = null;
+        _uploadedExcelFileName = "";
+        _columns = new();
+        _rows = new();
+        _activeTab = "Details";
+    }
+
     private void OnExcelFileSelected(InputFileChangeEventArgs e)
     {
+        _selectedFile = e.File;
         _uploadedExcelFileName = e.File?.Name ?? "";
+        _columns = new();
+        _rows = new();
+        _activeTab = "Details";
     }
+
+    private async Task ImportDataAsync()
+    {
+        var file = _selectedFile;
+        if (file is null) return;
+
+        if (string.IsNullOrWhiteSpace(_containerNo))
+        {
+            Snack.Add("Container No is required.", Severity.Warning);
+            return;
+        }
+        if (string.IsNullOrWhiteSpace(_refNo))
+        {
+            Snack.Add("Ref. No is required.", Severity.Warning);
+            return;
+        }
+        if (_labType == "Phases" && (_phasePct ?? 0m) == 0m)
+        {
+            Snack.Add("Phase % must not be 0 when Lab Type is Phases.", Severity.Warning);
+            return;
+        }
+        if (string.IsNullOrWhiteSpace(_warehouse))
+        {
+            Snack.Add("Warehouse is required.", Severity.Warning);
+            return;
+        }
+
+        _busy = true; _columns = new(); _rows = new();
+        StateHasChanged();
+        try
+        {
+            List<TcmMatchedColumn> columns;
+            List<Dictionary<string, string>> rows;
+            await using (var stream = file.OpenReadStream(maxAllowedSize: 20 * 1024 * 1024))
+            using (var ms = new MemoryStream())
+            {
+                await stream.CopyToAsync(ms);
+                ms.Position = 0;
+                (columns, rows) = ParseXlsx(ms);
+            }
+
+            if (columns.Count == 0)
+            {
+                Snack.Add("No recognized TCM columns found in the header row.", Severity.Warning);
+                return;
+            }
+            if (rows.Count == 0)
+            {
+                Snack.Add("No data rows found in the Excel.", Severity.Warning);
+                return;
+            }
+
+            _columns = columns;
+            _rows = rows;
+
+            var inserted = await ImportSvc.InsertRowsAsync(_containerNo.Trim(), _refNo.Trim(), _labType, Me.Name, _rows);
+            Snack.Add($"Inserted {inserted} row(s) into tmptcmitemslab.", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snack.Add($"Import failed: {ex.Message}", Severity.Error);
+        }
+        finally { _busy = false; }
+    }
+
+    // Known TCM Excel fields with normalized-name aliases used to locate the matching
+    // header column regardless of column order (the exact header wording drifts a bit
+    // between exports, e.g. "Ursprungsland" vs "UrspLand/-reg.").
+    private sealed record TcmFieldSpec(string Key, string[] Aliases);
+
+    private static readonly List<TcmFieldSpec> FieldSpecs = new()
+    {
+        new("Pallet",              new[] { "lenummer", "lenumer" }),
+        new("Itemcode",            new[] { "eanupccode", "gtincode" }),
+        new("Description",         new[] { "bezeichnung" }),
+        new("Qty",                 new[] { "menge" }),
+        new("Currency",            new[] { "währung", "wahrung", "whrung" }),
+        new("TchiboRP",            new[] { "tchiborp" }),
+        new("SdpInEuro",           new[] { "sdpineuro" }),
+        new("FirstHvkPreis",       new[] { "ersterhvkpreis", "hvkpreis" }),
+        new("GrossWeight",         new[] { "bruttogewicht" }),
+        new("NetWeight",           new[] { "nettogewicht" }),
+        new("HsCode",              new[] { "warennr", "impcod" }),
+        new("Origin",              new[] { "ursprland", "ursprungsland" }),
+        new("ProjectNo",           new[] { "projektnummer" }),
+        new("DescriptionEnglish",  new[] { "fremdspr" }),
+        new("CustomsTextEnglish",  new[] { "zolltextenglisch" }),
+        new("OrderNo",             new[] { "bestellnummer" }),
+        new("CartonQty",           new[] { "cartonqty" }),
+    };
+
+    private sealed record TcmMatchedColumn(string Key, string HeaderText, int ColIndex);
+
+    // Display overrides for column headers that should read differently from the
+    // literal Excel header text (e.g. "LE-Nummer" -> "Pallet No").
+    private static readonly Dictionary<string, string> ColumnHeaderOverrides = new()
+    {
+        ["Pallet"] = "Pallet No",
+        ["Itemcode"] = "Itemcode",
+        ["Qty"] = "Quantity",
+    };
+
+    private static string ColumnDisplayHeader(TcmMatchedColumn col) =>
+        ColumnHeaderOverrides.TryGetValue(col.Key, out var label) ? label : col.HeaderText;
+
+    // Fixed subset/order of matched columns shown in the Details grid (LE-Nummer, EAN/UPC-Code,
+    // Fremdspr. Art.Text, Menge, UrsprLand/-reg., Bruttogewicht, Nettogewicht, 1.Tchibo RP,
+    // Projektnummer, TD Bestellnummer). Other matched fields (Description, Currency, SdpInEuro,
+    // FirstHvkPreis, HsCode, CustomsTextEnglish, CartonQty) are parsed but not shown here.
+    private static readonly string[] DetailsColumnOrder =
+    {
+        "Pallet", "Itemcode", "DescriptionEnglish", "Qty", "Origin",
+        "GrossWeight", "NetWeight", "TchiboRP", "ProjectNo", "OrderNo",
+    };
+
+    private IEnumerable<TcmMatchedColumn> DetailsColumns => DetailsColumnOrder
+        .Select(k => _columns.FirstOrDefault(c => c.Key == k))
+        .Where(c => c is not null)!;
+
+    private static readonly HashSet<string> NumericColumnKeys = new()
+    {
+        "Qty", "GrossWeight", "NetWeight", "TchiboRP",
+    };
+
+    private static bool IsNumericColumn(string key) => NumericColumnKeys.Contains(key);
+
+    private static (List<TcmMatchedColumn> Columns, List<Dictionary<string, string>> Rows) ParseXlsx(Stream stream)
+    {
+        using var wb = new XLWorkbook(stream);
+        var ws = wb.Worksheet(1);
+        var last = ws.LastRowUsed();
+        if (last is null) return (new(), new());
+
+        var header = ws.Row(1);
+        var lastCol = header.LastCellUsed()?.Address.ColumnNumber ?? 0;
+
+        var matched = new List<TcmMatchedColumn>();
+        for (int col = 1; col <= lastCol; col++)
+        {
+            var headerText = (header.Cell(col).GetString() ?? "").Trim();
+            if (headerText.Length == 0) continue;
+            var normalized = Normalize(headerText);
+            var spec = FieldSpecs.FirstOrDefault(s =>
+                matched.All(c => c.Key != s.Key) &&
+                s.Aliases.Any(a => normalized.Contains(a) || a.Contains(normalized)));
+            if (spec is not null)
+                matched.Add(new TcmMatchedColumn(spec.Key, headerText, col));
+        }
+
+        // Re-order to the fixed FieldSpecs order regardless of the sheet's column order.
+        var columns = FieldSpecs
+            .Select(s => matched.FirstOrDefault(c => c.Key == s.Key))
+            .Where(c => c is not null)
+            .Select(c => c!)
+            .ToList();
+
+        var rows = new List<Dictionary<string, string>>();
+        for (int r = 2; r <= last.RowNumber(); r++)
+        {
+            var rowValues = new Dictionary<string, string>();
+            var anyValue = false;
+            foreach (var col in columns)
+            {
+                var v = (ws.Cell(r, col.ColIndex).GetString() ?? "").Trim();
+                rowValues[col.Key] = v;
+                if (v.Length > 0) anyValue = true;
+            }
+            if (anyValue) rows.Add(rowValues);
+        }
+        return (columns, rows);
+    }
+
+    private static string Normalize(string s) => new(s.ToLowerInvariant().Where(char.IsLetterOrDigit).ToArray());
 }
