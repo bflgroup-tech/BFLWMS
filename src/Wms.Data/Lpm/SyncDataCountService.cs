@@ -35,7 +35,7 @@ public class SyncDataCountService(IOnPremConnectionResolver resolver)
         "Building Completion", "UPC Box", "Goods Issue Plt", "PLT Delivery",
         "Goods Issue", "GRN", "USA Org File", "USA Purchase",
         "PLT Issue", "Cont Receipt", "Cont Receipt Export", "Close R1 Pallet",
-        "Item Group", "Item Master",
+        "Item Group", "Item Master", "Verify GIN",
     };
 
     private string OnPremCs() =>
@@ -269,6 +269,11 @@ public class SyncDataCountService(IOnPremConnectionResolver resolver)
                 "SELECT COUNT(itemcode) FROM ItemMaster WITH(NOLOCK)",
             ("Item Master", true) =>
                 $"SELECT COUNT(itemcode) FROM [{dn}]..ItemMaster WITH(NOLOCK)",
+
+            ("Verify GIN", false) =>
+                "SELECT COUNT(TrfNo) FROM BFLDATA..VerifyGin WITH(NOLOCK) WHERE CAST(Trndate AS DATE) BETWEEN @from AND @to",
+            ("Verify GIN", true) =>
+                $"SELECT COUNT(TrfNo) FROM [{dn}]..VerifyGin WITH(NOLOCK) WHERE CAST(Trndate AS DATE) BETWEEN @from AND @to",
 
             ("GRN", false) =>
                 "SELECT COUNT(1) FROM GRNHeaderRF WITH(NOLOCK) WHERE CAST(EntryDate AS DATE) BETWEEN @from AND @to",
