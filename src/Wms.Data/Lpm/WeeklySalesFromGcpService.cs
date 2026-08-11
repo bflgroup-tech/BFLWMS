@@ -13,10 +13,16 @@ public record WeeklySalesGcpRow(string StoreId, int DivCode, int Year1, int Mont
 
 /// <summary>
 /// Pulls the full weekly sales feed from BigQuery (mvp-data-bi.cdm_silver.it_sales_qty)
-/// and MERGE-upserts it into each active country's on-prem dbo.LPM_Weekly_SalesAmt
-/// (LPMSIM pattern) — the same table OtsPoAllocationService's "Generate Volume Group"
-/// reads for weighted monthly sales. The source has no country column, so every active
-/// country's on-prem DB receives the identical BigQuery result set.
+/// and MERGE-upserts it into dbo.LPM_Weekly_SalesAmt — the same table
+/// OtsPoAllocationService's "Generate Volume Group" reads for weighted monthly sales.
+/// The source has no country column, so the same BigQuery result set is written for
+/// every active country.
+///
+/// Writes go through the OnPremBackup connection (same one MissingExcessSnapshotService
+/// uses) rather than a per-country connection string — no per-country
+/// "{Country}_DB_ConnectionString" is actually configured in Azure for this on-prem
+/// target, only the single OnPremBackupDB_ConnectionString. "Country" here is purely
+/// the activation label in WmsRptCountryConfig, not a distinct physical connection.
 ///
 /// Country activation + job-run log reuse dbo.WmsRptCountryConfig / dbo.WmsRptJobRun on
 /// the Azure WMS DB (same tables MissingExcessSnapshotService uses), scoped by JobName.
@@ -44,9 +50,9 @@ public class WeeklySalesFromGcpService(IOnPremConnectionResolver resolver, IOpti
         return c;
     }
 
-    private SqlConnection OpenCountry(string country)
+    private SqlConnection OpenOnPremBackup()
     {
-        var c = new SqlConnection(WithConnectTimeout(resolver.GetCountryConnectionString(country)));
+        var c = new SqlConnection(WithConnectTimeout(resolver.GetOnPremBackupConnectionString()));
         c.Open();
         return c;
     }
@@ -159,7 +165,7 @@ public class WeeklySalesFromGcpService(IOnPremConnectionResolver resolver, IOpti
     {
         if (rows.Count == 0) return 0;
 
-        await using var c = OpenCountry(country);
+        await using var c = OpenOnPremBackup();
         await using var tx = (SqlTransaction)await c.BeginTransactionAsync(ct);
         try
         {
@@ -231,7 +237,7 @@ public class WeeklySalesFromGcpService(IOnPremConnectionResolver resolver, IOpti
     /// country's on-prem DB. Idempotent — safe to click more than once.</summary>
     public async Task RunSalesQtyMigrationAsync(string country, CancellationToken ct = default)
     {
-        await using var c = OpenCountry(country);
+        await using var c = OpenOnPremBackup();
         await c.ExecuteAsync(new CommandDefinition(
             SalesQtyMigrationSql, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
     }
