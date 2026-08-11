@@ -15,6 +15,23 @@
 </div>
 
 <div class="aiwms-section">
+    <div class="aiwms-card-header">Database Setup (testing)</div>
+    <p style="font-size:12px; color:var(--text-secondary); margin-top:-4px">One-time, idempotent schema migrations for the Weekly Sales (BigQuery) job — safe to click more than once.</p>
+    <div style="display:flex; gap:8px; flex-wrap:wrap">
+        <button class="aiwms-btn aiwms-btn-secondary" @onclick="RunJobNameMigrationAsync" disabled="@_busy">
+            Run migration: add JobName to WmsRptCountryConfig (WMS DB)
+        </button>
+        <button class="aiwms-btn aiwms-btn-secondary" @onclick="RunSalesQtyMigrationAsync" disabled="@_busy">
+            Run migration: add SalesQty to LPM_Weekly_SalesAmt (UAE)
+        </button>
+    </div>
+    @if (!string.IsNullOrEmpty(_migMessage))
+    {
+        <div class="aiwms-alert @(_migIsError ? "error" : "info")" style="margin-top:12px">@_migMessage</div>
+    }
+</div>
+
+<div class="aiwms-section">
     <div class="aiwms-card-header">Country Activation</div>
     <table class="aiwms-table aiwms-table-dense" style="max-width:860px">
         <thead>
@@ -139,6 +156,8 @@
     private bool _busy;
     private string _message = "";
     private bool _isError;
+    private string _migMessage = "";
+    private bool _migIsError;
 
     protected override async Task OnInitializedAsync()
     {
@@ -146,6 +165,34 @@
         await ReloadConfigAsync();
         await ReloadGcpConfigAsync();
         await RefreshLogAsync();
+    }
+
+    private async Task RunJobNameMigrationAsync()
+    {
+        _busy = true; await InvokeAsync(StateHasChanged);
+        try
+        {
+            await Gcp.RunJobNameMigrationAsync();
+            _migMessage = "JobName migration applied (or already up to date).";
+            _migIsError = false;
+            await ReloadConfigAsync();
+            await ReloadGcpConfigAsync();
+        }
+        catch (Exception ex) { _migMessage = $"Migration failed: {ex.Message}"; _migIsError = true; }
+        finally { _busy = false; }
+    }
+
+    private async Task RunSalesQtyMigrationAsync()
+    {
+        _busy = true; await InvokeAsync(StateHasChanged);
+        try
+        {
+            await Gcp.RunSalesQtyMigrationAsync("UAE");
+            _migMessage = "SalesQty migration applied to UAE (or already up to date).";
+            _migIsError = false;
+        }
+        catch (Exception ex) { _migMessage = $"Migration failed: {ex.Message}"; _migIsError = true; }
+        finally { _busy = false; }
     }
 
     private async Task ReloadConfigAsync()
