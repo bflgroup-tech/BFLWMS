@@ -263,7 +263,7 @@ public class SyncDataCountService(IOnPremConnectionResolver resolver)
             ("Item Group", false) =>
                 "SELECT COUNT(groupcode) FROM ItemGroup WITH(NOLOCK)",
             ("Item Group", true) =>
-                $"SELECT COUNT(groupcode) FROM [{dn}]..ItemGroup WITH(NOLOCK)",
+                "SELECT COUNT(groupcode) FROM hodata.dbo.itemgroup WITH(NOLOCK)",
 
             ("Item Master", false) =>
                 "SELECT COUNT(itemcode) FROM ItemMaster WITH(NOLOCK)",
