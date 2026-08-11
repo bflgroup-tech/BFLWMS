@@ -31,11 +31,11 @@ public class SyncDataCountService(IOnPremConnectionResolver resolver)
 
     private static readonly string[] Descriptions =
     {
-        "Transfer Header", "Transfer Detail", "RF Pair", "Sales Price",
-        "Building Completion", "UPC Box", "Goods Issue Plt", "PLT Delivery",
-        "Goods Issue", "GRN", "USA Org File", "USA Purchase",
-        "PLT Issue", "Cont Receipt", "Cont Receipt Export", "Close R1 Pallet",
-        "Item Group", "Item Master", "Verify GIN",
+        "Building Completion", "Close R1 Pallet", "Cont Receipt", "Cont Receipt Export",
+        "Goods Issue", "Goods Issue Plt", "GRN", "Item Group", "Item Master",
+        "PLT Delivery", "PLT Issue", "RF Pair", "Sales Price",
+        "Transfer Detail", "Transfer Header", "UPC Box", "USA Org File", "USA Purchase",
+        "Verify GIN",
     };
 
     private string OnPremCs() =>
