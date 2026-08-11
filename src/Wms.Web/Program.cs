@@ -97,11 +97,18 @@ public class Program
         builder.Services.AddScoped<OtsPoAllocationService>();
         builder.Services.AddScoped<TcmImportService>();
 
+        // Weekly sales pull from BigQuery (mvp-data-bi.cdm_silver.it_sales_qty) into
+        // each active country's on-prem LPM_Weekly_SalesAmt.
+        builder.Services.Configure<Wms.Data.Gcp.GcpBigQueryOptions>(
+            builder.Configuration.GetSection(Wms.Data.Gcp.GcpBigQueryOptions.SectionName));
+        builder.Services.AddScoped<WeeklySalesFromGcpService>();
+
         // Robotics chute-mapping/status APIs used by the Chute Mapping page.
         builder.Services.Configure<Wms.Data.Robotic.RoboticApiOptions>(
             builder.Configuration.GetSection(Wms.Data.Robotic.RoboticApiOptions.SectionName));
         builder.Services.AddHttpClient<Wms.Data.Robotic.ChuteMappingService>();
         builder.Services.AddHostedService<Wms.Web.Hosting.NightlyBatchService>();
+        builder.Services.AddHostedService<Wms.Web.Hosting.WeeklySalesBatchService>();
         builder.Services.AddHostedService<Wms.Web.Hosting.ToteMasterScheduledService>();
         builder.Services.AddHostedService<Wms.Web.Hosting.BoxesToWmsProdScheduledService>();
         builder.Services.AddHostedService<Wms.Web.Hosting.PendingGoodsReceiptEmailScheduledService>();

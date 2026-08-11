@@ -51,8 +51,8 @@ public class MissingExcessSnapshotService(IOnPremConnectionResolver resolver, IC
     {
         await using var c = OpenWms();
         var rows = await c.QueryAsync<RptCountryConfigRow>(new CommandDefinition(
-            "SELECT Country, IsActive, UpdatedTS, UpdatedBy FROM dbo.WmsRptCountryConfig ORDER BY Country",
-            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            "SELECT Country, IsActive, UpdatedTS, UpdatedBy FROM dbo.WmsRptCountryConfig WHERE JobName = @j ORDER BY Country",
+            new { j = JobName }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         return rows.AsList();
     }
 
@@ -60,8 +60,8 @@ public class MissingExcessSnapshotService(IOnPremConnectionResolver resolver, IC
     {
         await using var c = OpenWms();
         var rows = await c.QueryAsync<string>(new CommandDefinition(
-            "SELECT Country FROM dbo.WmsRptCountryConfig WHERE IsActive = 1 ORDER BY Country",
-            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            "SELECT Country FROM dbo.WmsRptCountryConfig WHERE JobName = @j AND IsActive = 1 ORDER BY Country",
+            new { j = JobName }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         return rows.AsList();
     }
 
@@ -70,14 +70,14 @@ public class MissingExcessSnapshotService(IOnPremConnectionResolver resolver, IC
         await using var c = OpenWms();
         await c.ExecuteAsync(new CommandDefinition(@"
             MERGE dbo.WmsRptCountryConfig AS t
-            USING (SELECT @c AS Country) AS s
-              ON t.Country = s.Country
+            USING (SELECT @j AS JobName, @c AS Country) AS s
+              ON t.JobName = s.JobName AND t.Country = s.Country
             WHEN MATCHED THEN
               UPDATE SET IsActive = @a, UpdatedTS = DATEADD(hour, 4, SYSUTCDATETIME()), UpdatedBy = @u
             WHEN NOT MATCHED THEN
-              INSERT (Country, IsActive, UpdatedTS, UpdatedBy)
-              VALUES (@c, @a, DATEADD(hour, 4, SYSUTCDATETIME()), @u);",
-            new { c = country, a = isActive, u = user.Name },
+              INSERT (JobName, Country, IsActive, UpdatedTS, UpdatedBy)
+              VALUES (@j, @c, @a, DATEADD(hour, 4, SYSUTCDATETIME()), @u);",
+            new { j = JobName, c = country, a = isActive, u = user.Name },
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
     }
 

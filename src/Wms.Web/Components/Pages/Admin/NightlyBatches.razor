@@ -4,6 +4,7 @@
 @using Wms.Data.Lpm
 @attribute [Authorize(Policy = MenuKeys.ADMIN_NIGHTLY_BATCHES)]
 @inject MissingExcessSnapshotService Snap
+@inject WeeklySalesFromGcpService Gcp
 @inject ICurrentUser CurrentUser
 
 <PageTitle>WMS — Nightly Batches Status</PageTitle>
@@ -46,7 +47,24 @@
                     </td>
                 </tr>
             }
-            @if (_config.Count == 0)
+            @foreach (var c in _gcpConfig)
+            {
+                <tr>
+                    <td>@WeeklySalesFromGcpService.JobName</td>
+                    <td><strong>@c.Country</strong></td>
+                    <td>
+                        <input type="checkbox" checked="@c.IsActive"
+                               @onchange="@(e => ToggleGcpAsync(c.Country, (bool)e.Value!))" />
+                    </td>
+                    <td>@ToGst(c.UpdatedTS).ToString("yyyy-MM-dd HH:mm") <span style="font-size:10px; color:var(--text-secondary)">GST</span></td>
+                    <td>@c.UpdatedBy</td>
+                    <td>
+                        <button class="aiwms-btn aiwms-btn-secondary" style="font-size:11px; padding:4px 8px"
+                                @onclick="() => RefreshGcpNowAsync(c.Country)" disabled="@_busy">Refresh Now</button>
+                    </td>
+                </tr>
+            }
+            @if (_config.Count == 0 && _gcpConfig.Count == 0)
             {
                 <tr><td colspan="6" style="font-style:italic; color:var(--text-secondary)">No countries configured yet. Add one with the form below.</td></tr>
             }
@@ -54,6 +72,13 @@
     </table>
 
     <div style="display:flex; gap:8px; align-items:end; margin-top:14px">
+        <div>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">PROCESS</label>
+            <select @bind="_newCountryJob" style="padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;">
+                <option value="@MissingExcessSnapshotService.JobName">@MissingExcessSnapshotService.JobName</option>
+                <option value="@WeeklySalesFromGcpService.JobName">@WeeklySalesFromGcpService.JobName</option>
+            </select>
+        </div>
         <div>
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">ADD COUNTRY</label>
             <input @bind="_newCountry" placeholder="e.g. KSA" style="padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
@@ -107,8 +132,10 @@
 
 @code {
     private List<RptCountryConfigRow> _config = new();
+    private List<RptCountryConfigRow> _gcpConfig = new();
     private List<RptJobRunRow> _runs = new();
     private string _newCountry = "";
+    private string _newCountryJob = MissingExcessSnapshotService.JobName;
     private bool _busy;
     private string _message = "";
     private bool _isError;
@@ -117,12 +144,19 @@
     {
         await CurrentUser.EnsureLoadedAsync();
         await ReloadConfigAsync();
+        await ReloadGcpConfigAsync();
         await RefreshLogAsync();
     }
 
     private async Task ReloadConfigAsync()
     {
         try { _config = await Snap.GetCountryConfigAsync(); }
+        catch (Exception ex) { Show($"Failed to load config: {ex.Message}", true); }
+    }
+
+    private async Task ReloadGcpConfigAsync()
+    {
+        try { _gcpConfig = await Gcp.GetCountryConfigAsync(); }
         catch (Exception ex) { Show($"Failed to load config: {ex.Message}", true); }
     }
 
@@ -143,16 +177,35 @@
         catch (Exception ex) { Show($"Toggle failed: {ex.Message}", true); }
     }
 
+    private async Task ToggleGcpAsync(string country, bool active)
+    {
+        try
+        {
+            await Gcp.SetCountryActiveAsync(country, active);
+            Show($"{country} → {(active ? "ACTIVE" : "INACTIVE")}.", false);
+            await ReloadGcpConfigAsync();
+        }
+        catch (Exception ex) { Show($"Toggle failed: {ex.Message}", true); }
+    }
+
     private async Task AddCountryAsync()
     {
         var name = _newCountry?.Trim();
         if (string.IsNullOrEmpty(name)) return;
         try
         {
-            await Snap.SetCountryActiveAsync(name, false);
+            if (_newCountryJob == WeeklySalesFromGcpService.JobName)
+            {
+                await Gcp.SetCountryActiveAsync(name, false);
+                await ReloadGcpConfigAsync();
+            }
+            else
+            {
+                await Snap.SetCountryActiveAsync(name, false);
+                await ReloadConfigAsync();
+            }
             _newCountry = "";
-            Show($"Added {name} (inactive).", false);
-            await ReloadConfigAsync();
+            Show($"Added {name} (inactive) for {_newCountryJob}.", false);
         }
         catch (Exception ex) { Show($"Add failed: {ex.Message}", true); }
     }
@@ -192,6 +245,24 @@
         {
             await Snap.FinishJobRunAsync(runId, "Failed", null, 0, ex.Message);
             Show($"Backfill failed: {ex.Message}", true);
+        }
+        finally { _busy = false; await RefreshLogAsync(); }
+    }
+
+    private async Task RefreshGcpNowAsync(string country)
+    {
+        _busy = true; Show($"Refreshing {country} from BigQuery…", false); await InvokeAsync(StateHasChanged);
+        var runId = await Gcp.StartJobRunAsync("OnDemand", country, CurrentUser.Name);
+        try
+        {
+            var rows = await Gcp.RefreshCountryAsync(country);
+            await Gcp.FinishJobRunAsync(runId, "Success", rows, null, null);
+            Show($"{country} done — {rows} rows.", false);
+        }
+        catch (Exception ex)
+        {
+            await Gcp.FinishJobRunAsync(runId, "Failed", null, 0, ex.Message);
+            Show($"Refresh failed: {ex.Message}", true);
         }
         finally { _busy = false; await RefreshLogAsync(); }
     }
