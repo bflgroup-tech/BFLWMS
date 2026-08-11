@@ -31,6 +31,7 @@
                 <tr>
                     <th>ContNo</th>
                     <th>Counting Date</th>
+                    <th>Completion Time</th>
                     <th style="text-align:center">Counted Qty</th>
                     <th style="text-align:center">Ageing Days</th>
                     <th style="padding-left:40px">Divisions</th>
@@ -42,6 +43,7 @@
                     <tr>
                         <td style="font-family:var(--font-mono)"><b>@r.ContNo</b></td>
                         <td>@r.CountingDate.ToString("dd/MM/yyyy")</td>
+                        <td>@r.CompletionTime</td>
                         <td style="text-align:center">@r.CountedQty.ToString("N0")</td>
                         <td style="text-align:center"><b>@r.AgeingDays</b></td>
                         <td style="word-break:break-word; padding-left:40px">@r.Divisions</td>

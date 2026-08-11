@@ -61,6 +61,7 @@ public class PendingGoodsReceiptEmailSender(
             sb.Append("<thead style=\"background:#111; color:#fff\"><tr>");
             sb.Append("<th style=\"text-align:left; padding:6px 10px\">ContNo</th>");
             sb.Append("<th style=\"text-align:left; padding:6px 10px\">Counting Date</th>");
+            sb.Append("<th style=\"text-align:left; padding:6px 10px\">Completion Time</th>");
             sb.Append("<th style=\"text-align:center; padding:6px 10px\">Counted Qty</th>");
             sb.Append("<th style=\"text-align:center; padding:6px 10px\">Ageing Days</th>");
             sb.Append("<th style=\"text-align:left; padding:6px 10px\">Divisions</th>");
@@ -70,6 +71,7 @@ public class PendingGoodsReceiptEmailSender(
                 sb.Append("<tr style=\"border-top:1px solid #e5e7eb\">");
                 sb.Append($"<td style=\"padding:6px 10px; font-family:Consolas,monospace\"><b>{Html(r.ContNo)}</b></td>");
                 sb.Append($"<td style=\"padding:6px 10px\">{r.CountingDate:dd/MM/yyyy}</td>");
+                sb.Append($"<td style=\"padding:6px 10px\">{Html(r.CompletionTime ?? "")}</td>");
                 sb.Append($"<td style=\"padding:6px 10px; text-align:center\">{r.CountedQty:N0}</td>");
                 sb.Append($"<td style=\"padding:6px 10px; text-align:center\"><b>{r.AgeingDays}</b></td>");
                 sb.Append($"<td style=\"padding:6px 10px\">{Html(r.Divisions)}</td>");

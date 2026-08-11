@@ -1,10 +1,14 @@
 namespace Wms.Data.Lpm;
 
 /// <summary>One row in the Pending Purchase (GRN) Status report — containers
-/// counted (bfldata.BuildingCompletion) but not yet purchased (usa.usapurchase).</summary>
+/// counted (bfldata.BuildingCompletion) but not yet purchased (usa.usapurchase).
+/// CompletionTime is bfldata.BuildingCompletion.TrnTime truncated to "HH:MM:SS"
+/// (that column is varchar with variable fractional-second digits, e.g.
+/// "15:26:31.9000000" — LEFT(...,8) drops the fraction).</summary>
 public record PendingPurchaseRow(
     string   ContNo,
     DateTime CountingDate,
+    string?  CompletionTime,
     int      CountedQty,
     int      AgeingDays,
     string   Divisions);
