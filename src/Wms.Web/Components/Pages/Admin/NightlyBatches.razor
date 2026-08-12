@@ -5,6 +5,8 @@
 @attribute [Authorize(Policy = MenuKeys.ADMIN_NIGHTLY_BATCHES)]
 @inject MissingExcessSnapshotService Snap
 @inject WeeklySalesFromGcpService Gcp
+@inject VolumeGroupWeeklyService Vg
+@inject OtsPoAllocationService Ots
 @inject ICurrentUser CurrentUser
 
 <PageTitle>WMS — Nightly Batches Status</PageTitle>
@@ -64,7 +66,25 @@
                             @onclick="RefreshGcpNowAsync" disabled="@_busy">Refresh Now</button>
                 </td>
             </tr>
-            @if (_config.Count == 0)
+            @foreach (var c in _vgConfig)
+            {
+                <tr>
+                    <td>@VolumeGroupWeeklyService.JobName <span style="font-size:10px; color:var(--text-secondary)">(Mon 04:00 GST)</span></td>
+                    <td><strong>@c.Country</strong></td>
+                    <td>
+                        <input type="checkbox" checked="@c.IsActive"
+                               @onchange="@(e => ToggleVgAsync(c.Country, (bool)e.Value!))" />
+                    </td>
+                    <td>@ToGst(c.UpdatedTS).ToString("yyyy-MM-dd HH:mm") <span style="font-size:10px; color:var(--text-secondary)">GST</span></td>
+                    <td>@c.UpdatedBy</td>
+                    <td style="white-space:nowrap">@(c.IsActive ? NextVolumeGroupFireGst().ToString("yyyy-MM-dd HH:mm") + " GST" : "—")</td>
+                    <td>
+                        <button class="aiwms-btn aiwms-btn-secondary" style="font-size:11px; padding:4px 8px"
+                                @onclick="() => RunVgNowAsync(c.Country)" disabled="@_busy">Run Now</button>
+                    </td>
+                </tr>
+            }
+            @if (_config.Count == 0 && _vgConfig.Count == 0)
             {
                 <tr><td colspan="7" style="font-style:italic; color:var(--text-secondary)">No countries configured yet. Add one with the form below.</td></tr>
             }
@@ -73,7 +93,16 @@
 
     <div style="display:flex; gap:8px; align-items:end; margin-top:14px">
         <div>
-            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">ADD COUNTRY (MissingExcessSnapshot)</label>
+            @* WeeklySalesFromGCP is deliberately absent — it is a single fixed row,
+               not per-country (see WeeklySalesFromGcpService's class doc comment). *@
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">PROCESS</label>
+            <select @bind="_newCountryJob" style="padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;">
+                <option value="@MissingExcessSnapshotService.JobName">@MissingExcessSnapshotService.JobName</option>
+                <option value="@VolumeGroupWeeklyService.JobName">@VolumeGroupWeeklyService.JobName</option>
+            </select>
+        </div>
+        <div>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">ADD COUNTRY</label>
             <input @bind="_newCountry" placeholder="e.g. KSA" style="padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
         </div>
         <button class="aiwms-btn aiwms-btn-secondary" @onclick="AddCountryAsync" disabled="@(_busy || string.IsNullOrWhiteSpace(_newCountry))">Add (inactive)</button>
@@ -126,8 +155,10 @@
 @code {
     private List<RptCountryConfigRow> _config = new();
     private List<RptCountryConfigRow> _gcpConfig = new();
+    private List<RptCountryConfigRow> _vgConfig = new();
     private List<RptJobRunRow> _runs = new();
     private string _newCountry = "";
+    private string _newCountryJob = MissingExcessSnapshotService.JobName;
     private bool _busy;
     private string _message = "";
     private bool _isError;
@@ -137,6 +168,7 @@
         await CurrentUser.EnsureLoadedAsync();
         await ReloadConfigAsync();
         await ReloadGcpConfigAsync();
+        await ReloadVgConfigAsync();
         await RefreshLogAsync();
     }
 
@@ -156,6 +188,12 @@
     // comment on WeeklySalesFromGcpService) — one fixed row, keyed by "" (empty Country).
     private RptCountryConfigRow GcpRow =>
         _gcpConfig.FirstOrDefault(c => c.Country == "") ?? new RptCountryConfigRow("", false, default, "");
+
+    private async Task ReloadVgConfigAsync()
+    {
+        try { _vgConfig = await Vg.GetCountryConfigAsync(); }
+        catch (Exception ex) { Show($"Failed to load VG config: {ex.Message}", true); }
+    }
 
     private async Task RefreshLogAsync()
     {
@@ -185,14 +223,33 @@
         catch (Exception ex) { Show($"Toggle failed: {ex.Message}", true); }
     }
 
+    private async Task ToggleVgAsync(string country, bool active)
+    {
+        try
+        {
+            await Vg.SetCountryActiveAsync(country, active);
+            Show($"{country} → {(active ? "ACTIVE" : "INACTIVE")}.", false);
+            await ReloadVgConfigAsync();
+        }
+        catch (Exception ex) { Show($"Toggle failed: {ex.Message}", true); }
+    }
+
     private async Task AddCountryAsync()
     {
         var name = _newCountry?.Trim();
         if (string.IsNullOrEmpty(name)) return;
         try
         {
-            await Snap.SetCountryActiveAsync(name, false);
-            await ReloadConfigAsync();
+            if (_newCountryJob == VolumeGroupWeeklyService.JobName)
+            {
+                await Vg.SetCountryActiveAsync(name, false);
+                await ReloadVgConfigAsync();
+            }
+            else
+            {
+                await Snap.SetCountryActiveAsync(name, false);
+                await ReloadConfigAsync();
+            }
             _newCountry = "";
             Show($"Added {name} (inactive).", false);
         }
@@ -256,6 +313,25 @@
         finally { _busy = false; await RefreshLogAsync(); }
     }
 
+    private async Task RunVgNowAsync(string country)
+    {
+        _busy = true; Show($"Generating VG for {country}…", false); await InvokeAsync(StateHasChanged);
+        var runId = await Vg.StartJobRunAsync("OnDemand", country, CurrentUser.Name ?? "");
+        try
+        {
+            var nowGst = DateTime.UtcNow.AddHours(4);
+            var rows = await Ots.GenerateStoreDivGradesAsync(nowGst.Month, nowGst.Year, country);
+            await Vg.FinishJobRunAsync(runId, "Success", rows, null);
+            Show($"{country} VG generate done — {rows} rows.", false);
+        }
+        catch (Exception ex)
+        {
+            await Vg.FinishJobRunAsync(runId, "Failed", null, ex.Message);
+            Show($"VG generate failed: {ex.Message}", true);
+        }
+        finally { _busy = false; await RefreshLogAsync(); }
+    }
+
     // Azure SQL SYSDATETIME() returns UTC; the UI shows GST (UTC+4, no DST).
     private static DateTime ToGst(DateTime utc) => utc.AddHours(4);
 
@@ -276,6 +352,19 @@
     private static DateTime NextWeeklyFireGst()
     {
         var candidate = NextDailyFireGst();
+        while (candidate.DayOfWeek != DayOfWeek.Monday) candidate = candidate.AddDays(1);
+        return candidate;
+    }
+
+    // WeeklyVolumeGroupBatchService fires two hours earlier than the 06:00 jobs so the
+    // fresh Volume Groups are in place before the Monday nightly/weekly runs read them.
+    private static readonly TimeSpan VolumeGroupFireTimeGst = new(4, 0, 0);
+
+    private static DateTime NextVolumeGroupFireGst()
+    {
+        var nowGst = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, GstTz);
+        var candidate = nowGst.Date.Add(VolumeGroupFireTimeGst);
+        if (nowGst >= candidate) candidate = candidate.AddDays(1);
         while (candidate.DayOfWeek != DayOfWeek.Monday) candidate = candidate.AddDays(1);
         return candidate;
     }

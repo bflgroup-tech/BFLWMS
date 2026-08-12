@@ -102,6 +102,7 @@ public class Program
         builder.Services.Configure<Wms.Data.Gcp.GcpBigQueryOptions>(
             builder.Configuration.GetSection(Wms.Data.Gcp.GcpBigQueryOptions.SectionName));
         builder.Services.AddScoped<WeeklySalesFromGcpService>();
+        builder.Services.AddScoped<VolumeGroupWeeklyService>();
 
         // Robotics chute-mapping/status APIs used by the Chute Mapping page.
         builder.Services.Configure<Wms.Data.Robotic.RoboticApiOptions>(
@@ -109,6 +110,7 @@ public class Program
         builder.Services.AddHttpClient<Wms.Data.Robotic.ChuteMappingService>();
         builder.Services.AddHostedService<Wms.Web.Hosting.NightlyBatchService>();
         builder.Services.AddHostedService<Wms.Web.Hosting.WeeklySalesBatchService>();
+        builder.Services.AddHostedService<Wms.Web.Hosting.WeeklyVolumeGroupBatchService>();
         builder.Services.AddHostedService<Wms.Web.Hosting.ToteMasterScheduledService>();
         builder.Services.AddHostedService<Wms.Web.Hosting.BoxesToWmsProdScheduledService>();
         builder.Services.AddHostedService<Wms.Web.Hosting.PendingGoodsReceiptEmailScheduledService>();
