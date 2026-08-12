@@ -107,6 +107,18 @@ public class MissingExcessSnapshotService(IOnPremConnectionResolver resolver, IC
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
     }
 
+    /// <summary>True if a Timer-triggered run of the given mode already started today
+    /// (GST). Guards against re-firing after an app restart resets the hosted service's
+    /// in-memory "already ran today" tracker — restarts happen mid-day on every deploy.</summary>
+    public async Task<bool> HasFiredTodayAsync(string mode, DateTime todayGst, CancellationToken ct = default)
+    {
+        await using var c = OpenWms();
+        var lastStart = await c.ExecuteScalarAsync<DateTime?>(new CommandDefinition(
+            "SELECT MAX(StartTS) FROM dbo.WmsRptJobRun WHERE JobName = @j AND Mode = @m AND TriggeredBy = 'Timer'",
+            new { j = JobName, m = mode }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        return lastStart is not null && lastStart.Value.Date == todayGst.Date;
+    }
+
     public async Task<List<RptJobRunRow>> GetRecentRunsAsync(int top = 50, CancellationToken ct = default)
     {
         await using var c = OpenWms();

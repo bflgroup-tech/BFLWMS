@@ -62,6 +62,17 @@ public class NightlyBatchService(IServiceProvider sp, ILogger<NightlyBatchServic
         await using var scope = sp.CreateAsyncScope();
         var svc = scope.ServiceProvider.GetRequiredService<MissingExcessSnapshotService>();
 
+        // A redeploy restarts the app mid-day, which resets ExecuteAsync's in-memory
+        // "already fired today" tracker — recheck against the persisted job-run log so
+        // a restart doesn't trigger a second same-day run (and the resulting
+        // PK_WmsRpt_ItemSummary violation from re-inserting a day already snapshotted).
+        var nowGst = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, GstTz);
+        if (await svc.HasFiredTodayAsync("Daily", nowGst.Date, ct))
+        {
+            log.LogInformation("NightlyBatchService: Daily run already logged for today — skipping (likely a restart).");
+            return;
+        }
+
         var countries = await svc.GetActiveCountriesAsync(ct);
         if (countries.Count == 0)
         {
