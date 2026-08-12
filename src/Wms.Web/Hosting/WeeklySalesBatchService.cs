@@ -61,6 +61,16 @@ public class WeeklySalesBatchService(IServiceProvider sp, ILogger<WeeklySalesBat
         await using var scope = sp.CreateAsyncScope();
         var svc = scope.ServiceProvider.GetRequiredService<WeeklySalesFromGcpService>();
 
+        // A redeploy restarts the app mid-day, which resets ExecuteAsync's in-memory
+        // "already fired today" tracker — recheck against the persisted job-run log so
+        // a restart on a Monday doesn't trigger a second same-day BigQuery pull.
+        var nowGst = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, GstTz);
+        if (await svc.HasFiredTodayAsync("Weekly", nowGst.Date, ct))
+        {
+            log.LogInformation("WeeklySalesBatchService: Weekly run already logged for today — skipping (likely a restart).");
+            return;
+        }
+
         var countries = await svc.GetActiveCountriesAsync(ct);
         if (countries.Count == 0)
         {
