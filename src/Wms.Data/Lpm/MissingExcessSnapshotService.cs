@@ -223,7 +223,11 @@ public class MissingExcessSnapshotService(IOnPremConnectionResolver resolver, IC
         {
             boxSummary  = (await grid.ReadAsync<BoxSummaryRow>()).ToArray();
             boxDetail   = (await grid.ReadAsync<BoxDetailCombinedDayRow>()).ToArray();
-            itemSummary = (await grid.ReadAsync<ItemSummaryReportRow>()).ToArray();
+            // hodata.itemmaster / datareporting.vupc_subclass can carry more than one row
+            // per itemcode (per-country mirrors) — the LEFT JOINs can fan a single itemcode
+            // out into duplicates, which then violates the (Country, ClosedDt, ItemCode) PK
+            // on insert below. Keep one row per ItemCode.
+            itemSummary = (await grid.ReadAsync<ItemSummaryReportRow>()).DistinctBy(r => r.ItemCode).ToArray();
         }
 
         // 2) Wipe + reload the (Country, day) slice in all three snapshot tables.
