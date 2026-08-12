@@ -1,5 +1,6 @@
 using Google.Apis.Auth.OAuth2;
 using Google.Cloud.BigQuery.V2;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Options;
 using Wms.Core;
 using Wms.Data.Configuration;
@@ -27,7 +28,7 @@ public record WeeklySalesGcpRow(string StoreId, int DivCode, int Year1, int Mont
 /// Country activation + job-run log reuse dbo.WmsRptCountryConfig / dbo.WmsRptJobRun on
 /// the Azure WMS DB (same tables MissingExcessSnapshotService uses), scoped by JobName.
 /// </summary>
-public class WeeklySalesFromGcpService(IOnPremConnectionResolver resolver, IOptions<GcpBigQueryOptions> gcpOpts, ICurrentUser user)
+public class WeeklySalesFromGcpService(IOnPremConnectionResolver resolver, IOptions<GcpBigQueryOptions> gcpOpts, IConfiguration configuration, ICurrentUser user)
 {
     private const int ConnectTimeoutSeconds = 60;
     private const int CommandTimeoutSeconds = 600;
@@ -124,13 +125,18 @@ public class WeeklySalesFromGcpService(IOnPremConnectionResolver resolver, IOpti
     public async Task<List<WeeklySalesGcpRow>> FetchFromBigQueryAsync(CancellationToken ct = default)
     {
         var opts = gcpOpts.Value;
-        if (!opts.IsConfigured)
+        var projectId = configuration["GCP_PROJECT_ID"];
+        if (string.IsNullOrWhiteSpace(projectId)) projectId = opts.ProjectId;
+        if (string.IsNullOrWhiteSpace(projectId))
             throw new InvalidOperationException(
-                "BigQuery is not configured — set BigQuery:ProjectId (and BigQuery:CredentialsPath, or the GOOGLE_APPLICATION_CREDENTIALS env var) in configuration.");
+                "BigQuery is not configured — set GCP_PROJECT_ID (or BigQuery:ProjectId) in configuration.");
 
-        var client = string.IsNullOrWhiteSpace(opts.CredentialsPath)
-            ? await BigQueryClient.CreateAsync(opts.ProjectId)
-            : await BigQueryClient.CreateAsync(opts.ProjectId, GoogleCredential.FromFile(opts.CredentialsPath));
+        var serviceAccountJson = configuration["GCP_SERVICE_ACCOUNT_JSON"];
+        var client = !string.IsNullOrWhiteSpace(serviceAccountJson)
+            ? await BigQueryClient.CreateAsync(projectId, GoogleCredential.FromJson(serviceAccountJson))
+            : !string.IsNullOrWhiteSpace(opts.CredentialsPath)
+                ? await BigQueryClient.CreateAsync(projectId, GoogleCredential.FromFile(opts.CredentialsPath))
+                : await BigQueryClient.CreateAsync(projectId);
 
         var result = await client.ExecuteQueryAsync(SourceQuery, parameters: null, cancellationToken: ct);
 
