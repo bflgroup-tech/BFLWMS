@@ -24,10 +24,46 @@
         <button class="aiwms-btn aiwms-btn-secondary" @onclick="RunSalesQtyMigrationAsync" disabled="@_busy">
             Run migration: add SalesQty to LPM_Weekly_SalesAmt (UAE)
         </button>
+        <button class="aiwms-btn aiwms-btn-secondary" @onclick="PreviewGcpDataAsync" disabled="@_busy">
+            Preview BigQuery data (fetch only — no insert)
+        </button>
     </div>
     @if (!string.IsNullOrEmpty(_migMessage))
     {
         <div class="aiwms-alert @(_migIsError ? "error" : "info")" style="margin-top:12px">@_migMessage</div>
+    }
+
+    @if (_previewRows.Count > 0)
+    {
+        <div style="margin-top:14px">
+            <div style="font-size:12px; color:var(--text-secondary); margin-bottom:6px">
+                Fetched @_previewTotal row(s) from BigQuery — showing first @_previewRows.Count.
+            </div>
+            <div style="overflow-x:auto">
+                <table class="aiwms-table aiwms-table-dense">
+                    <thead>
+                        <tr>
+                            <th>StoreId</th><th>DivCode</th><th>Year1</th><th>Month1</th><th>Week</th>
+                            <th style="text-align:right">SalesQty</th><th style="text-align:right">SalesAmt</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var r in _previewRows)
+                        {
+                            <tr>
+                                <td>@r.StoreId</td>
+                                <td>@r.DivCode</td>
+                                <td>@r.Year1</td>
+                                <td>@r.Month1</td>
+                                <td>@r.Week</td>
+                                <td style="text-align:right">@r.SalesQty</td>
+                                <td style="text-align:right">@r.SalesAmt</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        </div>
     }
 </div>
 
@@ -158,6 +194,8 @@
     private bool _isError;
     private string _migMessage = "";
     private bool _migIsError;
+    private List<WeeklySalesGcpRow> _previewRows = new();
+    private int _previewTotal;
 
     protected override async Task OnInitializedAsync()
     {
@@ -192,6 +230,27 @@
             _migIsError = false;
         }
         catch (Exception ex) { _migMessage = $"Migration failed: {ex.Message}"; _migIsError = true; }
+        finally { _busy = false; }
+    }
+
+    private async Task PreviewGcpDataAsync()
+    {
+        _busy = true; _migMessage = "Fetching from BigQuery…"; _migIsError = false; await InvokeAsync(StateHasChanged);
+        try
+        {
+            var rows = await Gcp.FetchFromBigQueryAsync();
+            _previewTotal = rows.Count;
+            _previewRows = rows.Take(50).ToList();
+            _migMessage = rows.Count == 0
+                ? "BigQuery returned 0 rows."
+                : $"Fetched {rows.Count} row(s) — nothing was written to any database.";
+            _migIsError = false;
+        }
+        catch (Exception ex)
+        {
+            _previewRows = new(); _previewTotal = 0;
+            _migMessage = $"Preview failed: {ex.Message}"; _migIsError = true;
+        }
         finally { _busy = false; }
     }
 
