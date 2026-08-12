@@ -134,6 +134,16 @@ public class WeeklySalesFromGcpService(IOnPremConnectionResolver resolver, IOpti
 
     // ====================== BigQuery fetch ======================
 
+    // BigQuery's client library returns NUMERIC/BIGNUMERIC columns as a
+    // BigQueryNumeric struct, which doesn't implement IConvertible — Convert.ToInt32/
+    // ToDecimal throw on it. Route every numeric column through ToString() + Parse
+    // instead, which works uniformly across long, double, BigQueryNumeric, and string.
+    private static int? ParseInt(object? value) =>
+        value is null ? null : (int)decimal.Parse(value.ToString()!, System.Globalization.CultureInfo.InvariantCulture);
+
+    private static decimal? ParseDecimal(object? value) =>
+        value is null ? null : decimal.Parse(value.ToString()!, System.Globalization.CultureInfo.InvariantCulture);
+
     public async Task<List<WeeklySalesGcpRow>> FetchFromBigQueryAsync(CancellationToken ct = default)
     {
         var opts = gcpOpts.Value;
@@ -156,13 +166,13 @@ public class WeeklySalesFromGcpService(IOnPremConnectionResolver resolver, IOpti
         foreach (var row in result)
         {
             rows.Add(new WeeklySalesGcpRow(
-                StoreId:  Convert.ToString(row["storeid"]) ?? "",
-                DivCode:  Convert.ToInt32(row["DivCode"]),
-                Year1:    Convert.ToInt32(row["CalendarYear"]),
-                Month1:   Convert.ToInt32(row["CalendarMonth"]),
-                Week:     Convert.ToInt32(row["CalendarWeek"]),
-                SalesQty: row["Soldqty"]       is null ? null : Convert.ToInt32(row["Soldqty"]),
-                SalesAmt: row["NetSalesExVAT"] is null ? null : Convert.ToDecimal(row["NetSalesExVAT"])));
+                StoreId:  row["storeid"]?.ToString() ?? "",
+                DivCode:  ParseInt(row["DivCode"]) ?? 0,
+                Year1:    ParseInt(row["CalendarYear"]) ?? 0,
+                Month1:   ParseInt(row["CalendarMonth"]) ?? 0,
+                Week:     ParseInt(row["CalendarWeek"]) ?? 0,
+                SalesQty: ParseInt(row["Soldqty"]),
+                SalesAmt: ParseDecimal(row["NetSalesExVAT"])));
         }
         return rows;
     }
