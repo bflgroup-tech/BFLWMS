@@ -6,7 +6,7 @@
     <RootNamespace>Wms.Web</RootNamespace>
     <UserSecretsId>4b8d3a42-cc08-411c-9a33-3c84ef8f4c19</UserSecretsId>
     <!-- CI overrides this with -p:Version=1.0.${{ github.run_number }} -->
-    <Version>1.0.396</Version>
+    <Version>1.0.397</Version>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\Wms.Core\Wms.Core.csproj" />
@@ -18,19 +18,27 @@
     of the local git log so the sidebar badge still shows a real number instead of a
     placeholder.
   -->
-  <Target Name="ComputeLatestPrNumber" BeforeTargets="GenerateAssemblyInfo">
+  <Target Name="ComputeLatestPrNumber" BeforeTargets="GenerateAssemblyInfo" AfterTargets="PrepareForBuild">
     <Exec Condition="'$(LatestPrNumber)' == ''"
           Command="git log -1 --pretty=%25s"
           ConsoleToMSBuild="true" StandardOutputImportance="low" ContinueOnError="true">
       <Output TaskParameter="ConsoleOutput" PropertyName="_GitLastCommitMessage" />
     </Exec>
     <PropertyGroup Condition="'$(LatestPrNumber)' == ''">
-      <_ComputedPrNumber>$([System.Text.RegularExpressions.Regex]::Match($(_GitLastCommitMessage), '#(\d+)$').Groups[1].Value)</_ComputedPrNumber>
+      <_ComputedPrNumber>$([System.Text.RegularExpressions.Regex]::Match($(_GitLastCommitMessage), '#(\d+)\)?$').Groups[1].Value)</_ComputedPrNumber>
       <LatestPrNumber Condition="'$(_ComputedPrNumber)' != ''">$(_ComputedPrNumber)</LatestPrNumber>
       <LatestPrNumber Condition="'$(LatestPrNumber)' == ''">unknown</LatestPrNumber>
     </PropertyGroup>
+    <!-- Write straight into @(AssemblyAttribute) (what CoreGenerateAssemblyInfo actually
+         reads) instead of @(AssemblyMetadata) — the SDK's own AssemblyMetadata-to-
+         AssemblyAttribute conversion target runs at an unpredictable point relative to
+         this one, so items added here to @(AssemblyMetadata) were silently missing the
+         cutoff and never made it into the compiled assembly. -->
     <ItemGroup>
-      <AssemblyMetadata Include="LatestPrNumber" Value="$(LatestPrNumber)" />
+      <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+        <_Parameter1>LatestPrNumber</_Parameter1>
+        <_Parameter2>$(LatestPrNumber)</_Parameter2>
+      </AssemblyAttribute>
     </ItemGroup>
   </Target>
   <ItemGroup>
