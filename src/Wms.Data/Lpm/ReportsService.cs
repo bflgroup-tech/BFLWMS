@@ -155,6 +155,42 @@ public class ReportsService(IOnPremConnectionResolver resolver)
         return rows.Where(s => !string.IsNullOrWhiteSpace(s)).ToList();
     }
 
+    /// <summary>
+    /// Division list for the PO Counting Report's Division filter — every
+    /// distinct Division in Datareporting.dbo.subclassmaster, excluding the
+    /// "DATA MIGRATION -D" placeholder value.
+    /// </summary>
+    public async Task<List<string>> GetPoCountingDivisionsAsync(CancellationToken ct = default)
+    {
+        await using var c = OpenOnPremBackup();
+        var rows = await c.QueryAsync<string>(new CommandDefinition(@"
+            SELECT DISTINCT Division FROM Datareporting.dbo.subclassmaster
+             WHERE Division IS NOT NULL AND Division <> '' AND Division <> 'DATA MIGRATION -D'
+             ORDER BY Division",
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        return rows.Where(s => !string.IsNullOrWhiteSpace(s)).ToList();
+    }
+
+    /// <summary>
+    /// Supplier list for the PO Counting Report's Supplier filter — every
+    /// distinct SuppName across BuildingCompletionSumm joined to
+    /// BuildingCompletionDet_OraPONo on ContNo (the same pair of tables the
+    /// report itself reads), not limited to whatever's in the currently
+    /// loaded/filtered grid.
+    /// </summary>
+    public async Task<List<string>> GetPoCountingSuppliersAsync(CancellationToken ct = default)
+    {
+        await using var c = OpenOnPremBackup();
+        var rows = await c.QueryAsync<string>(new CommandDefinition(@"
+            SELECT DISTINCT a.SuppName
+              FROM BFLDATA.dbo.BuildingCompletionSumm a WITH (NOLOCK)
+              JOIN BFLDATA.dbo.BuildingCompletionDet_OraPONo b WITH (NOLOCK) ON a.ContNo = b.ContNo
+             WHERE a.SuppName IS NOT NULL AND a.SuppName <> ''
+             ORDER BY a.SuppName",
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        return rows.Where(s => !string.IsNullOrWhiteSpace(s)).ToList();
+    }
+
     // 4-4-5 retail calendar: 13-week quarters split 4/4/5 weeks per "month". Given any
     // week number, returns every week number sharing that week's 4-4-5 month bucket
     // (e.g. week 31 -> [31,32,33,34]). Used to sum tmpPlanningTarget's per-week Target
@@ -652,6 +688,148 @@ public class ReportsService(IOnPremConnectionResolver resolver)
             new { countries = countryList, noCountryFilter = noCountryFilter ? 1 : 0, contNoFilter, warehouseFilter,
                   from = fromDate.Date, toExclusive = toDate.Date.AddDays(1) },
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        return rows.AsList();
+    }
+
+    // ===================== PO Counting Report =====================
+    /// <summary>
+    /// PO Counting Report — one row per (Country, ContNo, PONumber), splitting
+    /// the container-grain BuildingCompletionSumm data down to real PO grain
+    /// via BFLDATA.dbo.BuildingCompletionDet_OraPONo (one OraPONo per item
+    /// row, aggregated per container). CountingCompletionDate/Division/
+    /// Supplier come off BuildingCompletionSumm and are the same for every PO
+    /// in a given container (that table doesn't split them per-PO). contNo
+    /// and poNumber, like the ContNo lookup in the Counting Completion
+    /// Report, each skip the date-range filter when given — a standalone
+    /// lookup across all time rather than an additional filter on top of the
+    /// date range.
+    /// </summary>
+    public async Task<List<PoCountingRow>> GetPoCountingAsync(
+        IEnumerable<string>? countries, DateTime fromDate, DateTime toDate,
+        string? contNo, string? poNumber, CancellationToken ct = default)
+    {
+        var countryList = countries?.Where(s => !string.IsNullOrWhiteSpace(s)).ToArray() ?? Array.Empty<string>();
+        // null (no argument at all) means "genuinely unrestricted" — an empty-but-non-null
+        // list must NOT fall back to "show everything", since that's exactly what a
+        // deny-by-default caller passes for a user with zero country grants.
+        var noCountryFilter = countries is null;
+        var contNoFilter = string.IsNullOrWhiteSpace(contNo) ? null : contNo.Trim();
+        var poFilter = string.IsNullOrWhiteSpace(poNumber) ? null : poNumber.Trim();
+        var skipDateFilter = contNoFilter is not null || poFilter is not null;
+
+        await using var c = OpenOnPremBackup();
+        var rows = await c.QueryAsync<PoCountingRow>(new CommandDefinition(@"
+            SET NOCOUNT ON;
+            IF OBJECT_ID('tempdb..#PCBase') IS NOT NULL DROP TABLE #PCBase;
+            IF OBJECT_ID('tempdb..#PCDet')  IS NOT NULL DROP TABLE #PCDet;
+
+            SELECT s.Country, s.ContNo, s.Trndate AS CountingCompletionDate,
+                   s.Division, s.suppname AS Supplier,
+                   s.ContErrorUnits AS ErrorUnits, s.ContErrorrate AS ErrorRate,
+                   s.Purchasetype AS PurchaseType, s.remarks AS Remarks,
+                   s.status AS Status, s.buyer AS Buyer
+              INTO #PCBase
+              FROM BFLDATA.dbo.BuildingCompletionSumm s WITH (NOLOCK)
+             WHERE (@skipDateFilter = 1 OR (s.Trndate >= @from AND s.Trndate < @toExclusive))
+               AND (@noCountryFilter = 1 OR s.Country IN @countries)
+               AND (@contNoFilter IS NULL OR s.ContNo = @contNoFilter);
+
+            CREATE CLUSTERED INDEX IX_PCBase ON #PCBase (ContNo);
+
+            SELECT d.ContNo, d.OraPONo,
+                   OrderSheetQty   = SUM(ISNULL(d.Qty, 0)),
+                   GRNQty          = SUM(ISNULL(d.CheckedQty, 0)),
+                   MissingQty      = SUM(ISNULL(d.MissingQty, 0)),
+                   ExcessQty       = SUM(ISNULL(d.ExcessQty, 0)),
+                   ReturnToSuppQty = SUM(ISNULL(d.ReturnToSuppQty, 0)),
+                   ReturnToBuyQty  = SUM(ISNULL(d.ReturnToBuyQty, 0))
+              INTO #PCDet
+              FROM BFLDATA.dbo.BuildingCompletionDet_OraPONo d WITH (NOLOCK)
+             WHERE d.ContNo IN (SELECT ContNo FROM #PCBase)
+               AND (@poFilter IS NULL OR d.OraPONo = @poFilter)
+             GROUP BY d.ContNo, d.OraPONo;
+
+            CREATE CLUSTERED INDEX IX_PCDet ON #PCDet (ContNo, OraPONo);
+
+            -- Real Order Qty (as opposed to OrderSheetQty, which is really just the
+            -- Det_OraPONo item total) comes from HODATA.dbo.Vusaorder — the actual
+            -- purchase-order line data — summed per (ContNo, ORAPONo). Vusaorder.refno
+            -- is the container number (verified against BuildingCompletionSumm.ContNo),
+            -- not Vusaorder.Contno (which holds a Ref_ prefixed value, a job/reference
+            -- number, or blank depending on the row) — refno is the correct join key.
+            SELECT vo.refno AS ContNo, vo.ORAPONo, OrderQty = SUM(ISNULL(vo.Qty, 0))
+              INTO #PCOrder
+              FROM HODATA.dbo.Vusaorder vo WITH (NOLOCK)
+             WHERE vo.refno IN (SELECT DISTINCT ContNo FROM #PCBase)
+               AND vo.ORAPONo IN (SELECT DISTINCT OraPONo FROM #PCDet)
+             GROUP BY vo.refno, vo.ORAPONo;
+
+            CREATE CLUSTERED INDEX IX_PCOrder ON #PCOrder (ContNo, ORAPONo);
+
+            SELECT
+                b.Country,
+                b.ContNo,
+                PONumber                = det.OraPONo,
+                CountingCompletionDate  = b.CountingCompletionDate,
+                b.Division,
+                b.Supplier,
+                OrderSheetQty           = det.OrderSheetQty,
+                OrderQty                = ISNULL(ord.OrderQty, 0),
+                GRNQty                  = det.GRNQty,
+                ContainerFillRate       = CASE WHEN det.OrderSheetQty = 0 THEN 0 ELSE ROUND(det.GRNQty * 100.0 / det.OrderSheetQty, 2) END,
+                MissingQty              = det.MissingQty,
+                PctMissing              = CASE WHEN det.OrderSheetQty = 0 THEN 0 ELSE ROUND(det.MissingQty * 100.0 / det.OrderSheetQty, 2) END,
+                ExcessQty               = det.ExcessQty,
+                PctExcess               = CASE WHEN det.OrderSheetQty = 0 THEN 0 ELSE ROUND(det.ExcessQty  * 100.0 / det.OrderSheetQty, 2) END,
+                ReturnToSuppQty         = det.ReturnToSuppQty,
+                PctMissingReturn        = CASE WHEN det.OrderSheetQty = 0 THEN 0 ELSE ROUND(det.ReturnToSuppQty * 100.0 / det.OrderSheetQty, 2) END,
+                ReturnToBuyQty          = det.ReturnToBuyQty,
+                b.ErrorUnits,
+                b.ErrorRate,
+                b.PurchaseType,
+                b.Remarks,
+                b.Status,
+                b.Buyer
+              FROM #PCBase b
+              JOIN #PCDet det ON det.ContNo = b.ContNo
+              LEFT JOIN #PCOrder ord ON ord.ContNo = det.ContNo AND ord.ORAPONo = det.OraPONo
+             ORDER BY b.Country, b.ContNo, det.OraPONo;
+
+            DROP TABLE #PCBase, #PCDet, #PCOrder;",
+            new { countries = countryList, noCountryFilter = noCountryFilter ? 1 : 0, contNoFilter, poFilter,
+                  skipDateFilter = skipDateFilter ? 1 : 0,
+                  from = fromDate.Date, toExclusive = toDate.Date.AddDays(1) },
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        return rows.AsList();
+    }
+
+    /// <summary>
+    /// PO Counting Report — Item-wise detail for a single (ContNo, PONumber),
+    /// shown when the user double-clicks a PO row in the summary grid.
+    /// </summary>
+    public async Task<List<PoCountingItemRow>> GetPoCountingItemsAsync(
+        string contNo, string poNumber, CancellationToken ct = default)
+    {
+        await using var c = OpenOnPremBackup();
+        var rows = await c.QueryAsync<PoCountingItemRow>(new CommandDefinition(@"
+            SELECT d.ContNo,
+                   PONumber   = d.OraPONo,
+                   ItemCode   = d.upc,
+                   ItemName   = d.itemname,
+                   Style      = d.style,
+                   PalletType = d.Pallettype,
+                   Brand      = d.Brand,
+                   LpmDt      = d.LPMDt,
+                   Qty              = ISNULL(d.Qty, 0),
+                   CheckedQty       = ISNULL(d.CheckedQty, 0),
+                   MissingQty       = ISNULL(d.MissingQty, 0),
+                   ExcessQty        = ISNULL(d.ExcessQty, 0),
+                   ReturnToSuppQty  = ISNULL(d.ReturnToSuppQty, 0),
+                   ReturnToBuyQty   = ISNULL(d.ReturnToBuyQty, 0)
+              FROM BFLDATA.dbo.BuildingCompletionDet_OraPONo d WITH (NOLOCK)
+             WHERE d.ContNo = @contNo AND d.OraPONo = @poNumber
+             ORDER BY d.upc;",
+            new { contNo, poNumber }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         return rows.AsList();
     }
 
