@@ -175,7 +175,18 @@ public class WeeklySalesFromGcpService(IOnPremConnectionResolver resolver, IOpti
                 SalesQty: ParseInt(row["Soldqty"]),
                 SalesAmt: ParseDecimal(row["NetSalesExVAT"])));
         }
-        return rows;
+
+        // The source can carry more than one row per (StoreId, DivCode, Year1, Month1,
+        // Week) — that's LPM_Weekly_SalesAmt's primary key, so a duplicate there throws
+        // a PK violation on the MERGE. Sum duplicates into one row per key rather than
+        // arbitrarily dropping one.
+        return rows
+            .GroupBy(r => (r.StoreId, r.DivCode, r.Year1, r.Month1, r.Week))
+            .Select(g => new WeeklySalesGcpRow(
+                g.Key.StoreId, g.Key.DivCode, g.Key.Year1, g.Key.Month1, g.Key.Week,
+                SalesQty: g.Any(r => r.SalesQty.HasValue) ? g.Sum(r => r.SalesQty ?? 0) : null,
+                SalesAmt: g.Any(r => r.SalesAmt.HasValue) ? g.Sum(r => r.SalesAmt ?? 0) : null))
+            .ToList();
     }
 
     // ====================== Upsert into one country's on-prem LPM_Weekly_SalesAmt ======================
