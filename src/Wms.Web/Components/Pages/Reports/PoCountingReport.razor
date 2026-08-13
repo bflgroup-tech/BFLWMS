@@ -1,0 +1,450 @@
+@page "/reports/po-counting"
+@rendermode RenderMode.InteractiveServer
+@using Wms.Core
+@using Wms.Data.Lpm
+@using ClosedXML.Excel
+@using MudBlazor
+@attribute [Authorize(Policy = MenuKeys.RPT_PO_COUNTING)]
+@inject ReportsService Svc
+@inject ICurrentUser CurrentUser
+@inject IJSRuntime JS
+
+<PageTitle>WMS - PO Counting Report</PageTitle>
+
+<div class="aiwms-page-header">
+    <h2>PO Counting Report</h2>
+    <AuthorizeView Roles="Admin">
+        <p>One row per PO within a container. Counting Completion Date, Division and Supplier are the container's own values (BuildingCompletionSumm doesn't split them per PO). Container Fill Rate = GRN Qty / Order Qty x 100 for that PO. Double-click a row for item-wise detail.</p>
+    </AuthorizeView>
+</div>
+
+<div class="aiwms-section">
+    <div style="display:grid; grid-template-columns: 1fr 1fr 1fr 1fr 1.2fr 1.2fr auto; gap:12px; align-items:end;">
+        <div>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COUNTING DATE FROM @(HasLookupFilter ? "" : "*")</label>
+            <input type="date" @bind="_from" @bind:format="yyyy-MM-dd" max="@DateTime.Today.ToString("yyyy-MM-dd")" disabled="@HasLookupFilter" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
+        </div>
+        <div>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COUNTING DATE TO @(HasLookupFilter ? "" : "*")</label>
+            <input type="date" @bind="_to" @bind:format="yyyy-MM-dd" max="@DateTime.Today.ToString("yyyy-MM-dd")" disabled="@HasLookupFilter" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
+        </div>
+        <div>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">PO NUMBER (searches all dates)</label>
+            <input @bind="_poFilter" @bind:event="oninput" placeholder="e.g. 487522" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
+        </div>
+        <div>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">CONT NO (searches all dates)</label>
+            <input @bind="_contNoFilter" @bind:event="oninput" placeholder="e.g. AEINT6093" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
+        </div>
+        <div>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">DIVISION (select any)</label>
+            <MudSelect T="string" Dense="true" MultiSelection="true" SelectAll="true" Placeholder="All"
+                       Variant="Variant.Outlined" Margin="Margin.Dense"
+                       SelectedValues="_selectedDivisions" SelectedValuesChanged="@(v => _selectedDivisions = v.ToHashSet())">
+                @foreach (var d in _divisions) { <MudSelectItem T="string" Value="@d">@d</MudSelectItem> }
+            </MudSelect>
+        </div>
+        <div>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">SUPPLIER (select any)</label>
+            <MudSelect T="string" Dense="true" MultiSelection="true" SelectAll="true" Placeholder="All"
+                       Variant="Variant.Outlined" Margin="Margin.Dense"
+                       SelectedValues="_selectedSuppliers" SelectedValuesChanged="@(v => _selectedSuppliers = v.ToHashSet())">
+                @foreach (var s in _suppliers) { <MudSelectItem T="string" Value="@s">@s</MudSelectItem> }
+            </MudSelect>
+        </div>
+        <div style="display:flex; gap:8px">
+            <button class="aiwms-btn aiwms-btn-primary" @onclick="LoadAsync" disabled="@(_loading || (!HasLookupFilter && _from > _to))">@(_loading ? "Loading..." : "Load")</button>
+            <button class="aiwms-btn aiwms-btn-secondary" @onclick="ClearFilters" disabled="@_loading">Clear Filters</button>
+        </div>
+    </div>
+
+    <div style="margin-top:12px">
+        <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COUNTRY (select any)</label>
+        <MudSelect T="string" Dense="true" MultiSelection="true" SelectAll="true" Placeholder="All"
+                   Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width:420px"
+                   SelectedValues="_selectedCountries" SelectedValuesChanged="@(v => _selectedCountries = v.ToHashSet())">
+            @foreach (var c in _countries) { <MudSelectItem T="string" Value="@c">@DisplayCountry(c)</MudSelectItem> }
+        </MudSelect>
+    </div>
+
+    @if (!string.IsNullOrEmpty(_message))
+    {
+        <div class="aiwms-alert @(_isError ? "error" : "info")" style="margin-top:12px">@_message</div>
+    }
+</div>
+
+@if (_loaded)
+{
+    <div class="aiwms-section">
+        <div class="aiwms-card-header" style="display:flex; align-items:center; justify-content:space-between">
+            <span>PO Counting - @FilteredRows.Count row(s)</span>
+            <button class="aiwms-btn aiwms-btn-secondary" @onclick="ExportSummaryExcelAsync" disabled="@(_exportingSummary || FilteredRows.Count == 0)">@(_exportingSummary ? "Exporting..." : "Export Excel")</button>
+        </div>
+        <div style="overflow-x:auto">
+        <table class="aiwms-table aiwms-table-dense" style="width:auto">
+            <thead>
+                <tr>
+                    <th style="white-space:nowrap">PO Number</th>
+                    <th style="white-space:nowrap">Cont No</th>
+                    <th style="white-space:nowrap; min-width:170px">Counting Completion Date</th>
+                    <th style="text-align:right; white-space:nowrap">Order Sheet Qty</th>
+                    <th style="text-align:right; white-space:nowrap">Order Qty</th>
+                    <th style="text-align:right; white-space:nowrap">GRN Qty</th>
+                    <th style="text-align:right; white-space:nowrap">Container Fill Rate</th>
+                    <th style="text-align:right; white-space:nowrap">Missing Qty</th>
+                    <th style="text-align:right; white-space:nowrap">% Missing</th>
+                    <th style="text-align:right; white-space:nowrap">Excess Qty</th>
+                    <th style="text-align:right; white-space:nowrap">% Excess</th>
+                    <th style="text-align:right; white-space:nowrap">Return to Supp Qty</th>
+                    <th style="text-align:right; white-space:nowrap">% Missing Return</th>
+                    <th style="text-align:right; white-space:nowrap">Return to Buyer Qty</th>
+                    <th style="text-align:right; white-space:nowrap">Error Units</th>
+                    <th style="text-align:right; white-space:nowrap">Error Rate</th>
+                    <th style="white-space:nowrap">Purchasetype</th>
+                    <th style="white-space:nowrap">SuppName</th>
+                    <th style="white-space:nowrap">Status</th>
+                    <th style="white-space:nowrap">Division</th>
+                    <th style="white-space:nowrap">Buyer</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var r in FilteredRows)
+                {
+                    <tr style="cursor:pointer" title="Double-click for item-wise detail" @ondblclick="@(() => ShowItemsAsync(r.ContNo, r.PONumber))">
+                        <td style="font-family:var(--font-mono)"><b>@r.PONumber</b></td>
+                        <td style="font-family:var(--font-mono)">@r.ContNo</td>
+                        <td style="white-space:nowrap; min-width:170px">@FmtDate(r.CountingCompletionDate)</td>
+                        <td style="text-align:right">@r.OrderSheetQty.ToString("N0")</td>
+                        <td style="text-align:right">@r.OrderQty.ToString("N0")</td>
+                        <td style="text-align:right">@r.GRNQty.ToString("N0")</td>
+                        <td style="text-align:right">@r.ContainerFillRate.ToString("N2")</td>
+                        <td style="text-align:right">@r.MissingQty.ToString("N0")</td>
+                        <td style="text-align:right">@r.PctMissing.ToString("N2")</td>
+                        <td style="text-align:right">@r.ExcessQty.ToString("N0")</td>
+                        <td style="text-align:right">@r.PctExcess.ToString("N2")</td>
+                        <td style="text-align:right">@r.ReturnToSuppQty.ToString("N0")</td>
+                        <td style="text-align:right">@r.PctMissingReturn.ToString("N2")</td>
+                        <td style="text-align:right">@r.ReturnToBuyQty.ToString("N0")</td>
+                        <td style="text-align:right">@r.ErrorUnits.ToString("N2")</td>
+                        <td style="text-align:right">@r.ErrorRate.ToString("N2")</td>
+                        <td style="word-break:break-word">@r.PurchaseType</td>
+                        <td style="word-break:break-word">@r.Supplier</td>
+                        <td>@r.Status</td>
+                        <td style="word-break:break-word">@r.Division</td>
+                        <td style="word-break:break-word">@r.Buyer</td>
+                    </tr>
+                }
+                <tr style="font-weight:700; background:var(--surface-1, #f7f7f5);">
+                    <td colspan="3">Total</td>
+                    <td style="text-align:right">@FilteredRows.Sum(r => r.OrderSheetQty).ToString("N0")</td>
+                    <td style="text-align:right">@FilteredRows.Sum(r => r.OrderQty).ToString("N0")</td>
+                    <td style="text-align:right">@FilteredRows.Sum(r => r.GRNQty).ToString("N0")</td>
+                    <td style="text-align:right">@TotalPct(r => r.GRNQty).ToString("N2")</td>
+                    <td style="text-align:right">@FilteredRows.Sum(r => r.MissingQty).ToString("N0")</td>
+                    <td style="text-align:right">@TotalPct(r => r.MissingQty).ToString("N2")</td>
+                    <td style="text-align:right">@FilteredRows.Sum(r => r.ExcessQty).ToString("N0")</td>
+                    <td style="text-align:right">@TotalPct(r => r.ExcessQty).ToString("N2")</td>
+                    <td style="text-align:right">@FilteredRows.Sum(r => r.ReturnToSuppQty).ToString("N0")</td>
+                    <td style="text-align:right">@TotalPct(r => r.ReturnToSuppQty).ToString("N2")</td>
+                    <td style="text-align:right">@FilteredRows.Sum(r => r.ReturnToBuyQty).ToString("N0")</td>
+                    <td style="text-align:right">@FilteredRows.Sum(r => r.ErrorUnits).ToString("N2")</td>
+                    <td style="text-align:right">@TotalPct(r => (int)r.ErrorUnits).ToString("N2")</td>
+                    <td colspan="6"></td>
+                </tr>
+            </tbody>
+        </table>
+        </div>
+    </div>
+}
+
+@if (_selectedContNo is not null)
+{
+    <div class="aiwms-section">
+        <div class="aiwms-card-header" style="display:flex; align-items:center; justify-content:space-between; gap:8px">
+            <span>Item-wise Detail — PO @_selectedPo (Cont No(s) @_selectedContNo)</span>
+            <div style="display:flex; gap:8px">
+                <button class="aiwms-btn aiwms-btn-secondary" @onclick="ExportItemsExcelAsync" disabled="@(_exportingItems || _itemRows.Count == 0)">@(_exportingItems ? "Exporting..." : "Export Excel")</button>
+                <button class="aiwms-btn aiwms-btn-secondary" @onclick="@(() => _selectedContNo = null)">Close</button>
+            </div>
+        </div>
+        @if (_itemsLoading)
+        {
+            <div style="padding:12px 14px; font-size:13px; color:var(--text-secondary)">Loading item-wise detail...</div>
+        }
+        else
+        {
+            <div style="overflow-x:auto">
+            <table class="aiwms-table aiwms-table-dense">
+                <thead>
+                    <tr>
+                        <th>Item Code</th>
+                        <th>Item Name</th>
+                        <th>Style</th>
+                        <th>Brand</th>
+                        <th>LPM Date</th>
+                        <th style="text-align:right">Qty</th>
+                        <th style="text-align:right">Checked Qty</th>
+                        <th style="text-align:right">Missing Qty</th>
+                        <th style="text-align:right">Excess Qty</th>
+                        <th style="text-align:right">Return to Supp Qty</th>
+                        <th style="text-align:right">Return to Buyer Qty</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var i in _itemRows)
+                    {
+                        <tr>
+                            <td style="font-family:var(--font-mono)">@i.ItemCode</td>
+                            <td style="word-break:break-word">@i.ItemName</td>
+                            <td>@i.Style</td>
+                            <td>@i.Brand</td>
+                            <td>@FmtDate(i.LpmDt)</td>
+                            <td style="text-align:right">@i.Qty.ToString("N0")</td>
+                            <td style="text-align:right">@i.CheckedQty.ToString("N0")</td>
+                            <td style="text-align:right">@i.MissingQty.ToString("N0")</td>
+                            <td style="text-align:right">@i.ExcessQty.ToString("N0")</td>
+                            <td style="text-align:right">@i.ReturnToSuppQty.ToString("N0")</td>
+                            <td style="text-align:right">@i.ReturnToBuyQty.ToString("N0")</td>
+                        </tr>
+                    }
+                    @if (_itemRows.Count == 0)
+                    {
+                        <tr><td colspan="11" style="color:var(--text-secondary)">No item-wise rows for this PO.</td></tr>
+                    }
+                </tbody>
+            </table>
+            </div>
+        }
+    </div>
+}
+
+@code {
+    private List<string> _countries = new();
+    private HashSet<string> _selectedCountries = new();
+    private DateTime _from = DateTime.Today.AddDays(-1);
+    private DateTime _to   = DateTime.Today;
+    private string _contNoFilter = "";
+    private string _poFilter = "";
+    private List<string> _divisions = new();
+    private HashSet<string> _selectedDivisions = new();
+    private List<string> _suppliers = new();
+    private HashSet<string> _selectedSuppliers = new();
+    private bool _loading;
+    private bool _loaded;
+    private string _message = "";
+    private bool _isError;
+    private List<PoCountingRow> _rows = new();
+    private bool _exportingSummary;
+    private bool _exportingItems;
+
+    private string? _selectedContNo;
+    private string? _selectedPo;
+    private bool _itemsLoading;
+    private List<PoCountingItemRow> _itemRows = new();
+
+    private bool HasLookupFilter => !string.IsNullOrWhiteSpace(_contNoFilter) || !string.IsNullOrWhiteSpace(_poFilter);
+
+    private IEnumerable<string>? EffectiveCountriesOrNull =>
+        _selectedCountries.Count > 0 ? _selectedCountries
+        : CurrentUser.HasAllCountriesAccess ? null
+        : _countries;
+
+    private List<PoCountingRow> FilteredRows => _rows.Where(r =>
+        (_selectedDivisions.Count == 0 || (r.Division is not null && _selectedDivisions.Contains(r.Division, StringComparer.OrdinalIgnoreCase))) &&
+        (_selectedSuppliers.Count == 0 || (r.Supplier is not null && _selectedSuppliers.Contains(r.Supplier, StringComparer.OrdinalIgnoreCase)))).ToList();
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            await CurrentUser.EnsureLoadedAsync();
+            var list = await Svc.GetCountriesAsync();
+            var excluded = new[] { "Ex2Locations", "Ecom" };
+            var allowed = list.Where(c => !excluded.Contains(c, StringComparer.OrdinalIgnoreCase));
+            _countries = CurrentUser.FilterCountries(allowed).ToList();
+            _divisions = await Svc.GetPoCountingDivisionsAsync();
+            _suppliers = await Svc.GetPoCountingSuppliersAsync();
+        }
+        catch { /* fall back to empty list if the lookup fails */ }
+    }
+
+    private async Task LoadAsync()
+    {
+        _loading = true; _message = ""; _isError = false;
+        _selectedContNo = null; _selectedPo = null; _itemRows = new();
+        _rows = new();
+        try
+        {
+            _rows = await Svc.GetPoCountingAsync(EffectiveCountriesOrNull, _from, _to, _contNoFilter, _poFilter);
+            _loaded = true;
+            if (_rows.Count == 0) _message = "No rows for the selected filters.";
+            // A PO Number filter narrows the summary to that one PO already — show its
+            // item-wise detail right away instead of waiting for a double-click. Loop
+            // over every distinct ContNo the filter matched (the same PO can span more
+            // than one container) and merge their item rows.
+            else if (!string.IsNullOrWhiteSpace(_poFilter)) await ShowItemsForPoAsync(_poFilter.Trim());
+        }
+        catch (Exception ex) { _message = ex.Message; _isError = true; }
+        finally { _loading = false; }
+    }
+
+    private void ClearFilters()
+    {
+        _from = DateTime.Today.AddDays(-1);
+        _to = DateTime.Today;
+        _contNoFilter = "";
+        _poFilter = "";
+        _selectedDivisions = new();
+        _selectedSuppliers = new();
+        _selectedCountries = new();
+        _rows = new();
+        _loaded = false;
+        _message = "";
+        _isError = false;
+        _selectedContNo = null;
+        _selectedPo = null;
+        _itemRows = new();
+    }
+
+    private async Task ShowItemsForPoAsync(string poNumber)
+    {
+        var contNos = _rows
+            .Where(r => string.Equals(r.PONumber, poNumber, StringComparison.OrdinalIgnoreCase))
+            .Select(r => r.ContNo).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        if (contNos.Count == 0) return;
+
+        _selectedPo = poNumber;
+        _selectedContNo = string.Join(", ", contNos);
+        _itemsLoading = true; _itemRows = new();
+        try
+        {
+            var merged = new List<PoCountingItemRow>();
+            foreach (var contNo in contNos) merged.AddRange(await Svc.GetPoCountingItemsAsync(contNo, poNumber));
+            _itemRows = merged;
+        }
+        finally { _itemsLoading = false; }
+    }
+
+    private async Task ShowItemsAsync(string contNo, string poNumber)
+    {
+        _selectedContNo = contNo;
+        _selectedPo = poNumber;
+        _itemsLoading = true; _itemRows = new();
+        try { _itemRows = await Svc.GetPoCountingItemsAsync(contNo, poNumber); }
+        finally { _itemsLoading = false; }
+    }
+
+    private decimal TotalPct(Func<PoCountingRow, int> selector)
+    {
+        var totalOrder = FilteredRows.Sum(r => r.OrderQty);
+        if (totalOrder == 0) return 0;
+        return Math.Round(FilteredRows.Sum(selector) * 100m / totalOrder, 2);
+    }
+
+    private async Task ExportSummaryExcelAsync()
+    {
+        if (FilteredRows.Count == 0) return;
+        _exportingSummary = true;
+        try
+        {
+            using var wb = new XLWorkbook();
+            var ws = wb.AddWorksheet("PO Counting");
+            string[] headers =
+            {
+                "PO Number", "Cont No", "Counting Completion Date", "Order Sheet Qty", "Order Qty", "GRN Qty",
+                "Container Fill Rate", "Missing Qty", "% Missing", "Excess Qty", "% Excess",
+                "Return to Supp Qty", "% Missing Return", "Return to Buyer Qty",
+                "Error Units", "Error Rate", "Purchasetype", "SuppName", "Status", "Division", "Buyer"
+            };
+            for (int i = 0; i < headers.Length; i++) ws.Cell(1, i + 1).Value = headers[i];
+            ws.Row(1).Style.Font.Bold = true;
+
+            int row = 2;
+            foreach (var r in FilteredRows)
+            {
+                ws.Cell(row, 1).Value  = r.PONumber;
+                ws.Cell(row, 2).Value  = r.ContNo;
+                ws.Cell(row, 3).Value  = FmtDate(r.CountingCompletionDate);
+                ws.Cell(row, 4).Value  = r.OrderSheetQty;
+                ws.Cell(row, 5).Value  = r.OrderQty;
+                ws.Cell(row, 6).Value  = r.GRNQty;
+                ws.Cell(row, 7).Value  = r.ContainerFillRate;
+                ws.Cell(row, 8).Value  = r.MissingQty;
+                ws.Cell(row, 9).Value  = r.PctMissing;
+                ws.Cell(row, 10).Value = r.ExcessQty;
+                ws.Cell(row, 11).Value = r.PctExcess;
+                ws.Cell(row, 12).Value = r.ReturnToSuppQty;
+                ws.Cell(row, 13).Value = r.PctMissingReturn;
+                ws.Cell(row, 14).Value = r.ReturnToBuyQty;
+                ws.Cell(row, 15).Value = r.ErrorUnits;
+                ws.Cell(row, 16).Value = r.ErrorRate;
+                ws.Cell(row, 17).Value = r.PurchaseType;
+                ws.Cell(row, 18).Value = r.Supplier;
+                ws.Cell(row, 19).Value = r.Status;
+                ws.Cell(row, 20).Value = r.Division;
+                ws.Cell(row, 21).Value = r.Buyer;
+                row++;
+            }
+            ws.Columns().AdjustToContents();
+
+            using var ms = new MemoryStream();
+            wb.SaveAs(ms);
+            var b64 = Convert.ToBase64String(ms.ToArray());
+            var name = $"po-counting-summary-{_from:yyyyMMdd}-{_to:yyyyMMdd}.xlsx";
+            await JS.InvokeVoidAsync("downloadFileWithPicker", name, b64,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        }
+        finally { _exportingSummary = false; }
+    }
+
+    private async Task ExportItemsExcelAsync()
+    {
+        if (_itemRows.Count == 0) return;
+        _exportingItems = true;
+        try
+        {
+            using var wb = new XLWorkbook();
+            var ws = wb.AddWorksheet("Item-wise Detail");
+            string[] headers =
+            {
+                "Cont No", "PO Number", "Item Code", "Item Name", "Style", "Brand", "LPM Date",
+                "Qty", "Checked Qty", "Missing Qty", "Excess Qty", "Return to Supp Qty", "Return to Buyer Qty"
+            };
+            for (int i = 0; i < headers.Length; i++) ws.Cell(1, i + 1).Value = headers[i];
+            ws.Row(1).Style.Font.Bold = true;
+
+            int row = 2;
+            foreach (var i in _itemRows)
+            {
+                ws.Cell(row, 1).Value  = i.ContNo;
+                ws.Cell(row, 2).Value  = i.PONumber;
+                ws.Cell(row, 3).Value  = i.ItemCode;
+                ws.Cell(row, 4).Value  = i.ItemName;
+                ws.Cell(row, 5).Value  = i.Style;
+                ws.Cell(row, 6).Value  = i.Brand;
+                ws.Cell(row, 7).Value  = FmtDate(i.LpmDt);
+                ws.Cell(row, 8).Value  = i.Qty;
+                ws.Cell(row, 9).Value  = i.CheckedQty;
+                ws.Cell(row, 10).Value = i.MissingQty;
+                ws.Cell(row, 11).Value = i.ExcessQty;
+                ws.Cell(row, 12).Value = i.ReturnToSuppQty;
+                ws.Cell(row, 13).Value = i.ReturnToBuyQty;
+                row++;
+            }
+            ws.Columns().AdjustToContents();
+
+            using var ms = new MemoryStream();
+            wb.SaveAs(ms);
+            var b64 = Convert.ToBase64String(ms.ToArray());
+            var name = $"po-counting-item-wise-{_selectedPo}-{DateTime.Today:yyyyMMdd}.xlsx";
+            await JS.InvokeVoidAsync("downloadFileWithPicker", name, b64,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        }
+        finally { _exportingItems = false; }
+    }
+
+    private static string FmtDate(DateTime? d) => d?.ToString("dd-MMM-yyyy") ?? "";
+
+    private static string DisplayCountry(string c) =>
+        string.IsNullOrEmpty(c) ? c : c.ToUpper();
+}
