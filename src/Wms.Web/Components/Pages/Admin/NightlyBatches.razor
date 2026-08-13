@@ -16,7 +16,7 @@
 
 <div class="aiwms-section">
     <div class="aiwms-card-header">Country Activation</div>
-    <table class="aiwms-table aiwms-table-dense" style="max-width:860px">
+    <table class="aiwms-table aiwms-table-dense" style="max-width:1120px">
         <thead>
             <tr>
                 <th>Process</th>
@@ -24,6 +24,7 @@
                 <th>Active</th>
                 <th>Last updated</th>
                 <th>By</th>
+                <th style="white-space:nowrap">Next scheduled</th>
                 <th>Actions</th>
             </tr>
         </thead>
@@ -39,6 +40,7 @@
                     </td>
                     <td>@ToGst(c.UpdatedTS).ToString("yyyy-MM-dd HH:mm") <span style="font-size:10px; color:var(--text-secondary)">GST</span></td>
                     <td>@c.UpdatedBy</td>
+                    <td style="white-space:nowrap">@(c.IsActive ? NextDailyFireGst().ToString("yyyy-MM-dd HH:mm") + " GST" : "—")</td>
                     <td>
                         <button class="aiwms-btn aiwms-btn-secondary" style="font-size:11px; padding:4px 8px"
                                 @onclick="() => RefreshYesterdayAsync(c.Country)" disabled="@_busy">Refresh Now (T-1)</button>
@@ -56,6 +58,7 @@
                 </td>
                 <td>@(GcpRow.UpdatedTS == default ? "" : ToGst(GcpRow.UpdatedTS).ToString("yyyy-MM-dd HH:mm") + " GST")</td>
                 <td>@GcpRow.UpdatedBy</td>
+                <td style="white-space:nowrap">@(GcpRow.IsActive ? NextWeeklyFireGst().ToString("yyyy-MM-dd HH:mm") + " GST" : "—")</td>
                 <td>
                     <button class="aiwms-btn aiwms-btn-secondary" style="font-size:11px; padding:4px 8px"
                             @onclick="RefreshGcpNowAsync" disabled="@_busy">Refresh Now</button>
@@ -63,7 +66,7 @@
             </tr>
             @if (_config.Count == 0)
             {
-                <tr><td colspan="6" style="font-style:italic; color:var(--text-secondary)">No countries configured yet. Add one with the form below.</td></tr>
+                <tr><td colspan="7" style="font-style:italic; color:var(--text-secondary)">No countries configured yet. Add one with the form below.</td></tr>
             }
         </tbody>
     </table>
@@ -255,6 +258,27 @@
 
     // Azure SQL SYSDATETIME() returns UTC; the UI shows GST (UTC+4, no DST).
     private static DateTime ToGst(DateTime utc) => utc.AddHours(4);
+
+    // Mirrors NightlyBatchService / WeeklySalesBatchService's own fire-time logic —
+    // both fire at 06:00 GST, NightlyBatchService daily, WeeklySalesBatchService only
+    // on Mondays.
+    private static readonly TimeSpan FireTimeGst = new(6, 0, 0);
+    private static readonly TimeZoneInfo GstTz =
+        TimeZoneInfo.FindSystemTimeZoneById(OperatingSystem.IsWindows() ? "Arabian Standard Time" : "Asia/Dubai");
+
+    private static DateTime NextDailyFireGst()
+    {
+        var nowGst = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, GstTz);
+        var candidate = nowGst.Date.Add(FireTimeGst);
+        return nowGst < candidate ? candidate : candidate.AddDays(1);
+    }
+
+    private static DateTime NextWeeklyFireGst()
+    {
+        var candidate = NextDailyFireGst();
+        while (candidate.DayOfWeek != DayOfWeek.Monday) candidate = candidate.AddDays(1);
+        return candidate;
+    }
 
     private static string StatusPill(string s) => s switch
     {

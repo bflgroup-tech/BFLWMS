@@ -245,11 +245,16 @@ public class MissingExcessSnapshotService(IOnPremConnectionResolver resolver, IC
             // DELETE above missing a row it should have cleared (e.g. a stale row
             // left over from an interrupted prior run, or the PK covering fewer
             // columns than the (Country, ClosedDt, key) slice this method assumes).
-            // Re-running for the same day now updates in place instead of throwing.
+            // WITH (HOLDLOCK) closes the classic MERGE race: at default READ COMMITTED,
+            // two concurrent MERGEs for the same key (e.g. this Timer run overlapping a
+            // manual Refresh Now for the same country/day) can both see "no match" and
+            // both attempt INSERT — the second still throws the PK violation MERGE was
+            // supposed to avoid. HOLDLOCK serializes access to the matched range so the
+            // second one waits and correctly falls into UPDATE instead.
             foreach (var r in boxSummary)
             {
                 await dst.ExecuteAsync(new CommandDefinition(@"
-                    MERGE dbo.WmsRptMissingExcess_BoxSummary AS t
+                    MERGE dbo.WmsRptMissingExcess_BoxSummary WITH (HOLDLOCK) AS t
                     USING (SELECT @c AS Country, @b AS BoxNo, @d AS ClosedDt) AS s
                       ON t.Country = s.Country AND t.BoxNo = s.BoxNo AND t.ClosedDt = s.ClosedDt
                     WHEN MATCHED THEN
@@ -263,7 +268,7 @@ public class MissingExcessSnapshotService(IOnPremConnectionResolver resolver, IC
             foreach (var r in boxDetail)
             {
                 await dst.ExecuteAsync(new CommandDefinition(@"
-                    MERGE dbo.WmsRptMissingExcess_BoxDetail AS t
+                    MERGE dbo.WmsRptMissingExcess_BoxDetail WITH (HOLDLOCK) AS t
                     USING (SELECT @c AS Country, @d AS ClosedDt, @b AS BoxNo, @i AS ItemCode) AS s
                       ON t.Country = s.Country AND t.ClosedDt = s.ClosedDt AND t.BoxNo = s.BoxNo AND t.ItemCode = s.ItemCode
                     WHEN MATCHED THEN
@@ -277,7 +282,7 @@ public class MissingExcessSnapshotService(IOnPremConnectionResolver resolver, IC
             foreach (var r in itemSummary)
             {
                 await dst.ExecuteAsync(new CommandDefinition(@"
-                    MERGE dbo.WmsRptMissingExcess_ItemSummary AS t
+                    MERGE dbo.WmsRptMissingExcess_ItemSummary WITH (HOLDLOCK) AS t
                     USING (SELECT @c AS Country, @d AS ClosedDt, @i AS ItemCode) AS s
                       ON t.Country = s.Country AND t.ClosedDt = s.ClosedDt AND t.ItemCode = s.ItemCode
                     WHEN MATCHED THEN
