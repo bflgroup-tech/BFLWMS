@@ -241,27 +241,50 @@ public class MissingExcessSnapshotService(IOnPremConnectionResolver resolver, IC
                 new { c = country, d = d }, transaction: tx,
                 commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
 
+            // MERGE rather than plain INSERT below — belt-and-braces against the
+            // DELETE above missing a row it should have cleared (e.g. a stale row
+            // left over from an interrupted prior run, or the PK covering fewer
+            // columns than the (Country, ClosedDt, key) slice this method assumes).
+            // Re-running for the same day now updates in place instead of throwing.
             foreach (var r in boxSummary)
             {
                 await dst.ExecuteAsync(new CommandDefinition(@"
-                    INSERT INTO dbo.WmsRptMissingExcess_BoxSummary (Country, BoxNo, ClosedDt, ClosedBy, MissQty, ExcessQty)
-                    VALUES (@c, @b, @d, @cb, @m, @x);",
+                    MERGE dbo.WmsRptMissingExcess_BoxSummary AS t
+                    USING (SELECT @c AS Country, @b AS BoxNo, @d AS ClosedDt) AS s
+                      ON t.Country = s.Country AND t.BoxNo = s.BoxNo AND t.ClosedDt = s.ClosedDt
+                    WHEN MATCHED THEN
+                      UPDATE SET ClosedBy = @cb, MissQty = @m, ExcessQty = @x
+                    WHEN NOT MATCHED THEN
+                      INSERT (Country, BoxNo, ClosedDt, ClosedBy, MissQty, ExcessQty)
+                      VALUES (@c, @b, @d, @cb, @m, @x);",
                     new { c = country, b = r.BoxNo, d = r.ClosedDt ?? d, cb = r.ClosedBy, m = r.MissQty, x = r.ExcessQty },
                     transaction: tx, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
             }
             foreach (var r in boxDetail)
             {
                 await dst.ExecuteAsync(new CommandDefinition(@"
-                    INSERT INTO dbo.WmsRptMissingExcess_BoxDetail (Country, ClosedDt, BoxNo, PreparedBy, ItemCode, Qty, QtyIssued, MissingQty, ExcessQty)
-                    VALUES (@c, @d, @b, @p, @i, @q, @qi, @m, @x);",
+                    MERGE dbo.WmsRptMissingExcess_BoxDetail AS t
+                    USING (SELECT @c AS Country, @d AS ClosedDt, @b AS BoxNo, @i AS ItemCode) AS s
+                      ON t.Country = s.Country AND t.ClosedDt = s.ClosedDt AND t.BoxNo = s.BoxNo AND t.ItemCode = s.ItemCode
+                    WHEN MATCHED THEN
+                      UPDATE SET PreparedBy = @p, Qty = @q, QtyIssued = @qi, MissingQty = @m, ExcessQty = @x
+                    WHEN NOT MATCHED THEN
+                      INSERT (Country, ClosedDt, BoxNo, PreparedBy, ItemCode, Qty, QtyIssued, MissingQty, ExcessQty)
+                      VALUES (@c, @d, @b, @p, @i, @q, @qi, @m, @x);",
                     new { c = country, d = r.ClosedDt ?? d, b = r.BoxNo, p = r.PreparedBy, i = r.ItemCode, q = r.Qty, qi = r.QtyIssued, m = r.MissingQty, x = r.ExcessQty },
                     transaction: tx, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
             }
             foreach (var r in itemSummary)
             {
                 await dst.ExecuteAsync(new CommandDefinition(@"
-                    INSERT INTO dbo.WmsRptMissingExcess_ItemSummary (Country, ClosedDt, ItemCode, ItemName, Division, Department, MissingQty, ExcessQty, HOStock)
-                    VALUES (@c, @d, @i, @n, @v, @p, @m, @x, @h);",
+                    MERGE dbo.WmsRptMissingExcess_ItemSummary AS t
+                    USING (SELECT @c AS Country, @d AS ClosedDt, @i AS ItemCode) AS s
+                      ON t.Country = s.Country AND t.ClosedDt = s.ClosedDt AND t.ItemCode = s.ItemCode
+                    WHEN MATCHED THEN
+                      UPDATE SET ItemName = @n, Division = @v, Department = @p, MissingQty = @m, ExcessQty = @x, HOStock = @h
+                    WHEN NOT MATCHED THEN
+                      INSERT (Country, ClosedDt, ItemCode, ItemName, Division, Department, MissingQty, ExcessQty, HOStock)
+                      VALUES (@c, @d, @i, @n, @v, @p, @m, @x, @h);",
                     new { c = country, d = d, i = r.ItemCode, n = r.ItemName, v = r.Division, p = r.Department, m = r.MissingQty, x = r.ExcessQty, h = r.HOStock },
                     transaction: tx, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
             }
