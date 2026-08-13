@@ -1,3 +1,4 @@
+using System.Data;
 using Google.Apis.Auth.OAuth2;
 using Google.Cloud.BigQuery.V2;
 using Microsoft.Extensions.Configuration;
@@ -178,16 +179,46 @@ public class WeeklySalesFromGcpService(IOnPremConnectionResolver resolver, IOpti
     }
 
     // ====================== Upsert into one country's on-prem LPM_Weekly_SalesAmt ======================
+    // Bulk-copies the full feed (300K+ rows) into a session-scoped #Staging temp table,
+    // then a single set-based MERGE — row-by-row Dapper execution here would mean one
+    // round trip per row, which is minutes-to-hours slow at this volume.
 
-    private const string UpsertSql = @"
+    private const string CreateStagingSql = @"
+        CREATE TABLE #Staging (
+            StoreID  NVARCHAR(50)  NOT NULL,
+            DivCode  INT           NOT NULL,
+            Year1    INT           NOT NULL,
+            Month1   INT           NOT NULL,
+            Week     INT           NOT NULL,
+            SalesQty INT           NULL,
+            SalesAmt DECIMAL(18,2) NULL
+        );";
+
+    private const string MergeFromStagingSql = @"
         MERGE dbo.LPM_Weekly_SalesAmt AS t
-        USING (SELECT @StoreId AS StoreID, @DivCode AS DivCode, @Year1 AS Year1, @Month1 AS Month1, @Week AS Week) AS s
+        USING #Staging AS s
           ON t.StoreID = s.StoreID AND t.DivCode = s.DivCode AND t.Year1 = s.Year1 AND t.Month1 = s.Month1 AND t.Week = s.Week
         WHEN MATCHED THEN
-          UPDATE SET SalesQty = @SalesQty, SalesAmt = @SalesAmt, UpdatedTS = DATEADD(hour, 4, SYSUTCDATETIME())
+          UPDATE SET SalesQty = s.SalesQty, SalesAmt = s.SalesAmt, UpdatedTS = DATEADD(hour, 4, SYSUTCDATETIME())
         WHEN NOT MATCHED THEN
           INSERT (StoreID, DivCode, Year1, Month1, Week, SalesQty, SalesAmt, CreateTS)
-          VALUES (@StoreId, @DivCode, @Year1, @Month1, @Week, @SalesQty, @SalesAmt, DATEADD(hour, 4, SYSUTCDATETIME()));";
+          VALUES (s.StoreID, s.DivCode, s.Year1, s.Month1, s.Week, s.SalesQty, s.SalesAmt, DATEADD(hour, 4, SYSUTCDATETIME()));";
+
+    private static DataTable ToStagingTable(IReadOnlyList<WeeklySalesGcpRow> rows)
+    {
+        var table = new DataTable();
+        table.Columns.Add("StoreID", typeof(string));
+        table.Columns.Add("DivCode", typeof(int));
+        table.Columns.Add("Year1", typeof(int));
+        table.Columns.Add("Month1", typeof(int));
+        table.Columns.Add("Week", typeof(int));
+        table.Columns.Add("SalesQty", typeof(int));
+        table.Columns.Add("SalesAmt", typeof(decimal));
+        foreach (var r in rows)
+            table.Rows.Add(r.StoreId, r.DivCode, r.Year1, r.Month1, r.Week,
+                (object?)r.SalesQty ?? DBNull.Value, (object?)r.SalesAmt ?? DBNull.Value);
+        return table;
+    }
 
     public async Task<int> UpsertRowsAsync(string country, IReadOnlyList<WeeklySalesGcpRow> rows, CancellationToken ct = default)
     {
@@ -198,7 +229,20 @@ public class WeeklySalesFromGcpService(IOnPremConnectionResolver resolver, IOpti
         try
         {
             await c.ExecuteAsync(new CommandDefinition(
-                UpsertSql, rows, transaction: tx, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+                CreateStagingSql, transaction: tx, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+
+            using (var bulk = new SqlBulkCopy(c, SqlBulkCopyOptions.Default, tx)
+            {
+                DestinationTableName = "#Staging",
+                BulkCopyTimeout = CommandTimeoutSeconds,
+            })
+            {
+                await bulk.WriteToServerAsync(ToStagingTable(rows), ct);
+            }
+
+            await c.ExecuteAsync(new CommandDefinition(
+                MergeFromStagingSql, transaction: tx, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+
             await tx.CommitAsync(ct);
             return rows.Count;
         }
