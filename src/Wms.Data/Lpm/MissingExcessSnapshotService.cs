@@ -51,8 +51,8 @@ public class MissingExcessSnapshotService(IOnPremConnectionResolver resolver, IC
     {
         await using var c = OpenWms();
         var rows = await c.QueryAsync<RptCountryConfigRow>(new CommandDefinition(
-            "SELECT Country, IsActive, UpdatedTS, UpdatedBy FROM dbo.WmsRptCountryConfig ORDER BY Country",
-            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            "SELECT Country, IsActive, UpdatedTS, UpdatedBy FROM dbo.WmsRptCountryConfig WHERE JobName = @j ORDER BY Country",
+            new { j = JobName }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         return rows.AsList();
     }
 
@@ -60,8 +60,8 @@ public class MissingExcessSnapshotService(IOnPremConnectionResolver resolver, IC
     {
         await using var c = OpenWms();
         var rows = await c.QueryAsync<string>(new CommandDefinition(
-            "SELECT Country FROM dbo.WmsRptCountryConfig WHERE IsActive = 1 ORDER BY Country",
-            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            "SELECT Country FROM dbo.WmsRptCountryConfig WHERE JobName = @j AND IsActive = 1 ORDER BY Country",
+            new { j = JobName }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         return rows.AsList();
     }
 
@@ -70,14 +70,14 @@ public class MissingExcessSnapshotService(IOnPremConnectionResolver resolver, IC
         await using var c = OpenWms();
         await c.ExecuteAsync(new CommandDefinition(@"
             MERGE dbo.WmsRptCountryConfig AS t
-            USING (SELECT @c AS Country) AS s
-              ON t.Country = s.Country
+            USING (SELECT @j AS JobName, @c AS Country) AS s
+              ON t.JobName = s.JobName AND t.Country = s.Country
             WHEN MATCHED THEN
               UPDATE SET IsActive = @a, UpdatedTS = DATEADD(hour, 4, SYSUTCDATETIME()), UpdatedBy = @u
             WHEN NOT MATCHED THEN
-              INSERT (Country, IsActive, UpdatedTS, UpdatedBy)
-              VALUES (@c, @a, DATEADD(hour, 4, SYSUTCDATETIME()), @u);",
-            new { c = country, a = isActive, u = user.Name },
+              INSERT (JobName, Country, IsActive, UpdatedTS, UpdatedBy)
+              VALUES (@j, @c, @a, DATEADD(hour, 4, SYSUTCDATETIME()), @u);",
+            new { j = JobName, c = country, a = isActive, u = user.Name },
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
     }
 
@@ -105,6 +105,18 @@ public class MissingExcessSnapshotService(IOnPremConnectionResolver resolver, IC
              WHERE RunId = @id;",
             new { id = runId, s = status, r = rowsProcessed, d = datesProcessed, e = errorMessage },
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+    }
+
+    /// <summary>True if a Timer-triggered run of the given mode already started today
+    /// (GST). Guards against re-firing after an app restart resets the hosted service's
+    /// in-memory "already ran today" tracker — restarts happen mid-day on every deploy.</summary>
+    public async Task<bool> HasFiredTodayAsync(string mode, DateTime todayGst, CancellationToken ct = default)
+    {
+        await using var c = OpenWms();
+        var lastStart = await c.ExecuteScalarAsync<DateTime?>(new CommandDefinition(
+            "SELECT MAX(StartTS) FROM dbo.WmsRptJobRun WHERE JobName = @j AND Mode = @m AND TriggeredBy = 'Timer'",
+            new { j = JobName, m = mode }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        return lastStart is not null && lastStart.Value.Date == todayGst.Date;
     }
 
     public async Task<List<RptJobRunRow>> GetRecentRunsAsync(int top = 50, CancellationToken ct = default)
@@ -211,7 +223,11 @@ public class MissingExcessSnapshotService(IOnPremConnectionResolver resolver, IC
         {
             boxSummary  = (await grid.ReadAsync<BoxSummaryRow>()).ToArray();
             boxDetail   = (await grid.ReadAsync<BoxDetailCombinedDayRow>()).ToArray();
-            itemSummary = (await grid.ReadAsync<ItemSummaryReportRow>()).ToArray();
+            // hodata.itemmaster / datareporting.vupc_subclass can carry more than one row
+            // per itemcode (per-country mirrors) — the LEFT JOINs can fan a single itemcode
+            // out into duplicates, which then violates the (Country, ClosedDt, ItemCode) PK
+            // on insert below. Keep one row per ItemCode.
+            itemSummary = (await grid.ReadAsync<ItemSummaryReportRow>()).DistinctBy(r => r.ItemCode).ToArray();
         }
 
         // 2) Wipe + reload the (Country, day) slice in all three snapshot tables.
@@ -225,27 +241,50 @@ public class MissingExcessSnapshotService(IOnPremConnectionResolver resolver, IC
                 new { c = country, d = d }, transaction: tx,
                 commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
 
+            // MERGE rather than plain INSERT below — belt-and-braces against the
+            // DELETE above missing a row it should have cleared (e.g. a stale row
+            // left over from an interrupted prior run, or the PK covering fewer
+            // columns than the (Country, ClosedDt, key) slice this method assumes).
+            // Re-running for the same day now updates in place instead of throwing.
             foreach (var r in boxSummary)
             {
                 await dst.ExecuteAsync(new CommandDefinition(@"
-                    INSERT INTO dbo.WmsRptMissingExcess_BoxSummary (Country, BoxNo, ClosedDt, ClosedBy, MissQty, ExcessQty)
-                    VALUES (@c, @b, @d, @cb, @m, @x);",
+                    MERGE dbo.WmsRptMissingExcess_BoxSummary AS t
+                    USING (SELECT @c AS Country, @b AS BoxNo, @d AS ClosedDt) AS s
+                      ON t.Country = s.Country AND t.BoxNo = s.BoxNo AND t.ClosedDt = s.ClosedDt
+                    WHEN MATCHED THEN
+                      UPDATE SET ClosedBy = @cb, MissQty = @m, ExcessQty = @x
+                    WHEN NOT MATCHED THEN
+                      INSERT (Country, BoxNo, ClosedDt, ClosedBy, MissQty, ExcessQty)
+                      VALUES (@c, @b, @d, @cb, @m, @x);",
                     new { c = country, b = r.BoxNo, d = r.ClosedDt ?? d, cb = r.ClosedBy, m = r.MissQty, x = r.ExcessQty },
                     transaction: tx, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
             }
             foreach (var r in boxDetail)
             {
                 await dst.ExecuteAsync(new CommandDefinition(@"
-                    INSERT INTO dbo.WmsRptMissingExcess_BoxDetail (Country, ClosedDt, BoxNo, PreparedBy, ItemCode, Qty, QtyIssued, MissingQty, ExcessQty)
-                    VALUES (@c, @d, @b, @p, @i, @q, @qi, @m, @x);",
+                    MERGE dbo.WmsRptMissingExcess_BoxDetail AS t
+                    USING (SELECT @c AS Country, @d AS ClosedDt, @b AS BoxNo, @i AS ItemCode) AS s
+                      ON t.Country = s.Country AND t.ClosedDt = s.ClosedDt AND t.BoxNo = s.BoxNo AND t.ItemCode = s.ItemCode
+                    WHEN MATCHED THEN
+                      UPDATE SET PreparedBy = @p, Qty = @q, QtyIssued = @qi, MissingQty = @m, ExcessQty = @x
+                    WHEN NOT MATCHED THEN
+                      INSERT (Country, ClosedDt, BoxNo, PreparedBy, ItemCode, Qty, QtyIssued, MissingQty, ExcessQty)
+                      VALUES (@c, @d, @b, @p, @i, @q, @qi, @m, @x);",
                     new { c = country, d = r.ClosedDt ?? d, b = r.BoxNo, p = r.PreparedBy, i = r.ItemCode, q = r.Qty, qi = r.QtyIssued, m = r.MissingQty, x = r.ExcessQty },
                     transaction: tx, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
             }
             foreach (var r in itemSummary)
             {
                 await dst.ExecuteAsync(new CommandDefinition(@"
-                    INSERT INTO dbo.WmsRptMissingExcess_ItemSummary (Country, ClosedDt, ItemCode, ItemName, Division, Department, MissingQty, ExcessQty, HOStock)
-                    VALUES (@c, @d, @i, @n, @v, @p, @m, @x, @h);",
+                    MERGE dbo.WmsRptMissingExcess_ItemSummary AS t
+                    USING (SELECT @c AS Country, @d AS ClosedDt, @i AS ItemCode) AS s
+                      ON t.Country = s.Country AND t.ClosedDt = s.ClosedDt AND t.ItemCode = s.ItemCode
+                    WHEN MATCHED THEN
+                      UPDATE SET ItemName = @n, Division = @v, Department = @p, MissingQty = @m, ExcessQty = @x, HOStock = @h
+                    WHEN NOT MATCHED THEN
+                      INSERT (Country, ClosedDt, ItemCode, ItemName, Division, Department, MissingQty, ExcessQty, HOStock)
+                      VALUES (@c, @d, @i, @n, @v, @p, @m, @x, @h);",
                     new { c = country, d = d, i = r.ItemCode, n = r.ItemName, v = r.Division, p = r.Department, m = r.MissingQty, x = r.ExcessQty, h = r.HOStock },
                     transaction: tx, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
             }
