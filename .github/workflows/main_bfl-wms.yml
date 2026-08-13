@@ -30,7 +30,7 @@ jobs:
       - name: Compute latest PR number
         id: pr
         run: |
-          PR_NUM=$(git log -1 --pretty=%s | grep -oE '#[0-9]+$' | tr -d '#')
+          PR_NUM=$(git log -1 --pretty=%s | grep -oE '#[0-9]+\)?$' | tr -d '#)')
           echo "value=${PR_NUM:-unknown}" >> $GITHUB_OUTPUT
 
       - name: Build with dotnet

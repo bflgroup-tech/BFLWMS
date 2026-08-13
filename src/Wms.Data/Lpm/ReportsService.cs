@@ -784,8 +784,14 @@ public class ReportsService(IOnPremConnectionResolver resolver)
                 ReturnToSuppQty         = det.ReturnToSuppQty,
                 PctMissingReturn        = CASE WHEN det.OrderSheetQty = 0 THEN 0 ELSE ROUND(det.ReturnToSuppQty * 100.0 / det.OrderSheetQty, 2) END,
                 ReturnToBuyQty          = det.ReturnToBuyQty,
-                b.ErrorUnits,
-                b.ErrorRate,
+                -- b.ErrorUnits/b.ErrorRate are container-wide totals (same value for
+                -- every PO in that container) — split proportionally by each PO's own
+                -- share of the container's total checked qty (GRNQty) instead of
+                -- repeating the container total on every row.
+                ErrorUnits              = CASE WHEN SUM(det.GRNQty) OVER (PARTITION BY det.ContNo) = 0 THEN 0
+                                          ELSE ROUND(b.ErrorUnits * det.GRNQty * 1.0 / SUM(det.GRNQty) OVER (PARTITION BY det.ContNo), 2) END,
+                ErrorRate               = CASE WHEN SUM(det.GRNQty) OVER (PARTITION BY det.ContNo) = 0 THEN 0
+                                          ELSE ROUND(b.ErrorRate  * det.GRNQty * 1.0 / SUM(det.GRNQty) OVER (PARTITION BY det.ContNo), 2) END,
                 b.PurchaseType,
                 b.Remarks,
                 b.Status,
@@ -804,14 +810,35 @@ public class ReportsService(IOnPremConnectionResolver resolver)
     }
 
     /// <summary>
-    /// PO Counting Report — Item-wise detail for a single (ContNo, PONumber),
-    /// shown when the user double-clicks a PO row in the summary grid.
+    /// PO Counting Report — Detailed view. Same filters as GetPoCountingAsync
+    /// (Country/date-range/ContNo/PO Number), but one row per item instead of
+    /// aggregated per PO — the "Detailed" report option, same idea as the
+    /// Counting Completion Report's Summary/Detailed toggle.
     /// </summary>
-    public async Task<List<PoCountingItemRow>> GetPoCountingItemsAsync(
-        string contNo, string poNumber, CancellationToken ct = default)
+    public async Task<List<PoCountingItemRow>> GetPoCountingDetailAsync(
+        IEnumerable<string>? countries, DateTime fromDate, DateTime toDate,
+        string? contNo, string? poNumber, CancellationToken ct = default)
     {
+        var countryList = countries?.Where(s => !string.IsNullOrWhiteSpace(s)).ToArray() ?? Array.Empty<string>();
+        var noCountryFilter = countries is null;
+        var contNoFilter = string.IsNullOrWhiteSpace(contNo) ? null : contNo.Trim();
+        var poFilter = string.IsNullOrWhiteSpace(poNumber) ? null : poNumber.Trim();
+        var skipDateFilter = contNoFilter is not null || poFilter is not null;
+
         await using var c = OpenOnPremBackup();
         var rows = await c.QueryAsync<PoCountingItemRow>(new CommandDefinition(@"
+            SET NOCOUNT ON;
+            IF OBJECT_ID('tempdb..#PDBase') IS NOT NULL DROP TABLE #PDBase;
+
+            SELECT DISTINCT s.ContNo
+              INTO #PDBase
+              FROM BFLDATA.dbo.BuildingCompletionSumm s WITH (NOLOCK)
+             WHERE (@skipDateFilter = 1 OR (s.Trndate >= @from AND s.Trndate < @toExclusive))
+               AND (@noCountryFilter = 1 OR s.Country IN @countries)
+               AND (@contNoFilter IS NULL OR s.ContNo = @contNoFilter);
+
+            CREATE UNIQUE CLUSTERED INDEX IX_PDBase ON #PDBase (ContNo);
+
             SELECT d.ContNo,
                    PONumber   = d.OraPONo,
                    ItemCode   = d.upc,
@@ -827,9 +854,15 @@ public class ReportsService(IOnPremConnectionResolver resolver)
                    ReturnToSuppQty  = ISNULL(d.ReturnToSuppQty, 0),
                    ReturnToBuyQty   = ISNULL(d.ReturnToBuyQty, 0)
               FROM BFLDATA.dbo.BuildingCompletionDet_OraPONo d WITH (NOLOCK)
-             WHERE d.ContNo = @contNo AND d.OraPONo = @poNumber
-             ORDER BY d.upc;",
-            new { contNo, poNumber }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+             WHERE d.ContNo IN (SELECT ContNo FROM #PDBase)
+               AND (@poFilter IS NULL OR d.OraPONo = @poFilter)
+             ORDER BY d.ContNo, d.OraPONo, d.upc;
+
+            DROP TABLE #PDBase;",
+            new { countries = countryList, noCountryFilter = noCountryFilter ? 1 : 0, contNoFilter, poFilter,
+                  skipDateFilter = skipDateFilter ? 1 : 0,
+                  from = fromDate.Date, toExclusive = toDate.Date.AddDays(1) },
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         return rows.AsList();
     }
 

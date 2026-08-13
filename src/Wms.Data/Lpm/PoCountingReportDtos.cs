@@ -22,10 +22,13 @@ namespace Wms.Data.Lpm;
 /// OrderSheetQty is 0 (OrderSheetQty, not the Vusaorder-based OrderQty, to
 /// match what BuildingCompletionSumm itself uses as its denominator).
 ///
-/// ErrorUnits/ErrorRate/PurchaseType/Remarks/Status/Buyer are also
-/// container-level (BuildingCompletionSumm.ContErrorUnits/ContErrorrate/
-/// Purchasetype/remarks/status/buyer) — same value repeats for every PO
-/// within a given container, same caveat as Division/Supplier.
+/// ErrorUnits/ErrorRate start from BuildingCompletionSumm's container-wide
+/// ContErrorUnits/ContErrorrate, but are split across that container's POs
+/// proportionally by each PO's own share of GRNQty (checked qty) — not
+/// repeated as-is on every row. PurchaseType/Remarks/Status/Buyer remain
+/// genuinely container-level (Purchasetype/remarks/status/buyer) — same
+/// value repeats for every PO within a given container, same caveat as
+/// Division/Supplier.
 /// </summary>
 public record PoCountingRow(
     string    Country,
@@ -53,9 +56,9 @@ public record PoCountingRow(
     string?   Buyer);
 
 /// <summary>
-/// PO Counting Report — Item-wise detail. One row per item (upc) for a given
-/// (ContNo, PONumber), from BFLDATA.dbo.BuildingCompletionDet_OraPONo. Shown
-/// on double-clicking a PO row in the summary grid.
+/// PO Counting Report — Detailed view. One row per item (upc), from
+/// BFLDATA.dbo.BuildingCompletionDet_OraPONo. Shown when the "Detailed"
+/// report option is selected instead of "Summary".
 /// </summary>
 public record PoCountingItemRow(
     string    ContNo,
