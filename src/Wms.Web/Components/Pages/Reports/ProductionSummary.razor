@@ -120,34 +120,6 @@ else if (VisibleRows().Count > 0)
 {
     var visibleRows    = VisibleRows();
     var visibleSummary = VisibleSummary();
-    var totScanned = visibleRows.Sum(r => r.TotalScanned);
-    var mixedQty   = visibleRows.Where(r => r.Kind == "Mixed").Sum(r => r.TotalScanned);
-    var unkQty     = visibleRows.Where(r => r.Kind == "Unknown").Sum(r => r.TotalScanned);
-    var visibleStoreQty    = visibleRows.Sum(r => r.StoreQty);
-    var visibleTransferQty = _transferQtyByCountry.Where(kv => _selectedCountries.Contains(kv.Key)).Sum(kv => kv.Value);
-    var visibleMerchNeed   = _merchNeedByCountry.Where(kv => _selectedCountries.Contains(kv.Key)).Select(kv => kv.Value).ToList();
-    var merchNeedWeek      = visibleMerchNeed.Sum(m => m.MerchNeedWeek);
-    var merchNeedDay       = visibleMerchNeed.Sum(m => m.MerchNeedDay);
-    var isUaeVisible       = _selectedCountries.Contains("UAE");
-    var visibleEx2Qty      = visibleSummary.Sum(s => s.Ex2StoreQty);
-
-    <div class="aiwms-section">
-        <div style="display:grid; grid-template-columns: repeat(@(isUaeVisible ? 7 : 6), 1fr); gap:12px;">
-            @MetricCard("Store Qty",      visibleStoreQty.ToString("N0"), "#fdf2f8", "#9d174d", false)
-            @if (visibleTransferQty > 0)
-            {
-                @MetricCard("Transfer Qty",   visibleTransferQty.ToString("N0"),     "#ccfbf1", "#0f766e", false)
-            }
-            @MetricCard("Total Scanned", totScanned.ToString("N0"),       "#dbeafe", "#1e40af", false)
-            @MetricCard("Unknown",       unkQty.ToString("N0"),           "#fef3c7", "#92400e", false)
-            @if (isUaeVisible)
-            {
-                @MetricCard("EX2LOCATIONS", visibleEx2Qty.ToString("N0"), "#ede9fe", "#5b21b6", false)
-            }
-            @MetricCard("Merch Need (Week)",  merchNeedWeek.ToString("N0"),  "#ffedd5", "#9a3412", false)
-            @MetricCard("Merch Need (Day)",   merchNeedDay.ToString("N0"),   "#ffedd5", "#9a3412", false)
-        </div>
-    </div>
 
     @if (_selectedCountries.Count > 0)
     {
@@ -260,7 +232,7 @@ else if (VisibleRows().Count > 0)
                         @if (hasMixed) { <th rowspan="2" style="text-align:right">Mixed</th> }
                         <th rowspan="2" style="text-align:right">Unknown</th>
                         <th rowspan="2" style="text-align:right">Scanned Qty</th>
-                        <th rowspan="2" style="text-align:right">Stores Qty</th>
+                        <th rowspan="2" style="text-align:right">Transfer Qty</th>
                         @if (isUae)
                         {
                             <th rowspan="2" style="text-align:right">UAE Qty</th>
@@ -739,7 +711,7 @@ else if (_loadedOnce && VisibleRows().Count == 0)
             pivot = WithMissingMerchNeedDivisions(pivot);
             var isUae = _selectedCountries.Contains("UAE");
             if (multiCountry) sb.Append("Country,");
-            sb.Append("Date,Division,LPM,Non-LPM,Mixed,Unknown,Scanned Qty,Stores Qty");
+            sb.Append("Date,Division,LPM,Non-LPM,Mixed,Unknown,Scanned Qty,Transfer Qty");
             if (isUae) sb.Append(",UAE Qty,Oman Qty,Ex2 Qty");
             sb.Append(",Merch Need Month,Merch Need Week,Merch Need Day");
             sb.AppendLine();
