@@ -2,26 +2,35 @@
 @rendermode RenderMode.InteractiveServer
 @using Wms.Core
 @using Wms.Data.Lpm
+@using Wms.Data.Notifications
+@using Wms.Web.Hosting
 @attribute [Authorize(Policy = MenuKeys.ADMIN_NIGHTLY_BATCHES)]
 @inject MissingExcessSnapshotService Snap
 @inject WeeklySalesFromGcpService Gcp
 @inject VolumeGroupWeeklyService Vg
+@inject OtsWeeklyService OtsJob
+@inject ScheduledJobService Jobs
 @inject OtsPoAllocationService Ots
+@inject ContainerAllocationDataSyncService Sync
+@inject PendingGoodsReceiptEmailService Pgr
+@inject PendingGoodsReceiptEmailSender PgrSender
+@inject IConfiguration Config
 @inject ICurrentUser CurrentUser
 
 <PageTitle>WMS — Nightly Batches Status</PageTitle>
 
 <div class="aiwms-page-header">
     <h2>Nightly Batches Status</h2>
-    <p>Country toggles for the 06:00 GST job, recent run log, and on-demand Refresh / Backfill. All times shown are GST (UTC+4).</p>
+    <p>Every scheduled batch in one place — activation toggles, next fire time, on-demand runs, and the shared run log. All times shown are GST (UTC+4).</p>
 </div>
 
 <div class="aiwms-section">
-    <div class="aiwms-card-header">Country Activation</div>
-    <table class="aiwms-table aiwms-table-dense" style="max-width:1120px">
+    <div class="aiwms-card-header">Scheduled Jobs</div>
+    <table class="aiwms-table aiwms-table-dense">
         <thead>
             <tr>
                 <th>Process</th>
+                <th>Schedule</th>
                 <th>Country</th>
                 <th>Active</th>
                 <th>Last updated</th>
@@ -31,70 +40,41 @@
             </tr>
         </thead>
         <tbody>
-            @foreach (var c in _config)
+            @foreach (var j in _jobs)
             {
                 <tr>
-                    <td>@MissingExcessSnapshotService.JobName</td>
-                    <td><strong>@c.Country</strong></td>
+                    <td style="white-space:nowrap"><strong>@j.JobName</strong></td>
+                    <td style="white-space:nowrap; font-size:11px; color:var(--text-secondary)">@j.Schedule</td>
+                    <td>@(string.IsNullOrEmpty(j.Country) ? "" : j.Country)</td>
                     <td>
-                        <input type="checkbox" checked="@c.IsActive"
-                               @onchange="@(e => ToggleAsync(c.Country, (bool)e.Value!))" />
+                        <input type="checkbox" checked="@j.IsActive" disabled="@(_busy || j.ToggleNote is not null)"
+                               @onchange="@(e => ToggleJobAsync(j, (bool)e.Value!))" />
+                        @if (j.ToggleNote is not null)
+                        {
+                            <span style="font-size:10px; color:var(--text-secondary); margin-left:6px">@j.ToggleNote</span>
+                        }
                     </td>
-                    <td>@ToGst(c.UpdatedTS).ToString("yyyy-MM-dd HH:mm") <span style="font-size:10px; color:var(--text-secondary)">GST</span></td>
-                    <td>@c.UpdatedBy</td>
-                    <td style="white-space:nowrap">@(c.IsActive ? NextDailyFireGst().ToString("yyyy-MM-dd HH:mm") + " GST" : "—")</td>
-                    <td>
-                        <button class="aiwms-btn aiwms-btn-secondary" style="font-size:11px; padding:4px 8px"
-                                @onclick="() => RefreshYesterdayAsync(c.Country)" disabled="@_busy">Refresh Now (T-1)</button>
-                        <button class="aiwms-btn aiwms-btn-secondary" style="font-size:11px; padding:4px 8px"
-                                @onclick="() => BackfillAsync(c.Country)" disabled="@_busy">Backfill from 2026-02-21</button>
+                    <td style="white-space:nowrap">@(j.UpdatedTS == default ? "" : AsGst(j.UpdatedTS).ToString("yyyy-MM-dd HH:mm") + " GST")</td>
+                    <td>@j.UpdatedBy</td>
+                    <td style="white-space:nowrap">@(j.NextFire is null ? "—" : j.NextFire.Value.ToString("yyyy-MM-dd HH:mm") + " GST")</td>
+                    <td style="white-space:nowrap">
+                        @foreach (var (label, action) in j.Actions)
+                        {
+                            <button class="aiwms-btn aiwms-btn-secondary" style="font-size:11px; padding:4px 8px"
+                                    @onclick="action" disabled="@_busy">@label</button>
+                        }
                     </td>
                 </tr>
             }
-            <tr>
-                <td>@WeeklySalesFromGcpService.JobName</td>
-                <td></td>
-                <td>
-                    <input type="checkbox" checked="@GcpRow.IsActive"
-                           @onchange="@(e => ToggleGcpAsync((bool)e.Value!))" />
-                </td>
-                <td>@(GcpRow.UpdatedTS == default ? "" : ToGst(GcpRow.UpdatedTS).ToString("yyyy-MM-dd HH:mm") + " GST")</td>
-                <td>@GcpRow.UpdatedBy</td>
-                <td style="white-space:nowrap">@(GcpRow.IsActive ? NextWeeklyFireGst().ToString("yyyy-MM-dd HH:mm") + " GST" : "—")</td>
-                <td>
-                    <button class="aiwms-btn aiwms-btn-secondary" style="font-size:11px; padding:4px 8px"
-                            @onclick="RefreshGcpNowAsync" disabled="@_busy">Refresh Now</button>
-                </td>
-            </tr>
-            @foreach (var c in _vgConfig)
+            @if (_jobs.Count == 0)
             {
-                <tr>
-                    <td>@VolumeGroupWeeklyService.JobName <span style="font-size:10px; color:var(--text-secondary)">(Mon 04:00 GST)</span></td>
-                    <td><strong>@c.Country</strong></td>
-                    <td>
-                        <input type="checkbox" checked="@c.IsActive"
-                               @onchange="@(e => ToggleVgAsync(c.Country, (bool)e.Value!))" />
-                    </td>
-                    <td>@ToGst(c.UpdatedTS).ToString("yyyy-MM-dd HH:mm") <span style="font-size:10px; color:var(--text-secondary)">GST</span></td>
-                    <td>@c.UpdatedBy</td>
-                    <td style="white-space:nowrap">@(c.IsActive ? NextVolumeGroupFireGst().ToString("yyyy-MM-dd HH:mm") + " GST" : "—")</td>
-                    <td>
-                        <button class="aiwms-btn aiwms-btn-secondary" style="font-size:11px; padding:4px 8px"
-                                @onclick="() => RunVgNowAsync(c.Country)" disabled="@_busy">Run Now</button>
-                    </td>
-                </tr>
-            }
-            @if (_config.Count == 0 && _vgConfig.Count == 0)
-            {
-                <tr><td colspan="7" style="font-style:italic; color:var(--text-secondary)">No countries configured yet. Add one with the form below.</td></tr>
+                <tr><td colspan="8" style="font-style:italic; color:var(--text-secondary)">No jobs configured yet. Add a country with the form below.</td></tr>
             }
         </tbody>
     </table>
 
     <div style="display:flex; gap:8px; align-items:end; margin-top:14px">
         <div>
-            @* WeeklySalesFromGCP is deliberately absent — it is a single fixed row,
-               not per-country (see WeeklySalesFromGcpService's class doc comment). *@
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">PROCESS</label>
             <select @bind="_newCountryJob" style="padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;">
                 <option value="@MissingExcessSnapshotService.JobName">@MissingExcessSnapshotService.JobName</option>
@@ -107,11 +87,22 @@
         </div>
         <button class="aiwms-btn aiwms-btn-secondary" @onclick="AddCountryAsync" disabled="@(_busy || string.IsNullOrWhiteSpace(_newCountry))">Add (inactive)</button>
     </div>
+    <p style="font-size:11px; color:var(--text-secondary); margin-top:8px">
+        Only MissingExcessSnapshot and VolumeGroupWeekly run per country. The rest are single-instance jobs and already have their row above.
+    </p>
 
     @if (!string.IsNullOrEmpty(_message))
     {
         <div class="aiwms-alert @(_isError ? "error" : "info")" style="margin-top:12px">@_message</div>
     }
+</div>
+
+<div class="aiwms-section">
+    <div class="aiwms-card-header">Monday sequence</div>
+    <p style="font-size:12px; color:var(--text-secondary); margin:0 0 4px 0">
+        <strong>04:00</strong> Volume Group refresh → <strong>05:00</strong> OTS generate → <strong>06:00</strong> Missing/Excess snapshot + Weekly sales from BigQuery.
+        OTS needs Volume Group to have run for <strong>BFLGROUP</strong> the same day; if that row is inactive the 05:00 run fails on purpose rather than computing from a stale snapshot.
+    </p>
 </div>
 
 <div class="aiwms-section">
@@ -135,8 +126,8 @@
                     <td>@r.JobName</td>
                     <td>@r.Country</td>
                     <td>@r.Mode</td>
-                    <td>@ToGst(r.StartTS).ToString("yyyy-MM-dd HH:mm:ss")</td>
-                    <td>@(r.EndTS is null ? "" : ToGst(r.EndTS.Value).ToString("yyyy-MM-dd HH:mm:ss"))</td>
+                    <td>@AsGst(r.StartTS).ToString("yyyy-MM-dd HH:mm:ss")</td>
+                    <td>@(r.EndTS is null ? "" : AsGst(r.EndTS.Value).ToString("yyyy-MM-dd HH:mm:ss"))</td>
                     <td><span class="aiwms-pill @StatusPill(r.Status)">@r.Status</span></td>
                     <td style="text-align:right">@r.RowsProcessed</td>
                     <td style="text-align:right">@r.DatesProcessed</td>
@@ -153,9 +144,22 @@
 </div>
 
 @code {
-    private List<RptCountryConfigRow> _config = new();
-    private List<RptCountryConfigRow> _gcpConfig = new();
-    private List<RptCountryConfigRow> _vgConfig = new();
+    // One rendered row of the Scheduled Jobs table. Every job — per-country or
+    // single-instance, DB-toggled or config-gated — is projected into this shape
+    // so the markup stays a single <tr> template.
+    private sealed record JobVm(
+        string    JobName,
+        string    Schedule,
+        string?   Country,
+        bool      IsActive,
+        DateTime  UpdatedTS,
+        string?   UpdatedBy,
+        DateTime? NextFire,
+        Func<bool, Task> Toggle,
+        List<(string Label, EventCallback Action)> Actions,
+        string?   ToggleNote = null);
+
+    private List<JobVm> _jobs = new();
     private List<RptJobRunRow> _runs = new();
     private string _newCountry = "";
     private string _newCountryJob = MissingExcessSnapshotService.JobName;
@@ -166,33 +170,102 @@
     protected override async Task OnInitializedAsync()
     {
         await CurrentUser.EnsureLoadedAsync();
-        await ReloadConfigAsync();
-        await ReloadGcpConfigAsync();
-        await ReloadVgConfigAsync();
+        await ReloadJobsAsync();
         await RefreshLogAsync();
     }
 
-    private async Task ReloadConfigAsync()
-    {
-        try { _config = await Snap.GetCountryConfigAsync(); }
-        catch (Exception ex) { Show($"Failed to load config: {ex.Message}", true); }
-    }
+    // ---------------- Row assembly ----------------
 
-    private async Task ReloadGcpConfigAsync()
+    private async Task ReloadJobsAsync()
     {
-        try { _gcpConfig = await Gcp.GetCountryConfigAsync(); }
-        catch (Exception ex) { Show($"Failed to load config: {ex.Message}", true); }
-    }
+        var list = new List<JobVm>();
+        try
+        {
+            // 1. MissingExcessSnapshot — per country, daily 06:00.
+            foreach (var c in await Snap.GetCountryConfigAsync())
+            {
+                var country = c.Country;
+                list.Add(new JobVm(
+                    MissingExcessSnapshotService.JobName, "Daily 06:00", country,
+                    c.IsActive, c.UpdatedTS, c.UpdatedBy,
+                    c.IsActive ? NextDailyFireGst(new(6, 0, 0)) : null,
+                    active => ToggleAndReloadAsync(() => Snap.SetCountryActiveAsync(country, active), country, active),
+                    new()
+                    {
+                        ("Refresh Now (T-1)", EventCallback.Factory.Create(this, () => RefreshYesterdayAsync(country))),
+                        ("Backfill from 2026-02-21", EventCallback.Factory.Create(this, () => BackfillAsync(country))),
+                    }));
+            }
 
-    // WeeklySalesFromGCP has no real per-country distinction (see the class doc
-    // comment on WeeklySalesFromGcpService) — one fixed row, keyed by "" (empty Country).
-    private RptCountryConfigRow GcpRow =>
-        _gcpConfig.FirstOrDefault(c => c.Country == "") ?? new RptCountryConfigRow("", false, default, "");
+            // 2. WeeklySalesFromGCP — single row keyed by "", Monday 06:00.
+            var gcp = (await Gcp.GetCountryConfigAsync()).FirstOrDefault(c => c.Country == "")
+                      ?? new RptCountryConfigRow("", false, default, "");
+            list.Add(new JobVm(
+                WeeklySalesFromGcpService.JobName, "Mon 06:00", null,
+                gcp.IsActive, gcp.UpdatedTS, gcp.UpdatedBy,
+                gcp.IsActive ? NextWeeklyFireGst(new(6, 0, 0)) : null,
+                active => ToggleAndReloadAsync(() => Gcp.SetCountryActiveAsync("", active), WeeklySalesFromGcpService.JobName, active),
+                new() { ("Refresh Now", EventCallback.Factory.Create(this, RefreshGcpNowAsync)) }));
 
-    private async Task ReloadVgConfigAsync()
-    {
-        try { _vgConfig = await Vg.GetCountryConfigAsync(); }
-        catch (Exception ex) { Show($"Failed to load VG config: {ex.Message}", true); }
+            // 3. VolumeGroupWeekly — per country, Monday 04:00.
+            foreach (var c in await Vg.GetCountryConfigAsync())
+            {
+                var country = c.Country;
+                list.Add(new JobVm(
+                    VolumeGroupWeeklyService.JobName, "Mon 04:00", country,
+                    c.IsActive, c.UpdatedTS, c.UpdatedBy,
+                    c.IsActive ? NextWeeklyFireGst(new(4, 0, 0)) : null,
+                    active => ToggleAndReloadAsync(() => Vg.SetCountryActiveAsync(country, active), country, active),
+                    new() { ("Run Now", EventCallback.Factory.Create(this, () => RunVgNowAsync(country))) }));
+            }
+
+            // 4. OtsWeekly — single row, Monday 05:00 (one hour after VG).
+            var ots = await Jobs.GetSingleRowAsync(OtsWeeklyService.JobName);
+            list.Add(new JobVm(
+                OtsWeeklyService.JobName, "Mon 05:00", null,
+                ots.IsActive, ots.UpdatedTS, ots.UpdatedBy,
+                ots.IsActive ? NextWeeklyFireGst(new(5, 0, 0)) : null,
+                active => ToggleSingleAsync(OtsWeeklyService.JobName, active),
+                new() { ("Run Now", EventCallback.Factory.Create(this, RunOtsNowAsync)) }));
+
+            // 5. ToteMasterSync — single row, daily 05:00.
+            var tote = await Jobs.GetSingleRowAsync(ToteMasterScheduledService.JobName);
+            list.Add(new JobVm(
+                ToteMasterScheduledService.JobName, "Daily 05:00", null,
+                tote.IsActive, tote.UpdatedTS, tote.UpdatedBy,
+                tote.IsActive ? NextDailyFireGst(new(5, 0, 0)) : null,
+                active => ToggleSingleAsync(ToteMasterScheduledService.JobName, active),
+                new() { ("Run Now", EventCallback.Factory.Create(this, RunToteNowAsync)) }));
+
+            // 6. BoxesToWmsProd — single row, every 30 min, and additionally gated by
+            //    an App Service config flag. With the flag off the toggle is inert, so
+            //    show it disabled rather than implying the checkbox controls anything.
+            var boxes = await Jobs.GetSingleRowAsync(BoxesToWmsProdScheduledService.JobName);
+            var boxesEnabled = Config.GetValue(BoxesToWmsProdScheduledService.EnabledConfigKey, false);
+            list.Add(new JobVm(
+                BoxesToWmsProdScheduledService.JobName, "Every 30 min", null,
+                boxes.IsActive, boxes.UpdatedTS, boxes.UpdatedBy,
+                boxesEnabled && boxes.IsActive ? NextHalfHourGst() : null,
+                active => ToggleSingleAsync(BoxesToWmsProdScheduledService.JobName, active),
+                new() { ("Run Now", EventCallback.Factory.Create(this, RunBoxesNowAsync)) },
+                boxesEnabled ? null : "disabled by config flag"));
+
+            // 7. PendingGoodsReceiptEmail — its activation already lives in its own
+            //    table, so mirror that row instead of creating a second source of truth.
+            var pgr = await Pgr.GetAsync();
+            if (pgr is not null)
+            {
+                list.Add(new JobVm(
+                    "PendingGoodsReceiptEmail", $"Every {pgr.IntervalHours}h", null,
+                    pgr.IsActive, pgr.UpdatedTS, pgr.UpdatedBy,
+                    pgr.IsActive ? (pgr.LastRunTS?.AddHours(pgr.IntervalHours) ?? DateTime.UtcNow.AddHours(4)) : null,
+                    active => TogglePgrAsync(pgr, active),
+                    new() { ("Send Now", EventCallback.Factory.Create(this, () => RunPgrNowAsync(pgr))) }));
+            }
+        }
+        catch (Exception ex) { Show($"Failed to load jobs: {ex.Message}", true); }
+
+        _jobs = list;
     }
 
     private async Task RefreshLogAsync()
@@ -201,38 +274,30 @@
         catch (Exception ex) { Show($"Failed to load runs: {ex.Message}", true); }
     }
 
-    private async Task ToggleAsync(string country, bool active)
+    // ---------------- Toggles ----------------
+
+    private Task ToggleJobAsync(JobVm j, bool active) => j.Toggle(active);
+
+    private async Task ToggleAndReloadAsync(Func<Task> set, string label, bool active)
     {
         try
         {
-            await Snap.SetCountryActiveAsync(country, active);
-            Show($"{country} → {(active ? "ACTIVE" : "INACTIVE")}.", false);
-            await ReloadConfigAsync();
+            await set();
+            Show($"{label} → {(active ? "ACTIVE" : "INACTIVE")}.", false);
+            await ReloadJobsAsync();
         }
         catch (Exception ex) { Show($"Toggle failed: {ex.Message}", true); }
     }
 
-    private async Task ToggleGcpAsync(bool active)
-    {
-        try
-        {
-            await Gcp.SetCountryActiveAsync("", active);
-            Show($"WeeklySalesFromGCP → {(active ? "ACTIVE" : "INACTIVE")}.", false);
-            await ReloadGcpConfigAsync();
-        }
-        catch (Exception ex) { Show($"Toggle failed: {ex.Message}", true); }
-    }
+    private Task ToggleSingleAsync(string jobName, bool active) =>
+        ToggleAndReloadAsync(
+            () => Jobs.SetActiveAsync(jobName, ScheduledJobService.SingleRowKey, active, CurrentUser.Name ?? ""),
+            jobName, active);
 
-    private async Task ToggleVgAsync(string country, bool active)
-    {
-        try
-        {
-            await Vg.SetCountryActiveAsync(country, active);
-            Show($"{country} → {(active ? "ACTIVE" : "INACTIVE")}.", false);
-            await ReloadVgConfigAsync();
-        }
-        catch (Exception ex) { Show($"Toggle failed: {ex.Message}", true); }
-    }
+    private Task TogglePgrAsync(PendingGoodsReceiptEmailConfig cfg, bool active) =>
+        ToggleAndReloadAsync(
+            () => Pgr.SaveAsync(cfg.Recipients, cfg.IntervalHours, active, CurrentUser.Name ?? ""),
+            "PendingGoodsReceiptEmail", active);
 
     private async Task AddCountryAsync()
     {
@@ -241,20 +306,18 @@
         try
         {
             if (_newCountryJob == VolumeGroupWeeklyService.JobName)
-            {
                 await Vg.SetCountryActiveAsync(name, false);
-                await ReloadVgConfigAsync();
-            }
             else
-            {
                 await Snap.SetCountryActiveAsync(name, false);
-                await ReloadConfigAsync();
-            }
+
             _newCountry = "";
             Show($"Added {name} (inactive).", false);
+            await ReloadJobsAsync();
         }
         catch (Exception ex) { Show($"Add failed: {ex.Message}", true); }
     }
+
+    // ---------------- On-demand runs ----------------
 
     private async Task RefreshYesterdayAsync(string country)
     {
@@ -332,41 +395,103 @@
         finally { _busy = false; await RefreshLogAsync(); }
     }
 
-    // Azure SQL SYSDATETIME() returns UTC; the UI shows GST (UTC+4, no DST).
-    private static DateTime ToGst(DateTime utc) => utc.AddHours(4);
+    private async Task RunOtsNowAsync()
+    {
+        _busy = true; Show("Generating OTS — this can take several minutes…", false); await InvokeAsync(StateHasChanged);
+        try
+        {
+            var (rows, err) = await OtsJob.RunOnceAsync("OnDemand", CurrentUser.Name ?? "");
+            if (err is null) Show($"OTS generate done — {rows:N0} rows.", false);
+            else             Show($"OTS generate failed: {err}", true);
+        }
+        finally { _busy = false; await RefreshLogAsync(); }
+    }
 
-    // Mirrors NightlyBatchService / WeeklySalesBatchService's own fire-time logic —
-    // both fire at 06:00 GST, NightlyBatchService daily, WeeklySalesBatchService only
-    // on Mondays.
-    private static readonly TimeSpan FireTimeGst = new(6, 0, 0);
+    private async Task RunToteNowAsync()
+    {
+        _busy = true; Show("Syncing Tote ID Master…", false); await InvokeAsync(StateHasChanged);
+        var runId = await Jobs.StartRunAsync(ToteMasterScheduledService.JobName, "OnDemand", null, CurrentUser.Name ?? "");
+        try
+        {
+            var results = await Sync.SyncToteIDMasterAsync(origin: "Manual", actor: CurrentUser.Name);
+            await Jobs.FinishRunAsync(runId, "Success", results.Count, null);
+            Show($"Tote sync done — {results.Count} country row(s).", false);
+        }
+        catch (Exception ex)
+        {
+            await Jobs.FinishRunAsync(runId, "Failed", null, ex.Message);
+            Show($"Tote sync failed: {ex.Message}", true);
+        }
+        finally { _busy = false; await RefreshLogAsync(); }
+    }
+
+    private async Task RunBoxesNowAsync()
+    {
+        _busy = true; Show("Pushing boxes to WMS prod…", false); await InvokeAsync(StateHasChanged);
+        var runId = await Jobs.StartRunAsync(BoxesToWmsProdScheduledService.JobName, "OnDemand", null, CurrentUser.Name ?? "");
+        try
+        {
+            var result = await Sync.SyncBoxesToWmsProdAsync(origin: "Manual", actor: CurrentUser.Name);
+            await Jobs.FinishRunAsync(runId, "Success", null, result.Message);
+            Show($"Boxes push done — {result.Message}", false);
+        }
+        catch (Exception ex)
+        {
+            await Jobs.FinishRunAsync(runId, "Failed", null, ex.Message);
+            Show($"Boxes push failed: {ex.Message}", true);
+        }
+        finally { _busy = false; await RefreshLogAsync(); }
+    }
+
+    private async Task RunPgrNowAsync(PendingGoodsReceiptEmailConfig cfg)
+    {
+        _busy = true; Show("Sending Pending Goods Receipt email…", false); await InvokeAsync(StateHasChanged);
+        try
+        {
+            var res = await PgrSender.SendNowAsync(cfg.Recipients);
+            await Pgr.RecordRunAsync(cfg.Id, res.StatusMessage, res.Sent ? res.PendingCount : 0);
+            Show(res.Sent ? $"Email sent — {res.PendingCount} pending row(s)." : res.StatusMessage, !res.Sent);
+        }
+        catch (Exception ex) { Show($"Send failed: {ex.Message}", true); }
+        finally { _busy = false; await ReloadJobsAsync(); }
+    }
+
+    // ---------------- Time helpers ----------------
+
+    // WmsRptCountryConfig.UpdatedTS and WmsRptJobRun.StartTS/EndTS are ALREADY
+    // stored in GST — every writer stamps them with
+    // DATEADD(hour, 4, SYSUTCDATETIME()), and the readers pass the value through
+    // untouched. The page used to add another +4 on top, so every timestamp here
+    // rendered four hours in the future. Display them as-is.
+    private static DateTime AsGst(DateTime stored) => stored;
+
     private static readonly TimeZoneInfo GstTz =
         TimeZoneInfo.FindSystemTimeZoneById(OperatingSystem.IsWindows() ? "Arabian Standard Time" : "Asia/Dubai");
 
-    private static DateTime NextDailyFireGst()
+    private static DateTime NowGst() => TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, GstTz);
+
+    // Mirrors each BackgroundService's own fire-time arithmetic. Kept parameterised
+    // rather than one helper per job so a schedule change is a single argument.
+    private static DateTime NextDailyFireGst(TimeSpan fireTime)
     {
-        var nowGst = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, GstTz);
-        var candidate = nowGst.Date.Add(FireTimeGst);
+        var nowGst = NowGst();
+        var candidate = nowGst.Date.Add(fireTime);
         return nowGst < candidate ? candidate : candidate.AddDays(1);
     }
 
-    private static DateTime NextWeeklyFireGst()
+    private static DateTime NextWeeklyFireGst(TimeSpan fireTime, DayOfWeek day = DayOfWeek.Monday)
     {
-        var candidate = NextDailyFireGst();
-        while (candidate.DayOfWeek != DayOfWeek.Monday) candidate = candidate.AddDays(1);
+        var candidate = NextDailyFireGst(fireTime);
+        while (candidate.DayOfWeek != day) candidate = candidate.AddDays(1);
         return candidate;
     }
 
-    // WeeklyVolumeGroupBatchService fires two hours earlier than the 06:00 jobs so the
-    // fresh Volume Groups are in place before the Monday nightly/weekly runs read them.
-    private static readonly TimeSpan VolumeGroupFireTimeGst = new(4, 0, 0);
-
-    private static DateTime NextVolumeGroupFireGst()
+    private static DateTime NextHalfHourGst()
     {
-        var nowGst = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, GstTz);
-        var candidate = nowGst.Date.Add(VolumeGroupFireTimeGst);
-        if (nowGst >= candidate) candidate = candidate.AddDays(1);
-        while (candidate.DayOfWeek != DayOfWeek.Monday) candidate = candidate.AddDays(1);
-        return candidate;
+        var nowGst = NowGst();
+        var floor = new DateTime(nowGst.Year, nowGst.Month, nowGst.Day, nowGst.Hour, 0, 0);
+        if (nowGst < floor.AddMinutes(30)) return floor.AddMinutes(30);
+        return floor.AddHours(1);
     }
 
     private static string StatusPill(string s) => s switch

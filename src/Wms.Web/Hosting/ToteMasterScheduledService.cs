@@ -8,10 +8,17 @@ namespace Wms.Web.Hosting;
 /// origin="Scheduled" so the row appears in Recent Activity distinguishable
 /// from a Manual UI click. Lives in-process; relies on App Service Always On
 /// (same requirement as NightlyBatchService).
+///
+/// Gated on the dbo.WmsRptCountryConfig row (JobName='ToteMasterSync',
+/// Country='') so it can be switched off from the Nightly Batches page without
+/// a redeploy, and writes a dbo.WmsRptJobRun row per fire so the run shows up
+/// in that page's Recent runs table alongside the other batches.
 /// </summary>
 public class ToteMasterScheduledService(IServiceProvider sp, ILogger<ToteMasterScheduledService> log)
     : BackgroundService
 {
+    public const string JobName = "ToteMasterSync";
+
     private static readonly TimeSpan FireTimeGst = new(5, 0, 0);
     private static readonly TimeZoneInfo GstTz =
         TimeZoneInfo.FindSystemTimeZoneById(OperatingSystem.IsWindows() ? "Arabian Standard Time" : "Asia/Dubai");
@@ -58,14 +65,27 @@ public class ToteMasterScheduledService(IServiceProvider sp, ILogger<ToteMasterS
     private async Task RunAsync(CancellationToken ct)
     {
         await using var scope = sp.CreateAsyncScope();
-        var svc = scope.ServiceProvider.GetRequiredService<ContainerAllocationDataSyncService>();
+        var jobs = scope.ServiceProvider.GetRequiredService<ScheduledJobService>();
+
+        // Read the toggle on every fire so a UI flip takes effect without a restart.
+        // Missing row counts as inactive; the seed migration turns it on.
+        if (!await jobs.IsActiveAsync(JobName, ScheduledJobService.SingleRowKey, ct))
+        {
+            log.LogInformation("ToteMasterScheduledService: job is inactive — skipping.");
+            return;
+        }
+
+        var svc   = scope.ServiceProvider.GetRequiredService<ContainerAllocationDataSyncService>();
+        var runId = await jobs.StartRunAsync(JobName, "Daily", null, "Timer", ct);
         try
         {
             var results = await svc.SyncToteIDMasterAsync(origin: "Scheduled", actor: "system (scheduled)", ct: ct);
+            await jobs.FinishRunAsync(runId, "Success", results.Count, null, ct);
             log.LogInformation("ToteMasterScheduledService: completed {N} country row(s).", results.Count);
         }
         catch (Exception ex)
         {
+            await jobs.FinishRunAsync(runId, "Failed", null, ex.Message, CancellationToken.None);
             log.LogError(ex, "ToteMasterScheduledService: SyncToteIDMasterAsync threw.");
         }
     }
