@@ -21,12 +21,15 @@ public sealed record ProductionCheckingSummaryRow(
     int      Ex2StoreQty,
     long     Ex2TotalScanned);
 
-/// <summary>Store Qty for a single Ex2Locations shop, by its actual Country
-/// (bfldata.dbo.DataSettings.Country -- KSA/QATAR/BAHRAIN/KUWAIT/MALAYSIA),
-/// not the shared "Ex2Locations" SIMCountry bucket.</summary>
+/// <summary>Transfer Qty from bfldata.dbo.DailyCountCategoryTrf, by actual Country
+/// (bfldata.dbo.DataSettings.Country) and date -- one row per (Country, Date) for
+/// KSA/QATAR/BAHRAIN/KUWAIT/MALAYSIA (Ex2Locations shops, via Warehouse=JAFZA) plus
+/// UAE/OMAN (via Warehouse=TECHNO, the same warehouse the overall Transfer Qty scalar
+/// reads, just split by country/date).</summary>
 public sealed record Ex2ShopRow(
-    string Country,
-    int    StoreQty);
+    string   Country,
+    DateTime Date,
+    long     TransferQty);
 
 /// <summary>Bundle of detailed rows + summary rows + scalars returned in one go.</summary>
 public sealed record ProductionCheckingResult(
