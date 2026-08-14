@@ -1267,6 +1267,24 @@ DROP TABLE #Scans, #BatchKind, #ItemDiv;";
         return v is not null && v is not DBNull ? Convert.ToInt64(v) : 0;
     }
 
+    // TEMPORARY, see call site above — reads straight from BFLBAHRAIN's own
+    // vTransferDetail (which does have TrfDate/Quantity) instead of the bfldata
+    // Transfer table this report normally uses.
+    private async Task<long> GetBahrainTransferQtyFromVTransferDetailAsync(
+        SqlConnection conn, DateTime fromDate, DateTime toDateInclusive, CancellationToken ct)
+    {
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = @"
+            SELECT ISNULL(SUM(Quantity), 0)
+              FROM [BFLBAHRAIN].dbo.vTransferDetail WITH (NOLOCK)
+             WHERE TrfDate >= @from AND TrfDate < @toExclusive;";
+        cmd.Parameters.Add(new SqlParameter("@from",        fromDate.Date));
+        cmd.Parameters.Add(new SqlParameter("@toExclusive", toDateInclusive.Date.AddDays(1)));
+        cmd.CommandTimeout = 60;
+        var v = await cmd.ExecuteScalarAsync(ct);
+        return v is not null && v is not DBNull ? Convert.ToInt64(v) : 0;
+    }
+
     // ---------------- Non-UAE Production Checking (verbatim port of LPMSIM 1.14.268) ----------------
     // Phase 1: read raw scans from the country's dbo.amechecking via {Country}_DB_ConnectionString.
     // Phase 2: bulk-copy into a #Scans temp table on OnPremBackup, then run the same enrichment
@@ -1317,6 +1335,16 @@ DROP TABLE #Scans, #BatchKind, #ItemDiv;";
         var summary = new List<ProductionCheckingSummaryRow>();
         int overallStoreQty = 0;
         await using var conn = OpenOnPremBackup();
+
+        // TEMPORARY: Bahrain's own bfldata.dbo.DailyCountCategoryTrf isn't populated yet,
+        // so GetTransferQtyAsync above returns 0 for it. Until that's fixed, source
+        // Bahrain's Transfer Qty from BFLBAHRAIN..vTransferDetail instead (reachable from
+        // this OnPremBackup connection, same as the other per-country vTransferDetail
+        // reads elsewhere in this codebase).
+        if (string.Equals(country, "Bahrain", StringComparison.OrdinalIgnoreCase))
+        {
+            transferQty = await GetBahrainTransferQtyFromVTransferDetailAsync(conn, fromDate, toDateInclusive, ct);
+        }
 
         if (scanTable.Rows.Count == 0)
             return new ProductionCheckingResult(rows, summary, 0, transferQty, new());

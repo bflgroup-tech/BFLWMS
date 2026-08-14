@@ -133,7 +133,7 @@
                         <td style="text-align:right">@r.ReturnToSuppQty.ToString("N0")</td>
                         <td style="text-align:right">@r.PctMissingReturn.ToString("N2")</td>
                         <td style="text-align:right">@r.ReturnToBuyQty.ToString("N0")</td>
-                        <td style="text-align:right">@r.ErrorUnits.ToString("N2")</td>
+                        <td style="text-align:right">@r.ErrorUnits.ToString("N0")</td>
                         <td style="text-align:right">@r.ErrorRate.ToString("N2")</td>
                         <td style="word-break:break-word">@r.Supplier</td>
                         <td>@r.Status</td>
@@ -153,7 +153,7 @@
                     <td style="text-align:right">@FilteredRows.Sum(r => r.ReturnToSuppQty).ToString("N0")</td>
                     <td style="text-align:right">@TotalPct(r => r.ReturnToSuppQty).ToString("N2")</td>
                     <td style="text-align:right">@FilteredRows.Sum(r => r.ReturnToBuyQty).ToString("N0")</td>
-                    <td style="text-align:right">@FilteredRows.Sum(r => r.ErrorUnits).ToString("N2")</td>
+                    <td style="text-align:right">@FilteredRows.Sum(r => r.ErrorUnits).ToString("N0")</td>
                     <td style="text-align:right">@TotalPct(r => (int)r.ErrorUnits).ToString("N2")</td>
                     <td colspan="4"></td>
                 </tr>
