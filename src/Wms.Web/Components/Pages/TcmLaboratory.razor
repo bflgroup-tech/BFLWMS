@@ -127,27 +127,58 @@
         }
         else
         {
-            <div style="width:460px; border:1px solid var(--border); border-radius:4px; overflow:hidden">
-                <table class="aiwms-table" style="width:100%; margin:0">
-                    <thead>
-                        <tr><th colspan="2">Profit Margin</th></tr>
-                    </thead>
-                    <tbody>
-                        <tr>
-                            <td style="white-space:nowrap">Supplier Cost</td>
-                            <td><input class="aiwms-input" type="number" step="0.0001" @bind="SupplierCostText" style="width:190px; text-align:right; font-weight:700; font-size:15px" /></td>
-                        </tr>
-                        <tr>
-                            <td style="white-space:nowrap">FC rate for Cost</td>
-                            <td><input class="aiwms-input" type="number" step="0.0001" @bind="FcRateForCostText" style="width:190px; text-align:right; font-weight:700; font-size:15px" /></td>
-                        </tr>
-                        <tr>
-                            <td style="white-space:nowrap">Additional Expenses %</td>
-                            <td><input class="aiwms-input" type="number" step="0.0001" @bind="AdditionalExpensesPctText" style="width:190px; text-align:right; font-weight:700; font-size:15px" /></td>
-                        </tr>
-                    </tbody>
-                </table>
+            <div style="display:flex; align-items:end; gap:10px">
+                <div style="width:160px">
+                    <label class="aiwms-input-lbl">SUPPLIER COST</label>
+                    <input class="aiwms-input" type="number" step="0.0001" @bind="SupplierCostText" style="color:var(--danger)" />
+                </div>
+                <div style="width:160px">
+                    <label class="aiwms-input-lbl">FC RATE FOR COST</label>
+                    <input class="aiwms-input" type="number" step="0.0001" @bind="FcRateForCostText" style="color:var(--danger)" />
+                </div>
+                <div style="width:160px">
+                    <label class="aiwms-input-lbl">ADDITIONAL EXPENSES %</label>
+                    <input class="aiwms-input" type="number" step="0.0001" @bind="AdditionalExpensesPctText" style="color:var(--danger)" />
+                </div>
+                <label style="width:fit-content; box-sizing:border-box; height:38px; padding:0 12px; border:1px solid var(--border-default); border-radius:var(--r-sm); background:var(--bfl-white); display:flex; align-items:center; gap:6px; cursor:pointer">
+                    <input type="checkbox" @bind="_mrpPct" />
+                    <span class="aiwms-input-lbl" style="white-space:nowrap">MRP %</span>
+                </label>
+                <button class="aiwms-btn aiwms-btn-primary" style="margin-left:auto" @onclick="CalculateProfitMarginAsync" disabled="@_calcBusy">
+                    @(_calcBusy ? "Calculating..." : "Calculate")
+                </button>
             </div>
+
+            @if (_profitMarginRows.Count > 0)
+            {
+                <div style="margin-top:14px; overflow-x:auto">
+                    <table class="aiwms-table aiwms-table-dense">
+                        <thead>
+                            <tr>
+                                <th>Item Code</th>
+                                <th>Description</th>
+                                <th style="text-align:right">Qty</th>
+                                <th style="text-align:right">Cost Price</th>
+                                <th style="text-align:right">Sales Price</th>
+                                <th style="text-align:right">Profit %</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var r in _profitMarginRows)
+                            {
+                                <tr>
+                                    <td>@r.ItemCode</td>
+                                    <td>@r.ItemDesc</td>
+                                    <td style="text-align:right">@r.ItemQty</td>
+                                    <td style="text-align:right">@r.CostRate.ToString("F2")</td>
+                                    <td style="text-align:right">@r.SalesRate.ToString("F2")</td>
+                                    <td style="text-align:right">@ProfitPct(r)</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
         }
     </div>
 </div>
@@ -168,12 +199,34 @@
     private decimal _supplierCost = 0.0000m;
     private decimal _fcRateForCost = 5.0000m;
     private decimal _additionalExpensesPct = 0.0000m;
+    private bool _mrpPct = true;
     private string _uploadedExcelFileName = "";
     private IBrowserFile? _selectedFile;
     private bool _busy;
+    private bool _calcBusy;
     private List<TcmMatchedColumn> _columns = new();
     private List<Dictionary<string, string>> _rows = new();
     private string _activeTab = "Details";
+    private List<ProfitMarginRow> _profitMarginRows = new();
+
+    private async Task CalculateProfitMarginAsync()
+    {
+        _calcBusy = true; StateHasChanged();
+        try
+        {
+            await ImportSvc.CalculateProfitMarginAsync(_supplierCost, _fcRateForCost, _additionalExpensesPct, _mrpPct);
+            _profitMarginRows = await ImportSvc.GetProfitMarginRowsAsync(_containerNo.Trim(), _refNo.Trim());
+            Snack.Add("Profit margin calculated.", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snack.Add($"Calculate failed: {ex.Message}", Severity.Error);
+        }
+        finally { _calcBusy = false; }
+    }
+
+    private static string ProfitPct(ProfitMarginRow r) =>
+        r.SalesRate == 0 ? "—" : ((r.SalesRate - r.CostRate) / r.SalesRate * 100).ToString("F1") + "%";
 
     private string TabButtonStyle(string tab)
     {
