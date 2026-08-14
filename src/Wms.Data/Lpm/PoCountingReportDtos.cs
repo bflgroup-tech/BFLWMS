@@ -22,10 +22,10 @@ namespace Wms.Data.Lpm;
 /// OrderSheetQty is 0 (OrderSheetQty, not the Vusaorder-based OrderQty, to
 /// match what BuildingCompletionSumm itself uses as its denominator).
 ///
-/// ErrorUnits/ErrorRate start from BuildingCompletionSumm's container-wide
-/// ContErrorUnits/ContErrorrate, but are split across that container's POs
-/// proportionally by each PO's own share of GRNQty (checked qty) — not
-/// repeated as-is on every row. PurchaseType/Remarks/Status/Buyer remain
+/// ErrorUnits is MissingQty + ExcessQty for that PO (reconciles with
+/// BuildingCompletionSumm's container-wide ContErrorUnits, which is the same
+/// sum across the container's POs). ErrorRate is ErrorUnits / OrderSheetQty
+/// x 100 for that PO, 0 when OrderSheetQty is 0. PurchaseType/Remarks/Status/Buyer remain
 /// genuinely container-level (Purchasetype/remarks/status/buyer) — same
 /// value repeats for every PO within a given container, same caveat as
 /// Division/Supplier.
