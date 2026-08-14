@@ -1142,17 +1142,52 @@ SELECT
 -- 7) Overall Store Qty scalar.
 SELECT OverallStoreQty = SUM(CASE WHEN Result IN (0, 13) THEN 1 ELSE 0 END) FROM #Scans;
 
--- 8) Ex2Locations per-shop breakdown, by the shop's actual Country (KSA/QATAR/BAHRAIN/
--- KUWAIT/MALAYSIA) rather than the shared 'Ex2Locations' SIMCountry bucket.
+-- 8) Per-(country, date) Transfer Qty, from bfldata.dbo.DailyCountCategoryTrf, for
+-- every shop-card breakdown shown under UAE (EX2* cards + UAE Shops/Oman Shops) AND
+-- the Detailed pivot's UAE/Oman/Ex2 Qty columns (shown once per Date, since Transfer
+-- Qty has no Division breakdown to match the pivot's per-Division rows). Two disjoint
+-- slices unioned together, since they come from different warehouses and country
+-- groupings:
+--   - Ex2Locations shops (KSA/QATAR/BAHRAIN/KUWAIT/MALAYSIA — e.g. ShopName
+--     BFLP2MYS = MALAYSIA) ship via Warehouse='JAFZA'.
+--   - UAE/Oman ship via Warehouse='TECHNO', same warehouse as the overall
+--     Transfer Qty scalar (GetTransferQtyAsync) above — this is that same
+--     TECHNO total, just split by country/date instead of summed into one figure.
+-- Independent of #Scans — reads the transfer table directly.
 SELECT ds.Country,
-       StoreQty = SUM(CASE WHEN s.Result IN (0, 13) THEN 1 ELSE 0 END)
-  FROM #Scans s
-  INNER JOIN bfldata.dbo.DataSettings ds ON ds.ShopName = s.ShopName AND ds.SIMCountry = 'Ex2Locations'
- GROUP BY ds.Country;
+       TrfDate = CAST(d.TrnDate AS DATE),
+       TransferQty = ISNULL(SUM(
+                       ISNULL(d.HR0A,0)+ISNULL(d.HR1A,0)+ISNULL(d.HR2A,0)+ISNULL(d.HR3A,0)+ISNULL(d.HR4A,0)+
+                       ISNULL(d.HR5A,0)+ISNULL(d.HR6A,0)+ISNULL(d.HR7A,0)+ISNULL(d.HR8A,0)+ISNULL(d.HR9A,0)+
+                       ISNULL(d.HR10A,0)+ISNULL(d.HR11A,0)+ISNULL(d.HR12A,0)+ISNULL(d.HR13A,0)+ISNULL(d.HR14A,0)+
+                       ISNULL(d.HR15A,0)+ISNULL(d.HR16A,0)+ISNULL(d.HR17A,0)+ISNULL(d.HR18A,0)+ISNULL(d.HR19A,0)+
+                       ISNULL(d.HR20A,0)+ISNULL(d.HR21A,0)+ISNULL(d.HR22A,0)), 0)
+  FROM bfldata.dbo.DailyCountCategoryTrf d WITH (NOLOCK)
+  INNER JOIN bfldata.dbo.DataSettings ds ON ds.ShopName = d.ShopName AND ds.SIMCountry = 'Ex2Locations'
+ WHERE d.Warehouse = 'JAFZA' AND d.TrnDate BETWEEN @transferFrom AND @transferTo
+ GROUP BY ds.Country, CAST(d.TrnDate AS DATE)
+
+UNION ALL
+
+SELECT ds.Country,
+       TrfDate = CAST(d.TrnDate AS DATE),
+       TransferQty = ISNULL(SUM(
+                       ISNULL(d.HR0A,0)+ISNULL(d.HR1A,0)+ISNULL(d.HR2A,0)+ISNULL(d.HR3A,0)+ISNULL(d.HR4A,0)+
+                       ISNULL(d.HR5A,0)+ISNULL(d.HR6A,0)+ISNULL(d.HR7A,0)+ISNULL(d.HR8A,0)+ISNULL(d.HR9A,0)+
+                       ISNULL(d.HR10A,0)+ISNULL(d.HR11A,0)+ISNULL(d.HR12A,0)+ISNULL(d.HR13A,0)+ISNULL(d.HR14A,0)+
+                       ISNULL(d.HR15A,0)+ISNULL(d.HR16A,0)+ISNULL(d.HR17A,0)+ISNULL(d.HR18A,0)+ISNULL(d.HR19A,0)+
+                       ISNULL(d.HR20A,0)+ISNULL(d.HR21A,0)+ISNULL(d.HR22A,0)), 0)
+  FROM bfldata.dbo.DailyCountCategoryTrf d WITH (NOLOCK)
+  INNER JOIN bfldata.dbo.DataSettings ds ON ds.ShopName = d.ShopName
+ WHERE d.Warehouse = 'TECHNO' AND d.TrnDate BETWEEN @transferFrom AND @transferTo
+   AND ds.Country IN ('UAE', 'OMAN')
+ GROUP BY ds.Country, CAST(d.TrnDate AS DATE);
 
 DROP TABLE #Scans, #BatchKind, #ItemDiv;";
             cmd.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@fromDateOnly",        fromDateOnly));
             cmd.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@toDateExclusiveOnly", toDateExclusiveOnly));
+            cmd.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@transferFrom",        fromDate.Date));
+            cmd.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@transferTo",          toDateInclusive.Date));
             cmd.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@from",                fromInclusive));
             cmd.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@toExclusive",         toExclusive));
             cmd.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@country",             country));
@@ -1193,8 +1228,9 @@ DROP TABLE #Scans, #BatchKind, #ItemDiv;";
                 while (await rdr.ReadAsync(ct))
                 {
                     ex2Shops.Add(new Ex2ShopRow(
-                        Country:  rdr.IsDBNull(0) ? "" : rdr.GetString(0),
-                        StoreQty: rdr.IsDBNull(1) ? 0  : rdr.GetInt32(1)));
+                        Country:     rdr.IsDBNull(0) ? "" : rdr.GetString(0),
+                        Date:        rdr.IsDBNull(1) ? DateTime.MinValue : rdr.GetDateTime(1),
+                        TransferQty: rdr.IsDBNull(2) ? 0L : Convert.ToInt64(rdr.GetValue(2))));
                 }
             }
         }
