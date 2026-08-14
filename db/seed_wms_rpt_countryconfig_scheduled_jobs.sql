@@ -3,6 +3,11 @@
 
     RUN THIS ON THE AZURE WMS DB BEFORE (OR WITH) THE DEPLOY.
 
+    PREREQUISITE: run migrate_wms_rpt_countryconfig_fix_pk.sql first. If this
+    table's PK is still the original (Country)-only one, every single-row job
+    below collides with WeeklySalesFromGCP's existing Country = '' row and this
+    script dies on "Msg 2627 Violation of PRIMARY KEY constraint".
+
     Two of these jobs previously had NO database gate — they ran whenever their
     timer fired. As of this release both consult WmsRptCountryConfig, and a
     MISSING ROW COUNTS AS INACTIVE. So without this seed, ToteMasterSync and
