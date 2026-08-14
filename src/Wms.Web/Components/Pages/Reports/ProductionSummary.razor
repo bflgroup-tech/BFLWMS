@@ -176,8 +176,8 @@ else if (VisibleRows().Count > 0)
                     {
                         <div style="margin:10px 12px 0 12px; padding-top:10px; border-top:1px dashed var(--border-default);">
                             <div style="display:grid; grid-template-columns: repeat(7, 1fr); gap:12px;">
-                                @ShopCard("UA", "UAE Shops",   visibleSummary.Sum(s => s.UaeStoreQty).ToString("N0"),  "#166534")
-                                @ShopCard("OM", "Oman Shops",  visibleSummary.Sum(s => s.OmanStoreQty).ToString("N0"), "#166534")
+                                @ShopCard("UA", "UAE Shops",   VisibleEx2ShopQty("UAE").ToString("N0"),  "#166534")
+                                @ShopCard("OM", "Oman Shops",  VisibleEx2ShopQty("OMAN").ToString("N0"), "#166534")
                                 @ShopCard("KS", "EX2KSA",      VisibleEx2ShopQty("KSA").ToString("N0"),      "#6d28d9")
                                 @ShopCard("QA", "EX2QATAR",    VisibleEx2ShopQty("QATAR").ToString("N0"),    "#6d28d9")
                                 @ShopCard("BH", "EX2BAHRAIN",  VisibleEx2ShopQty("BAHRAIN").ToString("N0"),   "#6d28d9")
@@ -216,9 +216,9 @@ else if (VisibleRows().Count > 0)
                         g.Where(x => x.Kind == "Unknown").Sum(x => x.TotalScanned),
                         g.Sum(x => x.TotalScanned),
                         g.Sum(x => x.StoreQty),
-                        g.Sum(x => x.UaeStoreQty),
-                        g.Sum(x => x.OmanStoreQty),
-                        g.Sum(x => x.Ex2StoreQty),
+                        VisibleShopTransferQtyForDate("UAE", g.Key.ProductionDay),
+                        VisibleShopTransferQtyForDate("OMAN", g.Key.ProductionDay),
+                        VisibleEx2LocationsTransferQtyForDate(g.Key.ProductionDay),
                         mn.Month, mn.Week, mn.Day);
                 })
                 .OrderByDescending(x => x.ProductionDay)
@@ -242,6 +242,14 @@ else if (VisibleRows().Count > 0)
             var totalMerchNeedMonth = distinctDivisionMerchNeed.Sum(x => x.MerchNeedMonth);
             var totalMerchNeedWeek  = distinctDivisionMerchNeed.Sum(x => x.MerchNeedWeek);
             var totalMerchNeedDay   = distinctDivisionMerchNeed.Sum(x => x.MerchNeedDay);
+
+            // Same dedupe idea for UaeQty/OmanQty/Ex2Qty -- a per-(Country, Day) constant
+            // repeated on every Division row, so sum only the first row of each day.
+            var distinctDayTransfer = pivot.GroupBy(x => (x.Country, x.ProductionDay)).Select(g => g.First()).ToList();
+            var totalUaeQty  = distinctDayTransfer.Sum(x => x.UaeQty);
+            var totalOmanQty = distinctDayTransfer.Sum(x => x.OmanQty);
+            var totalEx2Qty  = distinctDayTransfer.Sum(x => x.Ex2Qty);
+            (string Country, DateTime Day)? lastShownTransferDay = null;
 
             <table class="aiwms-table aiwms-table-dense">
                 <thead>
@@ -270,6 +278,10 @@ else if (VisibleRows().Count > 0)
                 <tbody>
                     @foreach (var p in pivot)
                     {
+                        var showTransfer = lastShownTransferDay is null ||
+                            !string.Equals(lastShownTransferDay.Value.Country, p.Country, StringComparison.OrdinalIgnoreCase) ||
+                            lastShownTransferDay.Value.Day != p.ProductionDay;
+                        if (showTransfer) { lastShownTransferDay = (p.Country, p.ProductionDay); }
                         <tr>
                             <td>@p.ProductionDay.ToString("dd-MMM-yyyy")</td>
                             @if (multiCountry) { <td>@p.Country</td> }
@@ -280,9 +292,9 @@ else if (VisibleRows().Count > 0)
                             <td style="text-align:right; font-weight:600">@p.StoresQty.ToString("N0")</td>
                             @if (isUae)
                             {
-                                <td style="text-align:right">@p.UaeQty.ToString("N0")</td>
-                                <td style="text-align:right">@p.OmanQty.ToString("N0")</td>
-                                <td style="text-align:right">@p.Ex2Qty.ToString("N0")</td>
+                                <td style="text-align:right">@(showTransfer ? p.UaeQty.ToString("N0") : "")</td>
+                                <td style="text-align:right">@(showTransfer ? p.OmanQty.ToString("N0") : "")</td>
+                                <td style="text-align:right">@(showTransfer ? p.Ex2Qty.ToString("N0") : "")</td>
                             }
                             <td style="text-align:right">@p.MerchNeedMonth.ToString("N0")</td>
                             <td style="text-align:right">@p.MerchNeedWeek.ToString("N0")</td>
@@ -297,9 +309,9 @@ else if (VisibleRows().Count > 0)
                         <td style="text-align:right">@pivot.Sum(x => x.StoresQty).ToString("N0")</td>
                         @if (isUae)
                         {
-                            <td style="text-align:right">@pivot.Sum(x => x.UaeQty).ToString("N0")</td>
-                            <td style="text-align:right">@pivot.Sum(x => x.OmanQty).ToString("N0")</td>
-                            <td style="text-align:right">@pivot.Sum(x => x.Ex2Qty).ToString("N0")</td>
+                            <td style="text-align:right">@totalUaeQty.ToString("N0")</td>
+                            <td style="text-align:right">@totalOmanQty.ToString("N0")</td>
+                            <td style="text-align:right">@totalEx2Qty.ToString("N0")</td>
                         }
                         <td style="text-align:right">@totalMerchNeedMonth.ToString("N0")</td>
                         <td style="text-align:right">@totalMerchNeedWeek.ToString("N0")</td>
@@ -447,14 +459,33 @@ else if (_loadedOnce && VisibleRows().Count == 0)
     private Dictionary<string, List<MerchNeedDivisionRow>> _merchNeedByCountryDivision = new(StringComparer.OrdinalIgnoreCase);
     private Dictionary<string, List<Ex2ShopRow>> _ex2ShopsByCountry = new(StringComparer.OrdinalIgnoreCase);
 
-    // Sum of Ex2Shops StoreQty across every visible country's data, for one actual
-    // Ex2Locations country (e.g. "KSA", "QATAR") -- see Ex2ShopRow.Country.
-    private int VisibleEx2ShopQty(string shopCountry) =>
+    // Sum of Ex2Shops Transfer Qty across every visible country's data, for one
+    // actual shop-card country (Ex2Locations: "KSA"/"QATAR"/etc., or "UAE"/"OMAN")
+    // -- see Ex2ShopRow.Country.
+    private long VisibleEx2ShopQty(string shopCountry) =>
         _ex2ShopsByCountry
             .Where(kv => _selectedCountries.Contains(kv.Key))
             .SelectMany(kv => kv.Value)
             .Where(s => string.Equals(s.Country, shopCountry, StringComparison.OrdinalIgnoreCase))
-            .Sum(s => s.StoreQty);
+            .Sum(s => s.TransferQty);
+
+    // Same idea as VisibleEx2ShopQty but for one specific date, used by the Detailed
+    // pivot's UAE/Oman/Ex2 Qty columns (per ProductionDay, not per Division -- Transfer
+    // Qty has no Division breakdown at all). ProductionDay is the WH-shift-adjusted scan
+    // date (06:00 GST boundary); Ex2ShopRow.Date is the raw transfer TrnDate with no
+    // shift applied, so the two can disagree by up to a day at the edges -- acceptable
+    // for this reconciliation, not an exact join.
+    private long VisibleShopTransferQtyForDate(string shopCountry, DateTime date) =>
+        _ex2ShopsByCountry
+            .Where(kv => _selectedCountries.Contains(kv.Key))
+            .SelectMany(kv => kv.Value)
+            .Where(s => string.Equals(s.Country, shopCountry, StringComparison.OrdinalIgnoreCase) && s.Date.Date == date.Date)
+            .Sum(s => s.TransferQty);
+
+    private static readonly string[] _ex2LocationsCountries = { "KSA", "QATAR", "BAHRAIN", "KUWAIT", "MALAYSIA" };
+
+    private long VisibleEx2LocationsTransferQtyForDate(DateTime date) =>
+        _ex2LocationsCountries.Sum(c => VisibleShopTransferQtyForDate(c, date));
 
     private (long Month, long Week, long Day) MerchNeedFor(string country, string division)
     {
@@ -481,7 +512,14 @@ else if (_loadedOnce && VisibleRows().Count == 0)
                     string.Equals(p.Division, mn.Division, StringComparison.OrdinalIgnoreCase)))
                 .Select(mn => new DivisionPivotRow(
                     cd.Country, cd.ProductionDay, mn.Division,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0,
+                    // Computed, not hardcoded 0 — UaeQty/OmanQty/Ex2Qty are a per-(Country,
+                    // Day) constant shown once per day (see the render loop's showTransfer
+                    // dedupe), so every row for that day must carry the same real value
+                    // regardless of whether it lands first alphabetically by Division.
+                    VisibleShopTransferQtyForDate("UAE", cd.ProductionDay),
+                    VisibleShopTransferQtyForDate("OMAN", cd.ProductionDay),
+                    VisibleEx2LocationsTransferQtyForDate(cd.ProductionDay),
                     mn.MerchNeedMonth, mn.MerchNeedWeek, mn.MerchNeedDay)));
         return pivot.Concat(missing)
             .OrderByDescending(x => x.ProductionDay)
@@ -537,7 +575,7 @@ else if (_loadedOnce && VisibleRows().Count == 0)
     private sealed record DivisionPivotRow(
         string Country, DateTime ProductionDay, string Division,
         long Lpm, long NonLpm, long Mixed, long Unknown,
-        long ScannedQty, int StoresQty, int UaeQty, int OmanQty, int Ex2Qty,
+        long ScannedQty, int StoresQty, long UaeQty, long OmanQty, long Ex2Qty,
         long MerchNeedMonth, long MerchNeedWeek, long MerchNeedDay);
 
     // Current WH production day in GST (UTC+4). If "now" is before 06:00 GST,
@@ -692,7 +730,9 @@ else if (_loadedOnce && VisibleRows().Count == 0)
                         g.Where(x => x.Kind == "Mixed").Sum(x => x.TotalScanned),
                         g.Where(x => x.Kind == "Unknown").Sum(x => x.TotalScanned),
                         g.Sum(x => x.TotalScanned), g.Sum(x => x.StoreQty),
-                        g.Sum(x => x.UaeStoreQty), g.Sum(x => x.OmanStoreQty), g.Sum(x => x.Ex2StoreQty),
+                        VisibleShopTransferQtyForDate("UAE", g.Key.ProductionDay),
+                        VisibleShopTransferQtyForDate("OMAN", g.Key.ProductionDay),
+                        VisibleEx2LocationsTransferQtyForDate(g.Key.ProductionDay),
                         mn.Month, mn.Week, mn.Day);
                 })
                 .OrderByDescending(x => x.ProductionDay).ThenBy(x => x.Country).ThenBy(x => x.Division).ToList();
@@ -703,15 +743,25 @@ else if (_loadedOnce && VisibleRows().Count == 0)
             if (isUae) sb.Append(",UAE Qty,Oman Qty,Ex2 Qty");
             sb.Append(",Merch Need Month,Merch Need Week,Merch Need Day");
             sb.AppendLine();
+            // Transfer Qty (UAE/Oman/Ex2) is a per-(Country, Day) constant with no Division
+            // breakdown, but this pivot has one row per Division — print it once per day
+            // (first row) and blank on the rest, so a naive sum of the CSV column doesn't
+            // double-count it once per division.
+            (string Country, DateTime Day)? lastShownTransferDay = null;
             foreach (var p in pivot)
             {
+                var showTransfer = lastShownTransferDay is null ||
+                    !string.Equals(lastShownTransferDay.Value.Country, p.Country, StringComparison.OrdinalIgnoreCase) ||
+                    lastShownTransferDay.Value.Day != p.ProductionDay;
+                if (showTransfer) lastShownTransferDay = (p.Country, p.ProductionDay);
+
                 if (multiCountry) sb.Append(Csv(p.Country)).Append(',');
                 sb.Append(p.ProductionDay.ToString("yyyy-MM-dd")).Append(',')
                   .Append(Csv(p.Division)).Append(',')
                   .Append(p.Lpm).Append(',').Append(p.NonLpm).Append(',')
                   .Append(p.Mixed).Append(',').Append(p.Unknown).Append(',')
                   .Append(p.ScannedQty).Append(',').Append(p.StoresQty);
-                if (isUae) sb.Append(',').Append(p.UaeQty).Append(',').Append(p.OmanQty).Append(',').Append(p.Ex2Qty);
+                if (isUae) sb.Append(',').Append(showTransfer ? p.UaeQty.ToString() : "").Append(',').Append(showTransfer ? p.OmanQty.ToString() : "").Append(',').Append(showTransfer ? p.Ex2Qty.ToString() : "");
                 sb.Append(',').Append(p.MerchNeedMonth).Append(',').Append(p.MerchNeedWeek).Append(',').Append(p.MerchNeedDay);
                 sb.AppendLine();
             }
@@ -719,7 +769,13 @@ else if (_loadedOnce && VisibleRows().Count == 0)
             sb.Append("TOTAL,,").Append(pivot.Sum(x => x.Lpm)).Append(',').Append(pivot.Sum(x => x.NonLpm)).Append(',')
               .Append(pivot.Sum(x => x.Mixed)).Append(',').Append(pivot.Sum(x => x.Unknown)).Append(',')
               .Append(pivot.Sum(x => x.ScannedQty)).Append(',').Append(pivot.Sum(x => x.StoresQty));
-            if (isUae) sb.Append(',').Append(pivot.Sum(x => x.UaeQty)).Append(',').Append(pivot.Sum(x => x.OmanQty)).Append(',').Append(pivot.Sum(x => x.Ex2Qty));
+            if (isUae)
+            {
+                // Same dedupe as Merch Need below -- UaeQty/OmanQty/Ex2Qty are a per-(Country,
+                // Day) constant, so sum only the first row of each day, not every division row.
+                var distinctDayTransferCsv = pivot.GroupBy(x => (x.Country, x.ProductionDay)).Select(g => g.First()).ToList();
+                sb.Append(',').Append(distinctDayTransferCsv.Sum(x => x.UaeQty)).Append(',').Append(distinctDayTransferCsv.Sum(x => x.OmanQty)).Append(',').Append(distinctDayTransferCsv.Sum(x => x.Ex2Qty));
+            }
             // Merch Need is a per-(Country, Division) constant; a division can span
             // multiple rows here (one per ProductionDay), so total each division's
             // value exactly once rather than once per row. Case-insensitive key: see
