@@ -67,6 +67,7 @@ public class Program
         builder.Services.AddScoped<ContainerAllocationDataSyncService>();
         builder.Services.AddScoped<OpenContainerService>();
         builder.Services.AddScoped<ManualAllocationService>();
+        builder.Services.AddScoped<MaxCapService>();
         builder.Services.AddScoped<Wms.Data.Encoding.ItemEncodingService>();
 
         // WMS Itemmaster external API — Building's Tier-3 fallback goes through
