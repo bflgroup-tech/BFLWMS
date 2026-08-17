@@ -719,8 +719,16 @@
         _busy = true; _busyKind = "vg-gen"; _message = ""; _isError = false;
         try
         {
-            var n = await Svc.GenerateStoreDivGradesAsync(_month, _year, _country);
+            var (n, ungraded) = await Svc.GenerateStoreDivGradesAsync(_month, _year, _country);
             _message = $"Generated {n:N0} StoreDivGrade row(s) for {_month}/{_year}. Click 'View Volume Groups' to see them.";
+            if (ungraded > 0)
+            {
+                // A partial band set still "succeeds" — say so plainly instead of
+                // leaving a blank Grade column to be discovered later.
+                _isError = true;
+                _message += $" WARNING: {ungraded:N0} store(s) matched no band and were graded blank — " +
+                            $"check the AvgSalesPct ranges in LPM_VolumeGroupRange_Country for {_country}.";
+            }
         }
         catch (Exception ex) { ShowError($"Generate Volume Group failed: {ex.Message}"); }
         finally { _busy = false; _busyKind = ""; }
