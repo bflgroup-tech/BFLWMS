@@ -725,7 +725,6 @@ public class ReportsService(IOnPremConnectionResolver resolver)
 
             SELECT s.Country, s.ContNo, s.Trndate AS CountingCompletionDate,
                    s.Division, s.suppname AS Supplier,
-                   s.ContErrorUnits AS ErrorUnits, s.ContErrorrate AS ErrorRate,
                    s.Purchasetype AS PurchaseType, s.remarks AS Remarks,
                    s.status AS Status, s.buyer AS Buyer
               INTO #PCBase
@@ -784,14 +783,14 @@ public class ReportsService(IOnPremConnectionResolver resolver)
                 ReturnToSuppQty         = det.ReturnToSuppQty,
                 PctMissingReturn        = CASE WHEN det.OrderSheetQty = 0 THEN 0 ELSE ROUND(det.ReturnToSuppQty * 100.0 / det.OrderSheetQty, 2) END,
                 ReturnToBuyQty          = det.ReturnToBuyQty,
-                -- b.ErrorUnits/b.ErrorRate are container-wide totals (same value for
-                -- every PO in that container) — split proportionally by each PO's own
-                -- share of the container's total checked qty (GRNQty) instead of
-                -- repeating the container total on every row.
-                ErrorUnits              = CASE WHEN SUM(det.GRNQty) OVER (PARTITION BY det.ContNo) = 0 THEN 0
-                                          ELSE ROUND(b.ErrorUnits * det.GRNQty * 1.0 / SUM(det.GRNQty) OVER (PARTITION BY det.ContNo), 2) END,
-                ErrorRate               = CASE WHEN SUM(det.GRNQty) OVER (PARTITION BY det.ContNo) = 0 THEN 0
-                                          ELSE ROUND(b.ErrorRate  * det.GRNQty * 1.0 / SUM(det.GRNQty) OVER (PARTITION BY det.ContNo), 2) END,
+                -- ContErrorUnits at container level is just TotalMissingQty + TotalExcessQty
+                -- (verified: BuildingCompletionSumm.ContErrorUnits == SUM of both across that
+                -- container's POs), so compute it per-PO directly from this same #PCDet row
+                -- instead of splitting the container total proportionally by GRNQty — that
+                -- proportional split doesn't reconcile with each PO's own Missing/Excess Qty.
+                ErrorUnits              = det.MissingQty + det.ExcessQty,
+                ErrorRate               = CASE WHEN det.OrderSheetQty = 0 THEN 0
+                                          ELSE ROUND((det.MissingQty + det.ExcessQty) * 100.0 / det.OrderSheetQty, 2) END,
                 b.PurchaseType,
                 b.Remarks,
                 b.Status,
