@@ -1122,8 +1122,8 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
     //   * Grade:
     //       Country = 'ECOM'                    -> 'Z' (fixed)
     //       Non-ECOM, top-K by AvgSalesPct DESC -> 'A' where K = max(2, count(pct > 300))
-    //       Rest                                -> LPM_VolumeGroupRange band lookup
-    //                                              (IsSpecial = 0 rows only)
+    //       Rest                                -> LPM_VolumeGroupRange_Country band lookup
+    //                                              (IsSpecial = 0), matched on DivCode
     // Idempotent: DELETE existing rows for (Month, Year) then bulk insert.
     // ==============================================================
     /// <param name="actor">
@@ -1135,7 +1135,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
     public async Task<int> GenerateStoreDivGradesAsync(int month, int year, string? country = null, CancellationToken ct = default, string? actor = null)
     {
         // country == null OR BflGroup -> GLOBAL run (existing behaviour):
-        //   bands from  dbo.LPM_VolumeGroupRange
+        //   bands from  dbo.LPM_VolumeGroupRange_Country WHERE Country = 'BFLGROUP'
         //   weights via dbo.LPM_WeeklyWeights WHERE Country = 'UAE'
         //   persist to  dbo.StoreDivGrade  (delete WHERE Month1=@m AND Year1=@y)
         // country == a specific country (e.g. 'BAHRAIN', 'KSA') -> PER-COUNTRY run:
@@ -1256,15 +1256,39 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
 
         // 2) Non-special (B..I) grade bands, ordered widest first for stable matching.
         //    Always sourced from LPM_VolumeGroupRange_Country now — BFLGroup uses
-        //    the Country='BFLGROUP' row, per-country runs use the picked country.
-        var bands = (await c.QueryAsync<(string VolumeGroup, decimal? FromPct, decimal? ToPct)>(new CommandDefinition(@"
-            SELECT VolumeGroup, AvgSalesPctFrom, AvgSalesPctTo
+        //    the Country='BFLGROUP' rows, per-country runs use the picked country.
+        //
+        //    Bands are DIVISION-SPECIFIC: a division's own rows win, and rows with
+        //    no DivCode act as the country-wide fallback for divisions that have
+        //    none of their own. Previously every row for the country was thrown
+        //    into one flat list, so with per-division bands loaded the first
+        //    SortOrder match from ANY division decided the grade.
+        var bandRows = (await c.QueryAsync<(int? DivCode, string VolumeGroup, decimal? FromPct, decimal? ToPct)>(
+            new CommandDefinition(@"
+            SELECT DivCode, VolumeGroup, AvgSalesPctFrom, AvgSalesPctTo
               FROM dbo.LPM_VolumeGroupRange_Country WITH (NOLOCK)
              WHERE IsSpecial = 0
                AND Country = @ct
              ORDER BY SortOrder",
             new { ct = bandsCountry },
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).ToList();
+
+        // Grading every store blank is indistinguishable from "the algorithm ran"
+        // in the UI, and that silence cost real debugging time. Fail loudly instead.
+        if (bandRows.Count == 0)
+            throw new InvalidOperationException(
+                $"No Volume Group bands configured for Country = '{bandsCountry}' in " +
+                "dbo.LPM_VolumeGroupRange_Country (IsSpecial = 0). Load the band ranges " +
+                "for this country before generating Volume Groups — without them every " +
+                "store would be graded blank.");
+
+        // GroupBy preserves source order, and the query is ordered by SortOrder,
+        // so each division's list stays in SortOrder — first match wins, as before.
+        var bandsByDiv = bandRows
+            .Where(b => b.DivCode.HasValue)
+            .GroupBy(b => b.DivCode!.Value)
+            .ToDictionary(g => g.Key, g => g.ToList());
+        var bandsFallback = bandRows.Where(b => !b.DivCode.HasValue).ToList();
 
         // 3) Compute avg per DivCode across all non-ECOM rows with SalesAmt > 0.
         var avgByDiv = baseRows
@@ -1314,7 +1338,13 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                     }
                     else if (pct.HasValue)
                     {
-                        var band = bands.FirstOrDefault(b =>
+                        // This division's own bands, else the country-wide (no DivCode)
+                        // set. A division with neither still grades blank — same as
+                        // before — but the empty-table case now throws up front.
+                        var bandsForDiv = bandsByDiv.TryGetValue(r.DivCode, out var divBands)
+                            ? divBands
+                            : bandsFallback;
+                        var band = bandsForDiv.FirstOrDefault(b =>
                             (!b.FromPct.HasValue || pct.Value >= b.FromPct.Value) &&
                             (!b.ToPct.HasValue   || pct.Value <= b.ToPct.Value));
                         grade = band.VolumeGroup ?? "";
