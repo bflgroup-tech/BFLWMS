@@ -26,6 +26,7 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
     private const int ConnectTimeoutSeconds = 60;
     private const int CommandTimeoutSeconds = 300;
 
+
     private static string WithConnectTimeout(string cs)
     {
         var b = new SqlConnectionStringBuilder(cs) { ConnectTimeout = ConnectTimeoutSeconds };
@@ -842,22 +843,30 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
                             .Select(i => i!.Trim())
                             .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         if (itemcodes.Length == 0) return result;
+        var itemsCsv = string.Join(",", itemcodes);
 
         await using var c = OpenOnPremBackup();
         foreach (var dn in dataNames)
         {
             try
             {
+                // CSV + STRING_SPLIT rather than IN @items: Dapper expands an IN list
+                // to one parameter per item and SQL Server rejects a batch over 2100,
+                // which a large container exceeds. Same pattern as
+                // JafzaRoboProductionService and ManualAllocationService.
                 var sql = $@"
-                    SELECT Itemcode, Price
-                      FROM (SELECT Itemcode, Price,
-                                   rn = ROW_NUMBER() OVER (PARTITION BY Itemcode
-                                                           ORDER BY Trndate DESC, Time1 DESC)
-                              FROM [{dn}].dbo.RFSalesPrice WITH (NOLOCK)
-                             WHERE Itemcode IN @items) x
-                     WHERE rn = 1";
+                    SELECT DISTINCT CAST(value AS VARCHAR(50)) AS ItemCode INTO #rfItems FROM STRING_SPLIT(@itemsCsv, ',');
+                    CREATE CLUSTERED INDEX IX_rfItems ON #rfItems(ItemCode);
+
+                    SELECT x.Itemcode, x.Price
+                      FROM (SELECT p.Itemcode, p.Price,
+                                   rn = ROW_NUMBER() OVER (PARTITION BY p.Itemcode
+                                                           ORDER BY p.Trndate DESC, p.Time1 DESC)
+                              FROM [{dn}].dbo.RFSalesPrice p WITH (NOLOCK)
+                              INNER JOIN #rfItems i ON i.ItemCode = p.Itemcode) x
+                     WHERE x.rn = 1;";
                 var priced = await c.QueryAsync<(string Itemcode, decimal? Price)>(new CommandDefinition(
-                    sql, new { items = itemcodes },
+                    sql, new { itemsCsv },
                     commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
                 foreach (var p in priced)
                     if (p.Price.HasValue && !string.IsNullOrWhiteSpace(p.Itemcode))
