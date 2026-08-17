@@ -151,6 +151,10 @@
 
 @code {
     private string _contno = "";
+    // Default selection for this page — see OnInitializedAsync.
+    private const string DefaultCountry = "ECOM";
+    private const string DefaultStoreId = "ONLINE";
+
     private string _country = "";
     private string _storeId = "";
     private bool _busy;
@@ -170,11 +174,23 @@
         {
             _countries = await Svc.GetCountriesAsync();
             _countries = Me.FilterCountries(_countries).ToList();
-            _country = Me.Country is not null && _countries.Contains(Me.Country, StringComparer.OrdinalIgnoreCase)
-                ? _countries.First(c => string.Equals(c, Me.Country, StringComparison.OrdinalIgnoreCase))
-                : "";
+
+            // Manual allocation uploads are overwhelmingly ECOM/ONLINE, so default
+            // there rather than to the user's own country. Falls back to the old
+            // behaviour when the user has no ECOM access.
+            _country = _countries.FirstOrDefault(c => string.Equals(c, DefaultCountry, StringComparison.OrdinalIgnoreCase))
+                    ?? (Me.Country is not null && _countries.Contains(Me.Country, StringComparer.OrdinalIgnoreCase)
+                        ? _countries.First(c => string.Equals(c, Me.Country, StringComparison.OrdinalIgnoreCase))
+                        : "");
+
             if (!string.IsNullOrEmpty(_country))
+            {
                 _stores = await Svc.GetStoresForCountryAsync(_country);
+                // Preselect ONLINE when it is present — one store in ECOM, but match
+                // by StoreID rather than assuming it is the only/first row.
+                _storeId = _stores.FirstOrDefault(s => string.Equals(s.StoreID, DefaultStoreId, StringComparison.OrdinalIgnoreCase))
+                                  ?.StoreID ?? "";
+            }
         }
         catch (Exception ex) { ShowError($"Failed to load countries/stores: {ex.Message}"); }
     }
