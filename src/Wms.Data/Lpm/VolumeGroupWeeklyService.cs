@@ -122,7 +122,10 @@ public class VolumeGroupWeeklyService(
             {
                 // Passing BFLGROUP hits dbo.StoreDivGrade; any other country hits
                 // dbo.LPM_StoreDivGrade_Country. Existing behaviour in the service.
-                var rows = await otsSvc.GenerateStoreDivGradesAsync(month, year, country, ct);
+                // Explicit actor: ICurrentUser cannot resolve a signed-in user from a
+                // timer scope, and stamping GeneratedBy='anonymous' loses the audit.
+                var actor = triggeredBy == "Timer" ? "system (scheduled)" : triggeredBy;
+                var rows = await otsSvc.GenerateStoreDivGradesAsync(month, year, country, ct, actor);
                 await FinishJobRunAsync(runId, "Success", rows, null, ct);
                 results.Add((country, rows, null));
             }

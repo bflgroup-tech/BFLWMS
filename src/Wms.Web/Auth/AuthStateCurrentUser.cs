@@ -112,11 +112,24 @@ public class AuthStateCurrentUser(
         get
         {
             if (_loaded) return _name ?? "anonymous";
-            var task = auth.GetAuthenticationStateAsync();
-            if (task.IsCompletedSuccessfully)
-                return NameFromPrincipal(task.Result?.User)
-                    ?? NameFromPrincipal(http.HttpContext?.User)
-                    ?? "anonymous";
+
+            // Outside a Razor circuit — a BackgroundService scope, for instance —
+            // the server AuthenticationStateProvider THROWS rather than returning
+            // an anonymous state ("Do not call GetAuthenticationStateAsync outside
+            // of the DI scope for a Razor component"). A property getter must not
+            // propagate that: it took down the whole Monday VG batch. Fall through
+            // to HttpContext (also absent on a timer) and finally "anonymous".
+            // EnsureLoadedAsync already guards its own call the same way.
+            try
+            {
+                var task = auth.GetAuthenticationStateAsync();
+                if (task.IsCompletedSuccessfully)
+                    return NameFromPrincipal(task.Result?.User)
+                        ?? NameFromPrincipal(http.HttpContext?.User)
+                        ?? "anonymous";
+            }
+            catch { }
+
             return NameFromPrincipal(http.HttpContext?.User) ?? "anonymous";
         }
     }

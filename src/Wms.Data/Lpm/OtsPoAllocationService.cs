@@ -243,24 +243,39 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
     /// on the same day replaces itself but keeps prior days intact. Callers
     /// should follow with LoadPersistedAsync. Only valid when Country=BFLGroup;
     /// the razor page enforces that.</summary>
+    /// <summary>
+    /// True when dbo.StoreDivGrade holds rows stamped with today's GST date — i.e.
+    /// a BFLGROUP Volume Group run has already happened today. Only a BFLGROUP run
+    /// writes that table; per-country runs go to LPM_StoreDivGrade_Country.
+    ///
+    /// GenerateAndPersistAsync enforces this as a hard precondition. Scheduled
+    /// callers check it up front so they can defer instead of logging a failure
+    /// they already know is coming.
+    /// </summary>
+    public async Task<bool> IsVolumeGroupGeneratedTodayAsync(CancellationToken ct = default)
+    {
+        var todayGst = DateTime.UtcNow.AddHours(4).Date;
+        await using var chk = OpenOnPremBackup();
+        var vgToday = await chk.ExecuteScalarAsync<int>(new CommandDefinition(@"
+            SELECT COUNT(1) FROM dbo.StoreDivGrade WITH (NOLOCK)
+             WHERE CAST(GeneratedTS AS DATE) = @dt",
+            new { dt = todayGst }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        return vgToday > 0;
+    }
+
+    /// <param name="actor">See GenerateStoreDivGradesAsync — scheduled callers pass
+    /// an explicit value so the run is not audited as "anonymous".</param>
     public async Task<(int RowsPersisted, List<string> Warnings)> GenerateAndPersistAsync(
-        int month, int year, CancellationToken ct = default)
+        int month, int year, CancellationToken ct = default, string? actor = null)
     {
         // Precondition: Volume Group must have been (re-)generated today (GST).
         // Enforces the daily refresh chain so OTS numbers don't ride on a stale
         // StoreDivGrade snapshot.
         var todayGst = DateTime.UtcNow.AddHours(4).Date;
-        await using (var chk = OpenOnPremBackup())
-        {
-            var vgToday = await chk.ExecuteScalarAsync<int>(new CommandDefinition(@"
-                SELECT COUNT(1) FROM dbo.StoreDivGrade WITH (NOLOCK)
-                 WHERE CAST(GeneratedTS AS DATE) = @dt",
-                new { dt = todayGst }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-            if (vgToday == 0)
-                throw new InvalidOperationException(
-                    $"Volume Group has not been generated today ({todayGst:dd/MM/yyyy} GST). " +
-                    "Click 'Generate Volume Group' first, then re-run 'Generate' on OTS for PO Allocation.");
-        }
+        if (!await IsVolumeGroupGeneratedTodayAsync(ct))
+            throw new InvalidOperationException(
+                $"Volume Group has not been generated today ({todayGst:dd/MM/yyyy} GST). " +
+                "Click 'Generate Volume Group' first, then re-run 'Generate' on OTS for PO Allocation.");
 
         var (rows, warnings) = await GenerateAsync(month, year, country: null, ct);
         if (rows.Count == 0) return (0, warnings);
@@ -308,7 +323,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
             dt.Columns.Add("WeekAdjustment",  typeof(decimal));
             dt.Columns.Add("CurrentEOW",      typeof(int));
 
-            var who = user.Name ?? "";
+            var who = actor ?? user.Name ?? "";
             foreach (var r in rows)
             {
                 dt.Rows.Add(
@@ -1111,7 +1126,13 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
     //                                              (IsSpecial = 0 rows only)
     // Idempotent: DELETE existing rows for (Month, Year) then bulk insert.
     // ==============================================================
-    public async Task<int> GenerateStoreDivGradesAsync(int month, int year, string? country = null, CancellationToken ct = default)
+    /// <param name="actor">
+    /// Who to stamp into StoreDivGrade.GeneratedBy. Scheduled callers pass an
+    /// explicit value — ICurrentUser resolves to "anonymous" outside a Razor
+    /// circuit, which is useless in an audit column. Null keeps the UI behaviour
+    /// of reading the signed-in user.
+    /// </param>
+    public async Task<int> GenerateStoreDivGradesAsync(int month, int year, string? country = null, CancellationToken ct = default, string? actor = null)
     {
         // country == null OR BflGroup -> GLOBAL run (existing behaviour):
         //   bands from  dbo.LPM_VolumeGroupRange
@@ -1341,7 +1362,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
             dt.Columns.Add("Grade",       typeof(string));
             dt.Columns.Add("GeneratedBy", typeof(string));
 
-            var who = user.Name ?? "";
+            var who = actor ?? user.Name ?? "";
             foreach (var r in results)
             {
                 dt.Rows.Add(
