@@ -2,6 +2,7 @@ using Wms.Core;
 using Wms.Data.Configuration;
 using Dapper;
 using Microsoft.Data.SqlClient;
+using System.Text.RegularExpressions;
 
 namespace Wms.Data.Lpm;
 
@@ -732,10 +733,18 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
 
     private async Task<int> CopyToWmsProductionDbAsync(List<SourceRow> rows, CancellationToken ct)
     {
-        // online.dbo.PhotoCheckingResult — explicit column mapping. Fields not on
-        // the source side (Result, QtyIssuedResult, ShopCode, OrPrice, …) are left
-        // unset; SQL Server defaults / NULL apply.
-        var dt = BuildPhotoCheckingResultDataTable(rows);
+        // online.dbo.PhotoCheckingResult expects per-PIECE rows enriched from
+        // bfldata.dbo.DataSettings, so this is not a straight column copy:
+        //   * one row per piece (Qty always 1)
+        //   * Result / flags / Company / ShopCode from the store's DataSettings row
+        //   * OrPrice from the store's own DB, SalesPrice = FCCode + ' ' + OrPrice
+        //   * RefNo from BFLDATA..RFIDTransfer, created for today if absent
+        var settings = await LoadProdStoreSettingsAsync(rows, ct);
+        var prices   = await LoadRfSalesPricesAsync(rows, settings, ct);
+        var refNos   = await ResolveRefNosAsync(settings, ct);
+
+        var dt = BuildPhotoCheckingResultDataTable(rows, settings, prices, refNos);
+
         await using var conn = OpenWmsProductionDb();
         using var bulk = new SqlBulkCopy(conn)
         {
@@ -746,7 +755,197 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
         foreach (System.Data.DataColumn col in dt.Columns)
             bulk.ColumnMappings.Add(col.ColumnName, col.ColumnName);
         await bulk.WriteToServerAsync(dt, ct);
-        return rows.Count;
+
+        // Exploded row count, not the source row count — the caller reports it.
+        return dt.Rows.Count;
+    }
+
+    // ----- WMS-Prod-DB enrichment -----
+
+    /// <summary>Per-store settings needed to build PhotoCheckingResult rows.</summary>
+    private sealed class ProdStoreSettings
+    {
+        public string?  StoreID       { get; set; }
+        public string?  ShopName      { get; set; }
+        public string?  ShopLetter    { get; set; }
+        public string?  ShopCode      { get; set; }
+        public string?  Company       { get; set; }
+        public string?  FCCode        { get; set; }
+        public string?  Dataname      { get; set; }
+        public string?  Decimals      { get; set; }
+        public string?  POAllocationResult      { get; set; }
+        public string?  POAllocation_PrintFlag  { get; set; }
+        public string?  POAllocation_RFIDFlag   { get; set; }
+
+        public bool PrintFlagYes => IsYes(POAllocation_PrintFlag);
+        public bool RfidFlagYes  => IsYes(POAllocation_RFIDFlag);
+
+        // Decimals drives the SalesPrice string; a Kuwait 3-decimal price rendered
+        // as 2 would be wrong on the sticker. Falls back to 2 when unset/unparseable.
+        public int DecimalPlaces =>
+            int.TryParse(Decimals, out var d) && d >= 0 && d <= 6 ? d : 2;
+
+        private static bool IsYes(string? s) =>
+            !string.IsNullOrWhiteSpace(s) && s.Trim().StartsWith("Y", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// One DataSettings row per StoreID present in the allocation. DataSettings can
+    /// hold several rows for a StoreID, so one is picked deterministically by
+    /// ShopName rather than left to query order.
+    /// </summary>
+    private async Task<Dictionary<string, ProdStoreSettings>> LoadProdStoreSettingsAsync(
+        List<SourceRow> rows, CancellationToken ct)
+    {
+        var storeIds = rows.Select(r => r.StoreID).Where(s => !string.IsNullOrWhiteSpace(s))
+                           .Select(s => s!.Trim())
+                           .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        if (storeIds.Length == 0) return new(StringComparer.OrdinalIgnoreCase);
+
+        await using var c = OpenOnPremBackup();
+        var list = (await c.QueryAsync<ProdStoreSettings>(new CommandDefinition(@"
+            SELECT StoreID, ShopName, ShopLetter, ShopCode, Company, FCCode, Dataname, Decimals,
+                   POAllocationResult, POAllocation_PrintFlag, POAllocation_RFIDFlag
+              FROM (SELECT ds.*,
+                           rn = ROW_NUMBER() OVER (PARTITION BY ds.StoreID ORDER BY ds.ShopName)
+                      FROM bfldata.dbo.DataSettings ds WITH (NOLOCK)
+                     WHERE ds.StoreID IN @ids) x
+             WHERE rn = 1",
+            new { ids = storeIds }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).ToList();
+
+        return list.Where(s => !string.IsNullOrWhiteSpace(s.StoreID))
+                   .ToDictionary(s => s.StoreID!.Trim(), s => s, StringComparer.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Latest RFSalesPrice.Price per (Dataname, Itemcode) for the stores that print.
+    /// One round-trip per distinct Dataname rather than per row. Trndate/Time1 make
+    /// this a price history, so the most recent row wins.
+    ///
+    /// Only fetched for stores whose POAllocation_PrintFlag is Y — non-printing
+    /// stores leave OrPrice and SalesPrice NULL.
+    /// </summary>
+    private async Task<Dictionary<(string Dataname, string Itemcode), decimal>> LoadRfSalesPricesAsync(
+        List<SourceRow> rows, Dictionary<string, ProdStoreSettings> settings, CancellationToken ct)
+    {
+        var result = new Dictionary<(string, string), decimal>();
+
+        var dataNames = settings.Values
+            .Where(s => s.PrintFlagYes && !string.IsNullOrWhiteSpace(s.Dataname))
+            .Select(s => s.Dataname!.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Where(d => Regex.IsMatch(d, @"^[A-Za-z0-9_]+$"))   // 3-part name is interpolated
+            .ToArray();
+        if (dataNames.Length == 0) return result;
+
+        var itemcodes = rows.Select(r => r.Itemcode).Where(i => !string.IsNullOrWhiteSpace(i))
+                            .Select(i => i!.Trim())
+                            .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        if (itemcodes.Length == 0) return result;
+
+        await using var c = OpenOnPremBackup();
+        foreach (var dn in dataNames)
+        {
+            try
+            {
+                var sql = $@"
+                    SELECT Itemcode, Price
+                      FROM (SELECT Itemcode, Price,
+                                   rn = ROW_NUMBER() OVER (PARTITION BY Itemcode
+                                                           ORDER BY Trndate DESC, Time1 DESC)
+                              FROM [{dn}].dbo.RFSalesPrice WITH (NOLOCK)
+                             WHERE Itemcode IN @items) x
+                     WHERE rn = 1";
+                var priced = await c.QueryAsync<(string Itemcode, decimal? Price)>(new CommandDefinition(
+                    sql, new { items = itemcodes },
+                    commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+                foreach (var p in priced)
+                    if (p.Price.HasValue && !string.IsNullOrWhiteSpace(p.Itemcode))
+                        result[((string)dn, p.Itemcode.Trim())] = p.Price.Value;
+            }
+            catch (Exception ex)
+            {
+                // A country DB without RFSalesPrice must not fail the whole sync —
+                // those stores simply get no OrPrice. Surfaced in the log, not silent.
+                Console.Error.WriteLine($"[DataSync] WARN: RFSalesPrice lookup failed for '{dn}': {ex.Message}");
+            }
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// One RFIDTransfer TrfNo per shop for today, created if it does not exist.
+    /// Ported from the legacy getShopRefNo: TrfNo = ShopLetter + last digit of the
+    /// year + a 3-digit per-shop-per-year sequence (e.g. O6224, E16168 — ShopLetter
+    /// can be two characters).
+    ///
+    /// Differs from the VB original in two ways, both deliberate:
+    ///   * The original tested `If Not Rs1 Is Nothing`, which is always true for a
+    ///     DataSet, so the create branch was dead and Rows(0) threw on a shop with
+    ///     no row for today. This implements the intent — reuse if present, else create.
+    ///   * Read and insert run inside one transaction with UPDLOCK/HOLDLOCK, so two
+    ///     concurrent syncs for the same shop cannot mint two TrfNos for one day.
+    /// </summary>
+    private async Task<Dictionary<string, string>> ResolveRefNosAsync(
+        Dictionary<string, ProdStoreSettings> settings, CancellationToken ct)
+    {
+        var byShop = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        var shops = settings.Values
+            .Where(s => !string.IsNullOrWhiteSpace(s.ShopName))
+            .GroupBy(s => s.ShopName!.Trim(), StringComparer.OrdinalIgnoreCase)
+            .Select(g => (Shop: g.Key, Letter: g.Select(x => x.ShopLetter).FirstOrDefault(l => !string.IsNullOrWhiteSpace(l))))
+            .ToList();
+        if (shops.Count == 0) return byShop;
+
+        var todayGst = DateTime.UtcNow.AddHours(4).Date;
+
+        await using var c = OpenOnPremBackup();
+        foreach (var (shop, letter) in shops)
+        {
+            try
+            {
+                var trfNo = await c.ExecuteScalarAsync<string?>(new CommandDefinition(@"
+                    SET XACT_ABORT ON;
+                    BEGIN TRAN;
+
+                    DECLARE @trf varchar(15);
+
+                    SELECT TOP 1 @trf = TrfNo
+                      FROM BFLDATA.dbo.RFIDTransfer WITH (UPDLOCK, HOLDLOCK)
+                     WHERE ShopName = @shop
+                       AND CAST(TrfDate AS date) = @today;
+
+                    IF @trf IS NULL
+                    BEGIN
+                        DECLARE @seq int =
+                            ISNULL((SELECT MAX(CAST(RIGHT(TrfNo, 3) AS int))
+                                      FROM BFLDATA.dbo.RFIDTransfer WITH (UPDLOCK, HOLDLOCK)
+                                     WHERE ShopName = @shop
+                                       AND YEAR(TrfDate) = YEAR(@today)
+                                       AND RIGHT(TrfNo, 3) NOT LIKE '%[^0-9]%'), 0);
+
+                        SET @trf = @letter
+                                 + RIGHT(CAST(YEAR(@today) AS varchar(4)), 1)
+                                 + RIGHT('000' + CAST(@seq + 1 AS varchar(10)), 3);
+
+                        INSERT INTO BFLDATA.dbo.RFIDTransfer (ShopName, TrfNo, TrfDate)
+                        VALUES (@shop, @trf, @today);
+                    END
+
+                    COMMIT;
+                    SELECT @trf;",
+                    new { shop, today = todayGst, letter = (letter ?? "").Trim() },
+                    commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+
+                if (!string.IsNullOrWhiteSpace(trfNo)) byShop[shop] = trfNo!.Trim();
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[DataSync] WARN: RefNo resolve failed for shop '{shop}': {ex.Message}");
+            }
+        }
+        return byShop;
     }
 
     private async Task<int?> WriteLogRowAsync(string contno, int? batchNo, DataSyncDestination dest,
@@ -872,12 +1071,18 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
         return dt;
     }
 
-    private static System.Data.DataTable BuildPhotoCheckingResultDataTable(List<SourceRow> rows)
+    private static System.Data.DataTable BuildPhotoCheckingResultDataTable(
+        List<SourceRow> rows,
+        Dictionary<string, ProdStoreSettings> settings,
+        Dictionary<(string Dataname, string Itemcode), decimal> prices,
+        Dictionary<string, string> refNos)
     {
-        // PhotoCheckingResult column subset that we have source data for. Columns
-        // we don't populate (Result, QtyIssuedResult, ShopCode, OrPrice, PrintFlag,
-        // RfidFlag, Company, RefNo, Mark, Uid, RStatus, RDateTime, PStatus,
-        // PDateTime, Excess) are skipped — destination defaults/NULL apply.
+        // One row PER PIECE: an allocation of 8 becomes 8 rows with Qty = 1, because
+        // the legacy checking flow scans individual pieces. Rows with no allocated
+        // qty produce nothing.
+        //
+        // Still not populated (no source): QtyIssuedResult, PStatus, PDateTime.
+        // RDateTime is intentionally left off the DataTable so it lands NULL.
         var dt = new System.Data.DataTable();
         dt.Columns.Add("ContNo",           typeof(string));
         dt.Columns.Add("TrnDate",          typeof(DateTime));
@@ -888,13 +1093,24 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
         dt.Columns.Add("Season",           typeof(string));
         dt.Columns.Add("Department",       typeof(string));
         dt.Columns.Add("Division",         typeof(string));
+        dt.Columns.Add("Result",           typeof(string));   // DataSettings.POAllocationResult
         dt.Columns.Add("FinalResult",      typeof(string));
         dt.Columns.Add("ResultType",       typeof(string));
         dt.Columns.Add("Qty",              typeof(int));
         dt.Columns.Add("QtyIssue",         typeof(int));
+        dt.Columns.Add("OrPrice",          typeof(double));   // float on PhotoCheckingResult
+        dt.Columns.Add("PrintFlag",        typeof(string));
+        dt.Columns.Add("RfidFlag",         typeof(string));
+        dt.Columns.Add("Company",          typeof(string));
+        dt.Columns.Add("ShopCode",         typeof(string));
         dt.Columns.Add("Itemname",         typeof(string));
         dt.Columns.Add("Barcode",          typeof(string));
         dt.Columns.Add("SalesPrice",       typeof(string));   // varchar(30) on PhotoCheckingResult
+        dt.Columns.Add("RefNo",            typeof(string));
+        dt.Columns.Add("Mark",             typeof(string));
+        dt.Columns.Add("Uid",              typeof(string));   // varchar(5), not numeric
+        dt.Columns.Add("RStatus",          typeof(string));
+        dt.Columns.Add("Excess",           typeof(string));
         dt.Columns.Add("TcmContno",        typeof(string));
         dt.Columns.Add("BuildingCategory", typeof(string));
         dt.Columns.Add("LPMDt",            typeof(DateTime));
@@ -906,31 +1122,75 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
 
         foreach (var r in rows)
         {
-            dt.Rows.Add(
-                (object?)r.ContNo           ?? DBNull.Value,
-                (object?)r.TrnDate          ?? DBNull.Value,
-                (object?)r.Time1            ?? DBNull.Value,
-                (object?)r.UPC              ?? DBNull.Value,
-                (object?)r.Itemcode         ?? DBNull.Value,
-                (object?)r.GroupCode        ?? DBNull.Value,
-                (object?)r.Season           ?? DBNull.Value,
-                (object?)r.Department       ?? DBNull.Value,
-                (object?)r.Division         ?? DBNull.Value,
-                (object?)r.FinalResult      ?? DBNull.Value,
-                (object?)r.ResultType       ?? DBNull.Value,
-                (object?)(r.AllocatedQty ?? r.POQty) ?? DBNull.Value,   // legacy Qty column = allocation qty
-                (object?)r.QtyIssue         ?? DBNull.Value,
-                (object?)r.Itemname         ?? DBNull.Value,
-                (object?)r.Barcode          ?? DBNull.Value,
-                (object?)r.SalesPrice       ?? DBNull.Value,
-                (object?)r.TcmContno        ?? DBNull.Value,
-                (object?)r.BuildingCategory ?? DBNull.Value,
-                (object?)r.LPMDt            ?? DBNull.Value,
-                (object?)r.LPMBoxNO         ?? DBNull.Value,
-                (object?)r.ORAPONo          ?? DBNull.Value,
-                (object?)r.Style            ?? DBNull.Value,
-                (object?)r.Remarks          ?? DBNull.Value,
-                (object?)r.StoreID          ?? DBNull.Value);
+            var pieces = r.AllocatedQty ?? r.POQty ?? 0;
+            if (pieces <= 0) continue;
+
+            var storeId = r.StoreID?.Trim() ?? "";
+            settings.TryGetValue(storeId, out var st);
+
+            var printY = st?.PrintFlagYes == true;
+
+            // OrPrice / SalesPrice only when the store prints stickers.
+            object orPrice   = DBNull.Value;
+            object salesPrice = DBNull.Value;
+            if (printY && st is not null)
+            {
+                var dn = st.Dataname?.Trim();
+                var ic = r.Itemcode?.Trim();
+                if (!string.IsNullOrEmpty(dn) && !string.IsNullOrEmpty(ic)
+                    && prices.TryGetValue((dn, ic), out var p))
+                {
+                    orPrice = (double)p;
+                    // FCCode + space + price at the store's configured decimals.
+                    salesPrice = ((st.FCCode ?? "").Trim() + " " +
+                                  p.ToString("F" + st.DecimalPlaces,
+                                             System.Globalization.CultureInfo.InvariantCulture)).Trim();
+                }
+            }
+
+            var refNo = st?.ShopName is { Length: > 0 } shop && refNos.TryGetValue(shop.Trim(), out var rn)
+                ? (object)rn
+                : DBNull.Value;
+
+            for (var i = 0; i < pieces; i++)
+            {
+                dt.Rows.Add(
+                    (object?)r.ContNo           ?? DBNull.Value,
+                    (object?)r.TrnDate          ?? DBNull.Value,
+                    (object?)r.Time1            ?? DBNull.Value,
+                    (object?)r.UPC              ?? DBNull.Value,
+                    (object?)r.Itemcode         ?? DBNull.Value,
+                    (object?)r.GroupCode        ?? DBNull.Value,
+                    (object?)r.Season           ?? DBNull.Value,
+                    (object?)r.Department       ?? DBNull.Value,
+                    (object?)r.Division         ?? DBNull.Value,
+                    (object?)st?.POAllocationResult ?? DBNull.Value,
+                    (object?)r.FinalResult      ?? DBNull.Value,
+                    (object?)r.ResultType       ?? DBNull.Value,
+                    1,                                   // one piece per row
+                    (object?)r.QtyIssue         ?? DBNull.Value,
+                    orPrice,
+                    printY ? "Y" : "N",
+                    st?.RfidFlagYes == true ? "Y" : "N",
+                    (object?)st?.Company        ?? DBNull.Value,
+                    (object?)st?.ShopCode       ?? DBNull.Value,
+                    (object?)r.Itemname         ?? DBNull.Value,
+                    (object?)r.Barcode          ?? DBNull.Value,
+                    salesPrice,
+                    refNo,
+                    "PA",                                // Mark
+                    "0",                                 // Uid (varchar)
+                    "N",                                 // RStatus
+                    "N",                                 // Excess
+                    (object?)r.TcmContno        ?? DBNull.Value,
+                    (object?)r.BuildingCategory ?? DBNull.Value,
+                    (object?)r.LPMDt            ?? DBNull.Value,
+                    (object?)r.LPMBoxNO         ?? DBNull.Value,
+                    (object?)r.ORAPONo          ?? DBNull.Value,
+                    (object?)r.Style            ?? DBNull.Value,
+                    (object?)r.Remarks          ?? DBNull.Value,
+                    (object?)r.StoreID          ?? DBNull.Value);
+            }
         }
         return dt;
     }
