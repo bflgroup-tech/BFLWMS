@@ -63,8 +63,14 @@
                        SelectedValuesChanged="@(v => _allocCountries = v.ToHashSet())"
                        Placeholder="Pick one or more SIM countries"
                        Variant="Variant.Outlined" Margin="Margin.Dense">
-                @foreach (var sc in _simCountries) { <MudSelectItem T="string" Value="@sc">@sc</MudSelectItem> }
+                @foreach (var sc in _allowedAllocCountries) { <MudSelectItem T="string" Value="@sc">@sc</MudSelectItem> }
             </MudSelect>
+            @if (_allocCountriesRestricted)
+            {
+                <div style="font-size:11px; color:var(--text-secondary); margin-top:4px">
+                    Restricted to @string.Join(", ", _allowedAllocCountries) by AllocationCountry on this order.
+                </div>
+            }
         </div>
         <div>
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">PROCESSED CONTNOS</label>
@@ -629,6 +635,11 @@
 
     // P2: Allocation Countries (multi) + Processed Contnos dropdown + loaded batch banner.
     private List<string> _simCountries = new();
+    // The options actually offered for this container: _simCountries narrowed by
+    // hodata.vUSAOrder.AllocationCountry. Equal to _simCountries when the order
+    // says ALL / is blank / has no row.
+    private List<string> _allowedAllocCountries = new();
+    private bool _allocCountriesRestricted;
     private HashSet<string> _allocCountries = new();
     private List<string> _processedContnos = new();
     private string _selectedProcessedContno = "";
@@ -684,6 +695,8 @@
         }
 
         // Default Allocation Countries to ALL SIM countries; user can trim.
+        // Narrowed per container once one is picked — see ApplyContainerAllocCountriesAsync.
+        _allowedAllocCountries = _simCountries.ToList();
         _allocCountries = new HashSet<string>(_simCountries, StringComparer.OrdinalIgnoreCase);
 
         await RefreshProcessedContnosAsync();
@@ -725,6 +738,7 @@
         if (!string.IsNullOrWhiteSpace(_selectedProcessedContno))
         {
             _contno = _selectedProcessedContno.Trim();
+            await ApplyContainerAllocCountriesAsync();
             await RefreshStatusAsync();
         }
     }
@@ -749,6 +763,10 @@
 
     private async Task OnContnoChangedAsync()
     {
+        // Narrow here too, not just on Load PO Data — typing a container number and
+        // going straight to Process is a normal path, and it must respect the
+        // order's AllocationCountry.
+        await ApplyContainerAllocCountriesAsync();
         await RefreshStatusAsync();
     }
 
@@ -769,10 +787,39 @@
         {
             _poData = await Svc.LoadPoDataAsync(_contno);
             if (_poData.Count == 0) ShowInfo("No rows found in usaorgfile_LPM for this container.");
+            await ApplyContainerAllocCountriesAsync();
             await RefreshStatusAsync();
         }
         catch (Exception ex) { ShowError($"Load failed: {ex.Message}"); }
         finally { _busy = false; }
+    }
+
+    // Narrows the Allocation Countries options to whatever hodata.vUSAOrder says
+    // this container is allowed to ship to, and drops any currently ticked country
+    // that just fell outside that set. A lookup failure leaves the full list in
+    // place — a missing order row must not block allocation.
+    private async Task ApplyContainerAllocCountriesAsync()
+    {
+        var previous = _allocCountries;
+        try
+        {
+            var (allowed, restricted) = await Svc.GetAllocationCountriesForContainerAsync(_contno, _simCountries);
+            _allowedAllocCountries   = allowed;
+            _allocCountriesRestricted = restricted;
+        }
+        catch (Exception ex)
+        {
+            _allowedAllocCountries   = _simCountries.ToList();
+            _allocCountriesRestricted = false;
+            ShowInfo($"Could not read AllocationCountry for {_contno} ({ex.Message}) — showing all countries.");
+        }
+
+        // Keep the user's existing picks where they are still offered; otherwise
+        // fall back to selecting everything the order permits.
+        var kept = previous.Where(p => _allowedAllocCountries.Contains(p, StringComparer.OrdinalIgnoreCase)).ToList();
+        _allocCountries = kept.Count > 0
+            ? new HashSet<string>(kept, StringComparer.OrdinalIgnoreCase)
+            : new HashSet<string>(_allowedAllocCountries, StringComparer.OrdinalIgnoreCase);
     }
 
     private async Task ProcessAsync()

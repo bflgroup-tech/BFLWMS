@@ -2740,6 +2740,62 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         return list.AsList();
     }
 
+    // ===================== P2: Per-container allocation countries =====================
+    /// <summary>
+    /// Reads hodata.dbo.vUSAOrder.AllocationCountry for a container and narrows the
+    /// SIM country list to what that order actually allows.
+    ///
+    /// vUSAOrder is keyed by refno = ContNo (NOT its own Contno column — see the
+    /// note in CountingCompletionTodayService). A container can have several order
+    /// rows, so every distinct AllocationCountry is unioned together.
+    ///
+    /// 'ALL', blank, or no matching order row all mean "no restriction" and return
+    /// the full <paramref name="simCountries"/> list unchanged. Anything else is
+    /// treated as a delimited list of country names and intersected with the SIM
+    /// list, so a value naming a country that isn't a real allocation destination
+    /// simply drops out rather than producing an unusable option.
+    /// </summary>
+    /// <returns>
+    /// (Allowed countries, Restricted) — Restricted is false when the order imposes
+    /// no filter, so callers can tell "everything, by default" from "everything,
+    /// because the order happens to list them all".
+    /// </returns>
+    public async Task<(List<string> Allowed, bool Restricted)> GetAllocationCountriesForContainerAsync(
+        string contno, IEnumerable<string> simCountries, CancellationToken ct = default)
+    {
+        var all = simCountries.ToList();
+        if (string.IsNullOrWhiteSpace(contno)) return (all, false);
+
+        await using var c = OpenOnPremBackup();
+        var raw = await c.QueryAsync<string?>(new CommandDefinition(
+            @"SELECT DISTINCT AllocationCountry
+                FROM hodata.dbo.vUSAOrder WITH (NOLOCK)
+               WHERE refno = @c",
+            new { c = contno.Trim() }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+
+        var values = raw.Where(v => !string.IsNullOrWhiteSpace(v)).ToList();
+        if (values.Count == 0) return (all, false);
+
+        // Any row saying ALL lifts the restriction for the whole container.
+        if (values.Any(v => string.Equals(v!.Trim(), "ALL", StringComparison.OrdinalIgnoreCase)))
+            return (all, false);
+
+        var named = values
+            .SelectMany(v => v!.Split(new[] { ',', ';', '|', '/' }, StringSplitOptions.RemoveEmptyEntries))
+            .Select(s => s.Trim())
+            .Where(s => s.Length > 0)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (named.Count == 0) return (all, false);
+
+        var allowed = all.Where(sc => named.Contains(sc)).ToList();
+
+        // Every named country fell outside the SIM list — treat as unrestricted
+        // rather than handing back an empty dropdown nobody can proceed from.
+        if (allowed.Count == 0) return (all, false);
+
+        return (allowed, true);
+    }
+
     // ===================== P2: Processed Contnos dropdown =====================
     public async Task<List<string>> GetProcessedContnosAsync(string genCountry, CancellationToken ct = default)
     {
