@@ -60,10 +60,19 @@
             @(_busy && _busyKind == "load" ? "Loading…" : "Load")
         </button>
         <button class="aiwms-btn aiwms-btn-secondary" @onclick="ExportExcelAsync" disabled="@(_rows.Count == 0 || _busy)">Export Excel</button>
-        <button class="aiwms-btn aiwms-btn-primary" @onclick="GenerateVolumeGroupAsync"
+        @* Two explicit buttons rather than one whose target silently followed the
+           Country picker. They write to DIFFERENT tables, so the label says which. *@
+        <button class="aiwms-btn aiwms-btn-primary" @onclick="GenerateGroupVolumeGroupAsync"
                 disabled="@(!CanGenerateVolumeGroup)"
-                title="@(CanGenerateVolumeGroup ? (string.Equals(_country, OtsPoAllocationService.BflGroup, StringComparison.OrdinalIgnoreCase) ? "Populate dbo.StoreDivGrade for all countries (Month/Year)" : $"Populate dbo.LPM_StoreDivGrade_Country for {_country} (Month/Year) using LPM_VolumeGroupRange_Country bands") : "RunDate must be today")">
-            @(_busy && _busyKind == "vg-gen" ? "Generating…" : "Generate Volume Group")
+                title="@(CanGenerateVolumeGroup ? "Populate dbo.StoreDivGrade for ALL countries (Month/Year) using the Country='BFLGROUP' bands. This is the table Generate OTS reads." : "RunDate must be today")">
+            @(_busy && _busyKind == "vg-gen-group" ? "Generating…" : "Generate BFLGroup VG")
+        </button>
+        <button class="aiwms-btn aiwms-btn-primary" @onclick="GenerateCountryVolumeGroupAsync"
+                disabled="@(!CanGenerateCountryVolumeGroup)"
+                title="@(IsBflGroupSelected ? "Pick a specific country above — BFLGroup uses the button on the left" : CanGenerateCountryVolumeGroup ? $"Populate dbo.LPM_StoreDivGrade_Country for {_country} (Month/Year) using that country's LPM_VolumeGroupRange_Country bands" : "RunDate must be today")">
+            @(_busy && _busyKind == "vg-gen-country"
+                ? "Generating…"
+                : IsBflGroupSelected ? "Generate Country VG" : $"Generate {_country} VG")
         </button>
         <button class="aiwms-btn aiwms-btn-secondary" @onclick="ViewVolumeGroupsAsync"
                 disabled="@(_busy || _month == 0 || _year == 0)">
@@ -558,15 +567,29 @@
         && string.Equals(_country, OtsPoAllocationService.BflGroup, StringComparison.OrdinalIgnoreCase)
         && SelectedRunDate == _today;
 
-    // Generate Volume Group is broader than the OTS Generate — it accepts any
-    // country. BflGroup writes to dbo.StoreDivGrade (global); a specific country
-    // writes to dbo.LPM_StoreDivGrade_Country using LPM_VolumeGroupRange_Country
-    // bands filtered by that country. RunDate must still equal today so the
-    // grade snapshot lines up with today's OTS run.
+    // The two VG generates write to DIFFERENT tables and are deliberately separate
+    // buttons — one button that silently followed the Country picker made it easy
+    // to run the per-country one and wonder why Generate OTS still complained.
+    //
+    //   BFLGroup VG -> dbo.StoreDivGrade (every country in one pass, Country=
+    //                  'BFLGROUP' bands). This is what Generate OTS reads.
+    //   Country VG  -> dbo.LPM_StoreDivGrade_Country for the picked country only,
+    //                  using that country's LPM_VolumeGroupRange_Country bands.
+    //
+    // RunDate must equal today for both so the grade snapshot lines up with
+    // today's OTS run.
+    private bool IsBflGroupSelected =>
+        string.Equals(_country, OtsPoAllocationService.BflGroup, StringComparison.OrdinalIgnoreCase);
+
     private bool CanGenerateVolumeGroup =>
         !_busy && _month != 0 && _year != 0
-        && !string.IsNullOrWhiteSpace(_country)
         && SelectedRunDate == _today;
+
+    // The per-country button needs an actual country — BFLGroup is the other button.
+    private bool CanGenerateCountryVolumeGroup =>
+        CanGenerateVolumeGroup
+        && !string.IsNullOrWhiteSpace(_country)
+        && !IsBflGroupSelected;
 
     private DateTime SelectedRunDate =>
         DateTime.TryParse(_runDateStr, out var d) ? d.Date : _today;
@@ -713,24 +736,36 @@
         finally { _busy = false; _busyKind = ""; }
     }
 
-    private async Task GenerateVolumeGroupAsync()
+    // BFLGroup run — always BflGroup regardless of the Country picker, so this
+    // button cannot be aimed at the wrong table by a stray dropdown selection.
+    private Task GenerateGroupVolumeGroupAsync() =>
+        RunVolumeGroupGenerateAsync(OtsPoAllocationService.BflGroup, "vg-gen-group", "dbo.StoreDivGrade");
+
+    // Per-country run — writes only the picked country's rows.
+    private Task GenerateCountryVolumeGroupAsync() =>
+        CanGenerateCountryVolumeGroup
+            ? RunVolumeGroupGenerateAsync(_country, "vg-gen-country", "dbo.LPM_StoreDivGrade_Country")
+            : Task.CompletedTask;
+
+    private async Task RunVolumeGroupGenerateAsync(string country, string busyKind, string targetTable)
     {
         if (!CanGenerateVolumeGroup) return;
-        _busy = true; _busyKind = "vg-gen"; _message = ""; _isError = false;
+        _busy = true; _busyKind = busyKind; _message = ""; _isError = false;
         try
         {
-            var (n, ungraded) = await Svc.GenerateStoreDivGradesAsync(_month, _year, _country);
-            _message = $"Generated {n:N0} StoreDivGrade row(s) for {_month}/{_year}. Click 'View Volume Groups' to see them.";
+            var (n, ungraded) = await Svc.GenerateStoreDivGradesAsync(_month, _year, country);
+            _message = $"[{country}] Generated {n:N0} row(s) in {targetTable} for {_month}/{_year}. " +
+                       "Click 'View Volume Groups' to see them.";
             if (ungraded > 0)
             {
                 // A partial band set still "succeeds" — say so plainly instead of
                 // leaving a blank Grade column to be discovered later.
                 _isError = true;
                 _message += $" WARNING: {ungraded:N0} store(s) matched no band and were graded blank — " +
-                            $"check the AvgSalesPct ranges in LPM_VolumeGroupRange_Country for {_country}.";
+                            $"check the AvgSalesPct ranges in LPM_VolumeGroupRange_Country for {country}.";
             }
         }
-        catch (Exception ex) { ShowError($"Generate Volume Group failed: {ex.Message}"); }
+        catch (Exception ex) { ShowError($"Generate Volume Group ({country}) failed: {ex.Message}"); }
         finally { _busy = false; _busyKind = ""; }
     }
 
@@ -742,7 +777,9 @@
             _vgRows = await Svc.GetStoreDivGradesAsync(_month, _year, _country);
             _vgShow = true;
             if (_vgRows.Count == 0)
-                _message = $"No StoreDivGrade rows for {_month}/{_year}. Click 'Generate Volume Group' first.";
+                _message = IsBflGroupSelected
+                    ? $"No dbo.StoreDivGrade rows for {_month}/{_year}. Click 'Generate BFLGroup VG' first."
+                    : $"No dbo.LPM_StoreDivGrade_Country rows for {_country} {_month}/{_year}. Click 'Generate {_country} VG' first.";
         }
         catch (Exception ex) { ShowError($"View Volume Groups failed: {ex.Message}"); }
         finally { _busy = false; _busyKind = ""; }
