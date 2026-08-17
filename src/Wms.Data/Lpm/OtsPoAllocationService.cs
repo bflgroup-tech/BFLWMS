@@ -275,7 +275,9 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         if (!await IsVolumeGroupGeneratedTodayAsync(ct))
             throw new InvalidOperationException(
                 $"Volume Group has not been generated today ({todayGst:dd/MM/yyyy} GST). " +
-                "Click 'Generate Volume Group' first, then re-run 'Generate' on OTS for PO Allocation.");
+                "Click 'Generate BFLGroup VG' first (the per-country button writes " +
+                "LPM_StoreDivGrade_Country, which OTS does not read), then re-run " +
+                "'Generate' on OTS for PO Allocation.");
 
         var (rows, warnings) = await GenerateAsync(month, year, country: null, ct);
         if (rows.Count == 0) return (0, warnings);
