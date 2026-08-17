@@ -1132,7 +1132,12 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
     /// circuit, which is useless in an audit column. Null keeps the UI behaviour
     /// of reading the signed-in user.
     /// </param>
-    public async Task<int> GenerateStoreDivGradesAsync(int month, int year, string? country = null, CancellationToken ct = default, string? actor = null)
+    /// <returns>
+    /// (Rows persisted, Ungraded) — Ungraded counts non-ECOM stores that matched no
+    /// band, i.e. rows written with a blank Grade. Non-zero means the band ranges
+    /// for this country do not cover the full AvgSalesPct spread.
+    /// </returns>
+    public async Task<(int Rows, int Ungraded)> GenerateStoreDivGradesAsync(int month, int year, string? country = null, CancellationToken ct = default, string? actor = null)
     {
         // country == null OR BflGroup -> GLOBAL run (existing behaviour):
         //   bands from  dbo.LPM_VolumeGroupRange_Country WHERE Country = 'BFLGROUP'
@@ -1169,7 +1174,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
             new { m = month, y = year, ct = countryFilter },
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).ToList();
 
-        if (baseRows.Count == 0) return 0;
+        if (baseRows.Count == 0) return (0, 0);
 
         // 1b) Anchor = latest fiscal week from LPM_OTS_Output. wk is per-year
         //     (resets each year) so we read (Year, wk) from the row with the
@@ -1275,6 +1280,12 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
 
         // Grading every store blank is indistinguishable from "the algorithm ran"
         // in the UI, and that silence cost real debugging time. Fail loudly instead.
+        //
+        // NOTE the guard is deliberately not just Count == 0. A PARTIAL band set
+        // fails just as silently: BFLGROUP held a single row (DivCode 402, A,
+        // 300-99999), so every store below 300% matched nothing and graded blank
+        // while the page reported thousands of rows generated. The ungraded count
+        // returned below is what actually surfaces that case.
         if (bandRows.Count == 0)
             throw new InvalidOperationException(
                 $"No Volume Group bands configured for Country = '{bandsCountry}' in " +
@@ -1422,7 +1433,15 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
             throw;
         }
 
-        return results.Count;
+        // Ungraded = non-ECOM rows whose AvgSalesPct matched no band. Callers show
+        // this next to the row count so a band set that covers only part of the
+        // percentage range is visible immediately, rather than looking like a
+        // clean run until someone opens View Volume Groups.
+        var ungraded = results.Count(r =>
+            string.IsNullOrEmpty(r.Grade)
+            && !string.Equals(r.Country, "ECOM", StringComparison.OrdinalIgnoreCase));
+
+        return (results.Count, ungraded);
     }
 
     /// <summary>Read persisted StoreDivGrade rows for a picked (Month, Year),

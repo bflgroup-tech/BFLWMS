@@ -383,9 +383,12 @@
         try
         {
             var nowGst = DateTime.UtcNow.AddHours(4);
-            var rows = await Ots.GenerateStoreDivGradesAsync(nowGst.Month, nowGst.Year, country);
-            await Vg.FinishJobRunAsync(runId, "Success", rows, null);
-            Show($"{country} VG generate done — {rows} rows.", false);
+            var (rows, ungraded) = await Ots.GenerateStoreDivGradesAsync(nowGst.Month, nowGst.Year, country);
+            var note = ungraded > 0
+                ? $"{ungraded} store(s) matched no band and were graded blank — check AvgSalesPct ranges for {country}."
+                : null;
+            await Vg.FinishJobRunAsync(runId, "Success", rows, note);
+            Show($"{country} VG generate done — {rows} rows." + (note is null ? "" : " " + note), ungraded > 0);
         }
         catch (Exception ex)
         {
