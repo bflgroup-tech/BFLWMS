@@ -3,24 +3,26 @@ using Wms.Data.Lpm;
 namespace Wms.Web.Hosting;
 
 /// <summary>
-/// Fires every Monday at 04:00 GST (Arabian Standard Time = UTC+04:00).
+/// Fires every Monday at 06:00 GST (Arabian Standard Time = UTC+04:00).
 /// Calls VolumeGroupWeeklyService.RunOnceAsync which loops each active
 /// (JobName=VolumeGroupWeekly) country and refreshes Volume Groups for
 /// the current month/year. In-process, relies on App Service Always On.
 ///
 /// Mirrors NightlyBatchService's daily loop but with a week cadence.
+/// WeeklyOtsBatchService follows at 07:00 and depends on this run having
+/// completed for BFLGROUP — move one and move the other.
 /// </summary>
 public class WeeklyVolumeGroupBatchService(IServiceProvider sp, ILogger<WeeklyVolumeGroupBatchService> log)
     : BackgroundService
 {
-    private static readonly TimeSpan FireTimeGst = new(4, 0, 0);
+    private static readonly TimeSpan FireTimeGst = new(6, 0, 0);
     private const DayOfWeek FireDay = DayOfWeek.Monday;
     private static readonly TimeZoneInfo GstTz =
         TimeZoneInfo.FindSystemTimeZoneById(OperatingSystem.IsWindows() ? "Arabian Standard Time" : "Asia/Dubai");
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        log.LogInformation("WeeklyVolumeGroupBatchService started. Fire: Monday 04:00 GST.");
+        log.LogInformation("WeeklyVolumeGroupBatchService started. Fire: Monday 06:00 GST.");
         DateTime? lastFireGstDate = null;
 
         while (!stoppingToken.IsCancellationRequested)
@@ -31,7 +33,7 @@ public class WeeklyVolumeGroupBatchService(IServiceProvider sp, ILogger<WeeklyVo
                 var nowGst = TimeZoneInfo.ConvertTimeFromUtc(nowUtc, GstTz);
                 var nextFireGst = NextMondayFireGst(nowGst);
 
-                // If it's Monday and we've crossed 04:00 today and haven't yet
+                // If it's Monday and we've crossed 06:00 today and haven't yet
                 // fired for today's date, fire now (covers app-restart mid-window).
                 var todayFireGst = nowGst.Date.Add(FireTimeGst);
                 var shouldFireNow = nowGst.DayOfWeek == FireDay
@@ -46,7 +48,7 @@ public class WeeklyVolumeGroupBatchService(IServiceProvider sp, ILogger<WeeklyVo
                     continue;
                 }
 
-                // Sleep until next Monday 04:00 GST, capped at 1 hour so we
+                // Sleep until next Monday 06:00 GST, capped at 1 hour so we
                 // wake up regularly to handle clock changes / restarts.
                 var sleep = TimeZoneInfo.ConvertTimeToUtc(nextFireGst, GstTz) - DateTime.UtcNow;
                 if (sleep > TimeSpan.FromHours(1)) sleep = TimeSpan.FromHours(1);
@@ -62,7 +64,7 @@ public class WeeklyVolumeGroupBatchService(IServiceProvider sp, ILogger<WeeklyVo
         }
     }
 
-    /// <summary>Returns the next Monday-04:00 GST fire strictly in the future.</summary>
+    /// <summary>Returns the next Monday-06:00 GST fire strictly in the future.</summary>
     private static DateTime NextMondayFireGst(DateTime nowGst)
     {
         var daysToMonday = ((int)FireDay - (int)nowGst.DayOfWeek + 7) % 7;

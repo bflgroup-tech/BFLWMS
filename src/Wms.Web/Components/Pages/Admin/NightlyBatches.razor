@@ -100,8 +100,8 @@
 <div class="aiwms-section">
     <div class="aiwms-card-header">Monday sequence</div>
     <p style="font-size:12px; color:var(--text-secondary); margin:0 0 4px 0">
-        <strong>04:00</strong> Volume Group refresh → <strong>05:00</strong> OTS generate → <strong>06:00</strong> Missing/Excess snapshot + Weekly sales from BigQuery.
-        OTS needs Volume Group to have run for <strong>BFLGROUP</strong> the same day; if that row is inactive the 05:00 run fails on purpose rather than computing from a stale snapshot.
+        <strong>06:00</strong> Volume Group refresh (all countries) + Missing/Excess snapshot + Weekly sales from BigQuery → <strong>07:00</strong> OTS generate.
+        OTS needs Volume Group to have run for <strong>BFLGROUP</strong> the same day. If it has not, the 07:00 run defers and retries hourly rather than computing from a stale snapshot.
     </p>
 </div>
 
@@ -212,9 +212,9 @@
             {
                 var country = c.Country;
                 list.Add(new JobVm(
-                    VolumeGroupWeeklyService.JobName, "Mon 04:00", country,
+                    VolumeGroupWeeklyService.JobName, "Mon 06:00", country,
                     c.IsActive, c.UpdatedTS, c.UpdatedBy,
-                    c.IsActive ? NextWeeklyFireGst(new(4, 0, 0)) : null,
+                    c.IsActive ? NextWeeklyFireGst(new(6, 0, 0)) : null,
                     active => ToggleAndReloadAsync(() => Vg.SetCountryActiveAsync(country, active), country, active),
                     new() { ("Run Now", EventCallback.Factory.Create(this, () => RunVgNowAsync(country))) }));
             }
@@ -222,9 +222,9 @@
             // 4. OtsWeekly — single row, Monday 05:00 (one hour after VG).
             var ots = await Jobs.GetSingleRowAsync(OtsWeeklyService.JobName);
             list.Add(new JobVm(
-                OtsWeeklyService.JobName, "Mon 05:00", null,
+                OtsWeeklyService.JobName, "Mon 07:00", null,
                 ots.IsActive, ots.UpdatedTS, ots.UpdatedBy,
-                ots.IsActive ? NextWeeklyFireGst(new(5, 0, 0)) : null,
+                ots.IsActive ? NextWeeklyFireGst(new(7, 0, 0)) : null,
                 active => ToggleSingleAsync(OtsWeeklyService.JobName, active),
                 new() { ("Run Now", EventCallback.Factory.Create(this, RunOtsNowAsync)) }));
 
@@ -383,9 +383,12 @@
         try
         {
             var nowGst = DateTime.UtcNow.AddHours(4);
-            var rows = await Ots.GenerateStoreDivGradesAsync(nowGst.Month, nowGst.Year, country);
-            await Vg.FinishJobRunAsync(runId, "Success", rows, null);
-            Show($"{country} VG generate done — {rows} rows.", false);
+            var (rows, ungraded) = await Ots.GenerateStoreDivGradesAsync(nowGst.Month, nowGst.Year, country);
+            var note = ungraded > 0
+                ? $"{ungraded} store(s) matched no band and were graded blank — check AvgSalesPct ranges for {country}."
+                : null;
+            await Vg.FinishJobRunAsync(runId, "Success", rows, note);
+            Show($"{country} VG generate done — {rows} rows." + (note is null ? "" : " " + note), ungraded > 0);
         }
         catch (Exception ex)
         {

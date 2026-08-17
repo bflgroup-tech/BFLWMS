@@ -122,8 +122,17 @@ public class VolumeGroupWeeklyService(
             {
                 // Passing BFLGROUP hits dbo.StoreDivGrade; any other country hits
                 // dbo.LPM_StoreDivGrade_Country. Existing behaviour in the service.
-                var rows = await otsSvc.GenerateStoreDivGradesAsync(month, year, country, ct);
-                await FinishJobRunAsync(runId, "Success", rows, null, ct);
+                // Explicit actor: ICurrentUser cannot resolve a signed-in user from a
+                // timer scope, and stamping GeneratedBy='anonymous' loses the audit.
+                var actor = triggeredBy == "Timer" ? "system (scheduled)" : triggeredBy;
+                var (rows, ungraded) = await otsSvc.GenerateStoreDivGradesAsync(month, year, country, ct, actor);
+                // Stores that matched no band are written with a blank Grade. The run
+                // did succeed, so keep the status green, but record the count — a
+                // silent partial band set is exactly what hid the BFLGROUP problem.
+                var note = ungraded > 0
+                    ? $"{ungraded} store(s) matched no band and were graded blank — check AvgSalesPct ranges for {country}."
+                    : null;
+                await FinishJobRunAsync(runId, "Success", rows, note, ct);
                 results.Add((country, rows, null));
             }
             catch (Exception ex)
