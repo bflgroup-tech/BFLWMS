@@ -1105,12 +1105,16 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                     // no schema change is needed. Cap = min(manual qty, remaining).
                     OtsRunLookupRow? ecomOtsRow = null;
                     int ecomPreAllocTake = 0;
+                    // The manual figure itself, kept separately so the trace row can
+                    // show the cap even when `remaining` clipped the take (or left
+                    // nothing to take at all).
+                    int ecomManualCap = 0;
                     if (ecomManualPriority
                         && !IsSimSkuBlocked("ONLINE")
                         && initialAllocByKey.TryGetValue(("ONLINE", line.ItemCode.ToUpperInvariant()), out var ecomManualQty)
-                        && ecomManualQty > 0
-                        && remaining > 0)
+                        && ecomManualQty > 0)
                     {
+                        ecomManualCap = ecomManualQty;
                         ecomPreAllocTake = Math.Min(ecomManualQty, remaining);
                         if (ecomPreAllocTake > 0)
                         {
@@ -1119,6 +1123,10 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                         }
                     }
 
+                    // NB: deliberately still keyed on ecomPreAllocTake, not ecomManualCap.
+                    // Letting a manual qty that took nothing keep the item alive here
+                    // would push it into Pass 4 and flag it — a behaviour change, where
+                    // this work is audit-only.
                     if (eligible.Count == 0 && ecomPreAllocTake == 0) continue;
 
                     // Live OTS% per (StoreID, DivCode) driven by runningOtsQty
@@ -1170,6 +1178,51 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                         }
                         allocs["ONLINE"] = ecomRow;
                         remaining -= ecomPreAllocTake;
+                    }
+
+                    // Pass 1a trace. Direct append rather than RecordTrace because
+                    // ONLINE may have no row in the OTS run for this DivCode, and
+                    // RecordTrace requires an OtsRunLookupRow to read VolumeGroup /
+                    // LiveOtsPct / InitialOtsPct from. Same approach as the Pass 4
+                    // "Flagged" synthetic row below.
+                    //
+                    // Without this the trace was missing ECOM entirely, so
+                    // SUM(Take) per (ContNo, Itemcode) no longer reconciled to
+                    // line.Qty whenever ECOM Manual Priority was on.
+                    //
+                    // Cap carries the manual figure, so a take clipped by `remaining`
+                    // is visible as Cap > Take. A manual qty that could take nothing
+                    // records a Take=0 / CapReached row, matching passes 1b-4.
+                    if (trace is not null && ecomManualCap > 0)
+                    {
+                        var ecomSoh = itemSohByStore.GetValueOrDefault(
+                            ("ONLINE", line.ItemCode.ToUpperInvariant()), 0);
+                        var ecomRunning = ecomOtsRow is not null
+                            ? runningOtsQty.GetValueOrDefault((ecomOtsRow.StoreID, ecomOtsRow.DivCode), ecomOtsRow.OtsQtyToday)
+                            : 0;
+                        var remBeforeEcom = remaining + ecomPreAllocTake;
+
+                        trace.Add(new AllocationTraceRow(
+                            ContNo: line.ContNo, Itemcode: line.ItemCode, StoreID: "ONLINE",
+                            DivCode: divCode, Pass: 1, SortRank: 0,
+                            VolumeGroup: ecomOtsRow?.VolumeGroup,
+                            TierName: "EcomManual",
+                            LiveOtsPctBefore: ecomOtsRow is not null
+                                ? (decimal)Math.Round(LiveOtsPct(ecomOtsRow), 2)
+                                : null,
+                            Cap: ecomManualCap, Soh: ecomSoh,
+                            CurrentBeforeTake: 0,
+                            RemainingBefore: remBeforeEcom,
+                            Take: ecomPreAllocTake,
+                            RemainingAfter: remBeforeEcom - ecomPreAllocTake,
+                            RunningOtsQtyAfter: ecomRunning - ecomPreAllocTake,
+                            RunOption: runOption.ToString(),
+                            SkipReason: ecomPreAllocTake > 0 ? null : "CapReached",
+                            DefaultSkuMax: null, RawSkuMax: null, RatioSkuMax: null,
+                            AvgOtsPercent: avgOtsDecimal,
+                            AvgOtsMin: avgOtsMinDecimal,
+                            AvgOtsMax: avgOtsMaxDecimal,
+                            InitialOtsPct: ecomOtsRow?.OtsPercentToday));
                     }
 
                     int VolumeGroupRank(string? vg)

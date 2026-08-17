@@ -27,6 +27,15 @@ public class OtsWeeklyService(
         jobs.IsActiveAsync(JobName, ScheduledJobService.SingleRowKey, ct);
 
     /// <summary>
+    /// Has the BFLGROUP Volume Group run landed today? The timer checks this before
+    /// firing so a mid-Monday restart — where every batch's catch-up path triggers
+    /// in the same second — defers instead of racing VG and logging a guaranteed
+    /// failure.
+    /// </summary>
+    public Task<bool> IsVolumeGroupReadyAsync(CancellationToken ct = default) =>
+        otsSvc.IsVolumeGroupGeneratedTodayAsync(ct);
+
+    /// <summary>
     /// Runs Generate OTS for the current GST month/year and writes one
     /// dbo.WmsRptJobRun row. Never throws — the outcome is in the returned tuple
     /// and in the run log, so a timer caller does not need its own try/catch.
@@ -39,7 +48,8 @@ public class OtsWeeklyService(
         var runId  = await jobs.StartRunAsync(JobName, mode, null, triggeredBy, ct);
         try
         {
-            var (rows, warnings) = await otsSvc.GenerateAndPersistAsync(nowGst.Month, nowGst.Year, ct);
+            var actor = triggeredBy == "Timer" ? "system (scheduled)" : triggeredBy;
+            var (rows, warnings) = await otsSvc.GenerateAndPersistAsync(nowGst.Month, nowGst.Year, ct, actor);
 
             // Warnings are non-fatal (missing weights, unmatched divisions, …) but
             // they explain a surprising row count, so surface them in the run log.
