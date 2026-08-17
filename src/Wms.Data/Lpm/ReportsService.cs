@@ -788,7 +788,7 @@ public class ReportsService(IOnPremConnectionResolver resolver)
                 -- container's POs), so compute it per-PO directly from this same #PCDet row
                 -- instead of splitting the container total proportionally by GRNQty — that
                 -- proportional split doesn't reconcile with each PO's own Missing/Excess Qty.
-                ErrorUnits              = det.MissingQty + det.ExcessQty,
+                ErrorUnits              = CAST(det.MissingQty + det.ExcessQty AS DECIMAL(18,2)),
                 ErrorRate               = CASE WHEN det.OrderSheetQty = 0 THEN 0
                                           ELSE ROUND((det.MissingQty + det.ExcessQty) * 100.0 / det.OrderSheetQty, 2) END,
                 b.PurchaseType,
