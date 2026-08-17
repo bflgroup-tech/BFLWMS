@@ -1266,6 +1266,95 @@ DROP TABLE #Scans, #BatchKind, #ItemDiv;";
         return v is not null && v is not DBNull ? Convert.ToInt64(v) : 0;
     }
 
+    // Country -> BFL_MFP_OUTBOUND_T1.territory code. Small fixed set (the export countries plus
+    // UAE), no lookup table for this mapping exists anywhere else in the app.
+    private static readonly Dictionary<string, string> CountryToTerritoryCode = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["UAE"] = "ae", ["BAHRAIN"] = "bh", ["KSA"] = "sa", ["KUWAIT"] = "kw",
+        ["MALAYSIA"] = "my", ["OMAN"] = "om", ["QATAR"] = "qa",
+    };
+
+    private const string DailyTransferHourlySumSql = @"
+                     ISNULL(HR0A,0)+ISNULL(HR1A,0)+ISNULL(HR2A,0)+ISNULL(HR3A,0)+ISNULL(HR4A,0)+
+                     ISNULL(HR5A,0)+ISNULL(HR6A,0)+ISNULL(HR7A,0)+ISNULL(HR8A,0)+ISNULL(HR9A,0)+
+                     ISNULL(HR10A,0)+ISNULL(HR11A,0)+ISNULL(HR12A,0)+ISNULL(HR13A,0)+ISNULL(HR14A,0)+
+                     ISNULL(HR15A,0)+ISNULL(HR16A,0)+ISNULL(HR17A,0)+ISNULL(HR18A,0)+ISNULL(HR19A,0)+
+                     ISNULL(HR20A,0)+ISNULL(HR21A,0)+ISNULL(HR22A,0)";
+
+    /// <summary>Daily transfer qty for one warehouse column, from bfldata.dbo.DailyCountCategoryTrf on
+    /// whichever connection the caller opens. warehouseFilter=null sums every row on that connection
+    /// (matching GetTransferQtyAsync's uaeOnly:false path used for the existing By-Country Transfer
+    /// Qty cards); a non-null filter restricts to that Warehouse value (UAE's 'TECHNO').</summary>
+    private async Task<List<DailyWarehouseTransferRow>> GetDailyTransferForWarehouseAsync(
+        SqlConnection conn, string warehouseLabel, string? warehouseFilter,
+        DateTime weekStart, DateTime weekEnd, CancellationToken ct)
+    {
+        var rows = await conn.QueryAsync<(DateTime TrnDate, long TransferQty)>(new CommandDefinition($@"
+            SELECT TrnDate,
+                   TransferQty = CAST(ISNULL(SUM({DailyTransferHourlySumSql}), 0) AS BIGINT)
+              FROM bfldata.dbo.DailyCountCategoryTrf WITH (NOLOCK)
+             WHERE {(warehouseFilter is null ? "" : "Warehouse = @warehouseFilter AND ")}TrnDate BETWEEN @weekStart AND @weekEnd
+             GROUP BY TrnDate",
+            new { warehouseFilter, weekStart = weekStart.Date, weekEnd = weekEnd.Date },
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        return rows.Select(r => new DailyWarehouseTransferRow(r.TrnDate, warehouseLabel, r.TransferQty)).ToList();
+    }
+
+    /// <summary>
+    /// Admin-only "Daily Transfer Qty by Warehouse" report on Production Summary — one column per
+    /// warehouse (UAE+Oman's combined TECHNO total, read centrally same as the page's own top-level
+    /// Transfer Qty scalar; plus each export country's own receiving warehouse, labeled with that
+    /// country's ExportWH "R1" ShopName from BFLDATA.dbo.DataSettings where ExportActive='Y' AND
+    /// ExportWH='Y'). Each export country's daily quantity is read from bfldata.dbo.DailyCountCategoryTrf
+    /// via THAT COUNTRY'S OWN {Country}_DB_ConnectionString, not the central UAE connection — the same
+    /// per-country source (and same no-Warehouse-filter, whole-table sum) the existing By-Country
+    /// "Transfer Qty" cards already use, so the two agree. A country with no connection string
+    /// configured contributes no rows for its column (reads as 0 in the report). Merch Need per
+    /// warehouse comes from LPMSIM.dbo.BFL_MFP_OUTBOUND_T1.merch_need for the same (Year, Week),
+    /// matched via each column's TerritoryCode.
+    /// </summary>
+    public async Task<DailyTransferByWarehouseResult> GetDailyTransferByWarehouseAsync(
+        DateTime weekStart, DateTime weekEnd, int year, int week, CancellationToken ct = default)
+    {
+        await using var c = OpenOnPremBackup();
+
+        // Oman excluded: it ships via the same TECHNO warehouse as UAE (already counted in that
+        // column above), so a separate BFLOMANR1 column here would double-count it.
+        var exportWhShops = (await c.QueryAsync<(string Country, string ShopName)>(new CommandDefinition(@"
+            SELECT Country, ShopName
+              FROM BFLDATA.dbo.DataSettings WITH (NOLOCK)
+             WHERE ExportActive = 'Y' AND ExportWH = 'Y' AND Country <> 'OMAN'",
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).ToList();
+
+        var columns = new List<WarehouseTransferColumn> { new("TECHNO", "UAE", "ae") };
+        foreach (var (country, shopName) in exportWhShops)
+            if (CountryToTerritoryCode.TryGetValue(country, out var code))
+                columns.Add(new(shopName, country, code));
+
+        var daily = new List<DailyWarehouseTransferRow>();
+        daily.AddRange(await GetDailyTransferForWarehouseAsync(c, "TECHNO", "TECHNO", weekStart, weekEnd, ct));
+
+        foreach (var (country, shopName) in exportWhShops)
+        {
+            string? cs;
+            try { cs = resolver.GetCountryConnectionString(country); } catch { cs = null; }
+            if (string.IsNullOrWhiteSpace(cs)) continue; // no connection configured -> column reads 0
+
+            await using var countryConn = new SqlConnection(WithConnectTimeout(cs));
+            await countryConn.OpenAsync(ct);
+            daily.AddRange(await GetDailyTransferForWarehouseAsync(countryConn, shopName, null, weekStart, weekEnd, ct));
+        }
+
+        var merchNeeds = (await c.QueryAsync<WarehouseMerchNeedRow>(new CommandDefinition(@"
+            SELECT TerritoryCode = territory, MerchNeed = CAST(SUM(merch_need) AS BIGINT)
+              FROM LPMSIM.dbo.BFL_MFP_OUTBOUND_T1 WITH (NOLOCK)
+             WHERE Year = @year AND Week = @week
+             GROUP BY territory",
+            new { year, week }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).ToList();
+
+        return new DailyTransferByWarehouseResult(columns, daily, merchNeeds);
+    }
+
     // TEMPORARY, see call site above — reads straight from BFLBAHRAIN's own
     // vTransferDetail (which does have TrfDate/Quantity) instead of the bfldata
     // Transfer table this report normally uses.
