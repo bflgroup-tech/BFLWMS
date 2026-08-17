@@ -48,7 +48,7 @@
                 <select @bind="_warehouseFilter"
                         style="min-width:180px; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); background:white; font-size:13px"
                         disabled="@_busy">
-                    <option value="">(all warehouses)</option>
+                    <option value="">ALL</option>
                     @foreach (var w in _validWarehouses) { <option value="@w">@w</option> }
                 </select>
             </div>
@@ -245,6 +245,7 @@
             {
                 _rows = await Svc.GetRowsAsync(_country);
                 _validWarehouses = await Svc.GetValidWarehousesAsync(_country);
+                if (_validWarehouses.Count == 1) _warehouseFilter = _validWarehouses[0];
             }
         }
         catch (Exception ex) { ShowError($"Failed to load countries: {ex.Message}"); }
@@ -259,6 +260,7 @@
         {
             _rows = await Svc.GetRowsAsync(_country);
             _validWarehouses = await Svc.GetValidWarehousesAsync(_country);
+            if (_validWarehouses.Count == 1) _warehouseFilter = _validWarehouses[0];
         }
         catch (Exception ex) { ShowError($"Failed to load rows: {ex.Message}"); }
     }
