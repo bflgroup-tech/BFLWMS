@@ -22,7 +22,7 @@
         <div>
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COUNTRY</label>
             <select @bind="_country" @bind:after="OnCountryChangedAsync" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" disabled="@_busy">
-                @if (Me.HasAllCountriesAccess)
+                @if (CanSeeBflGroup)
                 {
                     <option value="@OtsPoAllocationService.BflGroup">@OtsPoAllocationService.BflGroup</option>
                 }
@@ -581,6 +581,14 @@
     private bool IsBflGroupSelected =>
         string.Equals(_country, OtsPoAllocationService.BflGroup, StringComparison.OrdinalIgnoreCase);
 
+    // BFLGroup has no bfldata.DataSettings row, so it never comes back from the SIM
+    // country list and FilterCountries can't surface it. Admins get it implicitly;
+    // everyone else needs it granted explicitly in Admin > Users > Country Access,
+    // where it is now offered alongside the real countries.
+    private bool CanSeeBflGroup =>
+        Me.HasAllCountriesAccess
+        || Me.AllowedCountries.Any(c => string.Equals(c, OtsPoAllocationService.BflGroup, StringComparison.OrdinalIgnoreCase));
+
     private bool CanGenerateVolumeGroup =>
         !_busy && _month != 0 && _year != 0
         && SelectedRunDate == _today;
@@ -629,9 +637,10 @@
             _currentOtsWk = await Svc.GetCurrentOtsWkAsync(_month == 0 ? null : _month, _year == 0 ? null : _year);
             _countries = await Svc.GetCountriesAsync();
             _countries = Me.FilterCountries(_countries).ToList();
-            // Non-admins with a restricted country set lose the BFLGroup ("see all countries")
-            // default — flip to their first allowed country instead.
-            if (!Me.HasAllCountriesAccess && string.Equals(_country, OtsPoAllocationService.BflGroup, StringComparison.OrdinalIgnoreCase))
+            // Without BFLGroup access the default selection is invalid — flip to the
+            // first allowed country instead. Admins always keep it; everyone else
+            // needs an explicit BFLGroup grant in Country Access.
+            if (!CanSeeBflGroup && string.Equals(_country, OtsPoAllocationService.BflGroup, StringComparison.OrdinalIgnoreCase))
                 _country = _countries.FirstOrDefault() ?? "";
             _monthYears = await Svc.GetAvailableMonthYearsAsync();
             _years = _monthYears.Select(x => x.Year).Distinct().OrderByDescending(y => y).ToList();

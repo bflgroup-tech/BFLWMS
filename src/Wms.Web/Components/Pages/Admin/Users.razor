@@ -293,6 +293,14 @@
         _whs   = await db.WHMasters.AsNoTracking().Where(w => w.Active).OrderBy(w => w.Country).ThenBy(w => w.Warehouse).ToListAsync();
         try { _countries = await Build.GetAllSimCountriesAsync(); }
         catch { _countries = _whs.Select(w => w.Country).Distinct().OrderBy(c => c).ToList(); }
+
+        // BFLGroup is the "all countries at once" pseudo-country used by OTS for PO
+        // Allocation — it has no bfldata.DataSettings row, so the SIM list never
+        // includes it. Grant it here like any other country: without it a non-admin
+        // has no way to be given the BFLGroup view, which is the one Generate OTS
+        // and Container Allocation actually read.
+        if (!_countries.Any(c => string.Equals(c, OtsPoAllocationService.BflGroup, StringComparison.OrdinalIgnoreCase)))
+            _countries.Insert(0, OtsPoAllocationService.BflGroup);
         await Reload();
     }
 
