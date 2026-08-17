@@ -197,12 +197,18 @@ else if (VisibleRows().Count > 0)
     }
 
     <div class="aiwms-section">
+        <div class="aiwms-card-header">Transfer Qty- Division wise</div>
         <div style="display:flex; gap:14px; align-items:center; margin-bottom:10px">
             <strong style="font-size:11px; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">View:</strong>
             <label style="display:flex; align-items:center; gap:4px; cursor:pointer"><input type="radio" name="vw" value="Summary"  checked="@(_view == "Summary")"  @onchange="@(_ => _view = "Summary")" /> Summary</label>
             <label style="display:flex; align-items:center; gap:4px; cursor:pointer"><input type="radio" name="vw" value="Detailed" checked="@(_view == "Detailed")" @onchange="@(_ => _view = "Detailed")" /> Detailed</label>
+            <button class="aiwms-btn aiwms-btn-secondary" style="margin-left:auto" @onclick="@(() => _pivotCollapsed = !_pivotCollapsed)">
+                @(_pivotCollapsed ? "Expand" : "Minimize")
+            </button>
         </div>
 
+        @if (!_pivotCollapsed)
+        {
         @if (_view == "Summary")
         {
             var multiCountry = _selectedCountries.Count > 1;
@@ -361,6 +367,7 @@ else if (VisibleRows().Count > 0)
                 </tbody>
             </table>
         }
+        }
     </div>
 }
 else if (_loadedOnce && VisibleRows().Count == 0)
@@ -368,7 +375,131 @@ else if (_loadedOnce && VisibleRows().Count == 0)
     <div class="aiwms-section"><div class="aiwms-alert info">No scans found for the selected range.</div></div>
 }
 
+@if (CanSeeDtbw)
+{
+        @if (_dtbwColumns.Count > 0)
+        {
+            var pivot = BuildDtbwPivot();
+            <div class="aiwms-section">
+                <div class="aiwms-card-header">Daily Transfer Qty by Warehouse — Week @_selectedWeek</div>
+                <div style="overflow-x:auto">
+                    <table class="aiwms-table aiwms-table-dense" style="font-size:12px">
+                        <thead>
+                            <tr>
+                                <th>Date</th>
+                                <th>Day</th>
+                                @foreach (var col in pivot.Columns) { <th style="text-align:right">@col.Warehouse</th> }
+                                <th style="text-align:right; background:#fdb623">Total</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var day in pivot.Days)
+                            {
+                                <tr>
+                                    <td>@day.ToString("MM/dd/yyyy")</td>
+                                    <td>@day.DayOfWeek</td>
+                                    @foreach (var col in pivot.Columns) { <td style="text-align:right">@pivot.DailyQty[(day, col.Warehouse)].ToString("N0")</td> }
+                                    <td style="text-align:right; font-weight:600">@pivot.DailyTotal[day].ToString("N0")</td>
+                                </tr>
+                            }
+                            <tr style="font-weight:700; background:#fff7e0">
+                                <td colspan="2">TOTAL Sel @_selectedWeek</td>
+                                @foreach (var col in pivot.Columns) { <td style="text-align:right">@pivot.ColumnTotal[col.Warehouse].ToString("N0")</td> }
+                                <td style="text-align:right">@pivot.GrandTotal.ToString("N0")</td>
+                            </tr>
+                            <tr>
+                                <td colspan="2">Merch Target</td>
+                                @foreach (var col in pivot.Columns) { <td style="text-align:right">@pivot.ColumnMerchTarget[col.Warehouse].ToString("N0")</td> }
+                                <td style="text-align:right">@pivot.GrandMerchTarget.ToString("N0")</td>
+                            </tr>
+                            <tr>
+                                <td colspan="2">Variance (Act - M.Tgt)</td>
+                                @foreach (var col in pivot.Columns)
+                                {
+                                    var v = pivot.ColumnVariance[col.Warehouse];
+                                    <td style="text-align:right; color:@(v < 0 ? "#dc2626" : "#15803d")">@v.ToString("N0")</td>
+                                }
+                                <td style="text-align:right; color:@(pivot.GrandVariance < 0 ? "#dc2626" : "#15803d")">@pivot.GrandVariance.ToString("N0")</td>
+                            </tr>
+                            <tr>
+                                <td colspan="2">Variance %</td>
+                                @foreach (var col in pivot.Columns)
+                                {
+                                    var p = pivot.ColumnVariancePct[col.Warehouse];
+                                    <td style="text-align:right; color:@(p < 0 ? "#dc2626" : "#15803d")">@p.ToString("N1")%</td>
+                                }
+                                <td style="text-align:right; color:@(pivot.GrandVariancePct < 0 ? "#dc2626" : "#15803d")">@pivot.GrandVariancePct.ToString("N1")%</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        }
+}
+
 @code {
+    // "Daily Transfer Qty by Warehouse" — restricted to this one named account, not the
+    // general Admin role, since it's still an experimental report. See BuildDtbwPivot() below.
+    private bool CanSeeDtbw => string.Equals(CurrentUser.Name, "shabeela.p@bflgroup.ae", StringComparison.OrdinalIgnoreCase);
+    private List<WarehouseTransferColumn>   _dtbwColumns    = new();
+    private List<DailyWarehouseTransferRow> _dtbwDaily      = new();
+    private List<WarehouseMerchNeedRow>     _dtbwMerchNeeds = new();
+
+    private sealed class DtbwPivot
+    {
+        public List<DateTime> Days = new();
+        public List<WarehouseTransferColumn> Columns = new();
+        public Dictionary<(DateTime Day, string Warehouse), long> DailyQty = new();
+        public Dictionary<DateTime, long> DailyTotal = new();
+        public Dictionary<string, long> ColumnTotal = new();
+        public Dictionary<string, long> ColumnMerchTarget = new();
+        public Dictionary<string, long> ColumnVariance = new();
+        public Dictionary<string, double> ColumnVariancePct = new();
+        public long GrandTotal;
+        public long GrandMerchTarget;
+        public long GrandVariance;
+        public double GrandVariancePct;
+    }
+
+    private DtbwPivot BuildDtbwPivot()
+    {
+        var p = new DtbwPivot { Columns = _dtbwColumns };
+        var weekNum = int.TryParse(_selectedWeek, out var w) ? w : int.Parse(ComputeCurrentWeekNumber());
+        var range = Weeks.FirstOrDefault(x => x.Num == weekNum);
+        p.Days = Enumerable.Range(0, (range.End - range.Start).Days + 1).Select(i => range.Start.AddDays(i)).ToList();
+
+        foreach (var day in p.Days)
+        {
+            long dayTotal = 0;
+            foreach (var col in p.Columns)
+            {
+                var qty = _dtbwDaily
+                    .Where(d => d.TrnDate.Date == day.Date && string.Equals(d.Warehouse, col.Warehouse, StringComparison.OrdinalIgnoreCase))
+                    .Sum(d => d.TransferQty);
+                p.DailyQty[(day, col.Warehouse)] = qty;
+                dayTotal += qty;
+            }
+            p.DailyTotal[day] = dayTotal;
+        }
+
+        foreach (var col in p.Columns)
+        {
+            var total  = _dtbwDaily.Where(d => string.Equals(d.Warehouse, col.Warehouse, StringComparison.OrdinalIgnoreCase)).Sum(d => d.TransferQty);
+            var target = _dtbwMerchNeeds.Where(m => string.Equals(m.TerritoryCode, col.TerritoryCode, StringComparison.OrdinalIgnoreCase)).Sum(m => m.MerchNeed);
+            var variance = total - target;
+            p.ColumnTotal[col.Warehouse] = total;
+            p.ColumnMerchTarget[col.Warehouse] = target;
+            p.ColumnVariance[col.Warehouse] = variance;
+            p.ColumnVariancePct[col.Warehouse] = target == 0 ? 0 : (double)variance / target * 100.0;
+        }
+
+        p.GrandTotal = p.ColumnTotal.Values.Sum();
+        p.GrandMerchTarget = p.ColumnMerchTarget.Values.Sum();
+        p.GrandVariance = p.GrandTotal - p.GrandMerchTarget;
+        p.GrandVariancePct = p.GrandMerchTarget == 0 ? 0 : (double)p.GrandVariance / p.GrandMerchTarget * 100.0;
+        return p;
+    }
+
     private List<string> _countries = new() { "UAE" };
     private HashSet<string> _selectedCountries = new(StringComparer.OrdinalIgnoreCase) { "UAE" };
     // UAE always reads via OnPremBackup (no per-country connection string needed), so it's
@@ -379,6 +510,7 @@ else if (_loadedOnce && VisibleRows().Count == 0)
     private DateTime _from = ComputeCurrentWeekRange().Start;
     private DateTime _to   = ComputeCurrentWeekRange().End;
     private string _view = "Summary";
+    private bool _pivotCollapsed;
     private bool _loading;
     private string? _loadingMsg;
     private bool _loadedOnce;
@@ -697,6 +829,21 @@ else if (_loadedOnce && VisibleRows().Count == 0)
                 try { _merchNeedByCountryDivision[country] = await Svc.GetMerchNeedByDivisionAsync(country, selectedWeekNum, selectedWeekDayCount); }
                 catch (Exception mnEx) { merchNeedErrors.Add($"{country} (by division): {mnEx.Message}"); _merchNeedByCountryDivision[country] = new(); }
             }
+
+            // "Daily Transfer Qty by Warehouse" — restricted to a single named account (not just
+            // any Admin), independent of the country picker above, driven solely by the selected week.
+            _dtbwColumns.Clear(); _dtbwDaily.Clear(); _dtbwMerchNeeds.Clear();
+            if (CanSeeDtbw)
+            {
+                var weekRange = Weeks.FirstOrDefault(x => x.Num == selectedWeekNum);
+                try
+                {
+                    var dtbw = await Svc.GetDailyTransferByWarehouseAsync(weekRange.Start, weekRange.End, weekRange.Start.Year, selectedWeekNum);
+                    _dtbwColumns = dtbw.Columns; _dtbwDaily = dtbw.Daily; _dtbwMerchNeeds = dtbw.MerchNeeds;
+                }
+                catch (Exception dtbwEx) { merchNeedErrors.Add($"Daily Transfer by Warehouse: {dtbwEx.Message}"); }
+            }
+
             _loadedOnce = true;
             var unconfigured = countries.Where(c => !_configuredCountries.Contains(c)).ToList();
             var notes = new List<string>();
