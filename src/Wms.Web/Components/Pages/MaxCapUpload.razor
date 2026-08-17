@@ -1,0 +1,418 @@
+@page "/capacity/max-cap-upload"
+@rendermode RenderMode.InteractiveServer
+@using Wms.Core
+@using Wms.Data.Lpm
+@using ClosedXML.Excel
+@using Microsoft.AspNetCore.Components.Forms
+@attribute [Authorize(Policy = MenuKeys.MAX_CAP_UPLOAD)]
+@inject MaxCapService Svc
+@inject ICurrentUser Me
+@inject Microsoft.JSInterop.IJSRuntime JS
+
+<PageTitle>WMS — Warehouse Min/Max Cap Upload</PageTitle>
+
+<div class="aiwms-page-header">
+    <h2>Warehouse Min/Max Cap Upload</h2>
+    <p>
+        Min/Max WH capacity per Warehouse and Division for one country. Uploading adds to
+        whatever is already there — pick a warehouse below to view or delete its existing data.
+    </p>
+    <AuthorizeView Roles="Admin">
+        <p>
+            Stored in <code>LPMSIM.dbo.WMS_WH_MAXMIN_CAP</code>; the fiscal Week/WeekId stamped
+            on each row is read from <code>LPMSIM.dbo.LPM_OTS_Output</code>.
+        </p>
+    </AuthorizeView>
+</div>
+
+@if (!string.IsNullOrEmpty(_message))
+{
+    <div class="aiwms-alert @(_isError ? "error" : "info")">@_message</div>
+}
+
+<div class="aiwms-section">
+    <div style="display:flex; gap:20px; flex-wrap:wrap">
+        <div>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COUNTRY</label>
+            <select @bind="_country" @bind:after="OnCountryChangedAsync"
+                    style="min-width:180px; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); background:white; font-size:13px"
+                    disabled="@_busy">
+                <option value="">(pick a country)</option>
+                @foreach (var c in _countries) { <option value="@c">@c</option> }
+            </select>
+        </div>
+        @if (!string.IsNullOrWhiteSpace(_country))
+        {
+            <div>
+                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">WAREHOUSE FILTER</label>
+                <select @bind="_warehouseFilter"
+                        style="min-width:180px; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); background:white; font-size:13px"
+                        disabled="@_busy">
+                    <option value="">(all warehouses)</option>
+                    @foreach (var w in _validWarehouses) { <option value="@w">@w</option> }
+                </select>
+            </div>
+            <div>
+                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">MONTH (@_currentYear) *</label>
+                <select @bind="_selectedMonth"
+                        style="min-width:150px; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); background:white; font-size:13px"
+                        disabled="@_busy">
+                    @for (int m = 1; m <= 12; m++)
+                    {
+                        var mCopy = m;
+                        <option value="@mCopy">@System.Globalization.CultureInfo.InvariantCulture.DateTimeFormat.GetMonthName(mCopy)</option>
+                    }
+                </select>
+            </div>
+            <div style="align-self:end">
+                <button class="aiwms-btn aiwms-btn-primary" @onclick="ShowReportAsync" disabled="@_busy">Show</button>
+            </div>
+            <div style="align-self:end">
+                <button class="aiwms-btn aiwms-btn-secondary" @onclick="DeleteForWarehouseAsync" disabled="@(_busy || string.IsNullOrEmpty(_warehouseFilter))">
+                    Delete existing @(string.IsNullOrEmpty(_warehouseFilter) ? "" : $"for {_warehouseFilter}")
+                </button>
+            </div>
+        }
+    </div>
+    @if (!string.IsNullOrWhiteSpace(_country))
+    {
+        <p style="margin:10px 0 0 0; color:var(--text-secondary); font-size:12px">
+            Valid warehouses for @_country: <b>@string.Join(", ", _validWarehouses)</b>. Pick a warehouse above to delete its existing data before uploading fresh rows.
+        </p>
+    }
+</div>
+
+@if (!string.IsNullOrWhiteSpace(_country))
+{
+    <div class="aiwms-section">
+        <div class="aiwms-card-header">Upload Excel template</div>
+        <p style="margin:0 0 10px 0; color:var(--text-secondary); font-size:12px">
+            Header row required, exactly these 4 columns:
+        </p>
+        <table class="aiwms-table aiwms-table-dense" style="max-width:640px; font-size:12px; margin-bottom:14px">
+            <thead>
+                <tr>
+                    <th>WAREHOUSE</th>
+                    <th>DIVISION</th>
+                    <th style="text-align:right">MIN_CAP_WEEK</th>
+                    <th style="text-align:right">MAX_CAP_WEEK</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr style="color:var(--text-secondary)">
+                    <td>JAFZA</td>
+                    <td>Beauty</td>
+                    <td style="text-align:right">500</td>
+                    <td style="text-align:right">2000</td>
+                </tr>
+            </tbody>
+        </table>
+        <p style="margin:0 0 10px 0; color:var(--text-secondary); font-size:12px">
+            All rows are saved under Country = <b>@_country</b> for the fiscal week of the month
+            picked above — a create timestamp is stamped automatically for every uploaded row.
+        </p>
+        <InputFile OnChange="OnFileSelected" accept=".xlsx" disabled="@_busy" />
+    </div>
+
+    @if (_uploadRows.Count > 0)
+    {
+        <div class="aiwms-section">
+            <div class="aiwms-card-header" style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px">
+                <span>Preview — @_uploadRows.Count row(s)</span>
+                <button class="aiwms-btn aiwms-btn-primary" @onclick="SaveUploadAsync" disabled="@_busy">Save</button>
+            </div>
+            <div style="max-height:400px; overflow:auto">
+                <table class="aiwms-table aiwms-table-dense" style="font-size:12px">
+                    <thead style="position:sticky; top:0; background:white; z-index:1">
+                        <tr>
+                            <th>Warehouse</th>
+                            <th>Division</th>
+                            <th style="text-align:right">Min Cap/Week</th>
+                            <th style="text-align:right">Max Cap/Week</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var r in _uploadRows)
+                        {
+                            <tr>
+                                <td>@r.Warehouse</td>
+                                <td>@r.Division</td>
+                                <td style="text-align:right">@r.MinCapWeek.ToString("N0")</td>
+                                <td style="text-align:right">@r.MaxCapWeek.ToString("N0")</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    }
+
+    <div class="aiwms-section">
+        <div class="aiwms-card-header">
+            <span>
+                Existing rows for @_country@(string.IsNullOrEmpty(_warehouseFilter) ? "" : $" / {_warehouseFilter}")
+                @(_reportShown ? $" — {System.Globalization.CultureInfo.InvariantCulture.DateTimeFormat.GetMonthName(_reportMonth)} {_currentYear} — {VisibleRows.Count} row(s)" : "")
+            </span>
+        </div>
+        @if (!_reportShown)
+        {
+            <p style="color:var(--text-secondary); font-size:13px">Pick a Country/Warehouse/Month above and click Show to load this report.</p>
+        }
+        else if (VisibleRows.Count == 0)
+        {
+            <p style="color:var(--text-secondary); font-size:13px">No rows to show.</p>
+        }
+        else
+        {
+            <div style="max-height:520px; overflow:auto">
+                <table class="aiwms-table aiwms-table-dense" style="font-size:12px">
+                    <thead style="position:sticky; top:0; background:white; z-index:1">
+                        <tr>
+                            <th>Warehouse</th>
+                            <th>Division</th>
+                            <th style="text-align:right">Min Cap/Week</th>
+                            <th style="text-align:right">Max Cap/Week</th>
+                            <th style="text-align:right">Month</th>
+                            <th style="text-align:right">Year</th>
+                            <th>Created</th>
+                            <th>Created By</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var r in VisibleRows)
+                        {
+                            <tr>
+                                <td>@r.Warehouse</td>
+                                <td>@r.Division</td>
+                                <td style="text-align:right">@r.MinCapWeek.ToString("N0")</td>
+                                <td style="text-align:right">@r.MaxCapWeek.ToString("N0")</td>
+                                <td style="text-align:right">@(r.Month is null ? "" : System.Globalization.CultureInfo.InvariantCulture.DateTimeFormat.GetMonthName(r.Month.Value))</td>
+                                <td style="text-align:right">@r.Year</td>
+                                <td>@r.CreateTs.ToString("dd-MMM-yyyy HH:mm")</td>
+                                <td>@r.CreatedUser</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </div>
+}
+
+@code {
+    private string _country = "";
+    private string _warehouseFilter = "";
+    private bool _busy;
+    private string _message = "";
+    private bool _isError;
+
+    private List<string> _countries = new();
+    private List<WhMaxMinCapRow> _rows = new();
+    private List<WhMaxMinCapUploadRow> _uploadRows = new();
+    private List<string> _validWarehouses = new();
+
+    private readonly int _currentYear = DateTime.UtcNow.AddHours(4).Year;
+    private int _selectedMonth = DateTime.UtcNow.AddHours(4).Month;
+
+    private bool _reportShown;
+    private int _reportMonth;
+    private string? _reportWeekId;
+
+    private List<WhMaxMinCapRow> VisibleRows
+    {
+        get
+        {
+            var rows = _rows.AsEnumerable();
+            if (!string.IsNullOrEmpty(_warehouseFilter))
+                rows = rows.Where(r => string.Equals(r.Warehouse, _warehouseFilter, StringComparison.OrdinalIgnoreCase));
+            if (_reportShown && _reportWeekId is not null)
+                rows = rows.Where(r => string.Equals(r.WeekId, _reportWeekId, StringComparison.OrdinalIgnoreCase));
+            return rows.ToList();
+        }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        await Me.EnsureLoadedAsync();
+        try
+        {
+            _countries = await Svc.GetCountriesAsync();
+            _countries = Me.FilterCountries(_countries).ToList();
+            _country = Me.Country is not null && _countries.Contains(Me.Country, StringComparer.OrdinalIgnoreCase)
+                ? _countries.First(c => string.Equals(c, Me.Country, StringComparison.OrdinalIgnoreCase))
+                : "";
+            if (!string.IsNullOrEmpty(_country))
+            {
+                _rows = await Svc.GetRowsAsync(_country);
+                _validWarehouses = await Svc.GetValidWarehousesAsync(_country);
+            }
+        }
+        catch (Exception ex) { ShowError($"Failed to load countries: {ex.Message}"); }
+    }
+
+    private async Task OnCountryChangedAsync()
+    {
+        _rows = new(); _uploadRows = new(); _validWarehouses = new(); _warehouseFilter = ""; _message = "";
+        _reportShown = false; _reportWeekId = null;
+        if (string.IsNullOrWhiteSpace(_country)) return;
+        try
+        {
+            _rows = await Svc.GetRowsAsync(_country);
+            _validWarehouses = await Svc.GetValidWarehousesAsync(_country);
+        }
+        catch (Exception ex) { ShowError($"Failed to load rows: {ex.Message}"); }
+    }
+
+    private async Task ShowReportAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_country)) return;
+        _busy = true; _message = ""; _reportShown = false;
+        StateHasChanged();
+        try
+        {
+            var fiscalWeek = await Svc.GetFiscalWeekAsync(_currentYear, _selectedMonth);
+            if (fiscalWeek is null)
+            {
+                var monthName = System.Globalization.CultureInfo.InvariantCulture.DateTimeFormat.GetMonthName(_selectedMonth);
+                ShowError($"No fiscal week data found for {monthName} {_currentYear} yet.");
+                return;
+            }
+            _rows = await Svc.GetRowsAsync(_country);
+            _reportWeekId = fiscalWeek.Value.WeekId;
+            _reportMonth = _selectedMonth;
+            _reportShown = true;
+        }
+        catch (Exception ex) { ShowError($"Failed to load report: {ex.Message}"); }
+        finally { _busy = false; }
+    }
+
+    private async Task DeleteForWarehouseAsync()
+    {
+        if (string.IsNullOrEmpty(_warehouseFilter)) return;
+        var confirm = await JS.InvokeAsync<bool>("confirm",
+            $"Delete all {VisibleRows.Count} row(s) for {_country} / {_warehouseFilter}? This cannot be undone.");
+        if (!confirm) return;
+        _busy = true; _message = "";
+        StateHasChanged();
+        try
+        {
+            await Svc.DeleteForWarehouseAsync(_country, _warehouseFilter);
+            _rows = await Svc.GetRowsAsync(_country);
+            ShowInfo($"Deleted all rows for {_country} / {_warehouseFilter}.");
+        }
+        catch (Exception ex) { ShowError($"Delete failed: {ex.Message}"); }
+        finally { _busy = false; }
+    }
+
+    private async Task OnFileSelected(InputFileChangeEventArgs e)
+    {
+        var file = e.File;
+        if (file is null) return;
+        if (!file.Name.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase))
+        {
+            ShowError("File must be .xlsx");
+            return;
+        }
+        _busy = true; _message = ""; _uploadRows = new();
+        StateHasChanged();
+        try
+        {
+            List<WhMaxMinCapUploadRow> parsed;
+            await using (var stream = file.OpenReadStream(maxAllowedSize: 10 * 1024 * 1024))
+            using (var ms = new MemoryStream())
+            {
+                await stream.CopyToAsync(ms);
+                ms.Position = 0;
+                parsed = ParseXlsx(ms);
+            }
+
+            if (parsed.Count == 0) { ShowError("No data rows found in the Excel."); return; }
+
+            var badWarehouses = parsed
+                .Select(r => r.Warehouse)
+                .Where(w => !_validWarehouses.Contains(w, StringComparer.OrdinalIgnoreCase))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (badWarehouses.Count > 0)
+            {
+                ShowError($"Invalid warehouse(s) for {_country}: {string.Join(", ", badWarehouses)}. Allowed: {string.Join(", ", _validWarehouses)}. Please recheck your warehouse column in the excel attachment.");
+                return;
+            }
+
+            _uploadRows = parsed;
+            ShowInfo($"Loaded {_uploadRows.Count} row(s). Review below, then click Save.");
+        }
+        catch (Exception ex) { ShowError($"Excel parse failed: {ex.Message}"); }
+        finally { _busy = false; }
+    }
+
+    private async Task SaveUploadAsync()
+    {
+        var monthName = System.Globalization.CultureInfo.InvariantCulture.DateTimeFormat.GetMonthName(_selectedMonth);
+        var confirm = await JS.InvokeAsync<bool>("confirm",
+            $"Save {_uploadRows.Count} row(s) for {_country}, {monthName} {_currentYear}? Any existing rows for the same warehouse/division in that period will be replaced.");
+        if (!confirm) return;
+        _busy = true; _message = "";
+        StateHasChanged();
+        try
+        {
+            var result = await Svc.SaveAsync(_country, _uploadRows, _currentYear, _selectedMonth, Me.Name);
+            if (result.Ok)
+            {
+                ShowInfo($"Saved {result.RowsSaved} row(s) for {_country}.");
+                _uploadRows = new();
+                _rows = await Svc.GetRowsAsync(_country);
+            }
+            else ShowError(result.Error ?? "Save failed.");
+        }
+        catch (Exception ex) { ShowError($"Save failed: {ex.Message}"); }
+        finally { _busy = false; }
+    }
+
+    private static List<WhMaxMinCapUploadRow> ParseXlsx(Stream stream)
+    {
+        using var wb = new XLWorkbook(stream);
+        var ws = wb.Worksheet(1);
+        var last = ws.LastRowUsed();
+        if (last is null) return new();
+
+        // Locate header columns by name — tolerant to column order.
+        var header = ws.Row(1);
+        int colWh = 0, colDivision = 0, colMin = 0, colMax = 0;
+        for (int col = 1; col <= header.LastCellUsed()!.Address.ColumnNumber; col++)
+        {
+            var h = (header.Cell(col).GetString() ?? "").Trim().ToLowerInvariant().Replace(" ", "").Replace("_", "").Replace(".", "");
+            switch (h)
+            {
+                case "warehouse": case "whname":     colWh       = col; break;
+                case "division":                     colDivision = col; break;
+                case "mincapweek":                   colMin      = col; break;
+                case "maxcapweek":                   colMax      = col; break;
+            }
+        }
+        if (colWh == 0 || colDivision == 0 || colMin == 0 || colMax == 0)
+            throw new InvalidOperationException("Header row must include: WAREHOUSE, DIVISION, MIN_CAP_WEEK, MAX_CAP_WEEK.");
+
+        var rows = new List<WhMaxMinCapUploadRow>();
+        for (int r = 2; r <= last.RowNumber(); r++)
+        {
+            var wh       = (ws.Cell(r, colWh      ).GetString() ?? "").Trim();
+            var division = (ws.Cell(r, colDivision).GetString() ?? "").Trim();
+            if (string.IsNullOrEmpty(wh) && string.IsNullOrEmpty(division))
+                continue;  // blank row
+
+            double ReadDouble(int col)
+            {
+                var cell = ws.Cell(r, col);
+                try { return cell.GetDouble(); }
+                catch { double.TryParse(cell.GetString(), out var v); return v; }
+            }
+
+            rows.Add(new WhMaxMinCapUploadRow(wh, division, ReadDouble(colMin), ReadDouble(colMax)));
+        }
+        return rows;
+    }
+
+    private void ShowError(string m) { _message = m; _isError = true; }
+    private void ShowInfo(string m)  { _message = m; _isError = false; }
+}

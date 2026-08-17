@@ -19,6 +19,7 @@ public static class MenuKeys
     public const string DATASYNC_MASTER               = "DATASYNC_MASTER";
     public const string DATASYNC_BOXES_TO_WMSPROD     = "DATASYNC_BOXES_TO_WMSPROD";
     public const string ITEM_ENCODING             = "ITEM_ENCODING";
+    public const string MAX_CAP_UPLOAD            = "MAX_CAP_UPLOAD";
     public const string LPM_PRODUCTION            = "LPM_PRODUCTION";
 
     public const string RPT_PENDING_PURCHASE      = "RPT_PENDING_PURCHASE";
@@ -81,6 +82,8 @@ public static class MenuKeys
         new MenuEntry(DATASYNC_BOXES_TO_WMSPROD,     "Data Sync",   "Boxes Data Sync to WMSPROD",     "datasync/boxes-to-wmsprod",     new[] { Roles.Admin, Roles.WHManager }),
 
         new MenuEntry(ITEM_ENCODING,         "Item Encoding",       "Item Encoding",             "encoding",                  new[] { Roles.Admin, Roles.WHAssociate, Roles.WHSupervisor, Roles.WHManager }),
+
+        new MenuEntry(MAX_CAP_UPLOAD,         "Operations",          "Warehouse Min/Max Cap Upload", "capacity/max-cap-upload", new[] { Roles.Admin, Roles.WHManager }),
 
         new MenuEntry(LPM_PRODUCTION,        "Production to Stores","LPM Production",            "production/lpm",            new[] { Roles.Admin, Roles.WHAssociate, Roles.WHSupervisor, Roles.WHManager }),
 
