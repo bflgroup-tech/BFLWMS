@@ -195,6 +195,79 @@ else if (VisibleRows().Count > 0)
             }
         </div>
     }
+}
+else if (_loadedOnce && VisibleRows().Count == 0)
+{
+    <div class="aiwms-section"><div class="aiwms-alert info">No scans found for the selected range.</div></div>
+}
+
+@if (CanSeeDtbwSection)
+{
+        @if (_dtbwColumns.Count > 0)
+        {
+            var pivot = BuildDtbwPivot();
+            var showTotalCol = pivot.Columns.Count > 1;
+            <div class="aiwms-section">
+                <div class="aiwms-card-header">@DtbwHeading — Week @_selectedWeek</div>
+                <div style="overflow-x:auto">
+                    <table class="aiwms-table aiwms-table-dense" style="font-size:12px">
+                        <thead>
+                            <tr>
+                                <th>Date</th>
+                                <th>Day</th>
+                                @foreach (var col in pivot.Columns) { <th style="text-align:right">@col.Warehouse</th> }
+                                @if (showTotalCol) { <th style="text-align:right; background:#fdb623">Total</th> }
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var day in pivot.Days)
+                            {
+                                <tr>
+                                    <td>@day.ToString("MM/dd/yyyy")</td>
+                                    <td>@day.DayOfWeek</td>
+                                    @foreach (var col in pivot.Columns) { <td style="text-align:right">@pivot.DailyQty[(day, col.Warehouse)].ToString("N0")</td> }
+                                    @if (showTotalCol) { <td style="text-align:right; font-weight:600">@pivot.DailyTotal[day].ToString("N0")</td> }
+                                </tr>
+                            }
+                            <tr style="font-weight:700; background:#fff7e0">
+                                <td colspan="2">TOTAL Sel @_selectedWeek</td>
+                                @foreach (var col in pivot.Columns) { <td style="text-align:right">@pivot.ColumnTotal[col.Warehouse].ToString("N0")</td> }
+                                @if (showTotalCol) { <td style="text-align:right">@pivot.GrandTotal.ToString("N0")</td> }
+                            </tr>
+                            <tr>
+                                <td colspan="2">Merch Target</td>
+                                @foreach (var col in pivot.Columns) { <td style="text-align:right">@pivot.ColumnMerchTarget[col.Warehouse].ToString("N0")</td> }
+                                @if (showTotalCol) { <td style="text-align:right">@pivot.GrandMerchTarget.ToString("N0")</td> }
+                            </tr>
+                            <tr>
+                                <td colspan="2">Variance (Act - M.Tgt)</td>
+                                @foreach (var col in pivot.Columns)
+                                {
+                                    var v = pivot.ColumnVariance[col.Warehouse];
+                                    <td style="text-align:right; color:@(v < 0 ? "#dc2626" : "#15803d")">@v.ToString("N0")</td>
+                                }
+                                @if (showTotalCol) { <td style="text-align:right; color:@(pivot.GrandVariance < 0 ? "#dc2626" : "#15803d")">@pivot.GrandVariance.ToString("N0")</td> }
+                            </tr>
+                            <tr>
+                                <td colspan="2">Variance %</td>
+                                @foreach (var col in pivot.Columns)
+                                {
+                                    var p = pivot.ColumnVariancePct[col.Warehouse];
+                                    <td style="text-align:right; color:@(p < 0 ? "#dc2626" : "#15803d")">@p.ToString("N1")%</td>
+                                }
+                                @if (showTotalCol) { <td style="text-align:right; color:@(pivot.GrandVariancePct < 0 ? "#dc2626" : "#15803d")">@pivot.GrandVariancePct.ToString("N1")%</td> }
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        }
+}
+
+@if (VisibleRows().Count > 0)
+{
+    var visibleRows    = VisibleRows();
+    var visibleSummary = VisibleSummary();
 
     <div class="aiwms-section">
         <div class="aiwms-card-header">Transfer Qty- Division wise</div>
@@ -370,77 +443,20 @@ else if (VisibleRows().Count > 0)
         }
     </div>
 }
-else if (_loadedOnce && VisibleRows().Count == 0)
-{
-    <div class="aiwms-section"><div class="aiwms-alert info">No scans found for the selected range.</div></div>
-}
-
-@if (CanSeeDtbw)
-{
-        @if (_dtbwColumns.Count > 0)
-        {
-            var pivot = BuildDtbwPivot();
-            <div class="aiwms-section">
-                <div class="aiwms-card-header">Daily Transfer Qty by Warehouse — Week @_selectedWeek</div>
-                <div style="overflow-x:auto">
-                    <table class="aiwms-table aiwms-table-dense" style="font-size:12px">
-                        <thead>
-                            <tr>
-                                <th>Date</th>
-                                <th>Day</th>
-                                @foreach (var col in pivot.Columns) { <th style="text-align:right">@col.Warehouse</th> }
-                                <th style="text-align:right; background:#fdb623">Total</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            @foreach (var day in pivot.Days)
-                            {
-                                <tr>
-                                    <td>@day.ToString("MM/dd/yyyy")</td>
-                                    <td>@day.DayOfWeek</td>
-                                    @foreach (var col in pivot.Columns) { <td style="text-align:right">@pivot.DailyQty[(day, col.Warehouse)].ToString("N0")</td> }
-                                    <td style="text-align:right; font-weight:600">@pivot.DailyTotal[day].ToString("N0")</td>
-                                </tr>
-                            }
-                            <tr style="font-weight:700; background:#fff7e0">
-                                <td colspan="2">TOTAL Sel @_selectedWeek</td>
-                                @foreach (var col in pivot.Columns) { <td style="text-align:right">@pivot.ColumnTotal[col.Warehouse].ToString("N0")</td> }
-                                <td style="text-align:right">@pivot.GrandTotal.ToString("N0")</td>
-                            </tr>
-                            <tr>
-                                <td colspan="2">Merch Target</td>
-                                @foreach (var col in pivot.Columns) { <td style="text-align:right">@pivot.ColumnMerchTarget[col.Warehouse].ToString("N0")</td> }
-                                <td style="text-align:right">@pivot.GrandMerchTarget.ToString("N0")</td>
-                            </tr>
-                            <tr>
-                                <td colspan="2">Variance (Act - M.Tgt)</td>
-                                @foreach (var col in pivot.Columns)
-                                {
-                                    var v = pivot.ColumnVariance[col.Warehouse];
-                                    <td style="text-align:right; color:@(v < 0 ? "#dc2626" : "#15803d")">@v.ToString("N0")</td>
-                                }
-                                <td style="text-align:right; color:@(pivot.GrandVariance < 0 ? "#dc2626" : "#15803d")">@pivot.GrandVariance.ToString("N0")</td>
-                            </tr>
-                            <tr>
-                                <td colspan="2">Variance %</td>
-                                @foreach (var col in pivot.Columns)
-                                {
-                                    var p = pivot.ColumnVariancePct[col.Warehouse];
-                                    <td style="text-align:right; color:@(p < 0 ? "#dc2626" : "#15803d")">@p.ToString("N1")%</td>
-                                }
-                                <td style="text-align:right; color:@(pivot.GrandVariancePct < 0 ? "#dc2626" : "#15803d")">@pivot.GrandVariancePct.ToString("N1")%</td>
-                            </tr>
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        }
-}
 
 @code {
-    // "Daily Transfer Qty by Warehouse" — restricted to this one named account, not the
-    // general Admin role, since it's still an experimental report. See BuildDtbwPivot() below.
+    // "Daily Transfer Qty by Warehouse" — full multi-column table for super users (Admin or
+    // explicit Section Access grant). A WH manager whose Country Access is scoped to exactly
+    // one country instead sees only that country's own column, with a renamed heading —
+    // driven purely by their existing Country Access grant, no separate Section Access grant
+    // needed for that restricted view. See BuildDtbwPivot() below.
     private bool CanSeeDtbw => CurrentUser.CanSeeSection(SectionKeys.PRODSUMM_DTBW);
+    private string? DtbwSingleCountry =>
+        !CanSeeDtbw && !CurrentUser.HasAllCountriesAccess && CurrentUser.AllowedCountries.Count == 1
+            ? CurrentUser.AllowedCountries.Single()
+            : null;
+    private bool CanSeeDtbwSection => CanSeeDtbw || DtbwSingleCountry is not null;
+    private string DtbwHeading => DtbwSingleCountry is not null ? $"Daily Transfer Qty for {DtbwSingleCountry}" : "Daily Transfer Qty by Warehouse";
     private List<WarehouseTransferColumn>   _dtbwColumns    = new();
     private List<DailyWarehouseTransferRow> _dtbwDaily      = new();
     private List<WarehouseMerchNeedRow>     _dtbwMerchNeeds = new();
@@ -830,16 +846,20 @@ else if (_loadedOnce && VisibleRows().Count == 0)
                 catch (Exception mnEx) { merchNeedErrors.Add($"{country} (by division): {mnEx.Message}"); _merchNeedByCountryDivision[country] = new(); }
             }
 
-            // "Daily Transfer Qty by Warehouse" — restricted to a single named account (not just
-            // any Admin), independent of the country picker above, driven solely by the selected week.
+            // "Daily Transfer Qty by Warehouse" — independent of the country picker above,
+            // driven solely by the selected week. Super users get every column; a single-
+            // country WH manager gets only their own column (see CanSeeDtbwSection).
             _dtbwColumns.Clear(); _dtbwDaily.Clear(); _dtbwMerchNeeds.Clear();
-            if (CanSeeDtbw)
+            if (CanSeeDtbwSection)
             {
                 var weekRange = Weeks.FirstOrDefault(x => x.Num == selectedWeekNum);
                 try
                 {
                     var dtbw = await Svc.GetDailyTransferByWarehouseAsync(weekRange.Start, weekRange.End, weekRange.Start.Year, selectedWeekNum);
-                    _dtbwColumns = dtbw.Columns; _dtbwDaily = dtbw.Daily; _dtbwMerchNeeds = dtbw.MerchNeeds;
+                    _dtbwColumns = CanSeeDtbw
+                        ? dtbw.Columns
+                        : dtbw.Columns.Where(c => string.Equals(c.Country, DtbwSingleCountry, StringComparison.OrdinalIgnoreCase)).ToList();
+                    _dtbwDaily = dtbw.Daily; _dtbwMerchNeeds = dtbw.MerchNeeds;
                 }
                 catch (Exception dtbwEx) { merchNeedErrors.Add($"Daily Transfer by Warehouse: {dtbwEx.Message}"); }
             }
