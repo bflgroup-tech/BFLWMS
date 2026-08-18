@@ -17,6 +17,7 @@ public class WmsDbContext(DbContextOptions<WmsDbContext> options) : DbContext(op
     public DbSet<WmsOpenBoxItem> OpenBoxItems => Set<WmsOpenBoxItem>();
     public DbSet<WmsUserMenuAccess> UserMenuAccess => Set<WmsUserMenuAccess>();
     public DbSet<WmsUserCountryAccess> UserCountryAccess => Set<WmsUserCountryAccess>();
+    public DbSet<WmsUserSectionAccess> UserSectionAccess => Set<WmsUserSectionAccess>();
 
     protected override void OnModelCreating(ModelBuilder mb)
     {
@@ -146,6 +147,18 @@ public class WmsDbContext(DbContextOptions<WmsDbContext> options) : DbContext(op
             e.HasKey(x => new { x.Username, x.Country });
             e.Property(x => x.Username).HasMaxLength(100);
             e.Property(x => x.Country).HasMaxLength(50);
+            e.Property(x => x.GrantedBy).HasMaxLength(100);
+            e.Property(x => x.GrantedTS).HasColumnType("datetime2(0)");
+        });
+
+        mb.Entity<WmsUserSectionAccess>(e =>
+        {
+            // Physical table is Wms_UserSectionAccess (underscore) — it was created that
+            // way in the Azure WMS DB; kept as-is rather than renaming in production.
+            e.ToTable("Wms_UserSectionAccess");
+            e.HasKey(x => new { x.Username, x.SectionKey });
+            e.Property(x => x.Username).HasMaxLength(100);
+            e.Property(x => x.SectionKey).HasMaxLength(50);
             e.Property(x => x.GrantedBy).HasMaxLength(100);
             e.Property(x => x.GrantedTS).HasColumnType("datetime2(0)");
         });

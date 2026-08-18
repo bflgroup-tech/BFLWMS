@@ -440,7 +440,7 @@ else if (_loadedOnce && VisibleRows().Count == 0)
 @code {
     // "Daily Transfer Qty by Warehouse" — restricted to this one named account, not the
     // general Admin role, since it's still an experimental report. See BuildDtbwPivot() below.
-    private bool CanSeeDtbw => string.Equals(CurrentUser.Name, "shabeela.p@bflgroup.ae", StringComparison.OrdinalIgnoreCase);
+    private bool CanSeeDtbw => CurrentUser.CanSeeSection(SectionKeys.PRODSUMM_DTBW);
     private List<WarehouseTransferColumn>   _dtbwColumns    = new();
     private List<DailyWarehouseTransferRow> _dtbwDaily      = new();
     private List<WarehouseMerchNeedRow>     _dtbwMerchNeeds = new();

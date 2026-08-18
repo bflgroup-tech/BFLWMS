@@ -143,7 +143,7 @@
         <div style="overflow-x:auto">
         <table class="aiwms-table aiwms-table-dense">
             <thead>
-                <tr><th style="width:200px">Username</th><th style="width:160px">Roles</th><th>Menu Access</th><th>Country Access</th></tr>
+                <tr><th style="width:200px">Username</th><th style="width:160px">Roles</th><th>Menu Access</th><th>Country Access</th><th>Section Access</th></tr>
             </thead>
             <tbody>
                 @foreach (var u in FilteredAccessUsers())
@@ -153,6 +153,7 @@
                         <td>@string.Join(", ", u.UserRoles.Select(r => r.RoleCode))</td>
                         <td style="word-break:break-word; font-size:12px">@(_allMenuGrants.TryGetValue(u.Username, out var mk) && mk.Count > 0 ? string.Join(", ", mk) : "(none)")</td>
                         <td style="word-break:break-word; font-size:12px">@(_allCountryGrants.TryGetValue(u.Username, out var cg) && cg.Count > 0 ? string.Join(", ", cg) : "(none)")</td>
+                        <td style="word-break:break-word; font-size:12px">@(_allSectionGrants.TryGetValue(u.Username, out var sk) && sk.Count > 0 ? string.Join(", ", sk) : "(none)")</td>
                     </tr>
                 }
             </tbody>
@@ -163,7 +164,7 @@
 </div>
 
 <div class="aiwms-section" style="background:#FFF9E6; border:1px solid #F0E0A0;">
-    <div class="aiwms-card-header">Copy Access — replaces the target user's Menu + Country Access with the source user's</div>
+    <div class="aiwms-card-header">Copy Access — replaces the target user's Menu + Country + Section Access with the source user's</div>
     <div style="display:flex; gap:10px; align-items:end; flex-wrap:wrap">
         <div>
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COPY FROM</label>
@@ -269,6 +270,40 @@
                     <label style="display:flex; align-items:center; gap:6px; font-size:13px; cursor:pointer">
                         <input type="checkbox" checked="@_countryGrants.Contains(c)" @onchange="@(e => ToggleCountry(c, (bool)e.Value!))" />
                         <span>@c</span>
+                    </label>
+                }
+            </div>
+        </div>
+    }
+</div>
+
+<div class="aiwms-section" style="background:#FFF3E6; border:1px solid #F0C89A;">
+    <div class="aiwms-card-header">Section Access — hideable sub-sections within a page; a user with no grant here doesn't see it (Admin role bypasses this list)</div>
+    <div style="display:flex; gap:10px; align-items:end; margin-bottom:12px">
+        <div>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">USER</label>
+            <select @bind="_sectionUser" @bind:after="LoadSectionGrantsAsync" style="padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white; min-width:280px">
+                <option value="">-- Select user --</option>
+                @foreach (var u in _users) { <option value="@u.Username">@u.Username</option> }
+            </select>
+        </div>
+        @if (!string.IsNullOrEmpty(_sectionUser))
+        {
+            <button class="aiwms-btn aiwms-btn-primary" @onclick="SaveSectionGrantsAsync">Save Section Access</button>
+            <span style="font-size:12px; color:var(--text-secondary)">@_sectionGrants.Count grants</span>
+        }
+    </div>
+
+    @if (!string.IsNullOrEmpty(_sectionUser))
+    {
+        <div style="border:1px solid var(--border-default); border-radius:var(--r-sm); padding:10px 14px; margin-bottom:10px">
+            <div style="display:grid; grid-template-columns: repeat(2, 1fr); gap:6px 14px">
+                @foreach (var sec in SectionKeys.All)
+                {
+                    var key = sec.Key;
+                    <label style="display:flex; align-items:center; gap:6px; font-size:13px; cursor:pointer">
+                        <input type="checkbox" checked="@_sectionGrants.Contains(key)" @onchange="@(e => ToggleSection(key, (bool)e.Value!))" />
+                        <span>@sec.PageLabel / @sec.Label</span>
                     </label>
                 }
             </div>
@@ -424,8 +459,9 @@
     private string _accessSearch = "";
     private Dictionary<string, List<string>> _allMenuGrants = new(StringComparer.OrdinalIgnoreCase);
     private Dictionary<string, List<string>> _allCountryGrants = new(StringComparer.OrdinalIgnoreCase);
+    private Dictionary<string, List<string>> _allSectionGrants = new(StringComparer.OrdinalIgnoreCase);
 
-    // Matches username, role, or any granted menu/country name — so typing e.g.
+    // Matches username, role, or any granted menu/country/section name — so typing e.g.
     // a report's display name surfaces every user who currently has it granted.
     private List<WmsUser> FilteredAccessUsers()
     {
@@ -435,7 +471,8 @@
             Matches(u.Username, term) ||
             u.UserRoles.Any(r => Matches(r.RoleCode, term)) ||
             (_allMenuGrants.TryGetValue(u.Username, out var mk) && mk.Any(k => Matches(k, term))) ||
-            (_allCountryGrants.TryGetValue(u.Username, out var cg) && cg.Any(c => Matches(c, term)))
+            (_allCountryGrants.TryGetValue(u.Username, out var cg) && cg.Any(c => Matches(c, term))) ||
+            (_allSectionGrants.TryGetValue(u.Username, out var sk) && sk.Any(s => Matches(s, term)))
         ).ToList();
     }
 
@@ -455,7 +492,11 @@
         m => m.Category is not null ? $"{m.Category} / {m.Label}" : m.Label,
         StringComparer.OrdinalIgnoreCase);
 
-    // Loads every user's grants in two queries (not one per row) — called on
+    // Same "PageLabel / Label" text the Section Access checklist below uses per item.
+    private static readonly Dictionary<string, string> _sectionLabelByKey = SectionKeys.All.ToDictionary(
+        s => s.Key, s => $"{s.PageLabel} / {s.Label}", StringComparer.OrdinalIgnoreCase);
+
+    // Loads every user's grants in three queries (not one per row) — called on
     // first "View All Access" and again after any Save/Copy so the overview
     // never shows stale data if left open across an edit.
     private async Task RefreshAllAccessSnapshotAsync()
@@ -469,6 +510,15 @@
         var countryRows = await db.UserCountryAccess.AsNoTracking().ToListAsync();
         _allCountryGrants = countryRows.GroupBy(g => g.Username, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(g => g.Key, g => g.Select(x => x.Country).OrderBy(x => x).ToList(), StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            var sectionRows = await db.UserSectionAccess.AsNoTracking().ToListAsync();
+            _allSectionGrants = sectionRows.GroupBy(g => g.Username, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(g => g.Key,
+                    g => g.Select(x => _sectionLabelByKey.GetValueOrDefault(x.SectionKey, x.SectionKey)).OrderBy(x => x).ToList(),
+                    StringComparer.OrdinalIgnoreCase);
+        }
+        catch { /* dbo.Wms_UserSectionAccess not migrated yet — leave the overview column blank rather than failing the whole snapshot */ }
     }
 
     // ---------------- Copy access ----------------
@@ -506,16 +556,36 @@
         foreach (var row in targetCountryRows.Where(r => !sourceCountrySet.Contains(r.Country)))
             db.UserCountryAccess.Remove(row);
 
+        // dbo.Wms_UserSectionAccess may not be migrated yet on every environment — isolate
+        // it so a missing table only skips the section copy, not the menu/country copy too.
+        var sourceSectionSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            var sourceSections = await db.UserSectionAccess.AsNoTracking()
+                .Where(a => a.Username == _copyFromUser).Select(a => a.SectionKey).ToListAsync();
+            sourceSectionSet = sourceSections.ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var targetSectionRows = await db.UserSectionAccess.Where(a => a.Username == _copyToUser).ToListAsync();
+            var targetSections = targetSectionRows.Select(a => a.SectionKey).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            foreach (var k in sourceSectionSet.Where(k => !targetSections.Contains(k)))
+                db.UserSectionAccess.Add(new WmsUserSectionAccess {
+                    Username = _copyToUser, SectionKey = k, GrantedTS = DateTime.Now, GrantedBy = Me.Name });
+            foreach (var row in targetSectionRows.Where(r => !sourceSectionSet.Contains(r.SectionKey)))
+                db.UserSectionAccess.Remove(row);
+        }
+        catch { sourceSectionSet.Clear(); }
+
         await db.SaveChangesAsync();
         Cache.Remove(AuthStateCurrentUser.ProfileCacheKey(_copyToUser));
         Cache.Remove(AuthStateCurrentUser.CountryAccessCacheKey(_copyToUser));
+        Cache.Remove(AuthStateCurrentUser.SectionAccessCacheKey(_copyToUser));
 
         // Keep any currently-open per-user panels in sync with what was just copied.
         if (_menuUser == _copyToUser) await LoadMenuGrantsAsync();
         if (_countryUser == _copyToUser) await LoadCountryGrantsAsync();
+        if (_sectionUser == _copyToUser) await LoadSectionGrantsAsync();
         if (_showAllAccess) await RefreshAllAccessSnapshotAsync();
 
-        Snack.Add($"Copied access from {_copyFromUser} to {_copyToUser} ({sourceMenuSet.Count} menu grants, {sourceCountrySet.Count} countries).", Severity.Success);
+        Snack.Add($"Copied access from {_copyFromUser} to {_copyToUser} ({sourceMenuSet.Count} menu grants, {sourceCountrySet.Count} countries, {sourceSectionSet.Count} sections).", Severity.Success);
     }
 
     // ---------------- Menu access ----------------
@@ -606,5 +676,65 @@
         Cache.Remove(AuthStateCurrentUser.CountryAccessCacheKey(_countryUser));
         if (_showAllAccess) await RefreshAllAccessSnapshotAsync();
         Snack.Add($"Country access saved for {_countryUser} ({_countryGrants.Count} countries).", Severity.Success);
+    }
+
+    // ---------------- Section access ----------------
+    private string _sectionUser = "";
+    private HashSet<string> _sectionGrants = new(StringComparer.OrdinalIgnoreCase);
+
+    private async Task LoadSectionGrantsAsync()
+    {
+        _sectionGrants = new(StringComparer.OrdinalIgnoreCase);
+        if (string.IsNullOrEmpty(_sectionUser)) return;
+        try
+        {
+            await using var db = await DbFactory.CreateDbContextAsync();
+            var keys = await db.UserSectionAccess.AsNoTracking()
+                .Where(a => a.Username == _sectionUser)
+                .Select(a => a.SectionKey).ToListAsync();
+            _sectionGrants = new HashSet<string>(keys, StringComparer.OrdinalIgnoreCase);
+        }
+        catch (Exception ex)
+        {
+            // Most likely dbo.Wms_UserSectionAccess hasn't been created yet — see
+            // db/install_wms_user_section_access.sql. Show it as a Snackbar instead of
+            // crashing the whole Blazor circuit.
+            Snack.Add($"Couldn't load section access — has db/install_wms_user_section_access.sql been run? ({ex.Message})", Severity.Error);
+        }
+    }
+
+    private void ToggleSection(string key, bool on)
+    {
+        if (on) _sectionGrants.Add(key); else _sectionGrants.Remove(key);
+    }
+
+    private async Task SaveSectionGrantsAsync()
+    {
+        if (string.IsNullOrEmpty(_sectionUser)) return;
+        try
+        {
+            await using var db = await DbFactory.CreateDbContextAsync();
+            var existing = await db.UserSectionAccess.Where(a => a.Username == _sectionUser).ToListAsync();
+            var existingKeys = existing.Select(e => e.SectionKey).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            foreach (var k in _sectionGrants.Where(k => !existingKeys.Contains(k)))
+                db.UserSectionAccess.Add(new WmsUserSectionAccess {
+                    Username = _sectionUser, SectionKey = k,
+                    GrantedTS = DateTime.Now, GrantedBy = Me.Name });
+            foreach (var e in existing.Where(e => !_sectionGrants.Contains(e.SectionKey)))
+                db.UserSectionAccess.Remove(e);
+            await db.SaveChangesAsync();
+            // Cache-based (not claims-based), so this takes effect on the user's next page
+            // load — no re-login needed, unlike Menu Access.
+            Cache.Remove(AuthStateCurrentUser.SectionAccessCacheKey(_sectionUser));
+            if (_showAllAccess) await RefreshAllAccessSnapshotAsync();
+            Snack.Add($"Section access saved for {_sectionUser} ({_sectionGrants.Count} grants).", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            // Most likely dbo.Wms_UserSectionAccess hasn't been created yet — see
+            // db/install_wms_user_section_access.sql. Show it as a Snackbar instead of
+            // crashing the whole Blazor circuit.
+            Snack.Add($"Couldn't save section access — has db/install_wms_user_section_access.sql been run? ({ex.Message})", Severity.Error);
+        }
     }
 }

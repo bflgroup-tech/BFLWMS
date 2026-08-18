@@ -32,6 +32,9 @@ public interface ICurrentUser
     IReadOnlyCollection<string> AllowedCountries { get; }
     /// <summary>Return the subset of `all` the current user is allowed to see. Preserves order.</summary>
     IEnumerable<string> FilterCountries(IEnumerable<string> all);
+    /// <summary>true if the user may see the sub-section identified by sectionKey
+    /// (Wms.Core.SectionKeys.*) — explicit grant in dbo.Wms_UserSectionAccess, or Admin role.</summary>
+    bool CanSeeSection(string sectionKey);
     /// <summary>
     /// Awaits the AuthenticationStateProvider, reads the principal, then loads the
     /// user's Country/Warehouse from the DB. Caches the result on the instance.
