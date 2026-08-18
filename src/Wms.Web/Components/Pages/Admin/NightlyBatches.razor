@@ -100,15 +100,25 @@
 <div class="aiwms-section">
     <div class="aiwms-card-header">Monday sequence</div>
     <p style="font-size:12px; color:var(--text-secondary); margin:0 0 4px 0">
-        <strong>06:00</strong> Volume Group refresh (all countries) + Missing/Excess snapshot + Weekly sales from BigQuery → <strong>07:00</strong> OTS generate.
+        <strong>01:00</strong> Weekly sales from BigQuery → <strong>06:00</strong> Volume Group refresh (all countries) + Missing/Excess snapshot → <strong>07:00</strong> OTS generate.
         OTS needs Volume Group to have run for <strong>BFLGROUP</strong> the same day. If it has not, the 07:00 run defers and retries hourly rather than computing from a stale snapshot.
     </p>
 </div>
 
 <div class="aiwms-section">
-    <div class="aiwms-card-header" style="display:flex; align-items:center; justify-content:space-between">
-        <span>Recent runs — last @_runs.Count</span>
-        <button class="aiwms-btn aiwms-btn-secondary" @onclick="RefreshLogAsync" disabled="@_busy">Reload</button>
+    <div class="aiwms-card-header" style="display:flex; align-items:center; justify-content:space-between; gap:10px">
+        <span>Recent runs — showing @FilteredRuns.Count of @_runs.Count</span>
+        <div style="display:flex; align-items:center; gap:8px">
+            <label style="font-size:11px; font-weight:700; color:var(--text-secondary)">PROCESS</label>
+            <select @bind="_jobFilter" style="padding:6px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;">
+                <option value="">All</option>
+                @foreach (var job in JobNames)
+                {
+                    <option value="@job">@job</option>
+                }
+            </select>
+            <button class="aiwms-btn aiwms-btn-secondary" @onclick="RefreshLogAsync" disabled="@_busy">Reload</button>
+        </div>
     </div>
     <table class="aiwms-table aiwms-table-dense">
         <thead>
@@ -119,7 +129,7 @@
             </tr>
         </thead>
         <tbody>
-            @foreach (var r in _runs)
+            @foreach (var r in FilteredRuns)
             {
                 <tr>
                     <td>@r.RunId</td>
@@ -135,9 +145,9 @@
                     <td style="max-width:380px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap" title="@r.ErrorMessage">@r.ErrorMessage</td>
                 </tr>
             }
-            @if (_runs.Count == 0)
+            @if (FilteredRuns.Count == 0)
             {
-                <tr><td colspan="11" style="font-style:italic; color:var(--text-secondary)">No runs yet.</td></tr>
+                <tr><td colspan="11" style="font-style:italic; color:var(--text-secondary)">No runs @(_jobFilter == "" ? "yet" : "for this process").</td></tr>
             }
         </tbody>
     </table>
@@ -166,6 +176,16 @@
     private bool _busy;
     private string _message = "";
     private bool _isError;
+    private string _jobFilter = "";
+
+    // Every job actually configured, unioned with anything else seen in the log,
+    // so a job that's been removed from _jobs still shows up as a filter option
+    // for its historical runs.
+    private List<string> JobNames =>
+        _jobs.Select(j => j.JobName).Union(_runs.Select(r => r.JobName)).Distinct().OrderBy(j => j).ToList();
+
+    private List<RptJobRunRow> FilteredRuns =>
+        string.IsNullOrEmpty(_jobFilter) ? _runs : _runs.Where(r => r.JobName == _jobFilter).ToList();
 
     protected override async Task OnInitializedAsync()
     {
@@ -197,13 +217,13 @@
                     }));
             }
 
-            // 2. WeeklySalesFromGCP — single row keyed by "", Monday 06:00.
+            // 2. WeeklySalesFromGCP — single row keyed by "", Monday 01:00.
             var gcp = (await Gcp.GetCountryConfigAsync()).FirstOrDefault(c => c.Country == "")
                       ?? new RptCountryConfigRow("", false, default, "");
             list.Add(new JobVm(
-                WeeklySalesFromGcpService.JobName, "Mon 06:00", null,
+                WeeklySalesFromGcpService.JobName, "Mon 01:00", null,
                 gcp.IsActive, gcp.UpdatedTS, gcp.UpdatedBy,
-                gcp.IsActive ? NextWeeklyFireGst(new(6, 0, 0)) : null,
+                gcp.IsActive ? NextWeeklyFireGst(new(1, 0, 0)) : null,
                 active => ToggleAndReloadAsync(() => Gcp.SetCountryActiveAsync("", active), WeeklySalesFromGcpService.JobName, active),
                 new() { ("Refresh Now", EventCallback.Factory.Create(this, RefreshGcpNowAsync)) }));
 

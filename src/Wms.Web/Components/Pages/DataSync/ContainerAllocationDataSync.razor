@@ -11,6 +11,7 @@
 <div class="aiwms-page-header">
     <h2>Container Allocation Data Sync</h2>
     <p>Copy an approved Container Allocation's detail rows to either the Azure WMS DB mirror or the on-prem WMS-Prod-DB (<code>online.dbo.PhotoCheckingResult</code>), or REVERSE-PULL legacy rows from WMSPRODDB (<code>online.dbo.PhotoCheckingResult</code>) into Azure <code>dbo.WMS_ContAllocationData</code> so LPM Manual Building can route them for store sorting. Each destination skips only if it already has rows for this container — clear them first to re-sync. Reverse pull writes <code>Country='UAE'</code>, <code>BatchNo=NULL</code>; Color/Gender/HsCode/Brand come from <code>usa.dbo.usaorgfile</code>.</p>
+    <p style="margin-top:6px"><b>WMS-Prod-DB</b> writes <b>one row per piece</b> (<code>Qty=1</code>), so an allocation of 8 becomes 8 rows. Result / PrintFlag / RfidFlag / Company / ShopCode come from that store's <code>bfldata.dbo.DataSettings</code> row; printing stores also get <code>OrPrice</code> from <code>[Dataname].dbo.RFSalesPrice</code> and <code>SalesPrice = FCCode + price</code> at the store's configured decimals. <code>RefNo</code> is the shop's <code>BFLDATA..RFIDTransfer</code> TrfNo for today, created if absent.</p>
 </div>
 
 <div class="aiwms-section">

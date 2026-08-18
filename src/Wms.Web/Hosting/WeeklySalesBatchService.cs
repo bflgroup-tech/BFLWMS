@@ -3,7 +3,7 @@ using Wms.Data.Lpm;
 namespace Wms.Web.Hosting;
 
 /// <summary>
-/// Fires once a week, Monday 06:00 GST (Arabian Standard Time = UTC+04:00).
+/// Fires once a week, Monday 01:00 GST (Arabian Standard Time = UTC+04:00).
 /// For each ACTIVE country in WmsRptCountryConfig (scoped to JobName
 /// 'WeeklySalesFromGCP'), pulls the full weekly-sales feed from BigQuery once
 /// and MERGE-upserts it into that country's on-prem LPM_Weekly_SalesAmt, logging
@@ -13,13 +13,13 @@ namespace Wms.Web.Hosting;
 public class WeeklySalesBatchService(IServiceProvider sp, ILogger<WeeklySalesBatchService> log)
     : BackgroundService
 {
-    private static readonly TimeSpan FireTimeGst = new(6, 0, 0);
+    private static readonly TimeSpan FireTimeGst = new(1, 0, 0);
     private static readonly TimeZoneInfo GstTz =
         TimeZoneInfo.FindSystemTimeZoneById(OperatingSystem.IsWindows() ? "Arabian Standard Time" : "Asia/Dubai");
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        log.LogInformation("WeeklySalesBatchService started. Fire time: Monday 06:00 GST.");
+        log.LogInformation("WeeklySalesBatchService started. Fire time: Monday 01:00 GST.");
         DateTime? lastFireGstDate = null;
 
         while (!stoppingToken.IsCancellationRequested)
