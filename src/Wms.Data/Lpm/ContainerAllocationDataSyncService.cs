@@ -1336,10 +1336,11 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
                 }
             }
 
-            // Stores with a blank ShopName share the "" bucket in refNos (see
-            // ResolveRefNosAsync) rather than being skipped.
+            // RefNo only applies to printing stores. Stores with a blank ShopName
+            // share the "" bucket in refNos (see ResolveRefNosAsync) rather than
+            // being skipped.
             var shopKey = (st?.ShopName ?? "").Trim();
-            var refNo = refNos.TryGetValue(shopKey, out var rn) ? (object)rn : "";
+            var refNo = printY && refNos.TryGetValue(shopKey, out var rn) ? (object)rn : "";
 
             // Barcode column carries the composite "Barcode/OrPrice/RefNo" text
             // when the store prints stickers; non-printing stores just get the
@@ -1378,7 +1379,7 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
                     barcode,
                     salesPrice,
                     refNo,
-                    "PA",                                // Mark
+                    printY ? "PA" : "",                 // Mark
                     "0",                                 // Uid (varchar)
                     "N",                                 // RStatus
                     "N",                                 // Excess
