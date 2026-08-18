@@ -1086,7 +1086,10 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
 
         var todayGst = DateTime.UtcNow.AddHours(4).Date;
 
-        await using var c = OpenOnPremBackup();
+        // Runs on WmsProductionDb, not OnPremBackup — same as stp_FindExportSalesPrice
+        // and the PhotoCheckingResult write itself. The OnPremBackup login has no
+        // INSERT/SELECT grant on BFLDATA.dbo.RFIDTransfer; WmsProductionDb's does.
+        await using var c = OpenWmsProductionDb();
         foreach (var (shop, letter) in shops)
         {
             try
