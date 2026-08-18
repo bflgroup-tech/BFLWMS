@@ -766,9 +766,11 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
     }
 
     /// <summary>Returns the exploded row count plus a summary of any non-fatal
-    /// RefNo issues (per-shop RFIDTransfer resolution failures, or stores with
-    /// no ShopName in DataSettings) so the caller can surface them in the sync
-    /// log/banner instead of only logging to Console.Error.</summary>
+    /// RefNo issues (per-shop RFIDTransfer resolution failures, or stores with no
+    /// row in DataSettings at all) so the caller can surface them in the sync
+    /// log/banner instead of only logging to Console.Error. A blank ShopName is
+    /// NOT flagged here — those stores share the "" RefNo bucket by design (see
+    /// ResolveRefNosAsync), it's only a genuinely unmatched StoreID that's a problem.</summary>
     private async Task<(int RowsCopied, string? Warning)> CopyToWmsProductionDbAsync(List<SourceRow> rows, CancellationToken ct)
     {
         // online.dbo.PhotoCheckingResult expects per-PIECE rows enriched from
@@ -781,11 +783,11 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
         var prices   = await LoadRfSalesPricesAsync(rows.Select(r => r.Itemcode), settings, ct);
         var (refNos, refNoFailures) = await ResolveRefNosAsync(settings, ct);
 
-        var missingShopNameStores = rows
+        var unmatchedStores = rows
             .Select(r => r.StoreID?.Trim() ?? "")
             .Where(s => s.Length > 0)
             .Distinct(StringComparer.OrdinalIgnoreCase)
-            .Where(s => !settings.TryGetValue(s, out var st) || string.IsNullOrWhiteSpace(st.ShopName))
+            .Where(s => !settings.ContainsKey(s))
             .ToList();
 
         var dt = BuildPhotoCheckingResultDataTable(rows, settings, prices, refNos);
@@ -804,8 +806,8 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
         var warnings = new List<string>();
         if (refNoFailures.Count > 0)
             warnings.Add($"RefNo resolution failed for shop(s): {string.Join(", ", refNoFailures)}");
-        if (missingShopNameStores.Count > 0)
-            warnings.Add($"Store(s) with no ShopName in DataSettings (RefNo left blank): {string.Join(", ", missingShopNameStores)}");
+        if (unmatchedStores.Count > 0)
+            warnings.Add($"Store(s) with no row in DataSettings (RefNo left blank): {string.Join(", ", unmatchedStores)}");
 
         // Exploded row count, not the source row count — the caller reports it.
         return (dt.Rows.Count, warnings.Count > 0 ? string.Join(" | ", warnings) : null);
@@ -1064,6 +1066,11 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
     ///     no row for today. This implements the intent — reuse if present, else create.
     ///   * Read and insert run inside one transaction with UPDLOCK/HOLDLOCK, so two
     ///     concurrent syncs for the same shop cannot mint two TrfNos for one day.
+    ///
+    /// Stores with a blank ShopName in DataSettings (e.g. EX2KSA export codes) are
+    /// grouped together under the "" key rather than excluded — they share one
+    /// TrfNo sequence for the day, using whichever ShopLetter is set on any
+    /// blank-ShopName DataSettings row.
     /// </summary>
     private async Task<(Dictionary<string, string> ByShop, List<string> Failures)> ResolveRefNosAsync(
         Dictionary<string, ProdStoreSettings> settings, CancellationToken ct)
@@ -1072,8 +1079,7 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
         var failures = new List<string>();
 
         var shops = settings.Values
-            .Where(s => !string.IsNullOrWhiteSpace(s.ShopName))
-            .GroupBy(s => s.ShopName!.Trim(), StringComparer.OrdinalIgnoreCase)
+            .GroupBy(s => (s.ShopName ?? "").Trim(), StringComparer.OrdinalIgnoreCase)
             .Select(g => (Shop: g.Key, Letter: g.Select(x => x.ShopLetter).FirstOrDefault(l => !string.IsNullOrWhiteSpace(l))))
             .ToList();
         if (shops.Count == 0) return (byShop, failures);
@@ -1330,9 +1336,10 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
                 }
             }
 
-            var refNo = st?.ShopName is { Length: > 0 } shop && refNos.TryGetValue(shop.Trim(), out var rn)
-                ? (object)rn
-                : "";
+            // Stores with a blank ShopName share the "" bucket in refNos (see
+            // ResolveRefNosAsync) rather than being skipped.
+            var shopKey = (st?.ShopName ?? "").Trim();
+            var refNo = refNos.TryGetValue(shopKey, out var rn) ? (object)rn : "";
 
             // Barcode column carries the composite "Barcode/OrPrice/RefNo" text
             // rather than the raw scanned barcode.
