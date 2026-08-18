@@ -1301,17 +1301,18 @@ DROP TABLE #Scans, #BatchKind, #ItemDiv;";
     }
 
     /// <summary>
-    /// Admin-only "Daily Transfer Qty by Warehouse" report on Production Summary — one column per
-    /// warehouse (UAE+Oman's combined TECHNO total, read centrally same as the page's own top-level
-    /// Transfer Qty scalar; plus each export country's own receiving warehouse, labeled with that
-    /// country's ExportWH "R1" ShopName from BFLDATA.dbo.DataSettings where ExportActive='Y' AND
-    /// ExportWH='Y'). Each export country's daily quantity is read from bfldata.dbo.DailyCountCategoryTrf
-    /// via THAT COUNTRY'S OWN {Country}_DB_ConnectionString, not the central UAE connection — the same
-    /// per-country source (and same no-Warehouse-filter, whole-table sum) the existing By-Country
-    /// "Transfer Qty" cards already use, so the two agree. A country with no connection string
-    /// configured contributes no rows for its column (reads as 0 in the report). Merch Need per
-    /// warehouse comes from LPMSIM.dbo.BFL_MFP_OUTBOUND_T1.merch_need for the same (Year, Week),
-    /// matched via each column's TerritoryCode.
+    /// "Daily Transfer Qty by Warehouse" report on Production Summary — one column per warehouse:
+    /// UAE+Oman's combined TECHNO total, read from bfldata.dbo.DailyCountCategoryTrf on the central
+    /// connection (same source as the page's own top-level Transfer Qty scalar, untouched); plus
+    /// each export country's own receiving warehouse, labeled with that country's ExportWH "R1"
+    /// ShopName from BFLDATA.dbo.DataSettings (ExportActive='Y' AND ExportWH='Y'), but the quantity
+    /// itself is read from that same country's own {Dataname}..vTransferDetail (also via the central
+    /// connection — reachable there, no per-country connection string needed), scoped to
+    /// TrfNo LIKE '{ExportCountryCode}%'. bfldata.dbo.DailyCountCategoryTrf isn't reliably populated
+    /// for export countries (confirmed empty for Bahrain), which is why they read from
+    /// vTransferDetail instead; UAE is unaffected. Merch Need per warehouse comes from
+    /// LPMSIM.dbo.BFL_MFP_OUTBOUND_T1.merch_need for the same (Year, Week), matched via each
+    /// column's TerritoryCode.
     /// </summary>
     public async Task<DailyTransferByWarehouseResult> GetDailyTransferByWarehouseAsync(
         DateTime weekStart, DateTime weekEnd, int year, int week, CancellationToken ct = default)
@@ -1320,30 +1321,26 @@ DROP TABLE #Scans, #BatchKind, #ItemDiv;";
 
         // Oman excluded: it ships via the same TECHNO warehouse as UAE (already counted in that
         // column above), so a separate BFLOMANR1 column here would double-count it.
-        var exportWhShops = (await c.QueryAsync<(string Country, string ShopName)>(new CommandDefinition(@"
-            SELECT Country, ShopName
+        var exportWhShops = (await c.QueryAsync<(string Country, string ShopName, string Dataname, string Code)>(new CommandDefinition(@"
+            SELECT Country, ShopName, Dataname, ExportCountryCode
               FROM BFLDATA.dbo.DataSettings WITH (NOLOCK)
              WHERE ExportActive = 'Y' AND ExportWH = 'Y' AND Country <> 'OMAN'",
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).ToList();
 
         var columns = new List<WarehouseTransferColumn> { new("TECHNO", "UAE", "ae") };
-        foreach (var (country, shopName) in exportWhShops)
+        foreach (var (country, shopName, _, _) in exportWhShops)
             if (CountryToTerritoryCode.TryGetValue(country, out var code))
                 columns.Add(new(shopName, country, code));
 
         var daily = new List<DailyWarehouseTransferRow>();
         daily.AddRange(await GetDailyTransferForWarehouseAsync(c, "TECHNO", "TECHNO", weekStart, weekEnd, ct));
 
-        foreach (var (country, shopName) in exportWhShops)
-        {
-            string? cs;
-            try { cs = resolver.GetCountryConnectionString(country); } catch { cs = null; }
-            if (string.IsNullOrWhiteSpace(cs)) continue; // no connection configured -> column reads 0
-
-            await using var countryConn = new SqlConnection(WithConnectTimeout(cs));
-            await countryConn.OpenAsync(ct);
-            daily.AddRange(await GetDailyTransferForWarehouseAsync(countryConn, shopName, null, weekStart, weekEnd, ct));
-        }
+        // Every export-WH country's daily breakdown comes from its own {Dataname}..vTransferDetail
+        // (via this same central connection) rather than bfldata.dbo.DailyCountCategoryTrf on its
+        // {Country}_DB_ConnectionString — confirmed empty for Bahrain, so treating all five export
+        // countries the same way for consistency. UAE (TECHNO, above) is untouched.
+        foreach (var (_, shopName, dataname, code) in exportWhShops)
+            daily.AddRange(await GetDailyExportCountryTransferFromVTransferDetailAsync(c, dataname, code, shopName, weekStart, weekEnd, ct));
 
         var merchNeeds = (await c.QueryAsync<WarehouseMerchNeedRow>(new CommandDefinition(@"
             SELECT TerritoryCode = territory, MerchNeed = CAST(SUM(merch_need) AS BIGINT)
@@ -1355,22 +1352,53 @@ DROP TABLE #Scans, #BatchKind, #ItemDiv;";
         return new DailyTransferByWarehouseResult(columns, daily, merchNeeds);
     }
 
-    // TEMPORARY, see call site above — reads straight from BFLBAHRAIN's own
-    // vTransferDetail (which does have TrfDate/Quantity) instead of the bfldata
-    // Transfer table this report normally uses.
-    private async Task<long> GetBahrainTransferQtyFromVTransferDetailAsync(
-        SqlConnection conn, DateTime fromDate, DateTime toDateInclusive, CancellationToken ct)
+    /// <summary>Each export country's own vTransferDetail database + TrfNo prefix code, from
+    /// BFLDATA.dbo.DataSettings (Dataname / ExportCountryCode) — null if that country isn't
+    /// flagged as an export warehouse.</summary>
+    private async Task<(string Dataname, string Code)?> GetExportCountryVTransferKeyAsync(
+        SqlConnection conn, string country, CancellationToken ct)
+    {
+        return await conn.QuerySingleOrDefaultAsync<(string Dataname, string Code)?>(new CommandDefinition(@"
+            SELECT Dataname, ExportCountryCode
+              FROM BFLDATA.dbo.DataSettings WITH (NOLOCK)
+             WHERE Country = @country AND ExportActive = 'Y' AND ExportWH = 'Y'",
+            new { country }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+    }
+
+    // TEMPORARY, see call sites — export countries' own bfldata.dbo.DailyCountCategoryTrf isn't
+    // reliably populated (confirmed empty for Bahrain; treating all export countries the same
+    // way for consistency), so Transfer Qty is read from each country's own {Dataname}..
+    // vTransferDetail instead, scoped to TrfNo LIKE '{code}%' (that country's own transfer-type
+    // prefix, confirmed against live data for all five export countries).
+    private async Task<long> GetExportCountryTransferQtyFromVTransferDetailAsync(
+        SqlConnection conn, string dataname, string trfNoCode, DateTime fromDate, DateTime toDateInclusive, CancellationToken ct)
     {
         await using var cmd = conn.CreateCommand();
-        cmd.CommandText = @"
+        cmd.CommandText = $@"
             SELECT ISNULL(SUM(Quantity), 0)
-              FROM [BFLBAHRAIN].dbo.vTransferDetail WITH (NOLOCK)
-             WHERE TrfDate >= @from AND TrfDate < @toExclusive;";
+              FROM [{dataname}].dbo.vTransferDetail WITH (NOLOCK)
+             WHERE TrfDate >= @from AND TrfDate < @toExclusive AND TrfNo LIKE @trfNoPattern;";
         cmd.Parameters.Add(new SqlParameter("@from",        fromDate.Date));
         cmd.Parameters.Add(new SqlParameter("@toExclusive", toDateInclusive.Date.AddDays(1)));
+        cmd.Parameters.Add(new SqlParameter("@trfNoPattern", trfNoCode + "%"));
         cmd.CommandTimeout = 60;
         var v = await cmd.ExecuteScalarAsync(ct);
         return v is not null && v is not DBNull ? Convert.ToInt64(v) : 0;
+    }
+
+    // Daily-granularity counterpart, for the Daily Transfer Qty by Warehouse report's export columns.
+    private async Task<List<DailyWarehouseTransferRow>> GetDailyExportCountryTransferFromVTransferDetailAsync(
+        SqlConnection conn, string dataname, string trfNoCode, string warehouseLabel,
+        DateTime weekStart, DateTime weekEnd, CancellationToken ct)
+    {
+        var rows = await conn.QueryAsync<(DateTime TrfDate, long Quantity)>(new CommandDefinition($@"
+            SELECT TrfDate, Quantity = CAST(ISNULL(SUM(Quantity), 0) AS BIGINT)
+              FROM [{dataname}].dbo.vTransferDetail WITH (NOLOCK)
+             WHERE TrfDate >= @weekStart AND TrfDate < @weekEndExclusive AND TrfNo LIKE @trfNoPattern
+             GROUP BY TrfDate",
+            new { weekStart = weekStart.Date, weekEndExclusive = weekEnd.Date.AddDays(1), trfNoPattern = trfNoCode + "%" },
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        return rows.Select(r => new DailyWarehouseTransferRow(r.TrfDate, warehouseLabel, r.Quantity)).ToList();
     }
 
     // ---------------- Non-UAE Production Checking (verbatim port of LPMSIM 1.14.268) ----------------
@@ -1424,14 +1452,16 @@ DROP TABLE #Scans, #BatchKind, #ItemDiv;";
         int overallStoreQty = 0;
         await using var conn = OpenOnPremBackup();
 
-        // TEMPORARY: Bahrain's own bfldata.dbo.DailyCountCategoryTrf isn't populated yet,
-        // so GetTransferQtyAsync above returns 0 for it. Until that's fixed, source
-        // Bahrain's Transfer Qty from BFLBAHRAIN..vTransferDetail instead (reachable from
-        // this OnPremBackup connection, same as the other per-country vTransferDetail
-        // reads elsewhere in this codebase).
-        if (string.Equals(country, "Bahrain", StringComparison.OrdinalIgnoreCase))
+        // Export-warehouse countries' own bfldata.dbo.DailyCountCategoryTrf isn't reliably
+        // populated (confirmed empty for Bahrain), so for any export country, source Transfer
+        // Qty from that country's own {Dataname}..vTransferDetail instead (reachable from this
+        // OnPremBackup connection). UAE keeps GetTransferQtyAsync above unchanged — this branch
+        // never runs for UAE since it takes the separate UAE code path entirely.
+        var exportKey = await GetExportCountryVTransferKeyAsync(conn, country, ct);
+        if (exportKey is not null)
         {
-            transferQty = await GetBahrainTransferQtyFromVTransferDetailAsync(conn, fromDate, toDateInclusive, ct);
+            transferQty = await GetExportCountryTransferQtyFromVTransferDetailAsync(
+                conn, exportKey.Value.Dataname, exportKey.Value.Code, fromDate, toDateInclusive, ct);
         }
 
         if (scanTable.Rows.Count == 0)
