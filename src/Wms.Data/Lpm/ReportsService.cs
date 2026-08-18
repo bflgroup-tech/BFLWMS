@@ -23,6 +23,17 @@ public class ReportsService(IOnPremConnectionResolver resolver)
         return b.ConnectionString;
     }
 
+    // A per-country connection string's own default DB is often NOT the country's actual
+    // data DB (e.g. it may point at the scan/amechecking DB) — same "wrong DB" issue already
+    // solved in TransferGinGrnService.OpenCountryWithDataName. Force InitialCatalog to the
+    // Dataname resolved from BFLDATA.dbo.DataSettings so dbo.vTransferDetail (unprefixed)
+    // resolves against the right database.
+    private static string WithInitialCatalog(string cs, string catalog)
+    {
+        var b = new SqlConnectionStringBuilder(cs) { InitialCatalog = catalog, ConnectTimeout = ConnectTimeoutSeconds };
+        return b.ConnectionString;
+    }
+
     private SqlConnection OpenOnPremBackup()
     {
         var c = new SqlConnection(WithConnectTimeout(resolver.GetOnPremBackupConnectionString()));
@@ -1321,14 +1332,14 @@ DROP TABLE #Scans, #BatchKind, #ItemDiv;";
 
         // Oman excluded: it ships via the same TECHNO warehouse as UAE (already counted in that
         // column above), so a separate BFLOMANR1 column here would double-count it.
-        var exportWhShops = (await c.QueryAsync<(string Country, string ShopName, string Code)>(new CommandDefinition(@"
-            SELECT Country, ShopName, ExportCountryCode
+        var exportWhShops = (await c.QueryAsync<(string Country, string ShopName, string Dataname, string Code)>(new CommandDefinition(@"
+            SELECT Country, ShopName, Dataname, ExportCountryCode
               FROM BFLDATA.dbo.DataSettings WITH (NOLOCK)
              WHERE ExportActive = 'Y' AND ExportWH = 'Y' AND Country <> 'OMAN'",
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).ToList();
 
         var columns = new List<WarehouseTransferColumn> { new("TECHNO", "UAE", "ae") };
-        foreach (var (country, shopName, _) in exportWhShops)
+        foreach (var (country, shopName, _, _) in exportWhShops)
             if (CountryToTerritoryCode.TryGetValue(country, out var code))
                 columns.Add(new(shopName, country, code));
 
@@ -1340,9 +1351,11 @@ DROP TABLE #Scans, #BatchKind, #ItemDiv;";
         // OnPremBackup/LOGBACKUP linked-server path — per explicit instruction. Its own
         // bfldata.dbo.DailyCountCategoryTrf isn't reliably populated (confirmed empty for
         // Bahrain), so all five export countries use this same vTransferDetail path. UAE
-        // (TECHNO, above) is untouched. A country with no connection string configured is
-        // silently skipped (0 rows for that column) rather than falling back to the central path.
-        foreach (var (country, shopName, code) in exportWhShops)
+        // (TECHNO, above) is untouched. InitialCatalog is forced to Dataname since the
+        // connection string's own default DB is the scan/amechecking DB, not the transfer DB
+        // (see WithInitialCatalog). A country with no connection string configured is silently
+        // skipped (0 rows for that column) rather than falling back to the central path.
+        foreach (var (country, shopName, dataname, code) in exportWhShops)
         {
             string? cs;
             try { cs = resolver.GetCountryConnectionString(country); }
@@ -1350,7 +1363,7 @@ DROP TABLE #Scans, #BatchKind, #ItemDiv;";
             if (string.IsNullOrWhiteSpace(cs))
                 continue;
 
-            await using var countryConn = new SqlConnection(WithConnectTimeout(cs));
+            await using var countryConn = new SqlConnection(WithInitialCatalog(cs, dataname));
             await countryConn.OpenAsync(ct);
             daily.AddRange(await GetDailyExportCountryTransferFromVTransferDetailAsync(countryConn, code, shopName, weekStart, weekEnd, ct));
         }
@@ -1365,14 +1378,16 @@ DROP TABLE #Scans, #BatchKind, #ItemDiv;";
         return new DailyTransferByWarehouseResult(columns, daily, merchNeeds);
     }
 
-    /// <summary>This country's TrfNo prefix code for vTransferDetail, from
-    /// BFLDATA.dbo.DataSettings.ExportCountryCode — null if that country isn't flagged as an
-    /// export warehouse. Reference/config data, so this always reads via the central
-    /// connection — the actual vTransferDetail data reads go via that country's own connection.</summary>
-    private async Task<string?> GetExportCountryCodeAsync(SqlConnection conn, string country, CancellationToken ct)
+    /// <summary>Each export country's Dataname (for forcing InitialCatalog on its own
+    /// connection — see WithInitialCatalog) + TrfNo prefix code for vTransferDetail, from
+    /// BFLDATA.dbo.DataSettings — null if that country isn't flagged as an export warehouse.
+    /// Reference/config data, so this always reads via the central connection — the actual
+    /// vTransferDetail data reads go via that country's own connection.</summary>
+    private async Task<(string Dataname, string Code)?> GetExportCountryVTransferKeyAsync(
+        SqlConnection conn, string country, CancellationToken ct)
     {
-        return await conn.QuerySingleOrDefaultAsync<string?>(new CommandDefinition(@"
-            SELECT ExportCountryCode
+        return await conn.QuerySingleOrDefaultAsync<(string Dataname, string Code)?>(new CommandDefinition(@"
+            SELECT Dataname, ExportCountryCode
               FROM BFLDATA.dbo.DataSettings WITH (NOLOCK)
              WHERE Country = @country AND ExportActive = 'Y' AND ExportWH = 'Y'",
             new { country }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
@@ -1463,17 +1478,21 @@ DROP TABLE #Scans, #BatchKind, #ItemDiv;";
 
             // Export-warehouse countries' own bfldata.dbo.DailyCountCategoryTrf isn't reliably
             // populated (confirmed empty for Bahrain), so for any export country, source Transfer
-            // Qty from that country's own dbo.vTransferDetail instead — read directly off this
-            // same countryConn (this country's own connection), not the central
-            // OnPremBackup/LOGBACKUP linked-server path. UAE never reaches this method at all
-            // (it takes the separate UAE code path above in GetProductionCheckingAsync).
-            string? exportCode;
+            // Qty from that country's own dbo.vTransferDetail instead — via this country's own
+            // connection (connStr), not the central OnPremBackup/LOGBACKUP linked-server path.
+            // Can't reuse countryConn above as-is: its InitialCatalog is the scan/amechecking DB,
+            // not necessarily the transfer DB, so InitialCatalog is forced to Dataname here (see
+            // WithInitialCatalog). UAE never reaches this method at all (it takes the separate
+            // UAE code path above in GetProductionCheckingAsync).
+            (string Dataname, string Code)? exportKey;
             await using (var lookupConn = OpenOnPremBackup())
-                exportCode = await GetExportCountryCodeAsync(lookupConn, country, ct);
-            if (exportCode is not null)
+                exportKey = await GetExportCountryVTransferKeyAsync(lookupConn, country, ct);
+            if (exportKey is not null)
             {
+                await using var vtdConn = new SqlConnection(WithInitialCatalog(connStr, exportKey.Value.Dataname));
+                await vtdConn.OpenAsync(ct);
                 transferQty = await GetExportCountryTransferQtyFromVTransferDetailAsync(
-                    countryConn, exportCode, fromDate, toDateInclusive, ct);
+                    vtdConn, exportKey.Value.Code, fromDate, toDateInclusive, ct);
             }
         }
 
