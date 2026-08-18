@@ -852,7 +852,14 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
 
         if (toGenerate.Count > 0)
         {
-            await using var c = OpenOnPremBackup();
+            // The proc runs on the WmsProductionDb connection, NOT OnPremBackup: the
+            // backup login has no EXECUTE right on BFLDATA.dbo.stp_FindExportSalesPrice
+            // ("The EXECUTE permission was denied ... database 'BFLDATA', schema 'dbo'").
+            //
+            // The re-read below deliberately stays on OnPremBackup, because that is the
+            // connection the actual write reads prices through — validating against a
+            // different one could pass here and still write a blank price.
+            await using var c = OpenWmsProductionDb();
             foreach (var g in toGenerate)
             {
                 var sample = g.First();
