@@ -1284,9 +1284,10 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
 
             var printY = st?.PrintFlagYes == true;
 
-            // OrPrice / SalesPrice only when the store prints stickers.
-            object orPrice   = DBNull.Value;
-            object salesPrice = DBNull.Value;
+            // OrPrice / SalesPrice only when the store prints stickers. OrPrice
+            // defaults to 0 (not NULL) when the store doesn't print or has no price.
+            double orPrice    = 0.0;
+            object salesPrice = "";
             if (printY && st is not null)
             {
                 var dn = st.Dataname?.Trim();
@@ -1304,7 +1305,12 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
 
             var refNo = st?.ShopName is { Length: > 0 } shop && refNos.TryGetValue(shop.Trim(), out var rn)
                 ? (object)rn
-                : DBNull.Value;
+                : "";
+
+            // Barcode column carries the composite "Barcode/OrPrice/RefNo" text
+            // rather than the raw scanned barcode.
+            var refNoText = refNo as string ?? "";
+            var barcode = $"{r.Barcode}/{orPrice.ToString(System.Globalization.CultureInfo.InvariantCulture)}/{refNoText}";
 
             for (var i = 0; i < pieces; i++)
             {
@@ -1329,10 +1335,10 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
                     orPrice,
                     printY ? "Y" : "N",
                     st?.RfidFlagYes == true ? "Y" : "N",
-                    (object?)st?.Company        ?? DBNull.Value,
+                    st?.Company ?? "",
                     (object?)st?.ShopCode       ?? DBNull.Value,
                     (object?)r.Itemname         ?? DBNull.Value,
-                    (object?)r.Barcode          ?? DBNull.Value,
+                    barcode,
                     salesPrice,
                     refNo,
                     "PA",                                // Mark
