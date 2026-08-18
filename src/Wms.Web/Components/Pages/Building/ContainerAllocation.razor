@@ -643,10 +643,13 @@
     private string _warehouse = "";
     private string _contno = "";
     private string _runOption = "FillMinMinPlusOthers";
+    // All four options default ON — this is how the container run is actually
+    // done day to day, and having to re-tick three of them on every page load
+    // was a reliable way to process a container with the wrong settings.
     private bool _validate = true;
-    private bool _ecomManualPriority = false;
-    private bool _traceEnabled = false;
-    private bool _bypassPass1b = false;
+    private bool _ecomManualPriority = true;
+    private bool _traceEnabled = true;
+    private bool _bypassPass1b = true;
     private long _totalPoQty;
     private List<BlockedItemRow> _blocked = new();
     private bool _showBlocked;
