@@ -648,25 +648,33 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
         }
 
         string? error = null;
+        string? warning = null;
         int rowsCopied = 0;
         try
         {
-            rowsCopied = destination switch
+            switch (destination)
             {
-                DataSyncDestination.AzureWmsDb       => await CopyToAzureWmsAsync(sourceRows, ct),
-                DataSyncDestination.WmsProductionDb  => await CopyToWmsProductionDbAsync(sourceRows, ct),
-                _ => throw new InvalidOperationException($"Unknown destination: {destination}"),
-            };
+                case DataSyncDestination.AzureWmsDb:
+                    rowsCopied = await CopyToAzureWmsAsync(sourceRows, ct);
+                    break;
+                case DataSyncDestination.WmsProductionDb:
+                    (rowsCopied, warning) = await CopyToWmsProductionDbAsync(sourceRows, ct);
+                    break;
+                default:
+                    throw new InvalidOperationException($"Unknown destination: {destination}");
+            }
         }
         catch (Exception ex) { error = ex.Message; }
 
         var syncId = await WriteLogRowAsync(
             contno, primaryBatchNo, destination, totalAllocatedQty,
-            status: error is null ? "Success" : "Failed", error, ct);
+            status: error is null ? "Success" : "Failed", error ?? warning, ct);
 
         return error is null
             ? new DataSyncResult(true,
-                $"Allocation: {rowsCopied:N0} rows copied to {DestinationLabel(destination)}.",
+                warning is null
+                    ? $"Allocation: {rowsCopied:N0} rows copied to {DestinationLabel(destination)}."
+                    : $"Allocation: {rowsCopied:N0} rows copied to {DestinationLabel(destination)}. WARNING: {warning}",
                 syncId, rowsCopied)
             : new DataSyncResult(false,
                 $"Allocation to {DestinationLabel(destination)} failed: {error}",
@@ -757,7 +765,11 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
         return rows.Count;
     }
 
-    private async Task<int> CopyToWmsProductionDbAsync(List<SourceRow> rows, CancellationToken ct)
+    /// <summary>Returns the exploded row count plus a summary of any non-fatal
+    /// RefNo issues (per-shop RFIDTransfer resolution failures, or stores with
+    /// no ShopName in DataSettings) so the caller can surface them in the sync
+    /// log/banner instead of only logging to Console.Error.</summary>
+    private async Task<(int RowsCopied, string? Warning)> CopyToWmsProductionDbAsync(List<SourceRow> rows, CancellationToken ct)
     {
         // online.dbo.PhotoCheckingResult expects per-PIECE rows enriched from
         // bfldata.dbo.DataSettings, so this is not a straight column copy:
@@ -767,7 +779,14 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
         //   * RefNo from BFLDATA..RFIDTransfer, created for today if absent
         var settings = await LoadProdStoreSettingsAsync(rows.Select(r => r.StoreID), ct);
         var prices   = await LoadRfSalesPricesAsync(rows.Select(r => r.Itemcode), settings, ct);
-        var refNos   = await ResolveRefNosAsync(settings, ct);
+        var (refNos, refNoFailures) = await ResolveRefNosAsync(settings, ct);
+
+        var missingShopNameStores = rows
+            .Select(r => r.StoreID?.Trim() ?? "")
+            .Where(s => s.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Where(s => !settings.TryGetValue(s, out var st) || string.IsNullOrWhiteSpace(st.ShopName))
+            .ToList();
 
         var dt = BuildPhotoCheckingResultDataTable(rows, settings, prices, refNos);
 
@@ -782,8 +801,14 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
             bulk.ColumnMappings.Add(col.ColumnName, col.ColumnName);
         await bulk.WriteToServerAsync(dt, ct);
 
+        var warnings = new List<string>();
+        if (refNoFailures.Count > 0)
+            warnings.Add($"RefNo resolution failed for shop(s): {string.Join(", ", refNoFailures)}");
+        if (missingShopNameStores.Count > 0)
+            warnings.Add($"Store(s) with no ShopName in DataSettings (RefNo left blank): {string.Join(", ", missingShopNameStores)}");
+
         // Exploded row count, not the source row count — the caller reports it.
-        return dt.Rows.Count;
+        return (dt.Rows.Count, warnings.Count > 0 ? string.Join(" | ", warnings) : null);
     }
 
     // ----- WMS-Prod-DB price pre-flight -----
@@ -1040,17 +1065,18 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
     ///   * Read and insert run inside one transaction with UPDLOCK/HOLDLOCK, so two
     ///     concurrent syncs for the same shop cannot mint two TrfNos for one day.
     /// </summary>
-    private async Task<Dictionary<string, string>> ResolveRefNosAsync(
+    private async Task<(Dictionary<string, string> ByShop, List<string> Failures)> ResolveRefNosAsync(
         Dictionary<string, ProdStoreSettings> settings, CancellationToken ct)
     {
         var byShop = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var failures = new List<string>();
 
         var shops = settings.Values
             .Where(s => !string.IsNullOrWhiteSpace(s.ShopName))
             .GroupBy(s => s.ShopName!.Trim(), StringComparer.OrdinalIgnoreCase)
             .Select(g => (Shop: g.Key, Letter: g.Select(x => x.ShopLetter).FirstOrDefault(l => !string.IsNullOrWhiteSpace(l))))
             .ToList();
-        if (shops.Count == 0) return byShop;
+        if (shops.Count == 0) return (byShop, failures);
 
         var todayGst = DateTime.UtcNow.AddHours(4).Date;
 
@@ -1097,9 +1123,10 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
             catch (Exception ex)
             {
                 Console.Error.WriteLine($"[DataSync] WARN: RefNo resolve failed for shop '{shop}': {ex.Message}");
+                failures.Add($"{shop} ({ex.Message})");
             }
         }
-        return byShop;
+        return (byShop, failures);
     }
 
     private async Task<int?> WriteLogRowAsync(string contno, int? batchNo, DataSyncDestination dest,
