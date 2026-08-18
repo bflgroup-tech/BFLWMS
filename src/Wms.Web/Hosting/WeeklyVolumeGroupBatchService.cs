@@ -3,26 +3,29 @@ using Wms.Data.Lpm;
 namespace Wms.Web.Hosting;
 
 /// <summary>
-/// Fires every Monday at 06:00 GST (Arabian Standard Time = UTC+04:00).
+/// Fires EVERY DAY at 06:00 GST (Arabian Standard Time = UTC+04:00).
 /// Calls VolumeGroupWeeklyService.RunOnceAsync which loops each active
 /// (JobName=VolumeGroupWeekly) country and refreshes Volume Groups for
 /// the current month/year. In-process, relies on App Service Always On.
 ///
-/// Mirrors NightlyBatchService's daily loop but with a week cadence.
 /// WeeklyOtsBatchService follows at 07:00 and depends on this run having
 /// completed for BFLGROUP — move one and move the other.
+///
+/// NOTE the class and its JobName still read "Weekly". The cadence changed to
+/// daily but JobName='VolumeGroupWeekly' is the key of the existing
+/// dbo.WmsRptCountryConfig rows, so renaming it would orphan every country
+/// toggle. Name kept deliberately.
 /// </summary>
 public class WeeklyVolumeGroupBatchService(IServiceProvider sp, ILogger<WeeklyVolumeGroupBatchService> log)
     : BackgroundService
 {
     private static readonly TimeSpan FireTimeGst = new(6, 0, 0);
-    private const DayOfWeek FireDay = DayOfWeek.Monday;
     private static readonly TimeZoneInfo GstTz =
         TimeZoneInfo.FindSystemTimeZoneById(OperatingSystem.IsWindows() ? "Arabian Standard Time" : "Asia/Dubai");
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        log.LogInformation("WeeklyVolumeGroupBatchService started. Fire: Monday 06:00 GST.");
+        log.LogInformation("WeeklyVolumeGroupBatchService started. Fire: daily 06:00 GST.");
         DateTime? lastFireGstDate = null;
 
         while (!stoppingToken.IsCancellationRequested)
@@ -31,24 +34,23 @@ public class WeeklyVolumeGroupBatchService(IServiceProvider sp, ILogger<WeeklyVo
             {
                 var nowUtc = DateTime.UtcNow;
                 var nowGst = TimeZoneInfo.ConvertTimeFromUtc(nowUtc, GstTz);
-                var nextFireGst = NextMondayFireGst(nowGst);
+                var nextFireGst = NextFireGst(nowGst);
 
-                // If it's Monday and we've crossed 06:00 today and haven't yet
-                // fired for today's date, fire now (covers app-restart mid-window).
+                // Crossed 06:00 today and haven't yet fired for today's date — fire
+                // now (also covers an app restart landing mid-window).
                 var todayFireGst = nowGst.Date.Add(FireTimeGst);
-                var shouldFireNow = nowGst.DayOfWeek == FireDay
-                    && nowGst >= todayFireGst
+                var shouldFireNow = nowGst >= todayFireGst
                     && (lastFireGstDate is null || lastFireGstDate.Value < nowGst.Date);
 
                 if (shouldFireNow)
                 {
-                    log.LogInformation("WeeklyVolumeGroupBatchService: firing weekly run at {Now}.", nowGst);
+                    log.LogInformation("WeeklyVolumeGroupBatchService: firing daily run at {Now}.", nowGst);
                     await RunOnceAsync(stoppingToken);
                     lastFireGstDate = nowGst.Date;
                     continue;
                 }
 
-                // Sleep until next Monday 06:00 GST, capped at 1 hour so we
+                // Sleep until the next 06:00 GST, capped at 1 hour so we
                 // wake up regularly to handle clock changes / restarts.
                 var sleep = TimeZoneInfo.ConvertTimeToUtc(nextFireGst, GstTz) - DateTime.UtcNow;
                 if (sleep > TimeSpan.FromHours(1)) sleep = TimeSpan.FromHours(1);
@@ -64,12 +66,11 @@ public class WeeklyVolumeGroupBatchService(IServiceProvider sp, ILogger<WeeklyVo
         }
     }
 
-    /// <summary>Returns the next Monday-06:00 GST fire strictly in the future.</summary>
-    private static DateTime NextMondayFireGst(DateTime nowGst)
+    /// <summary>Returns the next 06:00 GST fire strictly in the future.</summary>
+    private static DateTime NextFireGst(DateTime nowGst)
     {
-        var daysToMonday = ((int)FireDay - (int)nowGst.DayOfWeek + 7) % 7;
-        var candidate = nowGst.Date.AddDays(daysToMonday).Add(FireTimeGst);
-        if (candidate <= nowGst) candidate = candidate.AddDays(7);
+        var candidate = nowGst.Date.Add(FireTimeGst);
+        if (candidate <= nowGst) candidate = candidate.AddDays(1);
         return candidate;
     }
 
@@ -78,7 +79,7 @@ public class WeeklyVolumeGroupBatchService(IServiceProvider sp, ILogger<WeeklyVo
         await using var scope = sp.CreateAsyncScope();
         var svc = scope.ServiceProvider.GetRequiredService<VolumeGroupWeeklyService>();
 
-        var results = await svc.RunOnceAsync("Weekly", "Timer", ct);
+        var results = await svc.RunOnceAsync("Daily", "Timer", ct);
         if (results.Count == 0)
         {
             log.LogInformation("WeeklyVolumeGroupBatchService: no active countries — nothing to do.");
