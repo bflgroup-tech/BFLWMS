@@ -1268,7 +1268,7 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
         // the legacy checking flow scans individual pieces. Rows with no allocated
         // qty produce nothing.
         //
-        // Still not populated (no source): QtyIssuedResult, PStatus, PDateTime.
+        // Still not populated (no source): QtyIssuedResult, PDateTime.
         // RDateTime is intentionally left off the DataTable so it lands NULL.
         var dt = new System.Data.DataTable();
         dt.Columns.Add("ContNo",           typeof(string));
@@ -1297,6 +1297,7 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
         dt.Columns.Add("Mark",             typeof(string));
         dt.Columns.Add("Uid",              typeof(string));   // varchar(5), not numeric
         dt.Columns.Add("RStatus",          typeof(string));
+        dt.Columns.Add("PStatus",          typeof(string));
         dt.Columns.Add("Excess",           typeof(string));
         dt.Columns.Add("TcmContno",        typeof(string));
         dt.Columns.Add("BuildingCategory", typeof(string));
@@ -1382,6 +1383,7 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
                     printY ? "PA" : "",                 // Mark
                     "0",                                 // Uid (varchar)
                     "N",                                 // RStatus
+                    "N",                                 // PStatus
                     "N",                                 // Excess
                     (object?)r.TcmContno        ?? DBNull.Value,
                     (object?)r.BuildingCategory ?? DBNull.Value,
