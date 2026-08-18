@@ -3,6 +3,7 @@ using Wms.Data.Configuration;
 using Dapper;
 using Microsoft.Data.SqlClient;
 using System.Text.RegularExpressions;
+using System.Data;
 
 namespace Wms.Data.Lpm;
 
@@ -594,13 +595,14 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
                        Color    = u.color,
                        Gender   = u.GENDER,
                        HsCode   = u.hscode,
+                       UsaGroupCode = u.GroupCode,
                        [Class]  = s.[Class],
                        Family   = s.Family,
                        Subclass = s.Subclass
                   FROM LPMSIM.dbo.WMS_ContAllocationData d WITH (NOLOCK)
                   JOIN LPMSIM.dbo.WMS_Cont_Allocation_Header h WITH (NOLOCK) ON h.BatchNo = d.BatchNo
                   OUTER APPLY (
-                       SELECT TOP 1 uo.color, uo.GENDER, uo.hscode
+                       SELECT TOP 1 uo.color, uo.GENDER, uo.hscode, uo.GroupCode
                          FROM usa.dbo.usaorgfile uo WITH (NOLOCK)
                         WHERE uo.ContNo = d.ContNo AND uo.ItemCode = d.Itemcode
                         ORDER BY uo.TrnDate DESC
@@ -621,6 +623,29 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
 
         if (sourceRows.Count == 0)
             return new DataSyncResult(false, $"Allocation: no approved rows found for container {contno}.", null, 0);
+
+        // Price gate for the legacy destination — BEFORE any row is written. Items at
+        // printing stores must have a price; the pre-flight generates the missing ones
+        // via stp_FindExportSalesPrice and reports whatever it could not resolve.
+        if (destination == DataSyncDestination.WmsProductionDb)
+        {
+            var (missingPrices, generatedPrices) = await PreflightWmsProdPricesAsync(contno, ct);
+            if (missingPrices.Count > 0)
+            {
+                var sample = string.Join("; ", missingPrices.Take(5)
+                    .Select(m => $"{m.StoreID}/{m.Itemcode}" + (string.IsNullOrWhiteSpace(m.ResultMsg) ? "" : $" ({m.ResultMsg})")));
+                var detail = $"{missingPrices.Count} item(s) at print-enabled stores still have no RFSalesPrice after " +
+                             $"stp_FindExportSalesPrice: {sample}" + (missingPrices.Count > 5 ? " …" : "");
+                var blockId = await WriteLogRowAsync(
+                    contno, primaryBatchNo, destination, totalAllocatedQty,
+                    status: "Failed", error: detail, ct);
+                return new DataSyncResult(false,
+                    $"Allocation to {DestinationLabel(destination)} BLOCKED — {detail}",
+                    blockId, 0);
+            }
+            if (generatedPrices > 0)
+                Console.Error.WriteLine($"[DataSync] {contno}: generated {generatedPrices} RFSalesPrice row(s) via stp_FindExportSalesPrice.");
+        }
 
         string? error = null;
         int rowsCopied = 0;
@@ -740,8 +765,8 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
         //   * Result / flags / Company / ShopCode from the store's DataSettings row
         //   * OrPrice from the store's own DB, SalesPrice = FCCode + ' ' + OrPrice
         //   * RefNo from BFLDATA..RFIDTransfer, created for today if absent
-        var settings = await LoadProdStoreSettingsAsync(rows, ct);
-        var prices   = await LoadRfSalesPricesAsync(rows, settings, ct);
+        var settings = await LoadProdStoreSettingsAsync(rows.Select(r => r.StoreID), ct);
+        var prices   = await LoadRfSalesPricesAsync(rows.Select(r => r.Itemcode), settings, ct);
         var refNos   = await ResolveRefNosAsync(settings, ct);
 
         var dt = BuildPhotoCheckingResultDataTable(rows, settings, prices, refNos);
@@ -759,6 +784,119 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
 
         // Exploded row count, not the source row count — the caller reports it.
         return dt.Rows.Count;
+    }
+
+    // ----- WMS-Prod-DB price pre-flight -----
+
+    /// <summary>
+    /// @UserID for BFLData.dbo.stp_FindExportSalesPrice. WMS identifies users by
+    /// username, not by the numeric id the legacy app passed via gUserInfo.UserID,
+    /// so scheduled and UI runs alike stamp this service-account value.
+    /// </summary>
+    private const int SalesPriceUserId = 0;
+
+    /// <summary>One (store, item) that still has no price after the generate attempt.</summary>
+    public sealed record MissingPriceRow(string StoreID, string ShopName, string Itemcode, string? UPC, string? ResultMsg);
+
+    /// <summary>
+    /// Runs BEFORE any WMS-Prod-DB write. For every (store, item) whose store has
+    /// POAllocation_PrintFlag = Y, checks [Dataname].dbo.RFSalesPrice for a price;
+    /// where none exists, calls BFLData.dbo.stp_FindExportSalesPrice to generate one
+    /// (the proc inserts into RFSalesPrice), then re-reads. Anything still unpriced
+    /// is returned, and the caller aborts the sync rather than writing rows whose
+    /// stickers would print without a price.
+    ///
+    /// Non-printing stores are ignored — they never get OrPrice/SalesPrice anyway.
+    /// </summary>
+    public async Task<(List<MissingPriceRow> Missing, int Generated)> PreflightWmsProdPricesAsync(
+        string contno, CancellationToken ct = default)
+    {
+        var missing = new List<MissingPriceRow>();
+        if (string.IsNullOrWhiteSpace(contno)) return (missing, 0);
+
+        // Light projection of the approved rows — just what pricing needs.
+        List<(string? StoreID, string? Itemcode, string? UPC)> pairs;
+        await using (var src = OpenOnPremBackup())
+        {
+            pairs = (await src.QueryAsync<(string? StoreID, string? Itemcode, string? UPC)>(new CommandDefinition(@"
+                SELECT DISTINCT d.StoreID, d.Itemcode, d.UPC
+                  FROM LPMSIM.dbo.WMS_ContAllocationData d WITH (NOLOCK)
+                  JOIN LPMSIM.dbo.WMS_Cont_Allocation_Header h WITH (NOLOCK) ON h.BatchNo = d.BatchNo
+                 WHERE h.ContNo = @c AND h.ApprovedDt IS NOT NULL",
+                new { c = contno.Trim() },
+                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).ToList();
+        }
+        if (pairs.Count == 0) return (missing, 0);
+
+        var settings = await LoadProdStoreSettingsAsync(pairs.Select(p => p.StoreID), ct);
+
+        // Only stores that actually print stickers need a price.
+        var needsPrice = pairs
+            .Where(p => !string.IsNullOrWhiteSpace(p.StoreID) && !string.IsNullOrWhiteSpace(p.Itemcode))
+            .Select(p => (Store: p.StoreID!.Trim(), Item: p.Itemcode!.Trim(), p.UPC))
+            .Where(p => settings.TryGetValue(p.Store, out var st) && st.PrintFlagYes
+                        && !string.IsNullOrWhiteSpace(st.Dataname))
+            .ToList();
+        if (needsPrice.Count == 0) return (missing, 0);
+
+        var prices = await LoadRfSalesPricesAsync(needsPrice.Select(p => (string?)p.Item), settings, ct);
+
+        // Generate the ones that are absent, one proc call per (shop, item).
+        var generated = 0;
+        var msgByKey  = new Dictionary<(string, string), string?>();
+        var toGenerate = needsPrice
+            .Where(p => !prices.ContainsKey((settings[p.Store].Dataname!.Trim(), p.Item)))
+            .GroupBy(p => (Shop: settings[p.Store].ShopName?.Trim() ?? "", p.Item))
+            .Where(g => g.Key.Shop.Length > 0)
+            .ToList();
+
+        if (toGenerate.Count > 0)
+        {
+            await using var c = OpenOnPremBackup();
+            foreach (var g in toGenerate)
+            {
+                var sample = g.First();
+                try
+                {
+                    var p = new DynamicParameters();
+                    // NOTE: the legacy caller passed the UPC value to BOTH @UPC and
+                    // @ItemCode. Replicated verbatim — this is the behaviour proven in
+                    // production, and "fixing" it blind could price items wrongly.
+                    p.Add("@UPC",       sample.UPC);
+                    p.Add("@ItemCode",  sample.UPC);
+                    p.Add("@ShopName",  g.Key.Shop);
+                    p.Add("@UserID",    SalesPriceUserId);
+                    p.Add("@ResultPrice", dbType: DbType.Double, direction: ParameterDirection.Output);
+                    p.Add("@ResultMsg",   dbType: DbType.String, direction: ParameterDirection.Output, size: 250);
+
+                    await c.ExecuteAsync(new CommandDefinition(
+                        "BFLData.dbo.stp_FindExportSalesPrice", p,
+                        commandType: CommandType.StoredProcedure,
+                        commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+
+                    msgByKey[(g.Key.Shop, g.Key.Item)] = p.Get<string?>("@ResultMsg");
+                    generated++;
+                }
+                catch (Exception ex)
+                {
+                    msgByKey[(g.Key.Shop, g.Key.Item)] = ex.Message;
+                }
+            }
+
+            // Re-read: the proc inserts into RFSalesPrice, so prices should now exist.
+            prices = await LoadRfSalesPricesAsync(needsPrice.Select(x => (string?)x.Item), settings, ct);
+        }
+
+        foreach (var p in needsPrice)
+        {
+            var st = settings[p.Store];
+            if (prices.ContainsKey((st.Dataname!.Trim(), p.Item))) continue;
+            var shop = st.ShopName?.Trim() ?? "";
+            msgByKey.TryGetValue((shop, p.Item), out var msg);
+            missing.Add(new MissingPriceRow(p.Store, shop, p.Item, p.UPC, msg));
+        }
+
+        return (missing, generated);
     }
 
     // ----- WMS-Prod-DB enrichment -----
@@ -796,9 +934,9 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
     /// ShopName rather than left to query order.
     /// </summary>
     private async Task<Dictionary<string, ProdStoreSettings>> LoadProdStoreSettingsAsync(
-        List<SourceRow> rows, CancellationToken ct)
+        IEnumerable<string?> storeIdSource, CancellationToken ct)
     {
-        var storeIds = rows.Select(r => r.StoreID).Where(s => !string.IsNullOrWhiteSpace(s))
+        var storeIds = storeIdSource.Where(s => !string.IsNullOrWhiteSpace(s))
                            .Select(s => s!.Trim())
                            .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         if (storeIds.Length == 0) return new(StringComparer.OrdinalIgnoreCase);
@@ -827,7 +965,7 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
     /// stores leave OrPrice and SalesPrice NULL.
     /// </summary>
     private async Task<Dictionary<(string Dataname, string Itemcode), decimal>> LoadRfSalesPricesAsync(
-        List<SourceRow> rows, Dictionary<string, ProdStoreSettings> settings, CancellationToken ct)
+        IEnumerable<string?> itemcodeSource, Dictionary<string, ProdStoreSettings> settings, CancellationToken ct)
     {
         var result = new Dictionary<(string, string), decimal>();
 
@@ -839,7 +977,7 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
             .ToArray();
         if (dataNames.Length == 0) return result;
 
-        var itemcodes = rows.Select(r => r.Itemcode).Where(i => !string.IsNullOrWhiteSpace(i))
+        var itemcodes = itemcodeSource.Where(i => !string.IsNullOrWhiteSpace(i))
                             .Select(i => i!.Trim())
                             .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         if (itemcodes.Length == 0) return result;
@@ -1169,7 +1307,10 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
                     (object?)r.Time1            ?? DBNull.Value,
                     (object?)r.UPC              ?? DBNull.Value,
                     (object?)r.Itemcode         ?? DBNull.Value,
-                    (object?)r.GroupCode        ?? DBNull.Value,
+                    // GroupCode comes from usa.dbo.usaorgfile for this (ContNo, ItemCode).
+                    // Falls back to the allocation's own value when the PO line has none,
+                    // rather than writing NULL and losing what we already had.
+                    (object?)(r.UsaGroupCode ?? r.GroupCode) ?? DBNull.Value,
                     (object?)r.Season           ?? DBNull.Value,
                     (object?)r.Department       ?? DBNull.Value,
                     (object?)r.Division         ?? DBNull.Value,
@@ -1279,6 +1420,10 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
         public string?   Itemcode         { get; set; }
         public string?   Barcode          { get; set; }
         public string?   GroupCode        { get; set; }
+        // usa.dbo.usaorgfile.GroupCode for this (ContNo, ItemCode). Kept separate from
+        // the LPMSIM GroupCode above so only the WMS-Prod-DB write switches source —
+        // the Azure mirror keeps copying the allocation's own value.
+        public string?   UsaGroupCode     { get; set; }
         public int?      POQty            { get; set; }
         public int?      SkuMax           { get; set; }
         public int?      AllocatedQty     { get; set; }
