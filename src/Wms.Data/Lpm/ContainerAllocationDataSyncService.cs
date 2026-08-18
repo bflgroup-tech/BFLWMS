@@ -594,13 +594,14 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
                        Color    = u.color,
                        Gender   = u.GENDER,
                        HsCode   = u.hscode,
+                       UsaGroupCode = u.GroupCode,
                        [Class]  = s.[Class],
                        Family   = s.Family,
                        Subclass = s.Subclass
                   FROM LPMSIM.dbo.WMS_ContAllocationData d WITH (NOLOCK)
                   JOIN LPMSIM.dbo.WMS_Cont_Allocation_Header h WITH (NOLOCK) ON h.BatchNo = d.BatchNo
                   OUTER APPLY (
-                       SELECT TOP 1 uo.color, uo.GENDER, uo.hscode
+                       SELECT TOP 1 uo.color, uo.GENDER, uo.hscode, uo.GroupCode
                          FROM usa.dbo.usaorgfile uo WITH (NOLOCK)
                         WHERE uo.ContNo = d.ContNo AND uo.ItemCode = d.Itemcode
                         ORDER BY uo.TrnDate DESC
@@ -1169,7 +1170,10 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
                     (object?)r.Time1            ?? DBNull.Value,
                     (object?)r.UPC              ?? DBNull.Value,
                     (object?)r.Itemcode         ?? DBNull.Value,
-                    (object?)r.GroupCode        ?? DBNull.Value,
+                    // GroupCode comes from usa.dbo.usaorgfile for this (ContNo, ItemCode).
+                    // Falls back to the allocation's own value when the PO line has none,
+                    // rather than writing NULL and losing what we already had.
+                    (object?)(r.UsaGroupCode ?? r.GroupCode) ?? DBNull.Value,
                     (object?)r.Season           ?? DBNull.Value,
                     (object?)r.Department       ?? DBNull.Value,
                     (object?)r.Division         ?? DBNull.Value,
@@ -1279,6 +1283,10 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
         public string?   Itemcode         { get; set; }
         public string?   Barcode          { get; set; }
         public string?   GroupCode        { get; set; }
+        // usa.dbo.usaorgfile.GroupCode for this (ContNo, ItemCode). Kept separate from
+        // the LPMSIM GroupCode above so only the WMS-Prod-DB write switches source —
+        // the Azure mirror keeps copying the allocation's own value.
+        public string?   UsaGroupCode     { get; set; }
         public int?      POQty            { get; set; }
         public int?      SkuMax           { get; set; }
         public int?      AllocatedQty     { get; set; }
