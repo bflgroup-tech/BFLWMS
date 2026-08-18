@@ -55,3 +55,13 @@ public class WmsUserCountryAccess
     public DateTime GrantedTS { get; set; }
     public string   GrantedBy { get; set; } = "";
 }
+
+/// <summary>Per-user grant of hideable page sub-sections (Wms.Core.SectionKeys). Admin
+/// role bypasses this table (sees all). Empty rows = section hidden.</summary>
+public class WmsUserSectionAccess
+{
+    public string   Username   { get; set; } = "";
+    public string   SectionKey { get; set; } = "";
+    public DateTime GrantedTS  { get; set; }
+    public string   GrantedBy  { get; set; } = "";
+}

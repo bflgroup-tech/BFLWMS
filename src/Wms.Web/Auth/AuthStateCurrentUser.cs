@@ -19,9 +19,11 @@ public class AuthStateCurrentUser(
     private string? _country;
     private bool _hasAllCountriesAccess;
     private IReadOnlyCollection<string> _allowedCountries = Array.Empty<string>();
+    private IReadOnlyCollection<string> _allowedSections = Array.Empty<string>();
 
     public static string ProfileCacheKey(string username) => $"profile:{username}";
     public static string CountryAccessCacheKey(string username) => $"countryAccess:{username}";
+    public static string SectionAccessCacheKey(string username) => $"sectionAccess:{username}";
 
     public async Task EnsureLoadedAsync(CancellationToken ct = default)
     {
@@ -102,6 +104,31 @@ public class AuthStateCurrentUser(
             catch { /* leave defaults — empty access */ }
 
             cache.Set(caKey, (_hasAllCountriesAccess, _allowedCountries), TimeSpan.FromMinutes(2));
+        }
+
+        // Section access — same cache-per-username approach as country access above, kept
+        // under its own key so it invalidates independently of country grants.
+        var saKey = SectionAccessCacheKey(_name);
+        if (cache.TryGetValue<IReadOnlyCollection<string>>(saKey, out var saCached))
+        {
+            _allowedSections = saCached ?? Array.Empty<string>();
+        }
+        else
+        {
+            try
+            {
+                using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                cts.CancelAfter(TimeSpan.FromSeconds(5));
+                await using var db = await dbFactory.CreateDbContextAsync(cts.Token);
+                var sections = await db.UserSectionAccess.AsNoTracking()
+                    .Where(a => a.Username == _name)
+                    .Select(a => a.SectionKey)
+                    .ToListAsync(cts.Token);
+                _allowedSections = new HashSet<string>(sections, StringComparer.OrdinalIgnoreCase);
+            }
+            catch { /* leave defaults — empty access (e.g. table not migrated yet) */ }
+
+            cache.Set(saKey, _allowedSections, TimeSpan.FromMinutes(2));
         }
 
         _loaded = true;
@@ -187,4 +214,5 @@ public class AuthStateCurrentUser(
         var allowed = _allowedCountries;
         return all.Where(c => c is not null && allowed.Contains(c!));
     }
+    public bool CanSeeSection(string sectionKey) => _hasAllCountriesAccess || _allowedSections.Contains(sectionKey);
 }
