@@ -1342,9 +1342,12 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
             var refNo = refNos.TryGetValue(shopKey, out var rn) ? (object)rn : "";
 
             // Barcode column carries the composite "Barcode/OrPrice/RefNo" text
-            // rather than the raw scanned barcode.
+            // when the store prints stickers; non-printing stores just get the
+            // Itemcode, since there's no price/RefNo to embed.
             var refNoText = refNo as string ?? "";
-            var barcode = $"{r.Barcode}/{orPrice.ToString(System.Globalization.CultureInfo.InvariantCulture)}/{refNoText}";
+            var barcode = printY
+                ? $"{r.Barcode}/{orPrice.ToString(System.Globalization.CultureInfo.InvariantCulture)}/{refNoText}"
+                : (r.Itemcode ?? "");
 
             for (var i = 0; i < pieces; i++)
             {
