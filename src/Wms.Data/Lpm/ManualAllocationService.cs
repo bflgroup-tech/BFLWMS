@@ -32,6 +32,7 @@ public class ManualAllocationService(IOnPremConnectionResolver resolver, ICurren
 {
     private const int CommandTimeoutSeconds = 300;
 
+
     private SqlConnection OpenOnPremBackup()
     {
         var c = new SqlConnection(resolver.GetOnPremBackupConnectionString());
@@ -127,15 +128,29 @@ public class ManualAllocationService(IOnPremConnectionResolver resolver, ICurren
         // own SqlConnection because Dapper + SqlConnection are not thread-safe
         // for concurrent commands.
 
+        // The three lookups below used `itemcode IN @codes`, which Dapper expands to
+        // ONE PARAMETER PER CODE — a large upload blew SQL Server's hard 2100-parameter
+        // limit ("The incoming request has too many parameters"). Same fix already used
+        // by JafzaRoboProductionService and the Counting Completion UPC enrichment:
+        // send the list as a single CSV, split it into an indexed temp table
+        // server-side, then join. One round-trip regardless of size.
+        //
+        // Each task opens its own connection, so the temp tables are session-scoped
+        // and cannot collide despite running in parallel.
+        var codesCsv = string.Join(",", codes);
+
         // 1) Division + DivCode per itemcode.
         async Task<Dictionary<string, (int? DivCode, string? Division)>> LoadDivByItem()
         {
             await using var c = OpenOnPremBackup();
             return (await c.QueryAsync<(string Itemcode, int? DivCode, string? Division)>(new CommandDefinition(
-                @"SELECT itemcode, DivID AS DivCode, Division
-                    FROM datareporting.dbo.vupc_subclass WITH (NOLOCK)
-                   WHERE itemcode IN @codes",
-                new { codes }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
+                @"SELECT DISTINCT CAST(value AS VARCHAR(50)) AS ItemCode INTO #maDivItems FROM STRING_SPLIT(@codesCsv, ',');
+                  CREATE CLUSTERED INDEX IX_maDivItems ON #maDivItems(ItemCode);
+
+                  SELECT v.itemcode, v.DivID AS DivCode, v.Division
+                    FROM datareporting.dbo.vupc_subclass v WITH (NOLOCK)
+                    INNER JOIN #maDivItems i ON i.ItemCode = v.itemcode;",
+                new { codesCsv }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
                 .GroupBy(r => r.Itemcode, StringComparer.OrdinalIgnoreCase)
                 .ToDictionary(g => g.Key, g => (g.First().DivCode, g.First().Division), StringComparer.OrdinalIgnoreCase);
         }
@@ -146,13 +161,17 @@ public class ManualAllocationService(IOnPremConnectionResolver resolver, ICurren
         {
             await using var c = OpenOnPremBackup();
             return (await c.QueryAsync<(string Itemcode, int POQty, string? GroupCode)>(new CommandDefinition(
-                @"SELECT ItemCode,
-                         SUM(CAST(ISNULL(orgqty,0) AS INT)) AS POQty,
-                         MAX(GroupCode)                     AS GroupCode
-                    FROM usa.dbo.usaorgfile WITH (NOLOCK)
-                   WHERE ContNo = @c AND ItemCode IN @codes
-                   GROUP BY ItemCode",
-                new { c = contno, codes }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
+                @"SELECT DISTINCT CAST(value AS VARCHAR(50)) AS ItemCode INTO #maPoItems FROM STRING_SPLIT(@codesCsv, ',');
+                  CREATE CLUSTERED INDEX IX_maPoItems ON #maPoItems(ItemCode);
+
+                  SELECT o.ItemCode,
+                         SUM(CAST(ISNULL(o.orgqty,0) AS INT)) AS POQty,
+                         MAX(o.GroupCode)                     AS GroupCode
+                    FROM usa.dbo.usaorgfile o WITH (NOLOCK)
+                    INNER JOIN #maPoItems i ON i.ItemCode = o.ItemCode
+                   WHERE o.ContNo = @c
+                   GROUP BY o.ItemCode;",
+                new { c = contno, codesCsv }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
                 .ToDictionary(r => r.Itemcode, r => (r.POQty, r.GroupCode), StringComparer.OrdinalIgnoreCase);
         }
 
@@ -161,11 +180,15 @@ public class ManualAllocationService(IOnPremConnectionResolver resolver, ICurren
         {
             await using var c = OpenOnPremBackup();
             return (await c.QueryAsync<(string Itemcode, int SOH)>(new CommandDefinition(
-                @"SELECT itemcode, SUM(CAST(ISNULL(SOH,0) AS INT)) AS SOH
-                    FROM racks.dbo.LPM_locstock WITH (NOLOCK)
-                   WHERE storeid = @s AND itemcode IN @codes
-                   GROUP BY itemcode",
-                new { s = storeId, codes }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
+                @"SELECT DISTINCT CAST(value AS VARCHAR(50)) AS ItemCode INTO #maSohItems FROM STRING_SPLIT(@codesCsv, ',');
+                  CREATE CLUSTERED INDEX IX_maSohItems ON #maSohItems(ItemCode);
+
+                  SELECT l.itemcode, SUM(CAST(ISNULL(l.SOH,0) AS INT)) AS SOH
+                    FROM racks.dbo.LPM_locstock l WITH (NOLOCK)
+                    INNER JOIN #maSohItems i ON i.ItemCode = l.itemcode
+                   WHERE l.storeid = @s
+                   GROUP BY l.itemcode;",
+                new { s = storeId, codesCsv }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
                 .ToDictionary(r => r.Itemcode, r => r.SOH, StringComparer.OrdinalIgnoreCase);
         }
 
