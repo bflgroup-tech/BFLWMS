@@ -345,6 +345,7 @@
             <label style="display:flex; align-items:center; gap:4px; cursor:pointer"><input type="radio" name="rv" value="Store" checked="@(_view == "Store")" @onchange="@(_ => SetView("Store"))" /> Store</label>
             <label style="display:flex; align-items:center; gap:4px; cursor:pointer"><input type="radio" name="rv" value="CountryDivSummary" checked="@(_view == "CountryDivSummary")" @onchange="@(_ => SetView("CountryDivSummary"))" /> Country × Div Summary</label>
             <label style="display:flex; align-items:center; gap:4px; cursor:pointer"><input type="radio" name="rv" value="CountrySummary" checked="@(_view == "CountrySummary")" @onchange="@(_ => SetView("CountrySummary"))" /> Country Summary</label>
+            <label style="display:flex; align-items:center; gap:4px; cursor:pointer"><input type="radio" name="rv" value="CountryContainerSummary" checked="@(_view == "CountryContainerSummary")" @onchange="@(_ => SetView("CountryContainerSummary"))" /> Country × Container Summary</label>
         </div>
 
         <!-- Filters -->
@@ -578,6 +579,30 @@
                             <td style="text-align:right">@g.AllocQty</td>
                             <td style="text-align:right">@g.OtsQtyToday</td>
                             <td>@g.LPMDt?.ToString("yyyy-MM-dd")</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        }
+        else if (_view == "CountryContainerSummary")
+        {
+            <table class="aiwms-table aiwms-table-dense">
+                <thead>
+                    <tr>
+                        <th style="cursor:pointer" @onclick='() => Sort("Country")'>Country @SortArrow("Country")</th>
+                        <th style="cursor:pointer; text-align:right" @onclick='() => Sort("StoresCount")'>Stores Count @SortArrow("StoresCount")</th>
+                        <th style="cursor:pointer; text-align:right" @onclick='() => Sort("PoQty")' title="Total PO qty for the whole container — the same figure on every row, shown as context for the country's share">PO Qty @SortArrow("PoQty")</th>
+                        <th style="cursor:pointer; text-align:right" @onclick='() => Sort("AllocQty")'>Allocated Qty @SortArrow("AllocQty")</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var g in CountryContainerSummaryRows)
+                    {
+                        <tr>
+                            <td>@g.Country</td>
+                            <td style="text-align:right">@g.StoresCount</td>
+                            <td style="text-align:right">@g.PoQty.ToString("N0")</td>
+                            <td style="text-align:right">@g.AllocQty.ToString("N0")</td>
                         </tr>
                     }
                 </tbody>
@@ -1161,6 +1186,7 @@
     private record StoreRowVm(string StoreID, string? StoreName, string Country, string VolumeGroup, int? OtsQtyToday, string? Division, string Brand, string OraPONo, int PoQtySum, int AllocSum, double? OTS, DateTime? LPMDt, int? PriorityRank);
     private record CountryDivSummaryRowVm(string Country, int StoresCount, string OraPONo, string? Division, int PoQty, int AllocQty, DateTime? LPMDt, int? PriorityRank, int? OtsQtyToday);
     private record CountrySummaryRowVm(string Country, int StoresCount, string OraPONo, int PoQty, int AllocQty, DateTime? LPMDt, int? PriorityRank, int? OtsQtyToday);
+    private record CountryContainerSummaryRowVm(string Country, int StoresCount, int PoQty, int AllocQty);
 
     private IEnumerable<ItemSummaryRowVm> ItemSummaryRows
     {
@@ -1305,6 +1331,44 @@
                 "PriorityRank" => r => r.PriorityRank ?? int.MaxValue,
                 "OtsQtyToday" => r => r.OtsQtyToday ?? int.MinValue,
                 _ => r => r.Country,
+            };
+            return _sortAsc ? rows.OrderBy(k) : rows.OrderByDescending(k);
+        }
+    }
+
+    private IEnumerable<CountryContainerSummaryRowVm> CountryContainerSummaryRows
+    {
+        get
+        {
+            // One row per Country for the WHOLE container — POs and divisions both
+            // collapsed. Answers "how did this container split across countries".
+            //
+            // PO Qty is the container total (sum over distinct PONo of that PO's qty,
+            // counting each ItemCode once) and is therefore identical on every row.
+            // That matches Country Summary, where a PO's qty is shown in full against
+            // each country rather than apportioned — the PO is not country-specific.
+            // Allocated Qty is the column that actually varies.
+            var all = FilteredAll.ToList();
+            var containerPoQty = _allocation
+                .GroupBy(r => r.OraPONo)
+                .Sum(g => g.GroupBy(x => x.ItemCode).Sum(ig => ig.First().PoQty));
+
+            var rows = all
+                .GroupBy(r => r.Country)
+                .Select(g => new CountryContainerSummaryRowVm(
+                    g.Key,
+                    g.Select(x => x.StoreID).Distinct().Count(),
+                    containerPoQty,
+                    g.Sum(x => x.AllocQty)));
+
+            if (_sortKey is null)
+                return rows.OrderByDescending(r => r.AllocQty).ThenBy(r => r.Country);
+            Func<CountryContainerSummaryRowVm, object?> k = _sortKey switch {
+                "Country"     => r => r.Country,
+                "StoresCount" => r => r.StoresCount,
+                "PoQty"       => r => r.PoQty,
+                "AllocQty"    => r => r.AllocQty,
+                _             => r => r.Country,
             };
             return _sortAsc ? rows.OrderBy(k) : rows.OrderByDescending(k);
         }
