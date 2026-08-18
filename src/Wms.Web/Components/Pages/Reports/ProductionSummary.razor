@@ -545,6 +545,16 @@ else if (_loadedOnce && VisibleRows().Count == 0)
             // empty (fetch problem) — a legitimately empty *filtered* result (user has no
             // country grants) must stay empty, not silently re-widen to "UAE".
             if (list.Count > 0) _countries = CurrentUser.FilterCountries(list).ToList();
+
+            // _selectedCountries' field initializer defaults to {"UAE"} — fine for a
+            // full-access user (UAE stays in their filtered _countries, so it's kept), but a
+            // country-restricted WH manager without UAE access would otherwise silently load
+            // and display UAE data on first render despite UAE never even appearing as a
+            // checkbox option for them. Prune the default selection to what's actually
+            // offered; if that empties it out, default to everything they're allowed to see.
+            var allowedSet = new HashSet<string>(_countries, StringComparer.OrdinalIgnoreCase);
+            _selectedCountries.RemoveWhere(c => !allowedSet.Contains(c));
+            if (_selectedCountries.Count == 0) _selectedCountries = new HashSet<string>(_countries, StringComparer.OrdinalIgnoreCase);
         }
         catch { /* fall back to the hard-coded UAE seed if the lookup fails */ }
 
