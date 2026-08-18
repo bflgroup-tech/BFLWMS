@@ -648,25 +648,33 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
         }
 
         string? error = null;
+        string? warning = null;
         int rowsCopied = 0;
         try
         {
-            rowsCopied = destination switch
+            switch (destination)
             {
-                DataSyncDestination.AzureWmsDb       => await CopyToAzureWmsAsync(sourceRows, ct),
-                DataSyncDestination.WmsProductionDb  => await CopyToWmsProductionDbAsync(sourceRows, ct),
-                _ => throw new InvalidOperationException($"Unknown destination: {destination}"),
-            };
+                case DataSyncDestination.AzureWmsDb:
+                    rowsCopied = await CopyToAzureWmsAsync(sourceRows, ct);
+                    break;
+                case DataSyncDestination.WmsProductionDb:
+                    (rowsCopied, warning) = await CopyToWmsProductionDbAsync(sourceRows, ct);
+                    break;
+                default:
+                    throw new InvalidOperationException($"Unknown destination: {destination}");
+            }
         }
         catch (Exception ex) { error = ex.Message; }
 
         var syncId = await WriteLogRowAsync(
             contno, primaryBatchNo, destination, totalAllocatedQty,
-            status: error is null ? "Success" : "Failed", error, ct);
+            status: error is null ? "Success" : "Failed", error ?? warning, ct);
 
         return error is null
             ? new DataSyncResult(true,
-                $"Allocation: {rowsCopied:N0} rows copied to {DestinationLabel(destination)}.",
+                warning is null
+                    ? $"Allocation: {rowsCopied:N0} rows copied to {DestinationLabel(destination)}."
+                    : $"Allocation: {rowsCopied:N0} rows copied to {DestinationLabel(destination)}. WARNING: {warning}",
                 syncId, rowsCopied)
             : new DataSyncResult(false,
                 $"Allocation to {DestinationLabel(destination)} failed: {error}",
@@ -757,7 +765,13 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
         return rows.Count;
     }
 
-    private async Task<int> CopyToWmsProductionDbAsync(List<SourceRow> rows, CancellationToken ct)
+    /// <summary>Returns the exploded row count plus a summary of any non-fatal
+    /// RefNo issues (per-shop RFIDTransfer resolution failures, or stores with no
+    /// row in DataSettings at all) so the caller can surface them in the sync
+    /// log/banner instead of only logging to Console.Error. A blank ShopName is
+    /// NOT flagged here — those stores share the "" RefNo bucket by design (see
+    /// ResolveRefNosAsync), it's only a genuinely unmatched StoreID that's a problem.</summary>
+    private async Task<(int RowsCopied, string? Warning)> CopyToWmsProductionDbAsync(List<SourceRow> rows, CancellationToken ct)
     {
         // online.dbo.PhotoCheckingResult expects per-PIECE rows enriched from
         // bfldata.dbo.DataSettings, so this is not a straight column copy:
@@ -767,7 +781,14 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
         //   * RefNo from BFLDATA..RFIDTransfer, created for today if absent
         var settings = await LoadProdStoreSettingsAsync(rows.Select(r => r.StoreID), ct);
         var prices   = await LoadRfSalesPricesAsync(rows.Select(r => r.Itemcode), settings, ct);
-        var refNos   = await ResolveRefNosAsync(settings, ct);
+        var (refNos, refNoFailures) = await ResolveRefNosAsync(settings, ct);
+
+        var unmatchedStores = rows
+            .Select(r => r.StoreID?.Trim() ?? "")
+            .Where(s => s.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Where(s => !settings.ContainsKey(s))
+            .ToList();
 
         var dt = BuildPhotoCheckingResultDataTable(rows, settings, prices, refNos);
 
@@ -782,8 +803,14 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
             bulk.ColumnMappings.Add(col.ColumnName, col.ColumnName);
         await bulk.WriteToServerAsync(dt, ct);
 
+        var warnings = new List<string>();
+        if (refNoFailures.Count > 0)
+            warnings.Add($"RefNo resolution failed for shop(s): {string.Join(", ", refNoFailures)}");
+        if (unmatchedStores.Count > 0)
+            warnings.Add($"Store(s) with no row in DataSettings (RefNo left blank): {string.Join(", ", unmatchedStores)}");
+
         // Exploded row count, not the source row count — the caller reports it.
-        return dt.Rows.Count;
+        return (dt.Rows.Count, warnings.Count > 0 ? string.Join(" | ", warnings) : null);
     }
 
     // ----- WMS-Prod-DB price pre-flight -----
@@ -1039,18 +1066,23 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
     ///     no row for today. This implements the intent — reuse if present, else create.
     ///   * Read and insert run inside one transaction with UPDLOCK/HOLDLOCK, so two
     ///     concurrent syncs for the same shop cannot mint two TrfNos for one day.
+    ///
+    /// Stores with a blank ShopName in DataSettings (e.g. EX2KSA export codes) are
+    /// grouped together under the "" key rather than excluded — they share one
+    /// TrfNo sequence for the day, using whichever ShopLetter is set on any
+    /// blank-ShopName DataSettings row.
     /// </summary>
-    private async Task<Dictionary<string, string>> ResolveRefNosAsync(
+    private async Task<(Dictionary<string, string> ByShop, List<string> Failures)> ResolveRefNosAsync(
         Dictionary<string, ProdStoreSettings> settings, CancellationToken ct)
     {
         var byShop = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var failures = new List<string>();
 
         var shops = settings.Values
-            .Where(s => !string.IsNullOrWhiteSpace(s.ShopName))
-            .GroupBy(s => s.ShopName!.Trim(), StringComparer.OrdinalIgnoreCase)
+            .GroupBy(s => (s.ShopName ?? "").Trim(), StringComparer.OrdinalIgnoreCase)
             .Select(g => (Shop: g.Key, Letter: g.Select(x => x.ShopLetter).FirstOrDefault(l => !string.IsNullOrWhiteSpace(l))))
             .ToList();
-        if (shops.Count == 0) return byShop;
+        if (shops.Count == 0) return (byShop, failures);
 
         var todayGst = DateTime.UtcNow.AddHours(4).Date;
 
@@ -1097,9 +1129,10 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
             catch (Exception ex)
             {
                 Console.Error.WriteLine($"[DataSync] WARN: RefNo resolve failed for shop '{shop}': {ex.Message}");
+                failures.Add($"{shop} ({ex.Message})");
             }
         }
-        return byShop;
+        return (byShop, failures);
     }
 
     private async Task<int?> WriteLogRowAsync(string contno, int? batchNo, DataSyncDestination dest,
@@ -1303,14 +1336,19 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
                 }
             }
 
-            var refNo = st?.ShopName is { Length: > 0 } shop && refNos.TryGetValue(shop.Trim(), out var rn)
-                ? (object)rn
-                : "";
+            // RefNo only applies to printing stores. Stores with a blank ShopName
+            // share the "" bucket in refNos (see ResolveRefNosAsync) rather than
+            // being skipped.
+            var shopKey = (st?.ShopName ?? "").Trim();
+            var refNo = printY && refNos.TryGetValue(shopKey, out var rn) ? (object)rn : "";
 
             // Barcode column carries the composite "Barcode/OrPrice/RefNo" text
-            // rather than the raw scanned barcode.
+            // when the store prints stickers; non-printing stores just get the
+            // Itemcode, since there's no price/RefNo to embed.
             var refNoText = refNo as string ?? "";
-            var barcode = $"{r.Barcode}/{orPrice.ToString(System.Globalization.CultureInfo.InvariantCulture)}/{refNoText}";
+            var barcode = printY
+                ? $"{r.Barcode}/{orPrice.ToString(System.Globalization.CultureInfo.InvariantCulture)}/{refNoText}"
+                : (r.Itemcode ?? "");
 
             for (var i = 0; i < pieces; i++)
             {
@@ -1341,7 +1379,7 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
                     barcode,
                     salesPrice,
                     refNo,
-                    "PA",                                // Mark
+                    printY ? "PA" : "",                 // Mark
                     "0",                                 // Uid (varchar)
                     "N",                                 // RStatus
                     "N",                                 // Excess
