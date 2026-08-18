@@ -445,18 +445,18 @@ else if (_loadedOnce && VisibleRows().Count == 0)
 }
 
 @code {
-    // "Daily Transfer Qty by Warehouse" — full multi-column table for super users (Admin or
-    // explicit Section Access grant). A WH manager whose Country Access is scoped to exactly
-    // one country instead sees only that country's own column, with a renamed heading —
-    // driven purely by their existing Country Access grant, no separate Section Access grant
-    // needed for that restricted view. See BuildDtbwPivot() below.
+    // "Daily Transfer Qty by Warehouse" — visibility and column scope are separate concerns.
+    // Visibility: an explicit Section Access grant (or Admin), OR — even without a grant — a
+    // WH manager whose Country Access is scoped to exactly one country (see
+    // CanSeeDtbwSection). Column scope: ANY non-Admin/non-all-countries viewer only ever sees
+    // columns for their own granted countries (via Country Access), regardless of which path
+    // granted them visibility — a Section Access grant does not by itself unlock every
+    // country's column. Only Admin/HasAllCountriesAccess sees every column. See
+    // BuildDtbwPivot() below and the filtering in LoadAsync.
     private bool CanSeeDtbw => CurrentUser.CanSeeSection(SectionKeys.PRODSUMM_DTBW);
-    private string? DtbwSingleCountry =>
-        !CanSeeDtbw && !CurrentUser.HasAllCountriesAccess && CurrentUser.AllowedCountries.Count == 1
-            ? CurrentUser.AllowedCountries.Single()
-            : null;
-    private bool CanSeeDtbwSection => CanSeeDtbw || DtbwSingleCountry is not null;
-    private string DtbwHeading => DtbwSingleCountry is not null ? $"Daily Transfer Qty for {DtbwSingleCountry}" : "Daily Transfer Qty by Warehouse";
+    private bool CanSeeDtbwSection => CanSeeDtbw
+        || (!CurrentUser.HasAllCountriesAccess && CurrentUser.AllowedCountries.Count == 1);
+    private string DtbwHeading => _dtbwColumns.Count == 1 ? $"Daily Transfer Qty for {_dtbwColumns[0].Country}" : "Daily Transfer Qty by Warehouse";
     private List<WarehouseTransferColumn>   _dtbwColumns    = new();
     private List<DailyWarehouseTransferRow> _dtbwDaily      = new();
     private List<WarehouseMerchNeedRow>     _dtbwMerchNeeds = new();
@@ -847,8 +847,10 @@ else if (_loadedOnce && VisibleRows().Count == 0)
             }
 
             // "Daily Transfer Qty by Warehouse" — independent of the country picker above,
-            // driven solely by the selected week. Super users get every column; a single-
-            // country WH manager gets only their own column (see CanSeeDtbwSection).
+            // driven solely by the selected week. Only Admin/HasAllCountriesAccess gets every
+            // column; everyone else (regardless of whether a Section Access grant or the
+            // single-country auto-visibility rule made the section visible at all) only ever
+            // sees columns for the countries their own Country Access actually lists.
             _dtbwColumns.Clear(); _dtbwDaily.Clear(); _dtbwMerchNeeds.Clear();
             if (CanSeeDtbwSection)
             {
@@ -856,9 +858,9 @@ else if (_loadedOnce && VisibleRows().Count == 0)
                 try
                 {
                     var dtbw = await Svc.GetDailyTransferByWarehouseAsync(weekRange.Start, weekRange.End, weekRange.Start.Year, selectedWeekNum);
-                    _dtbwColumns = CanSeeDtbw
+                    _dtbwColumns = CurrentUser.HasAllCountriesAccess
                         ? dtbw.Columns
-                        : dtbw.Columns.Where(c => string.Equals(c.Country, DtbwSingleCountry, StringComparison.OrdinalIgnoreCase)).ToList();
+                        : dtbw.Columns.Where(c => CurrentUser.AllowedCountries.Contains(c.Country)).ToList();
                     _dtbwDaily = dtbw.Daily; _dtbwMerchNeeds = dtbw.MerchNeeds;
                 }
                 catch (Exception dtbwEx) { merchNeedErrors.Add($"Daily Transfer by Warehouse: {dtbwEx.Message}"); }
