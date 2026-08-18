@@ -885,7 +885,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         // TgtEOM per current spec:
         //   WkReduction = (PrevMonthEOM - TgtEOM) / weeksInMonth
         //   CurrentEOW  = PrevMonthEOM - (WkReduction * weeksElapsedSoFar)
-        //   OTS Qty     = CurrentEOW + WeekSales - SOH - LeadIntransit - LeadDCSOH
+        //   OTS Qty     = CurrentEOW + WeekSales - SOH - InTransit - Ex2DcSoh - CountingWIP
         //   OTS %       = OTS Qty / CurrentEOW * 100  (0 when CurrentEOW <= 0)
         // Only supply arriving inside the country's lead window counts (Lead
         // InTransit + Lead DC SOH). For countries with no Lead tracking (UAE,
@@ -1023,13 +1023,20 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                 currentEOW     = r.TgtEOM;   // fall back when no previous history
             }
 
-            // OTS formula (v1.0.364+): subtract the LEAD-horizon-filtered
-            // supply (Lead InTransit + Lead DC SOH) instead of the raw totals.
-            // Only stock that arrives within the country's lead window counts
-            // toward meeting Current EOW. For countries excluded from the Lead
-            // prefetch (UAE, OMAN, ECOM), leadIntransit + leadDcSoh = 0 so the
-            // formula reduces to (CurrentEOW + WeekSales - SOH).
-            var otsQty = currentEOW + ws - soh - leadIntransit - leadDcSoh;
+            // OTS formula — reverted to the raw totals it used before #354.
+            //
+            // #354 had switched to the LEAD-horizon-filtered supply (Lead InTransit +
+            // Lead DC SOH) on the reasoning that only stock arriving inside the
+            // country's lead window should count toward Current EOW. In practice that
+            // understated committed supply badly: the Lead columns are a small subset
+            // of the raw ones, so OTS came out roughly double what it should be
+            // (KSA/Menswear on 18/08/2026: 195,746 with Lead vs 83,005 with raw).
+            //
+            // All committed supply now counts again — InTransit, Ex2 DC SOH and
+            // CountingWIP (stock approved but not yet completed). The Lead* columns
+            // stay on the grid and in WmsOtsPoAllocationRun for reference; they are
+            // simply no longer part of the arithmetic.
+            var otsQty = currentEOW + ws - soh - inTransit - ex2dc - wip;
             var otsPct = currentEOW > 0 ? (double)otsQty / currentEOW * 100.0 : 0.0;
             results.Add(new OtsPoAllocationRow(
                 Country:         r.Country,
