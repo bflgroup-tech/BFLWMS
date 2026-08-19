@@ -1277,8 +1277,11 @@ DROP TABLE #Scans, #BatchKind, #ItemDiv;";
         return v is not null && v is not DBNull ? Convert.ToInt64(v) : 0;
     }
 
-    // Country -> BFL_MFP_OUTBOUND_T1.territory code. Small fixed set (the export countries plus
-    // UAE), no lookup table for this mapping exists anywhere else in the app.
+    // Country -> BFL_MFP_OUTBOUND_T1.territory code, for the Daily Transfer Qty by Warehouse
+    // report's export columns (small fixed set — the export countries plus UAE). A real
+    // reference table for this mapping exists too (LPMSIM.dbo.LPM_MfpTerritoryMap, used by
+    // GetDivisionCapVsTargetAsync below) but isn't wired up here to keep this report's
+    // behavior unchanged from before that table was known about.
     private static readonly Dictionary<string, string> CountryToTerritoryCode = new(StringComparer.OrdinalIgnoreCase)
     {
         ["UAE"] = "ae", ["BAHRAIN"] = "bh", ["KSA"] = "sa", ["KUWAIT"] = "kw",
@@ -1430,6 +1433,57 @@ DROP TABLE #Scans, #BatchKind, #ItemDiv;";
             new { weekStart = weekStart.Date, weekEndExclusive = weekEnd.Date.AddDays(1), trfNoPattern = trfNoCode + "%" },
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         return rows.Select(r => new DailyWarehouseTransferRow(r.TrfDate, warehouseLabel, r.Quantity)).ToList();
+    }
+
+    /// <summary>
+    /// "Week-wise Division Comparison (Actual vs Target)" on Production Summary — one row per
+    /// division for a country, Max Cap./Wk summed from LPMSIM.dbo.WMS_WH_MAXMIN_CAP (most
+    /// recently uploaded week per warehouse for that country — summed across warehouses in
+    /// case a country has more than one; that table's own division list is authoritative,
+    /// including ad-hoc entries like "DATA MIGRATION"/"LFL" the Division master table doesn't
+    /// have), plus one Target column per week actually present for that (territory, year,
+    /// month) in LPMSIM.dbo.BFL_MFP_OUTBOUND_T1 (its own week/month tagging, not the app's
+    /// calendar — matches confirmed live: that table already tags each row with the month it
+    /// belongs to). Territory code resolved from LPMSIM.dbo.LPM_MfpTerritoryMap (SIMCountry ->
+    /// Territory) — a real reference table, not a hardcoded mapping. BFL_MFP_OUTBOUND_T1's
+    /// division is an int DivCode, resolved via the Division master table; divisions with no
+    /// DivCode match get no target rows (0). Null if the country has no active territory
+    /// mapping.
+    /// </summary>
+    public async Task<DivisionCapVsTargetResult?> GetDivisionCapVsTargetAsync(
+        string country, int year, int month, CancellationToken ct = default)
+    {
+        await using var c = OpenOnPremBackup();
+
+        var territoryCode = await c.QuerySingleOrDefaultAsync<string?>(new CommandDefinition(@"
+            SELECT TOP 1 Territory
+              FROM LPMSIM.dbo.LPM_MfpTerritoryMap WITH (NOLOCK)
+             WHERE SIMCountry = @country AND IsActive = 1",
+            new { country }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        if (territoryCode is null) return null;
+
+        var caps = (await c.QueryAsync<DivisionCapRow>(new CommandDefinition(@"
+            ;WITH latest AS (
+                SELECT Warehouse, DIVISION, MAX_CAP_WEEK,
+                       ROW_NUMBER() OVER (PARTITION BY Warehouse, DIVISION ORDER BY Year DESC, Week DESC) AS rn
+                  FROM LPMSIM.dbo.WMS_WH_MAXMIN_CAP WITH (NOLOCK)
+                 WHERE Country = @country
+            )
+            SELECT Division = DIVISION, MaxCapWeek = CAST(ISNULL(SUM(MAX_CAP_WEEK), 0) AS DECIMAL(18,2))
+              FROM latest WHERE rn = 1
+             GROUP BY DIVISION
+             ORDER BY DIVISION",
+            new { country }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).ToList();
+
+        var targets = (await c.QueryAsync<DivisionWeekTargetRow>(new CommandDefinition(@"
+            SELECT d.Division, Week = o.week, Target = CAST(SUM(o.merch_need) AS DECIMAL(18,2))
+              FROM LPMSIM.dbo.BFL_MFP_OUTBOUND_T1 o WITH (NOLOCK)
+              JOIN LPMSIM.dbo.Division d WITH (NOLOCK) ON d.DivCode = o.division
+             WHERE o.territory = @territoryCode AND o.year = @year AND o.month = @month
+             GROUP BY d.Division, o.week",
+            new { territoryCode, year, month }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).ToList();
+
+        return new DivisionCapVsTargetResult(caps, targets);
     }
 
     // ---------------- Non-UAE Production Checking (verbatim port of LPMSIM 1.14.268) ----------------
