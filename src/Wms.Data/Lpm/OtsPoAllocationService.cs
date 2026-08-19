@@ -210,6 +210,9 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                    ISNULL(PrevMonthEOM,    0) AS PrevMonthEOM,
                    ISNULL(DivisorWeeks,    0) AS DivisorWeeks,
                    ISNULL(WeekAdjustment,  0) AS WeekAdjustment,
+                   ISNULL(CurrentWeek,     0) AS CurrentWeek,
+                   ISNULL(TargetWeek,      0) AS TargetWeek,
+                   ISNULL(WeeksMultiplier, 0) AS WeeksMultiplier,
                    ISNULL(CurrentEOW, TgtEOM) AS CurrentEOW
               FROM dbo.WmsOtsPoAllocationRun WITH (NOLOCK)
              WHERE [Year] = @year AND [Month] = @month
@@ -236,6 +239,9 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
             PrevMonthEOM: r.PrevMonthEOM,
             DivisorWeeks: r.DivisorWeeks,
             WeekAdjustment: r.WeekAdjustment,
+            CurrentWeek: r.CurrentWeek,
+            TargetWeek: r.TargetWeek,
+            WeeksMultiplier: r.WeeksMultiplier,
             CurrentEOW: r.CurrentEOW)).ToList();
     }
 
@@ -326,6 +332,9 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
             dt.Columns.Add("PrevMonthEOM",    typeof(int));
             dt.Columns.Add("DivisorWeeks",    typeof(int));
             dt.Columns.Add("WeekAdjustment",  typeof(decimal));
+            dt.Columns.Add("CurrentWeek",     typeof(int));
+            dt.Columns.Add("TargetWeek",      typeof(int));
+            dt.Columns.Add("WeeksMultiplier", typeof(int));
             dt.Columns.Add("CurrentEOW",      typeof(int));
 
             var who = actor ?? user.Name ?? "";
@@ -343,7 +352,8 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                     r.InTransit, r.Ex2DcSoh, r.CountingWIP, r.OtsQtyToday,
                     (decimal)r.OtsPercentToday,
                     (object?)r.PrevEOMMonth ?? DBNull.Value,
-                    r.PrevMonthEOM, r.DivisorWeeks, r.WeekAdjustment, r.CurrentEOW);
+                    r.PrevMonthEOM, r.DivisorWeeks, r.WeekAdjustment,
+                    r.CurrentWeek, r.TargetWeek, r.WeeksMultiplier, r.CurrentEOW);
             }
 
             using var bulk = new SqlBulkCopy(c, SqlBulkCopyOptions.Default, tx)
@@ -462,6 +472,17 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         // which shifts WeekAdjustment and CurrentEOW. Surfaced on the grid as the
         // "Divisor Weeks" column so the arithmetic is checkable from the report.
         var weeksInTargetMonthByCountry = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+        // Week bookkeeping surfaced on the grid so CurrentEOW is checkable:
+        //   CurrentWeek     = latest wk in LPM_OTS_Output (global, same for all rows)
+        //   TargetWeek      = CurrentWeek + NoOfLeadWeeks - 1   (per country)
+        //   WeeksMultiplier = TargetWeek - last week of the month BEFORE the target
+        //                     month, i.e. how many weeks INTO the target month the
+        //                     target week sits. This replaces NoOfLeadWeeks as the
+        //                     CurrentEOW multiplier.
+        var currentWeekGlobal          = 0;
+        var targetWeekByCountry        = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var weeksMultiplierByCountry   = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         {
             await using var c = OpenOnPremBackup();
             var currentWk = (await c.ExecuteScalarAsync<int?>(new CommandDefinition(@"
@@ -469,6 +490,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                  WHERE wk IS NOT NULL
                  ORDER BY OTSDate DESC, wk DESC",
                 commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))) ?? 0;
+            currentWeekGlobal = currentWk;
 
             var fiscalCal = (await c.QueryAsync<(int Year, int Month, int Week)>(new CommandDefinition(@"
                 SELECT DISTINCT [year] AS [Year], [month] AS [Month], [week] AS [Week]
@@ -544,6 +566,27 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
             foreach (var (cty, t) in targetByCountry)
             {
                 weeksInTargetMonthByCountry[cty] = weeksByMonthYear.TryGetValue((t.TgtMonth, t.TgtYear), out var w) ? w : 0;
+
+                // TargetWeek and the CurrentEOW multiplier. The multiplier counts how
+                // far INTO the target month the target week sits, measured from the
+                // last week of the preceding month.
+                var leadWeeks = weeksByCountry.TryGetValue(cty, out var lw) ? lw : 0;
+                var targetWk  = currentWk > 0 ? currentWk + leadWeeks - 1 : 0;
+                targetWeekByCountry[cty] = targetWk;
+
+                var lastWkOfPrev = fiscalCal
+                    .Where(kv => kv.Value.Month == t.PrevMonth && kv.Value.Item2 == t.PrevYear)
+                    .Select(kv => kv.Key.Week)
+                    .DefaultIfEmpty(0)
+                    .Max();
+
+                var mult = targetWk - lastWkOfPrev;
+                // Fiscal-year wrap: a January target week is numerically below the
+                // previous December's weeks, so the raw subtraction goes negative.
+                if (mult <= 0 && targetWk > 0 && lastWkOfPrev > 0) mult += 52;
+                // Last resort — keep the previous behaviour rather than emit 0/negative.
+                if (mult <= 0) mult = leadWeeks;
+                weeksMultiplierByCountry[cty] = mult;
             }
         }
 
@@ -966,10 +1009,22 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
             if (n == 0) continue;
             // Sort deterministically so leftover units land consistently.
             storesInGroup.Sort((a, b) => string.CompareOrdinal(a.StoreID, b.StoreID));
-            var itFloor  = effectiveInTransit     / n;
-            var itRem    = effectiveInTransit     % n;
-            var e2Floor  = ex2DcTotal             / n;
-            var e2Rem    = ex2DcTotal             % n;
+
+            // InTransit / Ex2 DC SOH are split PROPORTIONAL TO WEEK SALES within the
+            // (Country, DivCode) group — a store selling twice as much carries twice
+            // the in-transit stock. Equal-splitting them made a flagship and a kiosk
+            // look identically supplied.
+            //
+            // Lead InTransit / Lead DC SOH keep the equal split: they are a
+            // lead-window subset shown for reference and no longer feed OTS.
+            var weights = storesInGroup
+                .Select(s => weekSalesByKey.TryGetValue((s.StoreID, s.DivCode), out var w) ? Math.Max(0, w) : 0)
+                .ToArray();
+            var weightSum = weights.Sum();
+
+            var itShare = SplitByWeight(effectiveInTransit, weights, weightSum, n);
+            var e2Share = SplitByWeight(ex2DcTotal,         weights, weightSum, n);
+
             var liFloor  = effectiveLeadIntransit / n;
             var liRem    = effectiveLeadIntransit % n;
             var ldFloor  = leadDcTotal            / n;
@@ -978,8 +1033,8 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
             {
                 var s = storesInGroup[i];
                 var key = (s.Country, s.StoreID, s.DivCode);
-                perRowInTransit[key]     = itFloor + (i < itRem ? 1 : 0);
-                perRowEx2Dc[key]         = e2Floor + (i < e2Rem ? 1 : 0);
+                perRowInTransit[key]     = itShare[i];
+                perRowEx2Dc[key]         = e2Share[i];
                 perRowLeadIntransit[key] = liFloor + (i < liRem ? 1 : 0);
                 perRowLeadDcSoh[key]     = ldFloor + (i < ldRem ? 1 : 0);
             }
@@ -1018,12 +1073,20 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
             var wpm = weeksInTargetMonthByCountry.TryGetValue(r.Country, out var wp) && wp > 0
                 ? wp
                 : (weeksInMonth > 0 ? weeksInMonth : 0);
+            // Multiplier is how many weeks INTO the target month the target week sits
+            // (TargetWeek - last week of the preceding month), NOT NoOfLeadWeeks. The
+            // two differ whenever the lead horizon does not land at a month boundary.
+            var targetWeek  = targetWeekByCountry.TryGetValue(r.Country, out var tw) ? tw : 0;
+            var weeksMult   = weeksMultiplierByCountry.TryGetValue(r.Country, out var wm) && wm > 0
+                ? wm
+                : r.NoOfLeadWeeks;
+
             decimal weekAdjustment;
             int currentEOW;
             if (r.PrevMonthEOM > 0 && wpm > 0)
             {
                 weekAdjustment = (decimal)(r.TgtEOM - r.PrevMonthEOM) / wpm;
-                currentEOW     = (int)Math.Round(r.PrevMonthEOM + weekAdjustment * r.NoOfLeadWeeks);
+                currentEOW     = (int)Math.Round(r.PrevMonthEOM + weekAdjustment * weeksMult);
             }
             else
             {
@@ -1071,9 +1134,60 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                 PrevMonthEOM:    r.PrevMonthEOM,
                 DivisorWeeks:    wpm,
                 WeekAdjustment:  weekAdjustment,
+                CurrentWeek:     currentWeekGlobal,
+                TargetWeek:      targetWeek,
+                WeeksMultiplier: weeksMult,
                 CurrentEOW:      currentEOW));
         }
         return (results, warnings);
+    }
+
+    /// <summary>
+    /// Splits <paramref name="total"/> across n stores in proportion to
+    /// <paramref name="weights"/> (Week Sales), using largest-remainder so the parts
+    /// sum to the total exactly — no unit is invented or lost.
+    ///
+    /// Falls back to an equal split when every weight is zero, which happens for a
+    /// division with no weekly sales history; proportioning by nothing would
+    /// otherwise dump the whole total on one arbitrary store.
+    /// </summary>
+    private static int[] SplitByWeight(int total, int[] weights, long weightSum, int n)
+    {
+        var result = new int[n];
+        if (n == 0 || total == 0) return result;
+
+        if (weightSum <= 0)
+        {
+            var eqFloor = total / n;
+            var eqRem   = total % n;
+            for (var i = 0; i < n; i++) result[i] = eqFloor + (i < eqRem ? 1 : 0);
+            return result;
+        }
+
+        var remainders = new (int Index, decimal Frac)[n];
+        var assigned = 0;
+        for (var i = 0; i < n; i++)
+        {
+            var raw   = (decimal)total * weights[i] / weightSum;
+            var floor = (int)Math.Floor(raw);
+            result[i] = floor;
+            assigned += floor;
+            remainders[i] = (i, raw - floor);
+        }
+
+        // Hand the leftover to the largest fractional parts; index breaks ties so the
+        // result is stable across runs (stores are already sorted by StoreID).
+        var leftover = total - assigned;
+        if (leftover > 0)
+        {
+            Array.Sort(remainders, (a, b) =>
+            {
+                var c = b.Frac.CompareTo(a.Frac);
+                return c != 0 ? c : a.Index.CompareTo(b.Index);
+            });
+            for (var k = 0; k < leftover && k < n; k++) result[remainders[k].Index] += 1;
+        }
+        return result;
     }
 
     private static async Task<T> SafeAsync<T>(List<string> warnings, string label, Func<Task<T>> body, Func<T> fallback)
@@ -1128,6 +1242,9 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         public int      PrevMonthEOM    { get; set; }
         public int      DivisorWeeks    { get; set; }
         public decimal  WeekAdjustment  { get; set; }
+        public int      CurrentWeek     { get; set; }
+        public int      TargetWeek      { get; set; }
+        public int      WeeksMultiplier { get; set; }
         public int      CurrentEOW      { get; set; }
     }
 

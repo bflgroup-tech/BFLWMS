@@ -24,9 +24,12 @@ public record OtsPoAllocationRow(
     double   OtsPercentToday, // OtsQtyToday / CurrentEOW * 100; 0 when CurrentEOW <= 0
     string?  PrevEOMMonth,    // "MMM-yyyy" of the month PrevMonthEOM was read from (TgtEOMMonth - 1)
     int      PrevMonthEOM,    // TargetEOM from LPM_EOM_Output for PrevEOMMonth; 0 if missing
-    int      DivisorWeeks,    // #weeks in the TARGET EOM month (the month lastWk = currentWk + LeadWeeks - 1 falls in) — the WeekAdjustment divisor
+    int      DivisorWeeks,    // #weeks in the TARGET EOM month (the month TargetWeek falls in) — the WeekAdjustment divisor
     decimal  WeekAdjustment,  // (TgtEOM - PrevMonthEOM) / DivisorWeeks ; positive = scaling up, negative = winding down
-    int      CurrentEOW       // PrevMonthEOM + (WeekAdjustment * NoOfLeadWeeks). Falls back to TgtEOM when PrevMonthEOM = 0
+    int      CurrentWeek,     // latest wk in LPM_OTS_Output — same for every row
+    int      TargetWeek,      // CurrentWeek + NoOfLeadWeeks - 1 (per country)
+    int      WeeksMultiplier, // TargetWeek - last week of the month BEFORE the target month = weeks INTO the target month
+    int      CurrentEOW       // PrevMonthEOM + (WeekAdjustment * WeeksMultiplier). Falls back to TgtEOM when PrevMonthEOM = 0
 );
 
 /// <summary>One row per available (Month, Year) picker option.</summary>
