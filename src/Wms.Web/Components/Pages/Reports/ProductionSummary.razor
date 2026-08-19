@@ -1158,11 +1158,28 @@ else if (_loadedOnce && VisibleRows().Count == 0)
     private static string Csv(string? s) => s is null ? ""
         : (s.Contains(',') || s.Contains('"') || s.Contains('\n')) ? "\"" + s.Replace("\"", "\"\"") + "\"" : s;
 
-    // Small "×" icon button for section headers — hover shows "Minimize"/"Expand" via the
+    // Small icon button for section headers — glyph reflects the action the click performs
+    // (− to minimize, a checklist icon to expand), hover shows "Minimize"/"Expand" via the
     // native title tooltip, no separate big text button needed.
     private RenderFragment MinimizeToggle(bool collapsed, Action toggle) => __builder =>
     {
-        <button type="button" class="psr-minimize-btn" title="@(collapsed ? "Expand" : "Minimize")" @onclick="toggle">&times;</button>
+        <button type="button" class="psr-minimize-btn" title="@(collapsed ? "Expand" : "Minimize")" @onclick="toggle">
+            @if (collapsed)
+            {
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <rect x="3" y="4" width="4" height="4" rx="1" fill="currentColor" />
+                    <rect x="10" y="5" width="11" height="2" rx="1" fill="currentColor" />
+                    <rect x="3" y="10" width="4" height="4" rx="1" fill="currentColor" />
+                    <rect x="10" y="11" width="11" height="2" rx="1" fill="currentColor" />
+                    <rect x="3" y="16" width="4" height="4" rx="1" fill="currentColor" />
+                    <rect x="10" y="17" width="11" height="2" rx="1" fill="currentColor" />
+                </svg>
+            }
+            else
+            {
+                @: −
+            }
+        </button>
     };
 
     private RenderFragment MetricCard(string label, string value, string bg, string fg, bool big) => __builder =>
