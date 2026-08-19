@@ -24,7 +24,8 @@ public record OtsPoAllocationRow(
     double   OtsPercentToday, // OtsQtyToday / CurrentEOW * 100; 0 when CurrentEOW <= 0
     string?  PrevEOMMonth,    // "MMM-yyyy" of the month PrevMonthEOM was read from (TgtEOMMonth - 1)
     int      PrevMonthEOM,    // TargetEOM from LPM_EOM_Output for PrevEOMMonth; 0 if missing
-    decimal  WeekAdjustment,  // (TgtEOM - PrevMonthEOM) / weeksInPrevMonth ; positive = scaling up, negative = winding down
+    int      DivisorWeeks,    // #weeks in the TARGET EOM month (the month lastWk = currentWk + LeadWeeks - 1 falls in) — the WeekAdjustment divisor
+    decimal  WeekAdjustment,  // (TgtEOM - PrevMonthEOM) / DivisorWeeks ; positive = scaling up, negative = winding down
     int      CurrentEOW       // PrevMonthEOM + (WeekAdjustment * NoOfLeadWeeks). Falls back to TgtEOM when PrevMonthEOM = 0
 );
 
