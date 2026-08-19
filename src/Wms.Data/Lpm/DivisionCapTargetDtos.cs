@@ -6,9 +6,17 @@ namespace Wms.Data.Lpm;
 /// "DATA MIGRATION"/"LFL" that the Division master table doesn't have).</summary>
 public sealed record DivisionCapRow(string Division, decimal MaxCapWeek);
 
-/// <summary>One (Division, Week) merch_need target cell from LPMSIM.dbo.BFL_MFP_OUTBOUND_T1,
-/// resolved from its integer division code via the Division master table — Division here is
-/// that table's Title Case spelling; match against DivisionCapRow.Division case-insensitively.</summary>
-public sealed record DivisionWeekTargetRow(string Division, int Week, decimal Target);
+/// <summary>One division's merch_need target for the selected (Year, Week) from
+/// LPMSIM.dbo.BFL_MFP_OUTBOUND_T1, resolved from its integer division code via the Division
+/// master table — Division here is that table's Title Case spelling; match against
+/// DivisionCapRow.Division case-insensitively.</summary>
+public sealed record DivisionWeekTargetRow(string Division, decimal Target);
 
-public sealed record DivisionCapVsTargetResult(List<DivisionCapRow> Caps, List<DivisionWeekTargetRow> Targets);
+/// <summary>One (Division, Day) actual production quantity for the selected week — same
+/// source tables as the Daily Transfer Qty by Warehouse report (bfldata.dbo.DailyCountCategoryTrf
+/// for UAE/Techno, that country's own dbo.vTransferDetail for export countries), grouped by
+/// Division instead of by warehouse total.</summary>
+public sealed record DivisionDailyRow(string Division, DateTime Day, long Quantity);
+
+public sealed record DivisionCapVsTargetResult(
+    List<DivisionCapRow> Caps, List<DivisionWeekTargetRow> Targets, List<DivisionDailyRow> Daily);

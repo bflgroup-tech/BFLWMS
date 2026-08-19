@@ -1437,21 +1437,24 @@ DROP TABLE #Scans, #BatchKind, #ItemDiv;";
 
     /// <summary>
     /// "Week-wise Division Comparison (Actual vs Target)" on Production Summary — one row per
-    /// division for a country, Max Cap./Wk summed from LPMSIM.dbo.WMS_WH_MAXMIN_CAP (most
-    /// recently uploaded week per warehouse for that country — summed across warehouses in
-    /// case a country has more than one; that table's own division list is authoritative,
-    /// including ad-hoc entries like "DATA MIGRATION"/"LFL" the Division master table doesn't
-    /// have), plus one Target column per week actually present for that (territory, year,
-    /// month) in LPMSIM.dbo.BFL_MFP_OUTBOUND_T1 (its own week/month tagging, not the app's
-    /// calendar — matches confirmed live: that table already tags each row with the month it
-    /// belongs to). Territory code resolved from LPMSIM.dbo.LPM_MfpTerritoryMap (SIMCountry ->
-    /// Territory) — a real reference table, not a hardcoded mapping. BFL_MFP_OUTBOUND_T1's
-    /// division is an int DivCode, resolved via the Division master table; divisions with no
-    /// DivCode match get no target rows (0). Null if the country has no active territory
-    /// mapping.
+    /// division for a country, for the selected (Year, Week):
+    ///   - Max Cap./Wk: summed from LPMSIM.dbo.WMS_WH_MAXMIN_CAP (most recently uploaded week
+    ///     per warehouse for that country — summed across warehouses in case a country has
+    ///     more than one; that table's own division list is authoritative, including ad-hoc
+    ///     entries like "DATA MIGRATION"/"LFL" the Division master table doesn't have).
+    ///   - Target: LPMSIM.dbo.BFL_MFP_OUTBOUND_T1.merch_need for that exact (territory, year,
+    ///     week) — territory resolved from LPMSIM.dbo.LPM_MfpTerritoryMap (SIMCountry ->
+    ///     Territory), a real reference table, not a hardcoded mapping. BFL_MFP_OUTBOUND_T1's
+    ///     division is an int DivCode, resolved via the Division master table; divisions with
+    ///     no DivCode match get no target (0).
+    ///   - Daily actual: same source tables as GetDailyTransferByWarehouseAsync, grouped by
+    ///     Division instead of by warehouse total — bfldata.dbo.DailyCountCategoryTrf
+    ///     (Warehouse='TECHNO') for UAE, that country's own dbo.vTransferDetail (via its own
+    ///     connection, TrfNo LIKE '{ExportCountryCode}%') for export countries.
+    /// Null if the country has no active territory mapping.
     /// </summary>
     public async Task<DivisionCapVsTargetResult?> GetDivisionCapVsTargetAsync(
-        string country, int year, int month, CancellationToken ct = default)
+        string country, int year, int week, DateTime weekStart, DateTime weekEnd, CancellationToken ct = default)
     {
         await using var c = OpenOnPremBackup();
 
@@ -1476,14 +1479,55 @@ DROP TABLE #Scans, #BatchKind, #ItemDiv;";
             new { country }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).ToList();
 
         var targets = (await c.QueryAsync<DivisionWeekTargetRow>(new CommandDefinition(@"
-            SELECT d.Division, Week = o.week, Target = CAST(SUM(o.merch_need) AS DECIMAL(18,2))
+            SELECT d.Division, Target = CAST(SUM(o.merch_need) AS DECIMAL(18,2))
               FROM LPMSIM.dbo.BFL_MFP_OUTBOUND_T1 o WITH (NOLOCK)
               JOIN LPMSIM.dbo.Division d WITH (NOLOCK) ON d.DivCode = o.division
-             WHERE o.territory = @territoryCode AND o.year = @year AND o.month = @month
-             GROUP BY d.Division, o.week",
-            new { territoryCode, year, month }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).ToList();
+             WHERE o.territory = @territoryCode AND o.year = @year AND o.week = @week
+             GROUP BY d.Division",
+            new { territoryCode, year, week }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).ToList();
 
-        return new DivisionCapVsTargetResult(caps, targets);
+        List<DivisionDailyRow> daily;
+        if (string.Equals(country, "UAE", StringComparison.OrdinalIgnoreCase))
+        {
+            daily = (await c.QueryAsync<DivisionDailyRow>(new CommandDefinition($@"
+                SELECT Division, Day = TrnDate,
+                       Quantity = CAST(ISNULL(SUM({DailyTransferHourlySumSql}), 0) AS BIGINT)
+                  FROM bfldata.dbo.DailyCountCategoryTrf WITH (NOLOCK)
+                 WHERE Warehouse = 'TECHNO' AND TrnDate >= @weekStart AND TrnDate < @weekEndExclusive
+                 GROUP BY Division, TrnDate",
+                new { weekStart = weekStart.Date, weekEndExclusive = weekEnd.Date.AddDays(1) },
+                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).ToList();
+        }
+        else
+        {
+            daily = new List<DivisionDailyRow>();
+            var exportKey = await c.QuerySingleOrDefaultAsync<(string Dataname, string Code)?>(new CommandDefinition(@"
+                SELECT Dataname, ExportCountryCode
+                  FROM BFLDATA.dbo.DataSettings WITH (NOLOCK)
+                 WHERE Country = @country AND ExportActive = 'Y' AND ExportWH = 'Y'",
+                new { country }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            if (exportKey is not null)
+            {
+                string? cs;
+                try { cs = resolver.GetCountryConnectionString(country); }
+                catch { cs = null; }
+                if (!string.IsNullOrWhiteSpace(cs))
+                {
+                    await using var countryConn = new SqlConnection(WithInitialCatalog(cs, exportKey.Value.Dataname));
+                    await countryConn.OpenAsync(ct);
+                    daily = (await countryConn.QueryAsync<DivisionDailyRow>(new CommandDefinition(@"
+                        SELECT Division, Day = TrfDate,
+                               Quantity = CAST(ISNULL(SUM(Quantity), 0) AS BIGINT)
+                          FROM dbo.vTransferDetail WITH (NOLOCK)
+                         WHERE TrfDate >= @weekStart AND TrfDate < @weekEndExclusive AND TrfNo LIKE @trfNoPattern
+                         GROUP BY Division, TrfDate",
+                        new { weekStart = weekStart.Date, weekEndExclusive = weekEnd.Date.AddDays(1), trfNoPattern = exportKey.Value.Code + "%" },
+                        commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).ToList();
+                }
+            }
+        }
+
+        return new DivisionCapVsTargetResult(caps, targets, daily);
     }
 
     // ---------------- Non-UAE Production Checking (verbatim port of LPMSIM 1.14.268) ----------------
