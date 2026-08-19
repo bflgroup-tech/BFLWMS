@@ -8,7 +8,7 @@
  * What they hold:
  *   CurrentWeek     = latest wk in LPM_OTS_Output (the run's anchor week).
  *                     Same value on every row.
- *   TargetWeek      = CurrentWeek + NoOfLeadWeeks - 1, per country. The month
+ *   TargetWeek      = CurrentWeek + NoOfLeadWeeks, per country. The month
  *                     this week falls in is the Tgt EOM Month.
  *   WeeksMultiplier = TargetWeek - the last week of the month BEFORE the target
  *                     month, i.e. how many weeks INTO the target month the

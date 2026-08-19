@@ -463,7 +463,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         // WmsCountryOtsWeeks config or MFP has no calendar entry for lastWk.
         //
         // weeksInTargetMonthByCountry drives the WeekAdjustment denominator
-        // downstream — #weeks in the month that lastWk (= currentWk + LeadWeeks - 1)
+        // downstream — #weeks in the month that lastWk (= currentWk + LeadWeeks)
         // falls in, i.e. the country's TARGET EOM month. The walk from PrevMonthEOM
         // toward TgtEOM is therefore paced by the month it is walking INTO.
         //
@@ -475,7 +475,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
 
         // Week bookkeeping surfaced on the grid so CurrentEOW is checkable:
         //   CurrentWeek     = latest wk in LPM_OTS_Output (global, same for all rows)
-        //   TargetWeek      = CurrentWeek + NoOfLeadWeeks - 1   (per country)
+        //   TargetWeek      = CurrentWeek + NoOfLeadWeeks       (per country)
         //   WeeksMultiplier = TargetWeek - last week of the month BEFORE the target
         //                     month, i.e. how many weeks INTO the target month the
         //                     target week sits. This replaces NoOfLeadWeeks as the
@@ -508,7 +508,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
             var targetByCountry = new Dictionary<string, (int TgtMonth, int TgtYear, int PrevMonth, int PrevYear, string TgtLabel, string PrevLabel)>(StringComparer.OrdinalIgnoreCase);
             foreach (var (cty, n) in weeksByCountry)
             {
-                var lastWk = currentWk + n - 1;
+                var lastWk = currentWk + n;
                 int tgtM, tgtY;
                 if (currentWk > 0 && fiscalCal.TryGetValue((year, lastWk), out var mm))
                 {
@@ -571,7 +571,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                 // far INTO the target month the target week sits, measured from the
                 // last week of the preceding month.
                 var leadWeeks = weeksByCountry.TryGetValue(cty, out var lw) ? lw : 0;
-                var targetWk  = currentWk > 0 ? currentWk + leadWeeks - 1 : 0;
+                var targetWk  = currentWk > 0 ? currentWk + leadWeeks : 0;
                 targetWeekByCountry[cty] = targetWk;
 
                 var lastWkOfPrev = fiscalCal
@@ -1065,7 +1065,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
 
             // WeekAdjustment = per-week walk rate from PrevMonthEOM toward TgtEOM,
             // sized to the # weeks in the TARGET EOM month (per country) — the month
-            // that lastWk = currentWk + LeadWeeks - 1 falls in. Positive when scaling
+            // that lastWk = currentWk + LeadWeeks falls in. Positive when scaling
             // up (Tgt > Prev), negative when winding down.
             // CurrentEOW = PrevMonthEOM + WeekAdjustment × NoOfLeadWeeks — the
             // interpolation projects forward by the country's lead-weeks value.
