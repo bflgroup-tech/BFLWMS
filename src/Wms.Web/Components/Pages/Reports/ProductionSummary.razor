@@ -318,6 +318,10 @@ else if (_loadedOnce && VisibleRows().Count == 0)
 
 @if (CanSeeDivCap)
 {
+        var divCapWeekNum = int.TryParse(_selectedWeek, out var dcw) ? dcw : int.Parse(ComputeCurrentWeekNumber());
+        var divCapWeekRange = Weeks.FirstOrDefault(x => x.Num == divCapWeekNum);
+        var divCapWeekStart = divCapWeekRange.Start;
+        var divCapWeekEnd   = divCapWeekRange.End;
         @foreach (var (divCapCountry, divCapResult) in _divCapByCountry)
         {
             var collapsed = _divCapCollapsedCountries.Contains(divCapCountry);
@@ -338,33 +342,39 @@ else if (_loadedOnce && VisibleRows().Count == 0)
                 }
                 else
                 {
-                    var divPivot = BuildDivCapPivot(divCapResult);
+                    var divPivot = BuildDivCapPivot(divCapResult, divCapWeekStart, divCapWeekEnd);
                     <div style="overflow-x:auto">
                         <table class="aiwms-table aiwms-table-dense" style="font-size:12px">
                             <thead>
                                 <tr>
                                     <th>Division</th>
                                     <th style="text-align:right">Max Cap./Wk</th>
-                                    @foreach (var w in divPivot.Weeks) { <th style="text-align:right">Wk @w Tgt</th> }
+                                    @foreach (var day in divPivot.Days) { <th style="text-align:right">@day.ToString("dd-MMM")</th> }
+                                    <th style="text-align:right; background:#fdb623">Total Wk @_selectedWeek</th>
+                                    <th style="text-align:right">Target</th>
+                                    <th style="text-align:right">Variance</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 @foreach (var row in divPivot.Rows)
                                 {
+                                    var variance = divPivot.RowTotal[row.Division] - divPivot.RowTarget[row.Division];
                                     <tr>
                                         <td>@row.Division</td>
                                         <td style="text-align:right">@row.MaxCapWeek.ToString("N0")</td>
-                                        @foreach (var w in divPivot.Weeks)
-                                        {
-                                            var target = divPivot.Target.TryGetValue((row.Division.ToUpperInvariant(), w), out var t) ? t : 0;
-                                            <td style="text-align:right">@target.ToString("N0")</td>
-                                        }
+                                        @foreach (var day in divPivot.Days) { <td style="text-align:right">@divPivot.DailyQty[(day, row.Division)].ToString("N0")</td> }
+                                        <td style="text-align:right; font-weight:600">@divPivot.RowTotal[row.Division].ToString("N0")</td>
+                                        <td style="text-align:right">@divPivot.RowTarget[row.Division].ToString("N0")</td>
+                                        <td style="text-align:right; color:@(variance < 0 ? "#dc2626" : "#15803d")">@variance.ToString("N0")</td>
                                     </tr>
                                 }
                                 <tr style="font-weight:700; background:#fff7e0">
                                     <td>TOTAL</td>
                                     <td style="text-align:right">@divPivot.MaxCapTotal.ToString("N0")</td>
-                                    @foreach (var w in divPivot.Weeks) { <td style="text-align:right">@divPivot.WeekTotal[w].ToString("N0")</td> }
+                                    @foreach (var day in divPivot.Days) { <td style="text-align:right">@divPivot.DailyTotal[day].ToString("N0")</td> }
+                                    <td style="text-align:right">@divPivot.GrandTotal.ToString("N0")</td>
+                                    <td style="text-align:right">@divPivot.GrandTarget.ToString("N0")</td>
+                                    <td style="text-align:right; color:@(divPivot.GrandVariance < 0 ? "#dc2626" : "#15803d")">@divPivot.GrandVariance.ToString("N0")</td>
                                 </tr>
                             </tbody>
                         </table>
@@ -639,22 +649,49 @@ else if (_loadedOnce && VisibleRows().Count == 0)
 
     private sealed class DivCapPivot
     {
-        public List<int> Weeks = new();
+        public List<DateTime> Days = new();
         public List<DivisionCapRow> Rows = new();
-        public Dictionary<(string Division, int Week), decimal> Target = new();
-        public Dictionary<int, decimal> WeekTotal = new();
+        public Dictionary<(DateTime Day, string Division), long> DailyQty = new();
+        public Dictionary<DateTime, long> DailyTotal = new();
+        public Dictionary<string, long> RowTotal = new();
+        public Dictionary<string, decimal> RowTarget = new();
         public decimal MaxCapTotal;
+        public long GrandTotal;
+        public decimal GrandTarget;
+        public decimal GrandVariance;
     }
 
-    private DivCapPivot BuildDivCapPivot(DivisionCapVsTargetResult result)
+    private DivCapPivot BuildDivCapPivot(DivisionCapVsTargetResult result, DateTime weekStart, DateTime weekEnd)
     {
         var p = new DivCapPivot { Rows = result.Caps };
-        p.Weeks = result.Targets.Select(t => t.Week).Distinct().OrderBy(w => w).ToList();
-        foreach (var t in result.Targets)
-            p.Target[(t.Division.ToUpperInvariant(), t.Week)] = t.Target;
-        p.MaxCapTotal = result.Caps.Sum(r => r.MaxCapWeek);
-        foreach (var w in p.Weeks)
-            p.WeekTotal[w] = result.Caps.Sum(r => p.Target.TryGetValue((r.Division.ToUpperInvariant(), w), out var v) ? v : 0);
+        p.Days = Enumerable.Range(0, (weekEnd.Date - weekStart.Date).Days + 1).Select(i => weekStart.Date.AddDays(i)).ToList();
+
+        foreach (var day in p.Days)
+        {
+            long dayTotal = 0;
+            foreach (var row in p.Rows)
+            {
+                var qty = result.Daily
+                    .Where(d => d.Day.Date == day.Date && string.Equals(d.Division, row.Division, StringComparison.OrdinalIgnoreCase))
+                    .Sum(d => d.Quantity);
+                p.DailyQty[(day, row.Division)] = qty;
+                dayTotal += qty;
+            }
+            p.DailyTotal[day] = dayTotal;
+        }
+
+        foreach (var row in p.Rows)
+        {
+            p.RowTotal[row.Division]  = p.Days.Sum(day => p.DailyQty[(day, row.Division)]);
+            p.RowTarget[row.Division] = result.Targets
+                .Where(t => string.Equals(t.Division, row.Division, StringComparison.OrdinalIgnoreCase))
+                .Sum(t => t.Target);
+        }
+
+        p.MaxCapTotal   = p.Rows.Sum(r => r.MaxCapWeek);
+        p.GrandTotal    = p.RowTotal.Values.Sum();
+        p.GrandTarget   = p.RowTarget.Values.Sum();
+        p.GrandVariance = p.GrandTotal - p.GrandTarget;
         return p;
     }
 
@@ -1006,10 +1043,10 @@ else if (_loadedOnce && VisibleRows().Count == 0)
             // column; everyone else (regardless of whether a Section Access grant or the
             // single-country auto-visibility rule made the section visible at all) only ever
             // sees columns for the countries their own Country Access actually lists.
+            var weekRange = Weeks.FirstOrDefault(x => x.Num == selectedWeekNum);
             _dtbwColumns.Clear(); _dtbwDaily.Clear(); _dtbwMerchNeeds.Clear();
             if (CanSeeDtbwSection)
             {
-                var weekRange = Weeks.FirstOrDefault(x => x.Num == selectedWeekNum);
                 try
                 {
                     var dtbw = await Svc.GetDailyTransferByWarehouseAsync(weekRange.Start, weekRange.End, weekRange.Start.Year, selectedWeekNum);
@@ -1022,17 +1059,17 @@ else if (_loadedOnce && VisibleRows().Count == 0)
             }
 
             // "Week-wise Division Comparison" — one result per selected country (same picker
-            // the rest of the page uses), current calendar month. Countries with no active
-            // LPM_MfpTerritoryMap entry (GetDivisionCapVsTargetAsync returns null) are skipped.
+            // the rest of the page uses), scoped to the selected week (same as Daily Transfer
+            // Qty by Warehouse). Countries with no active LPM_MfpTerritoryMap entry
+            // (GetDivisionCapVsTargetAsync returns null) are skipped.
             _divCapByCountry.Clear();
             if (CanSeeDivCap)
             {
-                var today = CurrentProductionDayGst();
                 foreach (var country in _selectedCountries)
                 {
                     try
                     {
-                        var divCap = await Svc.GetDivisionCapVsTargetAsync(country, today.Year, today.Month);
+                        var divCap = await Svc.GetDivisionCapVsTargetAsync(country, weekRange.Start.Year, selectedWeekNum, weekRange.Start, weekRange.End);
                         if (divCap is not null) _divCapByCountry[country] = divCap;
                     }
                     catch (Exception divCapEx) { merchNeedErrors.Add($"Week-wise Division Comparison ({country}): {divCapEx.Message}"); }
