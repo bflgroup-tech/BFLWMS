@@ -593,6 +593,7 @@
                         <th style="cursor:pointer; text-align:right" @onclick='() => Sort("StoresCount")'>Stores Count @SortArrow("StoresCount")</th>
                         <th style="cursor:pointer; text-align:right" @onclick='() => Sort("PoQty")' title="Total PO qty for the whole container — the same figure on every row, shown as context for the country's share">PO Qty @SortArrow("PoQty")</th>
                         <th style="cursor:pointer; text-align:right" @onclick='() => Sort("AllocQty")'>Allocated Qty @SortArrow("AllocQty")</th>
+                        <th style="cursor:pointer; text-align:right" @onclick='() => Sort("AllocPct")' title="Allocated Qty ÷ the container's total PO Qty. Sums to 100% when the container is fully allocated; less when Pass 4 flagged and dropped items.">Allocation % @SortArrow("AllocPct")</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -603,6 +604,7 @@
                             <td style="text-align:right">@g.StoresCount</td>
                             <td style="text-align:right">@g.PoQty.ToString("N0")</td>
                             <td style="text-align:right">@g.AllocQty.ToString("N0")</td>
+                            <td style="text-align:right">@g.AllocPct.ToString("0.0")%</td>
                         </tr>
                     }
                 </tbody>
@@ -1189,7 +1191,7 @@
     private record StoreRowVm(string StoreID, string? StoreName, string Country, string VolumeGroup, int? OtsQtyToday, string? Division, string Brand, string OraPONo, int PoQtySum, int AllocSum, double? OTS, DateTime? LPMDt, int? PriorityRank);
     private record CountryDivSummaryRowVm(string Country, int StoresCount, string OraPONo, string? Division, int PoQty, int AllocQty, DateTime? LPMDt, int? PriorityRank, int? OtsQtyToday);
     private record CountrySummaryRowVm(string Country, int StoresCount, string OraPONo, int PoQty, int AllocQty, DateTime? LPMDt, int? PriorityRank, int? OtsQtyToday);
-    private record CountryContainerSummaryRowVm(string Country, int StoresCount, int PoQty, int AllocQty);
+    private record CountryContainerSummaryRowVm(string Country, int StoresCount, int PoQty, int AllocQty, decimal AllocPct);
 
     private IEnumerable<ItemSummaryRowVm> ItemSummaryRows
     {
@@ -1358,11 +1360,23 @@
 
             var rows = all
                 .GroupBy(r => r.Country)
-                .Select(g => new CountryContainerSummaryRowVm(
-                    g.Key,
-                    g.Select(x => x.StoreID).Distinct().Count(),
-                    containerPoQty,
-                    g.Sum(x => x.AllocQty)));
+                .Select(g =>
+                {
+                    var alloc = g.Sum(x => x.AllocQty);
+                    // Share of the container's PO qty, not of what was allocated. When
+                    // Pass 4 flags an item its qty is dropped, so the column then sums
+                    // to under 100% — which is the honest reading of "how much of this
+                    // container did each country get".
+                    var pct = containerPoQty > 0
+                        ? Math.Round((decimal)alloc * 100m / containerPoQty, 1)
+                        : 0m;
+                    return new CountryContainerSummaryRowVm(
+                        g.Key,
+                        g.Select(x => x.StoreID).Distinct().Count(),
+                        containerPoQty,
+                        alloc,
+                        pct);
+                });
 
             if (_sortKey is null)
                 return rows.OrderByDescending(r => r.AllocQty).ThenBy(r => r.Country);
@@ -1371,6 +1385,7 @@
                 "StoresCount" => r => r.StoresCount,
                 "PoQty"       => r => r.PoQty,
                 "AllocQty"    => r => r.AllocQty,
+                "AllocPct"    => r => r.AllocPct,
                 _             => r => r.Country,
             };
             return _sortAsc ? rows.OrderBy(k) : rows.OrderByDescending(k);
