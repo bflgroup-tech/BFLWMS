@@ -47,6 +47,42 @@
         accent-color: var(--bfl-yellow-hov);
         cursor: pointer;
     }
+    .psr-minimize-btn {
+        width: 30px; height: 30px; flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+        border: none; border-radius: 5px; background: transparent; color: var(--text-secondary);
+        cursor: pointer; font-size: 20px; line-height: 1; padding: 0;
+        transition: background-color .1s ease;
+    }
+    .psr-minimize-btn:hover {
+        background: rgba(0,0,0,0.08);
+    }
+    .psr-section-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        align-self: stretch;
+        width: 100%;
+        box-sizing: border-box;
+        background: #eef2ff;
+        padding: 8px 12px;
+        border-radius: var(--r-sm);
+        margin: -4px -4px 12px -4px;
+    }
+    .psr-section-header .aiwms-card-header {
+        background: transparent;
+        box-shadow: none;
+        padding: 0;
+        margin: 0;
+    }
+    .psr-country-badge {
+        display: inline-block;
+        background: #fdb623;
+        color: #4a2e00;
+        font-weight: 800;
+        padding: 2px 10px;
+        border-radius: 999px;
+        margin: 0 4px;
+    }
 </style>
 
 <div class="aiwms-page-header">
@@ -157,7 +193,12 @@ else if (VisibleRows().Count > 0)
     @if (_selectedCountries.Count > 0)
     {
         <div class="aiwms-section">
-            <div class="aiwms-card-header">By Country</div>
+            <div class="psr-section-header">
+                <div class="aiwms-card-header">By Country</div>
+                @MinimizeToggle(_byCountryCollapsed, () => _byCountryCollapsed = !_byCountryCollapsed)
+            </div>
+            @if (!_byCountryCollapsed)
+            {
             @foreach (var cs in CountrySummaries(visibleRows))
             {
                 var merchNeedPct = cs.MerchNeedWeek > 0 ? (double)cs.StoreQty / cs.MerchNeedWeek * 100 : 0;
@@ -193,6 +234,7 @@ else if (VisibleRows().Count > 0)
                     }
                 </div>
             }
+            }
         </div>
     }
 }
@@ -208,7 +250,16 @@ else if (_loadedOnce && VisibleRows().Count == 0)
             var pivot = BuildDtbwPivot();
             var showTotalCol = pivot.Columns.Count > 1;
             <div class="aiwms-section">
-                <div class="aiwms-card-header">@DtbwHeading — Week @_selectedWeek</div>
+                <div class="psr-section-header">
+                    <div class="aiwms-card-header">
+                        @DtbwHeadingText
+                        @if (DtbwHeadingCountry is not null) { <span class="psr-country-badge">@DtbwHeadingCountry</span> }
+                        — Week @_selectedWeek
+                    </div>
+                    @MinimizeToggle(_dtbwCollapsed, () => _dtbwCollapsed = !_dtbwCollapsed)
+                </div>
+                @if (!_dtbwCollapsed)
+                {
                 <div style="overflow-x:auto">
                     <table class="aiwms-table aiwms-table-dense" style="font-size:12px">
                         <thead>
@@ -260,6 +311,66 @@ else if (_loadedOnce && VisibleRows().Count == 0)
                         </tbody>
                     </table>
                 </div>
+                }
+            </div>
+        }
+}
+
+@if (CanSeeDivCap)
+{
+        @foreach (var (divCapCountry, divCapResult) in _divCapByCountry)
+        {
+            var collapsed = _divCapCollapsedCountries.Contains(divCapCountry);
+            <div class="aiwms-section">
+                <div class="psr-section-header">
+                    <div class="aiwms-card-header">
+                        Week-wise Division Comparison (Actual vs Target)
+                        <span class="psr-country-badge">@divCapCountry</span>
+                        — For WH Manager (Division Level)
+                    </div>
+                    @MinimizeToggle(collapsed, () => { if (!_divCapCollapsedCountries.Add(divCapCountry)) _divCapCollapsedCountries.Remove(divCapCountry); })
+                </div>
+                @if (!collapsed)
+                {
+                @if (divCapResult.Caps.Count == 0)
+                {
+                    <div class="aiwms-alert info">Data not available for @divCapCountry.</div>
+                }
+                else
+                {
+                    var divPivot = BuildDivCapPivot(divCapResult);
+                    <div style="overflow-x:auto">
+                        <table class="aiwms-table aiwms-table-dense" style="font-size:12px">
+                            <thead>
+                                <tr>
+                                    <th>Division</th>
+                                    <th style="text-align:right">Max Cap./Wk</th>
+                                    @foreach (var w in divPivot.Weeks) { <th style="text-align:right">Wk @w Tgt</th> }
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var row in divPivot.Rows)
+                                {
+                                    <tr>
+                                        <td>@row.Division</td>
+                                        <td style="text-align:right">@row.MaxCapWeek.ToString("N0")</td>
+                                        @foreach (var w in divPivot.Weeks)
+                                        {
+                                            var target = divPivot.Target.TryGetValue((row.Division.ToUpperInvariant(), w), out var t) ? t : 0;
+                                            <td style="text-align:right">@target.ToString("N0")</td>
+                                        }
+                                    </tr>
+                                }
+                                <tr style="font-weight:700; background:#fff7e0">
+                                    <td>TOTAL</td>
+                                    <td style="text-align:right">@divPivot.MaxCapTotal.ToString("N0")</td>
+                                    @foreach (var w in divPivot.Weeks) { <td style="text-align:right">@divPivot.WeekTotal[w].ToString("N0")</td> }
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                }
+                }
             </div>
         }
 }
@@ -270,14 +381,14 @@ else if (_loadedOnce && VisibleRows().Count == 0)
     var visibleSummary = VisibleSummary();
 
     <div class="aiwms-section">
-        <div class="aiwms-card-header">Transfer Qty- Division wise</div>
+        <div class="psr-section-header">
+            <div class="aiwms-card-header">Transfer Qty- Division wise</div>
+            @MinimizeToggle(_pivotCollapsed, () => _pivotCollapsed = !_pivotCollapsed)
+        </div>
         <div style="display:flex; gap:14px; align-items:center; margin-bottom:10px">
             <strong style="font-size:11px; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary)">View:</strong>
             <label style="display:flex; align-items:center; gap:4px; cursor:pointer"><input type="radio" name="vw" value="Summary"  checked="@(_view == "Summary")"  @onchange="@(_ => _view = "Summary")" /> Summary</label>
             <label style="display:flex; align-items:center; gap:4px; cursor:pointer"><input type="radio" name="vw" value="Detailed" checked="@(_view == "Detailed")" @onchange="@(_ => _view = "Detailed")" /> Detailed</label>
-            <button class="aiwms-btn aiwms-btn-secondary" style="margin-left:auto" @onclick="@(() => _pivotCollapsed = !_pivotCollapsed)">
-                @(_pivotCollapsed ? "Expand" : "Minimize")
-            </button>
         </div>
 
         @if (!_pivotCollapsed)
@@ -456,7 +567,8 @@ else if (_loadedOnce && VisibleRows().Count == 0)
     private bool CanSeeDtbw => CurrentUser.CanSeeSection(SectionKeys.PRODSUMM_DTBW);
     private bool CanSeeDtbwSection => CanSeeDtbw
         || (!CurrentUser.HasAllCountriesAccess && CurrentUser.AllowedCountries.Count == 1);
-    private string DtbwHeading => _dtbwColumns.Count == 1 ? $"Daily Transfer Qty for {_dtbwColumns[0].Country}" : "Daily Transfer Qty by Warehouse";
+    private string? DtbwHeadingCountry => _dtbwColumns.Count == 1 ? _dtbwColumns[0].Country : null;
+    private string DtbwHeadingText => DtbwHeadingCountry is not null ? "Daily Transfer Qty for" : "Daily Transfer Qty by Warehouse";
     private List<WarehouseTransferColumn>   _dtbwColumns    = new();
     private List<DailyWarehouseTransferRow> _dtbwDaily      = new();
     private List<WarehouseMerchNeedRow>     _dtbwMerchNeeds = new();
@@ -516,6 +628,36 @@ else if (_loadedOnce && VisibleRows().Count == 0)
         return p;
     }
 
+    // "Week-wise Division Comparison (Actual vs Target)" — one table per selected country
+    // (same _selectedCountries picker the rest of the page uses), so choosing a different
+    // country shows that country's own divisions. Visible via an explicit Section Access
+    // grant (or Admin), or automatically for a WH manager whose Country Access is scoped to
+    // exactly one country — same rule as CanSeeDtbwSection.
+    private bool CanSeeDivCap => CurrentUser.CanSeeSection(SectionKeys.PRODSUMM_DIVCAP)
+        || (!CurrentUser.HasAllCountriesAccess && CurrentUser.AllowedCountries.Count == 1);
+    private Dictionary<string, DivisionCapVsTargetResult> _divCapByCountry = new(StringComparer.OrdinalIgnoreCase);
+
+    private sealed class DivCapPivot
+    {
+        public List<int> Weeks = new();
+        public List<DivisionCapRow> Rows = new();
+        public Dictionary<(string Division, int Week), decimal> Target = new();
+        public Dictionary<int, decimal> WeekTotal = new();
+        public decimal MaxCapTotal;
+    }
+
+    private DivCapPivot BuildDivCapPivot(DivisionCapVsTargetResult result)
+    {
+        var p = new DivCapPivot { Rows = result.Caps };
+        p.Weeks = result.Targets.Select(t => t.Week).Distinct().OrderBy(w => w).ToList();
+        foreach (var t in result.Targets)
+            p.Target[(t.Division.ToUpperInvariant(), t.Week)] = t.Target;
+        p.MaxCapTotal = result.Caps.Sum(r => r.MaxCapWeek);
+        foreach (var w in p.Weeks)
+            p.WeekTotal[w] = result.Caps.Sum(r => p.Target.TryGetValue((r.Division.ToUpperInvariant(), w), out var v) ? v : 0);
+        return p;
+    }
+
     private List<string> _countries = new() { "UAE" };
     private HashSet<string> _selectedCountries = new(StringComparer.OrdinalIgnoreCase) { "UAE" };
     // UAE always reads via OnPremBackup (no per-country connection string needed), so it's
@@ -527,6 +669,9 @@ else if (_loadedOnce && VisibleRows().Count == 0)
     private DateTime _to   = ComputeCurrentWeekRange().End;
     private string _view = "Summary";
     private bool _pivotCollapsed;
+    private bool _byCountryCollapsed;
+    private bool _dtbwCollapsed;
+    private HashSet<string> _divCapCollapsedCountries = new(StringComparer.OrdinalIgnoreCase);
     private bool _loading;
     private string? _loadingMsg;
     private bool _loadedOnce;
@@ -876,6 +1021,24 @@ else if (_loadedOnce && VisibleRows().Count == 0)
                 catch (Exception dtbwEx) { merchNeedErrors.Add($"Daily Transfer by Warehouse: {dtbwEx.Message}"); }
             }
 
+            // "Week-wise Division Comparison" — one result per selected country (same picker
+            // the rest of the page uses), current calendar month. Countries with no active
+            // LPM_MfpTerritoryMap entry (GetDivisionCapVsTargetAsync returns null) are skipped.
+            _divCapByCountry.Clear();
+            if (CanSeeDivCap)
+            {
+                var today = CurrentProductionDayGst();
+                foreach (var country in _selectedCountries)
+                {
+                    try
+                    {
+                        var divCap = await Svc.GetDivisionCapVsTargetAsync(country, today.Year, today.Month);
+                        if (divCap is not null) _divCapByCountry[country] = divCap;
+                    }
+                    catch (Exception divCapEx) { merchNeedErrors.Add($"Week-wise Division Comparison ({country}): {divCapEx.Message}"); }
+                }
+            }
+
             _loadedOnce = true;
             var unconfigured = countries.Where(c => !_configuredCountries.Contains(c)).ToList();
             var notes = new List<string>();
@@ -994,6 +1157,13 @@ else if (_loadedOnce && VisibleRows().Count == 0)
 
     private static string Csv(string? s) => s is null ? ""
         : (s.Contains(',') || s.Contains('"') || s.Contains('\n')) ? "\"" + s.Replace("\"", "\"\"") + "\"" : s;
+
+    // Small "×" icon button for section headers — hover shows "Minimize"/"Expand" via the
+    // native title tooltip, no separate big text button needed.
+    private RenderFragment MinimizeToggle(bool collapsed, Action toggle) => __builder =>
+    {
+        <button type="button" class="psr-minimize-btn" title="@(collapsed ? "Expand" : "Minimize")" @onclick="toggle">&times;</button>
+    };
 
     private RenderFragment MetricCard(string label, string value, string bg, string fg, bool big) => __builder =>
     {

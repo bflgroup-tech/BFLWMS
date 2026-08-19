@@ -10,6 +10,7 @@ namespace Wms.Core;
 public static class SectionKeys
 {
     public const string PRODSUMM_DTBW = "PRODSUMM_DTBW";
+    public const string PRODSUMM_DIVCAP = "PRODSUMM_DIVCAP";
 
     /// <param name="PageLabel">Which page this section lives on — shown in the admin checklist.</param>
     /// <param name="Label">The section's own name.</param>
@@ -18,5 +19,6 @@ public static class SectionKeys
     public static readonly IReadOnlyList<SectionEntry> All = new[]
     {
         new SectionEntry(PRODSUMM_DTBW, "Production Summary Report", "Daily Transfer Qty by Warehouse"),
+        new SectionEntry(PRODSUMM_DIVCAP, "Production Summary Report", "Week-wise Division Comparison"),
     };
 }
