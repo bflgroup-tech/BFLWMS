@@ -213,18 +213,21 @@
                         @SortHeader("PrevMonthEOM",    "Prev Month EOM", null, true, title: "LPM_EOM_Output.TargetEOM for (Prev EOM Month, Store, Div); 0 if missing")
                         @SortHeader("DivisorWeeks",    "Divisor Weeks", null, true, title: "Number of fiscal weeks in the TARGET EOM month — the month that lastWk (= current wk + No. of Lead Weeks − 1) falls in, per BFL_MFP_OUTBOUND_T1. This is the Week Adjustment divisor, so it varies by country with lead weeks.")
                         @SortHeader("WeekAdjustment",  "Week Adjustment", null, true, title: "(TgtEOM − PrevMonthEOM) / Divisor Weeks; positive = scaling up, negative = winding down; 0 when PrevMonthEOM = 0. Displayed rounded — Current EOW uses the unrounded value.")
-                        @SortHeader("CurrentEOW",      "Current EOW",     null, true, title: "PrevMonthEOM + (Week Adjustment × No. of Lead Weeks); falls back to TgtEOM when PrevMonthEOM = 0")
+                        @SortHeader("CurrentWeek",     "Current Week", null, true, title: "Latest wk in LPM_OTS_Output — the fiscal week the run is anchored on. Same for every row.")
+                        @SortHeader("TargetWeek",      "Target Week", null, true, title: "Current Week + No. of Lead Weeks − 1 — the fiscal week the lead horizon reaches. Its month is the Tgt EOM Month.")
+                        @SortHeader("WeeksMultiplier", "Weeks Multiplier", null, true, title: "Target Week − last week of the month BEFORE the target month, i.e. how many weeks INTO the target month the target week sits. This multiplies Week Adjustment (it is NOT No. of Lead Weeks).")
+                        @SortHeader("CurrentEOW",      "Current EOW",     null, true, title: "PrevMonthEOM + (Week Adjustment × Weeks Multiplier); falls back to TgtEOM when PrevMonthEOM = 0")
                         @SortHeader("SOHToday",        "SOH Today", null, true, title: "SUM(SOH) from racks.LPM_locstock for this (Store, Div)")
-                        @SortHeader("NoOfLeadWeeks",   "No. of Lead Weeks", null, true, title: "WmsCountryOtsWeeks.Weeks for the store's Country — the number of weeks of lead the interpolation projects forward from PrevMonthEOM (defaults to 1 when missing)")
+                        @SortHeader("NoOfLeadWeeks",   "No. of Lead Weeks", null, true, title: "WmsCountryOtsWeeks.Weeks for the store's Country — how far forward the lead horizon reaches (defaults to 1 when missing). Drives Target Week; the CurrentEOW multiplier is Weeks Multiplier.")
                         @SortHeader("WeekSales",       "Week Sales", null, true, title: WeekSalesHeaderTitle())
-                        @SortHeader("LeadIntransit",   "Lead InTransit", null, true, title: "P2EXPORT..vTransferDetail qty (via racks..InTransit_ExportShipment intransit='Y') whose LPMDt is on/before the 1st of the month that (today + LeadWeeks*7) lands in. Split across (Country, DivCode) stores via largest-remainder. UAE = 0.")
-                        @SortHeader("LeadDCSOH",       "Lead DC SOH",    null, true, title: "{DataName}..whboxitemexport qty whose LPMDt is on/before the same cutoff as Lead InTransit. Split across (Country, DivCode) stores via largest-remainder.")
-                        @SortHeader("InTransit",       "InTransit", null, true, title: "(Ex2SOH + boxsoh) / storeCount(country); UAE = 0")
-                        @SortHeader("Ex2DcSoh",        "Ex2 DC SOH", null, true, title: "r1whsoh / storeCount(country)")
+                        @SortHeader("InTransit",       "InTransit", null, true, title: "(Ex2SOH + boxsoh) for the (Country, DivCode), split across that group's stores in proportion to Week Sales (largest-remainder, so the parts sum exactly). UAE = 0.")
+                        @SortHeader("Ex2DcSoh",        "Ex2 DC SOH", null, true, title: "r1whsoh for the (Country, DivCode), split across that group's stores in proportion to Week Sales (largest-remainder). Falls back to an equal split when the division has no weekly sales.")
                         @SortHeader("CountingWIP",     "Counting WIP", null, true, title: "SUM(AllocatedQty) for approved-but-not-completed containers per (Store, Div)")
                         @SortHeader("OtsQtyToday",     "OTS Qty Today", null, true, title: "CurrentEOW + WeekSales − SOH − InTransit − Ex2DcSoh − CountingWIP  (all committed supply is subtracted; Lead InTransit / Lead DC SOH are shown for reference but are not part of the formula)")
                         @SortHeader("OtsPercentToday", "OTS % Today", null, true, title: "OtsQtyToday / CurrentEOW × 100; 0 when CurrentEOW ≤ 0")
                         @SortHeader("OtsTodayRequired","OTS Today Required", null, true, title: "max(0, OtsQtyToday) — clipped to zero (negative OTS means over-stocked, no purchase needed)")
+                        @SortHeader("LeadIntransit",   "Lead InTransit", null, true, title: "REFERENCE ONLY — not in the OTS formula. P2EXPORT..vTransferDetail qty (via racks..InTransit_ExportShipment intransit='Y') whose LPMDt is on/before the 1st of the month that (today + LeadWeeks*7) lands in. Equal split across (Country, DivCode) stores. UAE = 0.")
+                        @SortHeader("LeadDCSOH",       "Lead DC SOH",    null, true, title: "REFERENCE ONLY — not in the OTS formula. {DataName}..whboxitemexport qty whose LPMDt is on/before the same cutoff as Lead InTransit. Equal split across (Country, DivCode) stores.")
                     </tr>
                 </thead>
                 <tbody>
@@ -245,18 +248,21 @@
                             <td style="text-align:right">@r.PrevMonthEOM.ToString("N0")</td>
                             <td style="text-align:right">@(r.DivisorWeeks == 0 ? "" : r.DivisorWeeks.ToString())</td>
                             <td style="text-align:right">@(r.WeekAdjustment == 0m ? "" : Math.Round(r.WeekAdjustment).ToString("N0"))</td>
+                            <td style="text-align:right">@(r.CurrentWeek == 0 ? "" : r.CurrentWeek.ToString())</td>
+                            <td style="text-align:right">@(r.TargetWeek == 0 ? "" : r.TargetWeek.ToString())</td>
+                            <td style="text-align:right">@(r.WeeksMultiplier == 0 ? "" : r.WeeksMultiplier.ToString())</td>
                             <td style="text-align:right">@r.CurrentEOW.ToString("N0")</td>
                             <td style="text-align:right">@r.SOHToday.ToString("N0")</td>
                             <td style="text-align:right">@r.NoOfLeadWeeks</td>
                             <td style="text-align:right" title="@WeekSalesTooltip(r)">@r.WeekSales.ToString("N0")</td>
-                            <td style="text-align:right">@r.LeadIntransit.ToString("N0")</td>
-                            <td style="text-align:right">@r.LeadDCSOH.ToString("N0")</td>
                             <td style="text-align:right">@r.InTransit.ToString("N0")</td>
                             <td style="text-align:right">@r.Ex2DcSoh.ToString("N0")</td>
                             <td style="text-align:right">@r.CountingWIP.ToString("N0")</td>
                             <td style="text-align:right"><b>@r.OtsQtyToday.ToString("N0")</b></td>
                             <td style="text-align:right">@((int)Math.Round(r.OtsPercentToday))%</td>
                             <td style="text-align:right"><b>@(req > 0 ? req.ToString("N0") : "")</b></td>
+                            <td style="text-align:right">@r.LeadIntransit.ToString("N0")</td>
+                            <td style="text-align:right">@r.LeadDCSOH.ToString("N0")</td>
                         </tr>
                     }
                 </tbody>
@@ -283,21 +289,25 @@
                         <td style="text-align:right; padding:6px 12px; border-top:2px solid #d1d5db">@tTgtEOM.ToString("N0")</td>
                         <td style="padding:6px 12px; border-top:2px solid #d1d5db"></td>
                         <td style="text-align:right; padding:6px 12px; border-top:2px solid #d1d5db">@tPrevEOM.ToString("N0")</td>
-                        @* Divisor Weeks + Week Adjustment are per-row rates, not additive — no total. *@
+                        @* Divisor Weeks, Week Adjustment, Current/Target Week and Weeks
+                           Multiplier are per-row rates or week numbers — not additive. *@
+                        <td style="padding:6px 12px; border-top:2px solid #d1d5db"></td>
+                        <td style="padding:6px 12px; border-top:2px solid #d1d5db"></td>
+                        <td style="padding:6px 12px; border-top:2px solid #d1d5db"></td>
                         <td style="padding:6px 12px; border-top:2px solid #d1d5db"></td>
                         <td style="padding:6px 12px; border-top:2px solid #d1d5db"></td>
                         <td style="text-align:right; padding:6px 12px; border-top:2px solid #d1d5db">@tCurEOW.ToString("N0")</td>
                         <td style="text-align:right; padding:6px 12px; border-top:2px solid #d1d5db">@tSOH.ToString("N0")</td>
                         <td style="padding:6px 12px; border-top:2px solid #d1d5db"></td>
                         <td style="text-align:right; padding:6px 12px; border-top:2px solid #d1d5db">@tWeekSales.ToString("N0")</td>
-                        <td style="text-align:right; padding:6px 12px; border-top:2px solid #d1d5db">@tLeadIn.ToString("N0")</td>
-                        <td style="text-align:right; padding:6px 12px; border-top:2px solid #d1d5db">@tLeadDc.ToString("N0")</td>
                         <td style="text-align:right; padding:6px 12px; border-top:2px solid #d1d5db">@tInTransit.ToString("N0")</td>
                         <td style="text-align:right; padding:6px 12px; border-top:2px solid #d1d5db">@tEx2.ToString("N0")</td>
                         <td style="text-align:right; padding:6px 12px; border-top:2px solid #d1d5db">@tWIP.ToString("N0")</td>
                         <td style="text-align:right; padding:6px 12px; border-top:2px solid #d1d5db">@tOtsQty.ToString("N0")</td>
                         <td style="padding:6px 12px; border-top:2px solid #d1d5db"></td>
                         <td style="text-align:right; padding:6px 12px; border-top:2px solid #d1d5db">@tOtsReq.ToString("N0")</td>
+                        <td style="text-align:right; padding:6px 12px; border-top:2px solid #d1d5db">@tLeadIn.ToString("N0")</td>
+                        <td style="text-align:right; padding:6px 12px; border-top:2px solid #d1d5db">@tLeadDc.ToString("N0")</td>
                     </tr>
                 </tfoot>
             </table>
@@ -838,11 +848,14 @@
         var ws = wb.AddWorksheet("OTS");
         string[] headers =
         {
+            // Layout mirrors the grid: week bookkeeping before Current EOW, and the
+            // reference-only Lead columns last.
             "Country","StoreID","Store Name","Divcode","Division","Volume Group",
-            "EOM Month","Tgt EOM Month","Tgt EOM","Prev EOM Month","Prev Month EOM","Divisor Weeks","Week Adjustment","Current EOW",
+            "EOM Month","Tgt EOM Month","Tgt EOM","Prev EOM Month","Prev Month EOM","Divisor Weeks","Week Adjustment",
+            "Current Week","Target Week","Weeks Multiplier","Current EOW",
             "SOH Today","No. of Lead Weeks","Week Sales",
-            "Lead InTransit","Lead DC SOH",
-            "InTransit","Ex2 DC SOH","Counting WIP","OTS Qty Today","OTS % Today","OTS Today Required"
+            "InTransit","Ex2 DC SOH","Counting WIP","OTS Qty Today","OTS % Today","OTS Today Required",
+            "Lead InTransit","Lead DC SOH"
         };
         for (int i = 0; i < headers.Length; i++) ws.Cell(1, i + 1).Value = headers[i];
         int row = 2;
@@ -862,34 +875,37 @@
             ws.Cell(row,11).Value  = r.PrevMonthEOM;
             ws.Cell(row,12).Value  = r.DivisorWeeks;
             ws.Cell(row,13).Value  = (int)Math.Round(r.WeekAdjustment);
-            ws.Cell(row,14).Value  = r.CurrentEOW;
-            ws.Cell(row,15).Value  = r.SOHToday;
-            ws.Cell(row,16).Value  = r.NoOfLeadWeeks;
-            ws.Cell(row,17).Value  = r.WeekSales;
-            ws.Cell(row,18).Value  = r.LeadIntransit;
-            ws.Cell(row,19).Value  = r.LeadDCSOH;
-            ws.Cell(row,20).Value  = r.InTransit;
-            ws.Cell(row,21).Value  = r.Ex2DcSoh;
-            ws.Cell(row,22).Value  = r.CountingWIP;
-            ws.Cell(row,23).Value  = r.OtsQtyToday;
-            ws.Cell(row,24).Value  = (int)Math.Round(r.OtsPercentToday);
-            ws.Cell(row,25).Value  = req > 0 ? req : 0;
+            ws.Cell(row,14).Value  = r.CurrentWeek;
+            ws.Cell(row,15).Value  = r.TargetWeek;
+            ws.Cell(row,16).Value  = r.WeeksMultiplier;
+            ws.Cell(row,17).Value  = r.CurrentEOW;
+            ws.Cell(row,18).Value  = r.SOHToday;
+            ws.Cell(row,19).Value  = r.NoOfLeadWeeks;
+            ws.Cell(row,20).Value  = r.WeekSales;
+            ws.Cell(row,21).Value  = r.InTransit;
+            ws.Cell(row,22).Value  = r.Ex2DcSoh;
+            ws.Cell(row,23).Value  = r.CountingWIP;
+            ws.Cell(row,24).Value  = r.OtsQtyToday;
+            ws.Cell(row,25).Value  = (int)Math.Round(r.OtsPercentToday);
+            ws.Cell(row,26).Value  = req > 0 ? req : 0;
+            ws.Cell(row,27).Value  = r.LeadIntransit;
+            ws.Cell(row,28).Value  = r.LeadDCSOH;
             row++;
         }
         // Totals row (column indices match the header layout above)
         ws.Cell(row, 1).Value = "Totals";
         ws.Cell(row, 9).Value  = _totTgtEOM;
         ws.Cell(row,11).Value  = SortedRows.Sum(r => r.PrevMonthEOM);
-        ws.Cell(row,14).Value  = SortedRows.Sum(r => r.CurrentEOW);
-        ws.Cell(row,15).Value  = _totSOH;
-        ws.Cell(row,17).Value  = _totWeekSales;
-        ws.Cell(row,18).Value  = _totLeadIn;
-        ws.Cell(row,19).Value  = _totLeadDc;
-        ws.Cell(row,20).Value  = _totInTransit;
-        ws.Cell(row,21).Value  = _totEx2;
-        ws.Cell(row,22).Value  = _totWIP;
-        ws.Cell(row,23).Value  = _totOtsQty;
-        ws.Cell(row,25).Value  = _totOtsRequired;
+        ws.Cell(row,17).Value  = SortedRows.Sum(r => r.CurrentEOW);
+        ws.Cell(row,18).Value  = _totSOH;
+        ws.Cell(row,20).Value  = _totWeekSales;
+        ws.Cell(row,21).Value  = _totInTransit;
+        ws.Cell(row,22).Value  = _totEx2;
+        ws.Cell(row,23).Value  = _totWIP;
+        ws.Cell(row,24).Value  = _totOtsQty;
+        ws.Cell(row,26).Value  = _totOtsRequired;
+        ws.Cell(row,27).Value  = _totLeadIn;
+        ws.Cell(row,28).Value  = _totLeadDc;
         ws.Row(row).Style.Font.Bold = true;
         ws.Columns().AdjustToContents();
         using var ms = new MemoryStream();
@@ -1001,6 +1017,9 @@
                 "PrevEOMMonth"    => r => r.PrevEOMMonth ?? "",
                 "PrevMonthEOM"    => r => r.PrevMonthEOM,
                 "DivisorWeeks"    => r => r.DivisorWeeks,
+                "CurrentWeek"     => r => r.CurrentWeek,
+                "TargetWeek"      => r => r.TargetWeek,
+                "WeeksMultiplier" => r => r.WeeksMultiplier,
                 "WeekAdjustment"  => r => r.WeekAdjustment,
                 "CurrentEOW"      => r => r.CurrentEOW,
                 "SOHToday"        => r => r.SOHToday,
