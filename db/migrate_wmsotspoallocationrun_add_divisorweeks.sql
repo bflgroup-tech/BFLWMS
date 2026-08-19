@@ -5,7 +5,7 @@
  * so persisting fails outright against a table without this column.
  *
  * What it holds: the number of fiscal weeks in the country's TARGET EOM month —
- * the month that lastWk (= current wk + NoOfLeadWeeks - 1) falls in, counted from
+ * the month that lastWk (= current wk + NoOfLeadWeeks) falls in, counted from
  * BFL_MFP_OUTBOUND_T1. That is the WeekAdjustment divisor:
  *
  *     WeekAdjustment = (TgtEOM - PrevMonthEOM) / DivisorWeeks
