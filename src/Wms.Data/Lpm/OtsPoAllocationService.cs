@@ -208,6 +208,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                    CountingWIP, OtsQtyToday, OtsPercentToday,
                    PrevEOMMonth,
                    ISNULL(PrevMonthEOM,    0) AS PrevMonthEOM,
+                   ISNULL(DivisorWeeks,    0) AS DivisorWeeks,
                    ISNULL(WeekAdjustment,  0) AS WeekAdjustment,
                    ISNULL(CurrentEOW, TgtEOM) AS CurrentEOW
               FROM dbo.WmsOtsPoAllocationRun WITH (NOLOCK)
@@ -233,6 +234,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
             OtsPercentToday: (double)r.OtsPercentToday,
             PrevEOMMonth: r.PrevEOMMonth,
             PrevMonthEOM: r.PrevMonthEOM,
+            DivisorWeeks: r.DivisorWeeks,
             WeekAdjustment: r.WeekAdjustment,
             CurrentEOW: r.CurrentEOW)).ToList();
     }
@@ -322,6 +324,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
             dt.Columns.Add("OtsPercentToday", typeof(decimal));
             dt.Columns.Add("PrevEOMMonth",    typeof(string));
             dt.Columns.Add("PrevMonthEOM",    typeof(int));
+            dt.Columns.Add("DivisorWeeks",    typeof(int));
             dt.Columns.Add("WeekAdjustment",  typeof(decimal));
             dt.Columns.Add("CurrentEOW",      typeof(int));
 
@@ -340,7 +343,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                     r.InTransit, r.Ex2DcSoh, r.CountingWIP, r.OtsQtyToday,
                     (decimal)r.OtsPercentToday,
                     (object?)r.PrevEOMMonth ?? DBNull.Value,
-                    r.PrevMonthEOM, r.WeekAdjustment, r.CurrentEOW);
+                    r.PrevMonthEOM, r.DivisorWeeks, r.WeekAdjustment, r.CurrentEOW);
             }
 
             using var bulk = new SqlBulkCopy(c, SqlBulkCopyOptions.Default, tx)
@@ -449,11 +452,16 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         // month - 1. Falls back to picked (month, year) when the country has no
         // WmsCountryOtsWeeks config or MFP has no calendar entry for lastWk.
         //
-        // weeksInPrevMonthByCountry drives the WeekAdjustment denominator
-        // downstream — its value is #weeks in the country's PrevEOMMonth (not
-        // the picked month) so the per-week walk from PrevMonthEOM to TgtEOM
-        // is calibrated to the correct calendar month.
-        var weeksInPrevMonthByCountry = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        // weeksInTargetMonthByCountry drives the WeekAdjustment denominator
+        // downstream — #weeks in the month that lastWk (= currentWk + LeadWeeks - 1)
+        // falls in, i.e. the country's TARGET EOM month. The walk from PrevMonthEOM
+        // toward TgtEOM is therefore paced by the month it is walking INTO.
+        //
+        // Was the PREV EOM month's week count until this change; the two differ
+        // whenever consecutive fiscal months have different week counts (4 vs 5),
+        // which shifts WeekAdjustment and CurrentEOW. Surfaced on the grid as the
+        // "Divisor Weeks" column so the arithmetic is checkable from the report.
+        var weeksInTargetMonthByCountry = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         {
             await using var c = OpenOnPremBackup();
             var currentWk = (await c.ExecuteScalarAsync<int?>(new CommandDefinition(@"
@@ -527,17 +535,15 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                 }
             }
 
-            // Populate weeksInPrevMonthByCountry: count DISTINCT week per (month, year)
-            // in the fiscal calendar (BFL_MFP_OUTBOUND_T1 derived), keyed by the
-            // country's PREV EOM month. Used downstream as the WeekAdjustment
-            // denominator so the per-week walk uses the correct calendar month's
-            // week count.
+            // Count DISTINCT week per (month, year) in the fiscal calendar
+            // (BFL_MFP_OUTBOUND_T1 derived), then key each country by its TARGET EOM
+            // month — the month lastWk lands in. That is the WeekAdjustment divisor.
             var weeksByMonthYear = fiscalCal.Values
                 .GroupBy(mm => (mm.Month, mm.Year))
                 .ToDictionary(g => g.Key, g => g.Count());
             foreach (var (cty, t) in targetByCountry)
             {
-                weeksInPrevMonthByCountry[cty] = weeksByMonthYear.TryGetValue((t.PrevMonth, t.PrevYear), out var w) ? w : 0;
+                weeksInTargetMonthByCountry[cty] = weeksByMonthYear.TryGetValue((t.TgtMonth, t.TgtYear), out var w) ? w : 0;
             }
         }
 
@@ -1003,11 +1009,13 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
             var wip = wipByKey.TryGetValue((r.Country, r.StoreID, r.DivCode), out var v) ? v : 0;
 
             // WeekAdjustment = per-week walk rate from PrevMonthEOM toward TgtEOM,
-            // sized to the # weeks in the PREV EOM month (per country). Positive
-            // when scaling up (Tgt > Prev), negative when winding down.
+            // sized to the # weeks in the TARGET EOM month (per country) — the month
+            // that lastWk = currentWk + LeadWeeks - 1 falls in. Positive when scaling
+            // up (Tgt > Prev), negative when winding down.
             // CurrentEOW = PrevMonthEOM + WeekAdjustment × NoOfLeadWeeks — the
             // interpolation projects forward by the country's lead-weeks value.
-            var wpm = weeksInPrevMonthByCountry.TryGetValue(r.Country, out var wp) && wp > 0
+            // The divisor is persisted as DivisorWeeks so the report is self-checking.
+            var wpm = weeksInTargetMonthByCountry.TryGetValue(r.Country, out var wp) && wp > 0
                 ? wp
                 : (weeksInMonth > 0 ? weeksInMonth : 0);
             decimal weekAdjustment;
@@ -1061,6 +1069,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                 OtsPercentToday: otsPct,
                 PrevEOMMonth:    r.PrevEOMMonth,
                 PrevMonthEOM:    r.PrevMonthEOM,
+                DivisorWeeks:    wpm,
                 WeekAdjustment:  weekAdjustment,
                 CurrentEOW:      currentEOW));
         }
@@ -1117,6 +1126,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         public decimal  OtsPercentToday { get; set; }
         public string?  PrevEOMMonth    { get; set; }
         public int      PrevMonthEOM    { get; set; }
+        public int      DivisorWeeks    { get; set; }
         public decimal  WeekAdjustment  { get; set; }
         public int      CurrentEOW      { get; set; }
     }
