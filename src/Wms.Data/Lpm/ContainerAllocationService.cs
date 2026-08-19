@@ -592,15 +592,24 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         {
             if (runOption != RunOption.FillSKUMaxRoundRobin && runOption != RunOption.FillMinMinPlusOthers) return new();
             await using var wms = OpenOnPremBackup();
+            // OTSDate = today (GST) is REQUIRED, not incidental. Without it the query
+            // returned every OTSDate in the month and the dictionary build below —
+            // which has no ORDER BY and is last-write-wins — silently picked an
+            // arbitrary day per (StoreID, DivCode). Allocation then ran on stale OTS
+            // while the Validate step, which checks COUNT(*) WHERE OTSDate = today,
+            // still reported OTS as generated. Observed on AEINT8070: the trace showed
+            // LiveOtsPct 92.37 against a CurrentEOW of 13,170 from an earlier day,
+            // where that day's actual row was CurrentEOW 5,882 / OtsPercent -45.04.
             return (await wms.QueryAsync<OtsRunLookupRow>(new CommandDefinition(@"
                 SELECT Country, StoreID, DivCode, VolumeGroup,
                        TgtEOM, SOHToday, WeekSales, InTransit, Ex2DcSoh, CountingWIP,
                        OtsQtyToday, OtsPercentToday, ISNULL(CurrentEOW, 0) AS CurrentEOW
                   FROM dbo.WmsOtsPoAllocationRun WITH (NOLOCK)
                  WHERE [Month] = @m AND [Year] = @y
+                   AND OTSDate = @otsDate
                    AND TgtEOM > 50
                    AND (@noCountryFilter = 1 OR Country IN @countries)",
-                new { m = nowGst.Month, y = nowGst.Year,
+                new { m = nowGst.Month, y = nowGst.Year, otsDate = nowGst.Date,
                       noCountryFilter = hasCountryFilter ? 0 : 1,
                       countries = countryFilter },
                 commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).ToList();
@@ -685,10 +694,13 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         var runningOtsQty = new Dictionary<(string StoreID, int DivCode), int>();
         if (runOption == RunOption.FillSKUMaxRoundRobin || runOption == RunOption.FillMinMinPlusOthers)
         {
+            // The query is now pinned to OTSDate = today, so "no rows" means today's
+            // run is missing rather than the month's — say so, since that is the
+            // action the operator has to take.
             if (otsRunRowsList.Count == 0)
                 throw new InvalidOperationException(
-                    $"{runOption} needs an OTS for PO Allocation run for {nowGst:MMMM yyyy} " +
-                    "in the picked Allocation Countries with TgtEOM > 50. Generate that first, then re-run Process.");
+                    $"{runOption} needs an OTS for PO Allocation run generated TODAY ({nowGst:dd/MM/yyyy} GST) " +
+                    "in the picked Allocation Countries with TgtEOM > 50. Go to OTS for PO Allocation → Generate, then re-run Process.");
             foreach (var r in otsRunRowsList)
             {
                 otsRunByKey[(r.StoreID, r.DivCode)] = r;
