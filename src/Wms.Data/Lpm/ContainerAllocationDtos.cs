@@ -152,7 +152,13 @@ public record AllocationTraceRow(
     decimal? AvgOtsPercent  = null,
     decimal? AvgOtsMin      = null,
     decimal? AvgOtsMax      = null,
-    decimal? InitialOtsPct  = null);
+    decimal? InitialOtsPct  = null,
+    // Line + store context, so a trace row can be read without joining back to
+    // usaorgfile_LPM. Allocation walks (OraPONo, Division, LPMDt) combos, so PONo
+    // and LPMDt identify which combo produced the row; Country identifies the store.
+    string?  PONo           = null,
+    DateTime? LPMDt         = null,
+    string?  Country        = null);
 
 /// <summary>One row from LPMSIM.dbo.WmsPlanningFlag — items whose FMMPO Pass 4
 /// remainder was >= 10% of PO qty and got dropped (nothing distributed) so a

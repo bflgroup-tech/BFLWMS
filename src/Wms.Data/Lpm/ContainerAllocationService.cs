@@ -1222,7 +1222,10 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                             AvgOtsPercent: avgOtsDecimal,
                             AvgOtsMin: avgOtsMinDecimal,
                             AvgOtsMax: avgOtsMaxDecimal,
-                            InitialOtsPct: ecomOtsRow?.OtsPercentToday));
+                            InitialOtsPct: ecomOtsRow?.OtsPercentToday,
+                            PONo: line.OraPONo,
+                            LPMDt: line.LPMDt,
+                            Country: ecomOtsRow?.Country ?? "ECOM"));
                     }
 
                     int VolumeGroupRank(string? vg)
@@ -1394,7 +1397,10 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                             AvgOtsPercent: avgOtsDecimal,
                             AvgOtsMin: avgOtsMinDecimal,
                             AvgOtsMax: avgOtsMaxDecimal,
-                            InitialOtsPct: r.OtsPercentToday));
+                            InitialOtsPct: r.OtsPercentToday,
+                            PONo: line.OraPONo,
+                            LPMDt: line.LPMDt,
+                            Country: r.Country));
                     }
 
                     // Sort order used by Passes 2, 3, 4: VolumeGroup A+ -> E, then LiveOtsPct DESC.
@@ -1807,7 +1813,10 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                                         AvgOtsPercent: avgOtsDecimal,
                                         AvgOtsMin: avgOtsMinDecimal,
                                         AvgOtsMax: avgOtsMaxDecimal,
-                                        InitialOtsPct: null));
+                                        InitialOtsPct: null,
+                                        PONo: line.OraPONo,
+                                        LPMDt: line.LPMDt,
+                                        Country: null));   // synthetic row — no store
                                 }
                                 remaining = 0;   // drop; move on to next item
                             }
@@ -1994,6 +2003,9 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
             tdt.Columns.Add("AvgOtsMin",          typeof(decimal));
             tdt.Columns.Add("AvgOtsMax",          typeof(decimal));
             tdt.Columns.Add("InitialOtsPct",      typeof(decimal));
+            tdt.Columns.Add("PONo",               typeof(string));
+            tdt.Columns.Add("LPMDt",              typeof(DateTime));
+            tdt.Columns.Add("Country",            typeof(string));
 
             foreach (var t in trace)
             {
@@ -2012,7 +2024,10 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                     (object?)t.AvgOtsPercent  ?? DBNull.Value,
                     (object?)t.AvgOtsMin      ?? DBNull.Value,
                     (object?)t.AvgOtsMax      ?? DBNull.Value,
-                    (object?)t.InitialOtsPct  ?? DBNull.Value);
+                    (object?)t.InitialOtsPct  ?? DBNull.Value,
+                    (object?)t.PONo           ?? DBNull.Value,
+                    (object?)t.LPMDt          ?? DBNull.Value,
+                    (object?)t.Country        ?? DBNull.Value);
             }
 
             using var tbulk = new SqlBulkCopy(ct1)
