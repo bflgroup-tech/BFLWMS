@@ -330,7 +330,7 @@ else if (_loadedOnce && VisibleRows().Count == 0)
                     <div class="aiwms-card-header">
                         Week-wise Division Comparison (Actual vs Target)
                         <span class="psr-country-badge">@divCapCountry</span>
-                        — For WH Manager (Division Level)
+                        — Week @_selectedWeek — For WH Manager (Division Level)
                     </div>
                     @MinimizeToggle(collapsed, () => { if (!_divCapCollapsedCountries.Add(divCapCountry)) _divCapCollapsedCountries.Remove(divCapCountry); })
                 </div>
@@ -347,34 +347,42 @@ else if (_loadedOnce && VisibleRows().Count == 0)
                         <table class="aiwms-table aiwms-table-dense" style="font-size:12px">
                             <thead>
                                 <tr>
-                                    <th>Division</th>
-                                    <th style="text-align:right">Max Cap./Wk</th>
+                                    <th rowspan="2">Division</th>
+                                    <th rowspan="2" style="text-align:right">Max Capacity<br />(Per Week)</th>
+                                    <th rowspan="2" style="text-align:right">Weekly Target</th>
+                                    <th rowspan="2" style="text-align:right; background:#fdb623">Weekly Achieved</th>
+                                    <th colspan="@divPivot.Days.Count" style="text-align:center">Production Achievement</th>
+                                    <th rowspan="2" style="text-align:right">Achieved %</th>
+                                </tr>
+                                <tr>
                                     @foreach (var day in divPivot.Days) { <th style="text-align:right">@day.ToString("dd-MMM")</th> }
-                                    <th style="text-align:right; background:#fdb623">Total Wk @_selectedWeek</th>
-                                    <th style="text-align:right">Target</th>
-                                    <th style="text-align:right">Variance</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 @foreach (var row in divPivot.Rows)
                                 {
-                                    var variance = divPivot.RowTotal[row.Division] - divPivot.RowTarget[row.Division];
+                                    var total  = divPivot.RowTotal[row.Division];
+                                    var target = divPivot.RowTarget[row.Division];
+                                    var pct    = target == 0 ? 0 : (double)total / (double)target * 100.0;
                                     <tr>
                                         <td>@row.Division</td>
                                         <td style="text-align:right">@row.MaxCapWeek.ToString("N0")</td>
+                                        <td style="text-align:right">@target.ToString("N0")</td>
+                                        <td style="text-align:right; font-weight:600">@total.ToString("N0")</td>
                                         @foreach (var day in divPivot.Days) { <td style="text-align:right">@divPivot.DailyQty[(day, row.Division)].ToString("N0")</td> }
-                                        <td style="text-align:right; font-weight:600">@divPivot.RowTotal[row.Division].ToString("N0")</td>
-                                        <td style="text-align:right">@divPivot.RowTarget[row.Division].ToString("N0")</td>
-                                        <td style="text-align:right; color:@(variance < 0 ? "#dc2626" : "#15803d")">@variance.ToString("N0")</td>
+                                        <td style="text-align:right">@pct.ToString("N0")%</td>
                                     </tr>
+                                }
+                                @{
+                                    var grandPct = divPivot.GrandTarget == 0 ? 0 : (double)divPivot.GrandTotal / (double)divPivot.GrandTarget * 100.0;
                                 }
                                 <tr style="font-weight:700; background:#fff7e0">
                                     <td>TOTAL</td>
                                     <td style="text-align:right">@divPivot.MaxCapTotal.ToString("N0")</td>
-                                    @foreach (var day in divPivot.Days) { <td style="text-align:right">@divPivot.DailyTotal[day].ToString("N0")</td> }
-                                    <td style="text-align:right">@divPivot.GrandTotal.ToString("N0")</td>
                                     <td style="text-align:right">@divPivot.GrandTarget.ToString("N0")</td>
-                                    <td style="text-align:right; color:@(divPivot.GrandVariance < 0 ? "#dc2626" : "#15803d")">@divPivot.GrandVariance.ToString("N0")</td>
+                                    <td style="text-align:right">@divPivot.GrandTotal.ToString("N0")</td>
+                                    @foreach (var day in divPivot.Days) { <td style="text-align:right">@divPivot.DailyTotal[day].ToString("N0")</td> }
+                                    <td style="text-align:right">@grandPct.ToString("N0")%</td>
                                 </tr>
                             </tbody>
                         </table>
@@ -658,7 +666,6 @@ else if (_loadedOnce && VisibleRows().Count == 0)
         public decimal MaxCapTotal;
         public long GrandTotal;
         public decimal GrandTarget;
-        public decimal GrandVariance;
     }
 
     private DivCapPivot BuildDivCapPivot(DivisionCapVsTargetResult result, DateTime weekStart, DateTime weekEnd)
@@ -688,10 +695,9 @@ else if (_loadedOnce && VisibleRows().Count == 0)
                 .Sum(t => t.Target);
         }
 
-        p.MaxCapTotal   = p.Rows.Sum(r => r.MaxCapWeek);
-        p.GrandTotal    = p.RowTotal.Values.Sum();
-        p.GrandTarget   = p.RowTarget.Values.Sum();
-        p.GrandVariance = p.GrandTotal - p.GrandTarget;
+        p.MaxCapTotal = p.Rows.Sum(r => r.MaxCapWeek);
+        p.GrandTotal  = p.RowTotal.Values.Sum();
+        p.GrandTarget = p.RowTarget.Values.Sum();
         return p;
     }
 
