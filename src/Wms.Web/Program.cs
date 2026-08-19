@@ -105,6 +105,10 @@ public class Program
         builder.Services.AddScoped<WeeklySalesFromGcpService>();
         builder.Services.AddScoped<VolumeGroupWeeklyService>();
 
+        // On-demand ECOM SOH pull from BigQuery (mvp-data-bi.Ecom_Bronze.INCREFF_*_SOH)
+        // into LPMSIM's dbo.LPM_ECOM_INCREFF_SOH. No timer yet — Refresh Now only.
+        builder.Services.AddScoped<IncreffSohFromGcpService>();
+
         // Generic (JobName, Country) activation + run-log access over the shared
         // WmsRptCountryConfig / WmsRptJobRun tables, used by the newer batch jobs.
         builder.Services.AddScoped<ScheduledJobService>();

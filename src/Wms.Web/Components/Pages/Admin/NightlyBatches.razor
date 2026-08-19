@@ -10,6 +10,7 @@
 @inject VolumeGroupWeeklyService Vg
 @inject OtsWeeklyService OtsJob
 @inject ScheduledJobService Jobs
+@inject IncreffSohFromGcpService IncreffSoh
 @inject OtsPoAllocationService Ots
 @inject ContainerAllocationDataSyncService Sync
 @inject PendingGoodsReceiptEmailService Pgr
@@ -283,6 +284,16 @@
                     active => TogglePgrAsync(pgr, active),
                     new() { ("Send Now", EventCallback.Factory.Create(this, () => RunPgrNowAsync(pgr))) }));
             }
+
+            // 8. IncreffSohFromGCP — on-demand only (no timer yet). Toggle is inert
+            //    today; it's there so a future timer has an activation row ready.
+            var increff = await Jobs.GetSingleRowAsync(IncreffSohFromGcpService.JobName);
+            list.Add(new JobVm(
+                IncreffSohFromGcpService.JobName, "On-demand", null,
+                increff.IsActive, increff.UpdatedTS, increff.UpdatedBy,
+                null,
+                active => ToggleSingleAsync(IncreffSohFromGcpService.JobName, active),
+                new() { ("Refresh Now", EventCallback.Factory.Create(this, RefreshIncreffNowAsync)) }));
         }
         catch (Exception ex) { Show($"Failed to load jobs: {ex.Message}", true); }
 
@@ -463,6 +474,24 @@
         {
             await Jobs.FinishRunAsync(runId, "Failed", null, ex.Message);
             Show($"Boxes push failed: {ex.Message}", true);
+        }
+        finally { _busy = false; await RefreshLogAsync(); }
+    }
+
+    private async Task RefreshIncreffNowAsync()
+    {
+        _busy = true; Show("Refreshing ECOM INCREFF SOH from BigQuery (UAE, KSA)…", false); await InvokeAsync(StateHasChanged);
+        var runId = await Jobs.StartRunAsync(IncreffSohFromGcpService.JobName, "OnDemand", null, CurrentUser.Name ?? "");
+        try
+        {
+            var rows = await IncreffSoh.RefreshAsync();
+            await Jobs.FinishRunAsync(runId, "Success", rows, null);
+            Show($"IncreffSohFromGCP done — {rows} rows.", false);
+        }
+        catch (Exception ex)
+        {
+            await Jobs.FinishRunAsync(runId, "Failed", null, ex.Message);
+            Show($"Refresh failed: {ex.Message}", true);
         }
         finally { _busy = false; await RefreshLogAsync(); }
     }
