@@ -56,7 +56,21 @@
 @if (_loaded)
 {
     <div class="aiwms-section">
-        <div class="aiwms-card-header">ECOM Stock Variance - @_totals!.RowCount.ToString("N0") row(s)</div>
+        <div class="aiwms-card-header" style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px">
+            <span>ECOM Stock Variance - @_totals!.RowCount.ToString("N0") row(s)</span>
+            @if (TotalPages > 1)
+            {
+                <div style="display:flex; align-items:center; gap:8px">
+                    <button class="aiwms-btn aiwms-btn-secondary" style="font-size:11px; padding:4px 8px" @onclick="@(() => LoadAsync(_pageNumber - 1))" disabled="@(_loading || _pageNumber <= 1)">&laquo; Prev</button>
+                    <span style="font-size:13px; white-space:nowrap">Page @_pageNumber of @TotalPages</span>
+                    <button class="aiwms-btn aiwms-btn-secondary" style="font-size:11px; padding:4px 8px" @onclick="@(() => LoadAsync(_pageNumber + 1))" disabled="@(_loading || _pageNumber >= TotalPages)">Next &raquo;</button>
+                    <input type="number" min="1" max="@TotalPages" @bind="_pageJumpInput" @bind:event="oninput"
+                           @onkeyup="@(async e => { if (e.Key == "Enter") await LoadAsync(_pageJumpInput); })"
+                           style="width:64px; padding:4px 6px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:12px;" placeholder="Page #" />
+                    <button class="aiwms-btn aiwms-btn-secondary" style="font-size:11px; padding:4px 8px" @onclick="@(() => LoadAsync(_pageJumpInput))" disabled="@_loading">Go</button>
+                </div>
+            }
+        </div>
         <div style="overflow-x:auto">
         <table class="aiwms-table aiwms-table-dense">
             <thead>
@@ -105,15 +119,6 @@
             </tbody>
         </table>
         </div>
-
-        @if (TotalPages > 1)
-        {
-            <div style="display:flex; align-items:center; gap:10px; margin-top:12px">
-                <button class="aiwms-btn aiwms-btn-secondary" @onclick="@(() => LoadAsync(_pageNumber - 1))" disabled="@(_loading || _pageNumber <= 1)">&laquo; Prev</button>
-                <span style="font-size:13px">Page @_pageNumber of @TotalPages</span>
-                <button class="aiwms-btn aiwms-btn-secondary" @onclick="@(() => LoadAsync(_pageNumber + 1))" disabled="@(_loading || _pageNumber >= TotalPages)">Next &raquo;</button>
-            </div>
-        }
     </div>
 }
 
@@ -131,6 +136,7 @@
     private bool _varianceOnly = true;
     private bool _exporting;
     private int _pageNumber = 1;
+    private int _pageJumpInput = 1;
 
     private int TotalPages => _totals is null || _totals.RowCount == 0
         ? 1 : (int)Math.Ceiling(_totals.RowCount / (double)EcomStockVarianceReportService.PageSize);
@@ -166,6 +172,7 @@
             var totals = await Svc.GetTotalsAsync(EffectiveCountriesOrNull, EffectiveDivisionsOrNull, _varianceOnly);
             _totals = totals;
             _pageNumber = Math.Clamp(pageNumber, 1, Math.Max(1, TotalPages));
+            _pageJumpInput = _pageNumber;
             _rows = totals.RowCount == 0
                 ? new()
                 : await Svc.GetReportPageAsync(EffectiveCountriesOrNull, EffectiveDivisionsOrNull, _varianceOnly, _pageNumber);
