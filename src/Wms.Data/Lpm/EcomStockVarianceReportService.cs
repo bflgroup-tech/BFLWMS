@@ -17,7 +17,7 @@ public record EcomStockVarianceTotals(int RowCount, long IncreffSOH, long MFCS_S
 /// IncreffMfcsSohCompareService's Refresh Now (from DATAREPORTING.dbo.vUPC_SUBCLASS),
 /// so this report no longer joins the 20M-row view itself at read time.
 ///
-/// Filterable by Country, Division, and "Variance only" (Variance > 0) — all
+/// Filterable by Country, Division, and "Variance only" (Variance &lt;&gt; 0) — all
 /// three are applied server-side (FilterWhereSql), not client-side, because the
 /// on-screen grid is real-paged (GetReportPageAsync): filtering after paging
 /// would mean a page of 500 raw rows could shrink to a handful once "Variance
@@ -77,7 +77,7 @@ public class EcomStockVarianceReportService(IOnPremConnectionResolver resolver)
     private const string FilterWhereSql = @"
              WHERE (@noCountryFilter = 1 OR Country IN @countries)
                AND (@noDivisionFilter = 1 OR Division IN @divisions)
-               AND (@varianceOnly = 0 OR Variance > 0)";
+               AND (@varianceOnly = 0 OR Variance <> 0)";
 
     private static object BuildFilterParams(
         IEnumerable<string>? countries, IEnumerable<string>? divisions, bool varianceOnly) => new
