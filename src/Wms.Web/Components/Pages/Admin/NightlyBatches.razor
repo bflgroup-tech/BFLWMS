@@ -11,6 +11,7 @@
 @inject OtsWeeklyService OtsJob
 @inject ScheduledJobService Jobs
 @inject IncreffSohFromGcpService IncreffSoh
+@inject IncreffMfcsSohCompareService IncreffCompare
 @inject OtsPoAllocationService Ots
 @inject ContainerAllocationDataSyncService Sync
 @inject PendingGoodsReceiptEmailService Pgr
@@ -294,6 +295,17 @@
                 null,
                 active => ToggleSingleAsync(IncreffSohFromGcpService.JobName, active),
                 new() { ("Refresh Now", EventCallback.Factory.Create(this, RefreshIncreffNowAsync)) }));
+
+            // 9. IncreffMfcsSohCompare — on-demand only. Compares LPM_ECOM_INCREFF_SOH
+            //    against RACKS.dbo.lpm_locstock; run IncreffSohFromGCP first for a
+            //    fresh compare.
+            var compare = await Jobs.GetSingleRowAsync(IncreffMfcsSohCompareService.JobName);
+            list.Add(new JobVm(
+                IncreffMfcsSohCompareService.JobName, "On-demand", null,
+                compare.IsActive, compare.UpdatedTS, compare.UpdatedBy,
+                null,
+                active => ToggleSingleAsync(IncreffMfcsSohCompareService.JobName, active),
+                new() { ("Refresh Now", EventCallback.Factory.Create(this, RefreshIncreffCompareNowAsync)) }));
         }
         catch (Exception ex) { Show($"Failed to load jobs: {ex.Message}", true); }
 
@@ -492,6 +504,24 @@
         {
             await Jobs.FinishRunAsync(runId, "Failed", null, ex.Message);
             Show($"Refresh failed: {ex.Message}", true);
+        }
+        finally { _busy = false; await RefreshLogAsync(); }
+    }
+
+    private async Task RefreshIncreffCompareNowAsync()
+    {
+        _busy = true; Show("Comparing IncreffSOH vs MFCS_SOH…", false); await InvokeAsync(StateHasChanged);
+        var runId = await Jobs.StartRunAsync(IncreffMfcsSohCompareService.JobName, "OnDemand", null, CurrentUser.Name ?? "");
+        try
+        {
+            var rows = await IncreffCompare.RefreshAsync();
+            await Jobs.FinishRunAsync(runId, "Success", rows, null);
+            Show($"IncreffMfcsSohCompare done — {rows} rows.", false);
+        }
+        catch (Exception ex)
+        {
+            await Jobs.FinishRunAsync(runId, "Failed", null, ex.Message);
+            Show($"Compare failed: {ex.Message}", true);
         }
         finally { _busy = false; await RefreshLogAsync(); }
     }

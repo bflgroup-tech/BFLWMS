@@ -109,6 +109,10 @@ public class Program
         // into LPMSIM's dbo.LPM_ECOM_INCREFF_SOH. No timer yet — Refresh Now only.
         builder.Services.AddScoped<IncreffSohFromGcpService>();
 
+        // On-demand comparison of that INCREFF feed against RACKS.dbo.lpm_locstock
+        // (MFCS online-store stock) into dbo.LPM_ECOM_SOH_COMPARISON. No timer yet.
+        builder.Services.AddScoped<IncreffMfcsSohCompareService>();
+
         // Generic (JobName, Country) activation + run-log access over the shared
         // WmsRptCountryConfig / WmsRptJobRun tables, used by the newer batch jobs.
         builder.Services.AddScoped<ScheduledJobService>();
