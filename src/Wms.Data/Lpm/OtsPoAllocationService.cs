@@ -21,6 +21,28 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
 {
     private const int CommandTimeoutSeconds = 300;
 
+    /// <summary>
+    /// The build that produced a persisted row, stamped into
+    /// WmsOtsPoAllocationRun.AppVersion by BOTH the Generate button and the 07:00
+    /// scheduled job — they share this method, so the value proves which assembly
+    /// actually ran.
+    ///
+    /// Exists because "did the scheduled run pick up yesterday's deploy?" was twice
+    /// only answerable by back-solving arithmetic from the stored figures. Now it is
+    /// a column.
+    ///
+    /// Reads the ENTRY assembly (Wms.Web) rather than this one, so it matches the
+    /// version shown in the app footer. Computed once — it cannot change while the
+    /// process lives, which is precisely the property being measured.
+    /// </summary>
+    private static readonly string AppVersion =
+        System.Reflection.CustomAttributeExtensions
+            .GetCustomAttribute<System.Reflection.AssemblyInformationalVersionAttribute>(
+                System.Reflection.Assembly.GetEntryAssembly()!)
+            ?.InformationalVersion?.Split('+')[0]
+        ?? System.Reflection.Assembly.GetEntryAssembly()?.GetName().Version?.ToString()
+        ?? "unknown";
+
     public const string BflGroup = "BFLGroup";
 
     private SqlConnection OpenOnPremBackup()
@@ -336,6 +358,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
             dt.Columns.Add("TargetWeek",      typeof(int));
             dt.Columns.Add("WeeksMultiplier", typeof(int));
             dt.Columns.Add("CurrentEOW",      typeof(int));
+            dt.Columns.Add("AppVersion",      typeof(string));
 
             var who = actor ?? user.Name ?? "";
             foreach (var r in rows)
@@ -353,7 +376,8 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                     (decimal)r.OtsPercentToday,
                     (object?)r.PrevEOMMonth ?? DBNull.Value,
                     r.PrevMonthEOM, r.DivisorWeeks, r.WeekAdjustment,
-                    r.CurrentWeek, r.TargetWeek, r.WeeksMultiplier, r.CurrentEOW);
+                    r.CurrentWeek, r.TargetWeek, r.WeeksMultiplier, r.CurrentEOW,
+                    AppVersion);
             }
 
             using var bulk = new SqlBulkCopy(c, SqlBulkCopyOptions.Default, tx)
