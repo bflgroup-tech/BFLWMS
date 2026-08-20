@@ -13,8 +13,40 @@
 @inject ICurrentUser Me
 @inject ISnackbar Snack
 @inject IMemoryCache Cache
+@inject IJSRuntime JS
 
 <PageTitle>WMS — Users</PageTitle>
+
+<style>
+    .usr-minimize-btn {
+        width: 30px; height: 30px; flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+        border: none; border-radius: 5px; background: transparent; color: #6B4E00;
+        cursor: pointer; font-size: 20px; line-height: 1; padding: 0;
+        transition: background-color .1s ease;
+    }
+    .usr-minimize-btn:hover {
+        background: rgba(0,0,0,0.10);
+    }
+    .usr-section-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        align-self: stretch;
+        width: 100%;
+        box-sizing: border-box;
+        background: #FDF0C8;
+        padding: 8px 12px;
+        border-radius: var(--r-sm);
+        margin: -4px -4px 12px -4px;
+    }
+    .usr-section-header .aiwms-card-header {
+        color: #6B4E00;
+        background: transparent;
+        box-shadow: none;
+        padding: 0;
+        margin: 0;
+    }
+</style>
 
 <div class="aiwms-page-header">
     <h2>Users &amp; Roles</h2>
@@ -54,21 +86,22 @@
 </div>
 
 <div class="aiwms-section" style="background:#FFF9E6; border:1px solid #F0E0A0;">
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:@(_usersListVisible ? "12px" : "0")">
+    <div class="usr-section-header">
         <div class="aiwms-card-header" style="margin:0; cursor:pointer;" @onclick="() => _usersListVisible = !_usersListVisible">All users</div>
-        @if (_usersListVisible)
-        {
-            <button class="aiwms-btn" style="background:#0E6E7A; color:white; border:none;" @onclick="() => _usersListVisible = false">Minimize</button>
-        }
+        @MinimizeToggle(!_usersListVisible, () => _usersListVisible = !_usersListVisible)
     </div>
     @if (_usersListVisible)
     {
+    <div style="margin-bottom:12px; max-width:360px">
+        <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">SEARCH (USERNAME / COUNTRY / WAREHOUSE / ROLE)</label>
+        <input @bind="_userSearch" @bind:event="oninput" placeholder="Type to filter..." style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
+    </div>
     <table class="aiwms-table">
         <thead>
-            <tr><th>Username</th><th>Country</th><th>Warehouse</th><th>Active</th><th>Roles</th><th>Created</th><th style="width:220px"></th></tr>
+            <tr><th>Username</th><th>Country</th><th>Warehouse</th><th>Active</th><th>Roles</th><th>Created</th><th style="width:280px"></th></tr>
         </thead>
         <tbody>
-            @foreach (var u in _users)
+            @foreach (var u in FilteredUsers())
             {
                 <tr>
                     <td>@u.Username</td>
@@ -116,22 +149,21 @@
                         <td>
                             <button class="aiwms-btn aiwms-btn-secondary" style="padding:4px 10px;font-size:12px" @onclick="() => StartEdit(u)">Edit</button>
                             <button class="aiwms-btn aiwms-btn-secondary" style="padding:4px 10px;font-size:12px" @onclick="() => ToggleActive(u.Username)">@(u.IsActive ? "Disable" : "Enable")</button>
+                            <button class="aiwms-btn aiwms-btn-secondary" style="padding:4px 10px;font-size:12px" @onclick="() => RemoveUserAsync(u.Username)">Remove</button>
                         </td>
                     }
                 </tr>
             }
         </tbody>
     </table>
+    <div style="font-size:12px; color:var(--text-secondary); margin-top:8px">@FilteredUsers().Count of @_users.Count user(s)</div>
     }
 </div>
 
 <div class="aiwms-section" style="background:#FFFCF0; border:1px solid #EDE0B8;">
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:@(_showAllAccess ? "12px" : "0")">
+    <div class="usr-section-header">
         <div class="aiwms-card-header" style="margin:0; cursor:pointer;" @onclick="ToggleAllAccessViewAsync">All Users — Access Overview</div>
-        @if (_showAllAccess)
-        {
-            <button class="aiwms-btn" style="background:#0E6E7A; color:white; border:none;" @onclick="ToggleAllAccessViewAsync">Minimize</button>
-        }
+        @MinimizeToggle(!_showAllAccess, () => _ = ToggleAllAccessViewAsync())
     </div>
     @if (_showAllAccess)
     {
@@ -312,8 +344,47 @@
 </div>
 
 @code {
+    // Small icon button for section headers — glyph reflects the action the click performs
+    // (− to minimize, a checklist icon to expand), hover shows "Minimize"/"Expand" via the
+    // native title tooltip. Matches ProductionSummary.razor's MinimizeToggle pattern.
+    private RenderFragment MinimizeToggle(bool collapsed, Action toggle) => __builder =>
+    {
+        <button type="button" class="usr-minimize-btn" title="@(collapsed ? "Expand" : "Minimize")" @onclick="toggle">
+            @if (collapsed)
+            {
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <rect x="3" y="4" width="4" height="4" rx="1" fill="currentColor" />
+                    <rect x="10" y="5" width="11" height="2" rx="1" fill="currentColor" />
+                    <rect x="3" y="10" width="4" height="4" rx="1" fill="currentColor" />
+                    <rect x="10" y="11" width="11" height="2" rx="1" fill="currentColor" />
+                    <rect x="3" y="16" width="4" height="4" rx="1" fill="currentColor" />
+                    <rect x="10" y="17" width="11" height="2" rx="1" fill="currentColor" />
+                </svg>
+            }
+            else
+            {
+                @: −
+            }
+        </button>
+    };
+
     private List<WmsUser> _users = new();
-    private bool _usersListVisible = true;
+    private bool _usersListVisible = false;
+    private string _userSearch = "";
+
+    // Matches username, country, warehouse, or any assigned role code — mirrors the
+    // Access Overview search below so both filters behave the same way.
+    private List<WmsUser> FilteredUsers()
+    {
+        var term = _userSearch.Trim();
+        if (term.Length == 0) return _users;
+        return _users.Where(u =>
+            Matches(u.Username, term) ||
+            Matches(u.Country, term) ||
+            Matches(u.Warehouse, term) ||
+            u.UserRoles.Any(r => Matches(r.RoleCode, term))
+        ).ToList();
+    }
     private List<WmsRole> _roles = new();
     private List<WmsWHMaster> _whs = new();
     private List<string> _countries = new();
@@ -398,6 +469,45 @@
         u.IsActive = !u.IsActive;
         await db.SaveChangesAsync();
         Cache.Remove(AuthStateCurrentUser.ProfileCacheKey(username));
+        await Reload();
+    }
+
+    // Hard-deletes the user and every access grant tied to them. AuditSaveChangesInterceptor
+    // (Wms.Data.Auditing) automatically writes a 'D' row per deleted entity to dbo.WmsAuditLog
+    // (EntityName/EntityKey/ChangedBy/ChangedTS/ChangesJson) — that's the permanent "removed"
+    // record; no separate log table is needed.
+    private async Task RemoveUserAsync(string username)
+    {
+        var confirm = await JS.InvokeAsync<bool>("confirm", $"Remove user {username}? This deletes their roles and access grants and cannot be undone.");
+        if (!confirm) return;
+
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var u = await db.Users.Include(x => x.UserRoles).FirstOrDefaultAsync(x => x.Username == username);
+        if (u is null) return;
+
+        // Two separate SaveChanges calls: EF has no modeled FK relationship between WmsUser
+        // and the three access-grant tables (they're plain Username columns, not navigation
+        // properties), so it can't infer that the children must be deleted before the parent —
+        // deleting all grants first avoids relying on delete-order it doesn't know about.
+        db.UserRoles.RemoveRange(u.UserRoles);
+        db.UserCountryAccess.RemoveRange(db.UserCountryAccess.Where(a => a.Username == username));
+        db.UserMenuAccess.RemoveRange(db.UserMenuAccess.Where(a => a.Username == username));
+        try { db.UserSectionAccess.RemoveRange(db.UserSectionAccess.Where(a => a.Username == username)); }
+        catch { /* dbo.Wms_UserSectionAccess not migrated on this environment yet */ }
+        await db.SaveChangesAsync();
+
+        db.Users.Remove(u);
+        await db.SaveChangesAsync();
+        Cache.Remove(AuthStateCurrentUser.ProfileCacheKey(username));
+        Cache.Remove(AuthStateCurrentUser.CountryAccessCacheKey(username));
+        Cache.Remove(AuthStateCurrentUser.SectionAccessCacheKey(username));
+
+        if (_menuUser == username) { _menuUser = ""; _menuGrants.Clear(); }
+        if (_countryUser == username) { _countryUser = ""; _countryGrants.Clear(); }
+        if (_sectionUser == username) { _sectionUser = ""; _sectionGrants.Clear(); }
+        if (_showAllAccess) await RefreshAllAccessSnapshotAsync();
+
+        Snack.Add($"{username} removed.", Severity.Success);
         await Reload();
     }
 
