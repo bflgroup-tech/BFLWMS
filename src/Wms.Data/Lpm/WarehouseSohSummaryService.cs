@@ -12,6 +12,17 @@ public sealed record WhStockOnHand(
     long NumberOfPallets,
     long TotalActiveSkus);
 
+/// <summary>One row of the "SOH Detail — Division Level" report — Division resolved via
+/// Datareporting.dbo.vUPC_SUBCLASS (no match = "Unknown").</summary>
+public sealed record SohDivisionRow(string Division, long SohQty, long BoxCount, long PalletCount);
+
+/// <summary>One row of the "SOH Detail — Seasonal Level" report — Season is
+/// WHBoxItems(Export).Season's raw single-letter code mapped to a readable label —
+/// W=Winter, everything else (S, plus the negligible C/H codes) folds into Summer,
+/// confirmed with the business. "Non-seasonal" is a defensive fallback for any
+/// future/unseen code, not something live data hits today.</summary>
+public sealed record SohSeasonRow(string Season, long SohQty, long BoxCount, long PalletCount);
+
 /// <summary>
 /// Storage Capacity figures for one warehouse group. For the box+pallet group
 /// (TECHNO/JAFZA/YOTO), FreeBoxRackLocations/FilledBoxLocations are BINRACK-type
@@ -143,6 +154,130 @@ public class WarehouseSohSummaryService(IOnPremConnectionResolver resolver)
         await rdr.ReadAsync(ct);
         return new WhStockOnHand(
             rdr.GetInt64(0), rdr.GetInt64(1), rdr.GetInt64(2), rdr.GetInt64(3), rdr.GetInt64(4), rdr.GetInt64(5));
+    }
+
+    // W=Winter; everything else (S, plus the negligible C/H codes -- 15 rows combined,
+    // out of ~860k) folds into Summer, per explicit confirmation. "Non-seasonal" is kept
+    // as a defensive fallback for any future/unseen code, not something live data hits today.
+    private const string SeasonLabelCaseSql = @"
+        CASE WHEN Season = 'W' THEN 'Winter'
+             WHEN Season IN ('S', 'C', 'H') THEN 'Summer'
+             ELSE 'Non-seasonal'
+        END";
+
+    /// <summary>"SOH Detail — Division Level" for UAE — every warehouse combined
+    /// (TECHNO/JAFZA/YOTO/BlackBOX, no split, matching the reference's single flat
+    /// table), Division resolved via Datareporting.dbo.vUPC_SUBCLASS (itemcode ->
+    /// Division; no match = "Unknown"). vUPC_SUBCLASS has ~400 duplicate itemcode rows
+    /// (confirmed live), so it's deduped to one Division per itemcode (MIN, same fix
+    /// already used for the Production Summary scan query's Division lookup) before
+    /// joining — an un-deduped join fans out and inflates SohQty/PalletCount for any
+    /// heavily-stocked SKU that happens to hit a duplicated itemcode.</summary>
+    public async Task<List<SohDivisionRow>> GetSohByDivisionAsync(CancellationToken ct = default)
+    {
+        await using var c = OpenOnPremBackup();
+        await using var cmd = c.CreateCommand();
+        cmd.CommandText = @"
+            ;WITH ItemDiv AS (
+                SELECT itemcode, Division = MIN(Division)
+                  FROM Datareporting.dbo.vUPC_SUBCLASS
+                 GROUP BY itemcode
+            )
+            SELECT
+                Division    = ISNULL(v.Division, 'Unknown'),
+                SohQty      = CAST(ISNULL(SUM(w.qty), 0) AS BIGINT),
+                BoxCount    = CAST(COUNT(DISTINCT CASE WHEN w.BoxNo <> '' THEN w.BoxNo END) AS BIGINT),
+                PalletCount = CAST(COUNT(DISTINCT CASE WHEN w.PalletNo <> '' THEN w.PalletNo END) AS BIGINT)
+              FROM RACKS.dbo.WHBoxItems w
+              LEFT JOIN ItemDiv v ON v.itemcode = w.ItemCode
+             GROUP BY ISNULL(v.Division, 'Unknown')
+             ORDER BY Division";
+        cmd.CommandTimeout = CommandTimeoutSeconds;
+        await using var rdr = await cmd.ExecuteReaderAsync(ct);
+        var result = new List<SohDivisionRow>();
+        while (await rdr.ReadAsync(ct))
+            result.Add(new SohDivisionRow(rdr.GetString(0), rdr.GetInt64(1), rdr.GetInt64(2), rdr.GetInt64(3)));
+        return result;
+    }
+
+    /// <summary>"SOH Detail — Seasonal Level" for UAE — every warehouse combined, same
+    /// scope as GetSohByDivisionAsync.</summary>
+    public async Task<List<SohSeasonRow>> GetSohBySeasonAsync(CancellationToken ct = default)
+    {
+        await using var c = OpenOnPremBackup();
+        await using var cmd = c.CreateCommand();
+        cmd.CommandText = $@"
+            SELECT
+                Season      = {SeasonLabelCaseSql},
+                SohQty      = CAST(ISNULL(SUM(qty), 0) AS BIGINT),
+                BoxCount    = CAST(COUNT(DISTINCT CASE WHEN BoxNo <> '' THEN BoxNo END) AS BIGINT),
+                PalletCount = CAST(COUNT(DISTINCT CASE WHEN PalletNo <> '' THEN PalletNo END) AS BIGINT)
+              FROM RACKS.dbo.WHBoxItems
+             GROUP BY {SeasonLabelCaseSql}
+             ORDER BY Season";
+        cmd.CommandTimeout = CommandTimeoutSeconds;
+        await using var rdr = await cmd.ExecuteReaderAsync(ct);
+        var result = new List<SohSeasonRow>();
+        while (await rdr.ReadAsync(ct))
+            result.Add(new SohSeasonRow(rdr.GetString(0), rdr.GetInt64(1), rdr.GetInt64(2), rdr.GetInt64(3)));
+        return result;
+    }
+
+    /// <summary>"SOH Detail — Division Level" for a non-UAE country, from that country's
+    /// own {DataName}.dbo.WHBoxItemsExport (DataName resolved via WhBoxItemsSource, same
+    /// as Stock On Hand above). Same vUPC_SUBCLASS dedup as GetSohByDivisionAsync.</summary>
+    public async Task<List<SohDivisionRow>> GetSohByDivisionForCountryAsync(string country, CancellationToken ct = default)
+    {
+        await using var c = OpenOnPremBackup();
+        var src = await WhBoxItemsSource.ResolveAsync(c, country, ct);
+
+        await using var cmd = c.CreateCommand();
+        cmd.CommandText = $@"
+            ;WITH ItemDiv AS (
+                SELECT itemcode, Division = MIN(Division)
+                  FROM Datareporting.dbo.vUPC_SUBCLASS
+                 GROUP BY itemcode
+            )
+            SELECT
+                Division    = ISNULL(v.Division, 'Unknown'),
+                SohQty      = CAST(ISNULL(SUM(w.Qty), 0) AS BIGINT),
+                BoxCount    = CAST(COUNT(DISTINCT CASE WHEN w.BoxNo <> '' THEN w.BoxNo END) AS BIGINT),
+                PalletCount = CAST(COUNT(DISTINCT CASE WHEN w.PalletNo <> '' THEN w.PalletNo END) AS BIGINT)
+              FROM {src} w
+              LEFT JOIN ItemDiv v ON v.itemcode = w.ItemCode
+             GROUP BY ISNULL(v.Division, 'Unknown')
+             ORDER BY Division";
+        cmd.CommandTimeout = CommandTimeoutSeconds;
+        await using var rdr = await cmd.ExecuteReaderAsync(ct);
+        var result = new List<SohDivisionRow>();
+        while (await rdr.ReadAsync(ct))
+            result.Add(new SohDivisionRow(rdr.GetString(0), rdr.GetInt64(1), rdr.GetInt64(2), rdr.GetInt64(3)));
+        return result;
+    }
+
+    /// <summary>"SOH Detail — Seasonal Level" for a non-UAE country, same source as
+    /// GetSohByDivisionForCountryAsync.</summary>
+    public async Task<List<SohSeasonRow>> GetSohBySeasonForCountryAsync(string country, CancellationToken ct = default)
+    {
+        await using var c = OpenOnPremBackup();
+        var src = await WhBoxItemsSource.ResolveAsync(c, country, ct);
+
+        await using var cmd = c.CreateCommand();
+        cmd.CommandText = $@"
+            SELECT
+                Season      = {SeasonLabelCaseSql},
+                SohQty      = CAST(ISNULL(SUM(Qty), 0) AS BIGINT),
+                BoxCount    = CAST(COUNT(DISTINCT CASE WHEN BoxNo <> '' THEN BoxNo END) AS BIGINT),
+                PalletCount = CAST(COUNT(DISTINCT CASE WHEN PalletNo <> '' THEN PalletNo END) AS BIGINT)
+              FROM {src}
+             GROUP BY {SeasonLabelCaseSql}
+             ORDER BY Season";
+        cmd.CommandTimeout = CommandTimeoutSeconds;
+        await using var rdr = await cmd.ExecuteReaderAsync(ct);
+        var result = new List<SohSeasonRow>();
+        while (await rdr.ReadAsync(ct))
+            result.Add(new SohSeasonRow(rdr.GetString(0), rdr.GetInt64(1), rdr.GetInt64(2), rdr.GetInt64(3)));
+        return result;
     }
 
     /// <summary>Storage Capacity for a non-UAE country, from that country's own
