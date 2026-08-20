@@ -35,9 +35,18 @@
             </MudSelect>
         </div>
         <div style="display:flex; gap:8px">
-            <button class="aiwms-btn aiwms-btn-primary" @onclick="@(() => LoadAsync(1))" disabled="@_loading">@(_loading ? "Loading..." : "Load")</button>
-            <button class="aiwms-btn aiwms-btn-secondary" @onclick="ClearFilters" disabled="@_loading">Clear Filters</button>
-            <button class="aiwms-btn aiwms-btn-secondary" @onclick="ExportExcelAsync" disabled="@(_exporting || _totals is null || _totals.RowCount == 0)">@(_exporting ? "Exporting..." : "Export Excel")</button>
+            <button class="aiwms-btn" style="background:var(--s-live); color:#fff; border-radius:10px;"
+                    @onclick="@(() => LoadAsync(1))" disabled="@_loading">
+                <span class="mi" style="font-size:16px;">play_arrow</span> @(_loading ? "Loading..." : "Load")
+            </button>
+            <button class="aiwms-btn" style="background:#fff; color:var(--text-primary); border:1.5px solid var(--border-strong); border-radius:10px;"
+                    @onclick="ClearFilters" disabled="@_loading">
+                <span class="mi" style="font-size:16px;">refresh</span> Clear Filters
+            </button>
+            <button class="aiwms-btn" style="background:#fff; color:var(--s-active); border:1.5px solid var(--s-active); border-radius:10px;"
+                    @onclick="ExportExcelAsync" disabled="@(_exporting || _totals is null || _totals.RowCount == 0)">
+                <span class="mi" style="font-size:16px;">download</span> @(_exporting ? "Exporting..." : "Export Excel")
+            </button>
         </div>
     </div>
 
