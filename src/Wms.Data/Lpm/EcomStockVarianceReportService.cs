@@ -13,7 +13,8 @@ public record EcomStockVarianceRow(
 /// dbo.LPM_ECOM_SOH_COMPARISON (populated by IncreffMfcsSohCompareService's
 /// Refresh Now) to DATAREPORTING.dbo.vUPC_SUBCLASS on Itemcode, for the
 /// Division/Department/Class/Subclass/Family breakdown. Filterable by
-/// Country and Division.
+/// Country, Division, and Department — Division alone still leaves some
+/// departments (e.g. Womenswear/Fast Fashion) over the page's row cap.
 /// </summary>
 public class EcomStockVarianceReportService(IOnPremConnectionResolver resolver)
 {
@@ -56,33 +57,68 @@ public class EcomStockVarianceReportService(IOnPremConnectionResolver resolver)
         return rows.Where(s => !string.IsNullOrWhiteSpace(s)).ToList();
     }
 
-    /// <summary>
-    /// countries/divisions: null means unrestricted; an empty-but-non-null list
-    /// means "match nothing" (a deny-by-default caller with zero country grants)
-    /// — same convention as ReportsService.GetPoCountingAsync.
-    /// </summary>
-    public async Task<List<EcomStockVarianceRow>> GetReportAsync(
-        IEnumerable<string>? countries, IEnumerable<string>? divisions, CancellationToken ct = default)
+    /// <summary>Department list for the filter — every distinct Department in
+    /// DATAREPORTING.dbo.vUPC_SUBCLASS, the same view this report joins to.</summary>
+    public async Task<List<string>> GetDepartmentsAsync(CancellationToken ct = default)
     {
-        var countryList  = countries?.Where(s => !string.IsNullOrWhiteSpace(s)).ToArray() ?? Array.Empty<string>();
-        var divisionList = divisions?.Where(s => !string.IsNullOrWhiteSpace(s)).ToArray() ?? Array.Empty<string>();
-        var noCountryFilter  = countries is null;
-        var noDivisionFilter = divisions is null;
-
         await using var c = OpenOnPremBackup();
-        var rows = await c.QueryAsync<EcomStockVarianceRow>(new CommandDefinition(@"
+        var rows = await c.QueryAsync<string>(new CommandDefinition(@"
+            SELECT DISTINCT Department FROM DATAREPORTING.dbo.vUPC_SUBCLASS
+             WHERE Department IS NOT NULL AND Department <> ''
+             ORDER BY Department",
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        return rows.Where(s => !string.IsNullOrWhiteSpace(s)).ToList();
+    }
+
+    // countries/divisions/departments: null means unrestricted; an empty-but-non-null
+    // list means "match nothing" (a deny-by-default caller with zero country grants)
+    // — same convention as ReportsService.GetPoCountingAsync.
+    private const string FilterWhereSql = @"
+             WHERE (@noCountryFilter = 1 OR a.Country IN @countries)
+               AND (@noDivisionFilter = 1 OR b.Division IN @divisions)
+               AND (@noDepartmentFilter = 1 OR b.Department IN @departments)";
+
+    private static object BuildFilterParams(
+        IEnumerable<string>? countries, IEnumerable<string>? divisions, IEnumerable<string>? departments) => new
+    {
+        countries = countries?.Where(s => !string.IsNullOrWhiteSpace(s)).ToArray() ?? Array.Empty<string>(),
+        noCountryFilter = countries is null ? 1 : 0,
+        divisions = divisions?.Where(s => !string.IsNullOrWhiteSpace(s)).ToArray() ?? Array.Empty<string>(),
+        noDivisionFilter = divisions is null ? 1 : 0,
+        departments = departments?.Where(s => !string.IsNullOrWhiteSpace(s)).ToArray() ?? Array.Empty<string>(),
+        noDepartmentFilter = departments is null ? 1 : 0,
+    };
+
+    /// <summary>Cheap pre-check before GetReportAsync — the page uses this to refuse
+    /// to render (and to avoid pulling the full row set over the wire) when the
+    /// filtered result is too large for an unpaginated HTML table.</summary>
+    public async Task<int> GetReportCountAsync(
+        IEnumerable<string>? countries, IEnumerable<string>? divisions, IEnumerable<string>? departments,
+        CancellationToken ct = default)
+    {
+        await using var c = OpenOnPremBackup();
+        return await c.ExecuteScalarAsync<int>(new CommandDefinition($@"
+            SELECT COUNT(*)
+              FROM dbo.LPM_ECOM_SOH_COMPARISON a
+              LEFT JOIN DATAREPORTING.dbo.vUPC_SUBCLASS b ON a.Itemcode = b.Itemcode
+            {FilterWhereSql};",
+            BuildFilterParams(countries, divisions, departments),
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+    }
+
+    public async Task<List<EcomStockVarianceRow>> GetReportAsync(
+        IEnumerable<string>? countries, IEnumerable<string>? divisions, IEnumerable<string>? departments,
+        CancellationToken ct = default)
+    {
+        await using var c = OpenOnPremBackup();
+        var rows = await c.QueryAsync<EcomStockVarianceRow>(new CommandDefinition($@"
             SELECT a.Country, a.Itemcode, a.IncreffSOH, a.MFCS_SOH, a.Variance, a.CreateTS,
                    b.Division, b.Department, b.class AS Class, b.subclass AS Subclass, b.Family
               FROM dbo.LPM_ECOM_SOH_COMPARISON a
               LEFT JOIN DATAREPORTING.dbo.vUPC_SUBCLASS b ON a.Itemcode = b.Itemcode
-             WHERE (@noCountryFilter = 1 OR a.Country IN @countries)
-               AND (@noDivisionFilter = 1 OR b.Division IN @divisions)
+            {FilterWhereSql}
              ORDER BY a.Country, a.Itemcode;",
-            new
-            {
-                countries = countryList, noCountryFilter = noCountryFilter ? 1 : 0,
-                divisions = divisionList, noDivisionFilter = noDivisionFilter ? 1 : 0,
-            },
+            BuildFilterParams(countries, divisions, departments),
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         return rows.AsList();
     }
