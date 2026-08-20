@@ -231,6 +231,74 @@
         </div>
     </div>
 
+    var sohByDivision = CombinedSohByDivision;
+    var sohBySeason   = CombinedSohBySeason;
+    <div class="aiwms-section" style="padding:0; overflow:hidden">
+        <div class="wsoh-box-header" style="border-radius:0">SOH Detail — Division Level</div>
+        <div style="overflow-x:auto">
+            <table class="aiwms-table aiwms-table-dense">
+                <thead>
+                    <tr>
+                        <th>Division</th>
+                        <th style="text-align:right">SOH Qty</th>
+                        <th style="text-align:right">Box Count</th>
+                        <th style="text-align:right">Pallet Count</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var r in sohByDivision)
+                    {
+                        <tr>
+                            <td>@r.Division</td>
+                            <td style="text-align:right">@r.SohQty.ToString("N0")</td>
+                            <td style="text-align:right">@r.BoxCount.ToString("N0")</td>
+                            <td style="text-align:right">@r.PalletCount.ToString("N0")</td>
+                        </tr>
+                    }
+                    <tr style="font-weight:700; background:#fff7e0">
+                        <td>Grand Total</td>
+                        <td style="text-align:right">@sohByDivision.Sum(r => r.SohQty).ToString("N0")</td>
+                        <td style="text-align:right">@sohByDivision.Sum(r => r.BoxCount).ToString("N0")</td>
+                        <td style="text-align:right">@sohByDivision.Sum(r => r.PalletCount).ToString("N0")</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="aiwms-section" style="padding:0; overflow:hidden">
+        <div class="wsoh-box-header" style="border-radius:0">SOH Detail — Seasonal Level</div>
+        <div style="overflow-x:auto">
+            <table class="aiwms-table aiwms-table-dense">
+                <thead>
+                    <tr>
+                        <th>Season</th>
+                        <th style="text-align:right">SOH Qty</th>
+                        <th style="text-align:right">Box Count</th>
+                        <th style="text-align:right">Pallet Count</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var r in sohBySeason)
+                    {
+                        <tr>
+                            <td>@r.Season</td>
+                            <td style="text-align:right">@r.SohQty.ToString("N0")</td>
+                            <td style="text-align:right">@r.BoxCount.ToString("N0")</td>
+                            <td style="text-align:right">@r.PalletCount.ToString("N0")</td>
+                        </tr>
+                    }
+                    <tr style="font-weight:700; background:#fff7e0">
+                        <td>Grand Total</td>
+                        <td style="text-align:right">@sohBySeason.Sum(r => r.SohQty).ToString("N0")</td>
+                        <td style="text-align:right">@sohBySeason.Sum(r => r.BoxCount).ToString("N0")</td>
+                        <td style="text-align:right">@sohBySeason.Sum(r => r.PalletCount).ToString("N0")</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
     <div class="aiwms-section">
         <div style="display:flex; gap:20px; flex-wrap:wrap; align-items:flex-start;">
             <div style="flex:1; min-width:320px; padding:0; overflow:hidden">
@@ -379,6 +447,29 @@ else if (_loadedOnce)
         }
     }
 
+    private readonly Dictionary<string, List<SohDivisionRow>> _sohDivisionByCountry = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, List<SohSeasonRow>> _sohSeasonByCountry = new(StringComparer.OrdinalIgnoreCase);
+
+    // "SOH Detail" reports (Division/Seasonal Level) combine every selected country into
+    // one flat table, same aggregate-across-countries approach as CombinedAgingUnits above.
+    private List<SohDivisionRow> CombinedSohByDivision =>
+        _sohDivisionByCountry
+            .Where(kv => _selectedCountries.Contains(kv.Key))
+            .SelectMany(kv => kv.Value)
+            .GroupBy(r => r.Division, StringComparer.OrdinalIgnoreCase)
+            .Select(g => new SohDivisionRow(g.Key, g.Sum(r => r.SohQty), g.Sum(r => r.BoxCount), g.Sum(r => r.PalletCount)))
+            .OrderBy(r => r.Division)
+            .ToList();
+
+    private List<SohSeasonRow> CombinedSohBySeason =>
+        _sohSeasonByCountry
+            .Where(kv => _selectedCountries.Contains(kv.Key))
+            .SelectMany(kv => kv.Value)
+            .GroupBy(r => r.Season, StringComparer.OrdinalIgnoreCase)
+            .Select(g => new SohSeasonRow(g.Key, g.Sum(r => r.SohQty), g.Sum(r => r.BoxCount), g.Sum(r => r.PalletCount)))
+            .OrderBy(r => r.Season)
+            .ToList();
+
     private long UnitsFor(string category) => CombinedAgingUnits switch
     {
         null => 0,
@@ -465,6 +556,8 @@ else if (_loadedOnce)
         _stockByWarehouse.Clear();
         _storageByWarehouse.Clear();
         _agingUnitsByCountry.Clear();
+        _sohDivisionByCountry.Clear();
+        _sohSeasonByCountry.Clear();
         await InvokeAsync(StateHasChanged);
         try
         {
@@ -477,6 +570,9 @@ else if (_loadedOnce)
                 _storageTotals[("UAE", false)] = await SohSvc.GetStorageCapacityForBlackboxAsync();
 
                 _agingUnitsByCountry["UAE"] = await SohSvc.GetAgingUnitsAsync();
+
+                _sohDivisionByCountry["UAE"] = await SohSvc.GetSohByDivisionAsync();
+                _sohSeasonByCountry["UAE"]   = await SohSvc.GetSohBySeasonAsync();
 
                 var uaeStock = await SohSvc.GetStockOnHandByWarehouseAsync();
                 foreach (var (wh, stock) in uaeStock)
@@ -522,6 +618,12 @@ else if (_loadedOnce)
 
                 try { _agingUnitsByCountry[country] = await SohSvc.GetAgingUnitsForCountryAsync(country); }
                 catch { /* leave unset -- combined aging total just won't include this country */ }
+
+                try { _sohDivisionByCountry[country] = await SohSvc.GetSohByDivisionForCountryAsync(country); }
+                catch { /* leave unset -- combined SOH Detail (Division) just won't include this country */ }
+
+                try { _sohSeasonByCountry[country] = await SohSvc.GetSohBySeasonForCountryAsync(country); }
+                catch { /* leave unset -- combined SOH Detail (Seasonal) just won't include this country */ }
             }
         }
         finally
