@@ -116,6 +116,26 @@ public class ScheduledJobService(IOnPremConnectionResolver resolver)
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
     }
 
+    /// <summary>
+    /// Has this job completed successfully today (GST)? For a job that must run
+    /// after another one on a fixed offset timer (not a wait-chain) — the second
+    /// timer checks this before firing and defers/retries hourly if the upstream
+    /// job hasn't landed yet today. StartTS is already stamped in GST by every
+    /// writer, so no extra timezone conversion is needed here.
+    /// </summary>
+    public async Task<bool> HasSucceededTodayAsync(string jobName, CancellationToken ct = default)
+    {
+        var todayGst = DateTime.UtcNow.AddHours(4).Date;
+        await using var c = OpenWms();
+        return await c.ExecuteScalarAsync<bool>(new CommandDefinition(@"
+            SELECT CASE WHEN EXISTS (
+                SELECT 1 FROM dbo.WmsRptJobRun
+                 WHERE JobName = @j AND Status = 'Success' AND CAST(StartTS AS DATE) = @today
+            ) THEN 1 ELSE 0 END;",
+            new { j = jobName, today = todayGst },
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+    }
+
     /// <summary>Last completed run per JobName, for the "Last run" column.</summary>
     public async Task<Dictionary<string, RptJobRunRow>> GetLastRunPerJobAsync(CancellationToken ct = default)
     {
