@@ -133,6 +133,12 @@ public class Program
         builder.Services.AddScoped<Wms.Web.Hosting.PendingGoodsReceiptEmailSender>();
         builder.Services.AddScoped<Wms.Data.Notifications.PendingGoodsReceiptEmailService>();
 
+        // Daily 08:00 GST: pull ECOM SOH from BigQuery. Daily 08:15 GST: compare it
+        // against MFCS stock — a fixed offset after the pull, not a wait-chain (see
+        // IncreffMfcsSohCompareBatchService for the readiness-check/defer behavior).
+        builder.Services.AddHostedService<Wms.Web.Hosting.IncreffSohFromGcpBatchService>();
+        builder.Services.AddHostedService<Wms.Web.Hosting.IncreffMfcsSohCompareBatchService>();
+
         // WMS DbContext — Azure SQL via AAD (Managed Identity in App Service,
         // AAD Default locally via `az login`). NO password in code.
         builder.Services.AddDbContextFactory<WmsDbContext>((sp, o) =>
