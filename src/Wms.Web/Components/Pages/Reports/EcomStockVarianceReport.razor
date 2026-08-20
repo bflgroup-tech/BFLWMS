@@ -37,6 +37,7 @@
         <div style="display:flex; gap:8px">
             <button class="aiwms-btn aiwms-btn-primary" @onclick="@(() => LoadAsync(1))" disabled="@_loading">@(_loading ? "Loading..." : "Load")</button>
             <button class="aiwms-btn aiwms-btn-secondary" @onclick="ClearFilters" disabled="@_loading">Clear Filters</button>
+            <button class="aiwms-btn aiwms-btn-secondary" @onclick="ExportExcelAsync" disabled="@(_exporting || _totals is null || _totals.RowCount == 0)">@(_exporting ? "Exporting..." : "Export Excel")</button>
         </div>
     </div>
 
@@ -55,10 +56,7 @@
 @if (_loaded)
 {
     <div class="aiwms-section">
-        <div class="aiwms-card-header" style="display:flex; align-items:center; justify-content:space-between">
-            <span>ECOM Stock Variance - @_totals!.RowCount.ToString("N0") row(s)</span>
-            <button class="aiwms-btn aiwms-btn-secondary" @onclick="ExportExcelAsync" disabled="@(_exporting || _totals!.RowCount == 0)">@(_exporting ? "Exporting..." : "Export Excel")</button>
-        </div>
+        <div class="aiwms-card-header">ECOM Stock Variance - @_totals!.RowCount.ToString("N0") row(s)</div>
         <div style="overflow-x:auto">
         <table class="aiwms-table aiwms-table-dense">
             <thead>
