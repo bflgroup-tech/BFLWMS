@@ -14,6 +14,9 @@ namespace Wms.Data.Lpm;
 ///   MFCS_SOH   -> RACKS.dbo.lpm_locstock    (MFCS online-store stock;
 ///                 StoreID = 'ONLINE' for UAE, 'ONLINEKSA' for KSA)
 ///
+/// Variance (= ABS(IncreffSOH - MFCS_SOH)) is a PERSISTED computed column on the
+/// table itself, not written here — it derives automatically on insert.
+///
 /// Both sources live on the same on-prem SQL instance as LPMSIM — LPM_ECOM_INCREFF_SOH
 /// is local to that DB, RACKS.dbo.lpm_locstock is reached via 3-part naming (same
 /// pattern as the LPMSIM.dbo.* cross-references elsewhere in this codebase) — so
