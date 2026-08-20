@@ -35,14 +35,14 @@
             </MudSelect>
         </div>
         <div style="display:flex; gap:8px">
-            <button class="aiwms-btn aiwms-btn-primary" @onclick="LoadAsync" disabled="@_loading">@(_loading ? "Loading..." : "Load")</button>
+            <button class="aiwms-btn aiwms-btn-primary" @onclick="@(() => LoadAsync(1))" disabled="@_loading">@(_loading ? "Loading..." : "Load")</button>
             <button class="aiwms-btn aiwms-btn-secondary" @onclick="ClearFilters" disabled="@_loading">Clear Filters</button>
         </div>
     </div>
 
     <div style="margin-top:12px">
         <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:13px">
-            <input type="checkbox" checked="@_varianceOnly" @onchange="@(e => _varianceOnly = (bool)e.Value!)" /> Variance only (Variance &gt; 0)
+            <input type="checkbox" checked="@_varianceOnly" @onchange="VarianceOnlyChangedAsync" /> Variance only (Variance &gt; 0)
         </label>
     </div>
 
@@ -56,9 +56,9 @@
 {
     <div class="aiwms-section">
         <div class="aiwms-card-header" style="display:flex; align-items:center; justify-content:space-between">
-        <span>ECOM Stock Variance - @FilteredRows.Count row(s)</span>
-        <button class="aiwms-btn aiwms-btn-secondary" @onclick="ExportExcelAsync" disabled="@(_exporting || FilteredRows.Count == 0)">@(_exporting ? "Exporting..." : "Export Excel")</button>
-    </div>
+            <span>ECOM Stock Variance - @_totals!.RowCount.ToString("N0") row(s)</span>
+            <button class="aiwms-btn aiwms-btn-secondary" @onclick="ExportExcelAsync" disabled="@(_exporting || _totals!.RowCount == 0)">@(_exporting ? "Exporting..." : "Export Excel")</button>
+        </div>
         <div style="overflow-x:auto">
         <table class="aiwms-table aiwms-table-dense">
             <thead>
@@ -78,13 +78,13 @@
             </thead>
             <tbody>
                 <tr style="font-weight:700; background:var(--surface-1, #f7f7f5);">
-                    <td colspan="2">Total</td>
-                    <td style="text-align:right">@FilteredRows.Sum(r => r.IncreffSOH).ToString("N0")</td>
-                    <td style="text-align:right">@FilteredRows.Sum(r => r.MFCS_SOH).ToString("N0")</td>
-                    <td style="text-align:right">@FilteredRows.Sum(r => r.Variance).ToString("N0")</td>
+                    <td colspan="2">Total (all @_totals!.RowCount.ToString("N0") rows, not just this page)</td>
+                    <td style="text-align:right">@_totals!.IncreffSOH.ToString("N0")</td>
+                    <td style="text-align:right">@_totals!.MFCS_SOH.ToString("N0")</td>
+                    <td style="text-align:right">@_totals!.Variance.ToString("N0")</td>
                     <td colspan="6"></td>
                 </tr>
-                @foreach (var r in FilteredRows)
+                @foreach (var r in _rows)
                 {
                     <tr>
                         <td>@r.Country</td>
@@ -100,13 +100,22 @@
                         <td style="white-space:nowrap">@r.CreateTS.ToString("dd-MMM-yyyy HH:mm")</td>
                     </tr>
                 }
-                @if (FilteredRows.Count == 0)
+                @if (_rows.Count == 0)
                 {
                     <tr><td colspan="11" style="color:var(--text-secondary)">No rows for the selected filters.</td></tr>
                 }
             </tbody>
         </table>
         </div>
+
+        @if (TotalPages > 1)
+        {
+            <div style="display:flex; align-items:center; gap:10px; margin-top:12px">
+                <button class="aiwms-btn aiwms-btn-secondary" @onclick="@(() => LoadAsync(_pageNumber - 1))" disabled="@(_loading || _pageNumber <= 1)">&laquo; Prev</button>
+                <span style="font-size:13px">Page @_pageNumber of @TotalPages</span>
+                <button class="aiwms-btn aiwms-btn-secondary" @onclick="@(() => LoadAsync(_pageNumber + 1))" disabled="@(_loading || _pageNumber >= TotalPages)">Next &raquo;</button>
+            </div>
+        }
     </div>
 }
 
@@ -120,11 +129,13 @@
     private string _message = "";
     private bool _isError;
     private List<EcomStockVarianceRow> _rows = new();
+    private EcomStockVarianceTotals? _totals;
     private bool _varianceOnly = true;
     private bool _exporting;
+    private int _pageNumber = 1;
 
-    private List<EcomStockVarianceRow> FilteredRows =>
-        _varianceOnly ? _rows.Where(r => r.Variance > 0).ToList() : _rows;
+    private int TotalPages => _totals is null || _totals.RowCount == 0
+        ? 1 : (int)Math.Ceiling(_totals.RowCount / (double)EcomStockVarianceReportService.PageSize);
 
     // null (no argument at all) means "genuinely unrestricted"; a user with zero
     // country grants gets the deny-by-default empty (non-null) list instead of
@@ -149,17 +160,31 @@
         catch { /* fall back to empty lists if the lookup fails */ }
     }
 
-    private async Task LoadAsync()
+    private async Task LoadAsync(int pageNumber)
     {
-        _loading = true; _message = ""; _isError = false; _loaded = false; _rows = new();
+        _loading = true; _message = ""; _isError = false; await InvokeAsync(StateHasChanged);
         try
         {
-            _rows = await Svc.GetReportAsync(EffectiveCountriesOrNull, EffectiveDivisionsOrNull);
+            var totals = await Svc.GetTotalsAsync(EffectiveCountriesOrNull, EffectiveDivisionsOrNull, _varianceOnly);
+            _totals = totals;
+            _pageNumber = Math.Clamp(pageNumber, 1, Math.Max(1, TotalPages));
+            _rows = totals.RowCount == 0
+                ? new()
+                : await Svc.GetReportPageAsync(EffectiveCountriesOrNull, EffectiveDivisionsOrNull, _varianceOnly, _pageNumber);
             _loaded = true;
-            if (_rows.Count == 0) _message = "No rows for the selected filters.";
+            if (totals.RowCount == 0) _message = "No rows for the selected filters.";
         }
         catch (Exception ex) { _message = ex.Message; _isError = true; }
         finally { _loading = false; }
+    }
+
+    // "Variance only" is applied server-side (it changes the filtered row count,
+    // hence the page count) — re-load from page 1 once a report has already been
+    // shown; before that, just record the state for the next Load click.
+    private async Task VarianceOnlyChangedAsync(ChangeEventArgs e)
+    {
+        _varianceOnly = (bool)e.Value!;
+        if (_loaded) await LoadAsync(1);
     }
 
     private void ClearFilters()
@@ -167,6 +192,8 @@
         _selectedCountries = new();
         _selectedDivisions = new();
         _rows = new();
+        _totals = null;
+        _pageNumber = 1;
         _loaded = false;
         _message = "";
         _isError = false;
@@ -174,10 +201,12 @@
 
     private async Task ExportExcelAsync()
     {
-        if (FilteredRows.Count == 0) return;
+        if (_totals is null || _totals.RowCount == 0) return;
         _exporting = true;
         try
         {
+            var all = await Svc.GetReportAsync(EffectiveCountriesOrNull, EffectiveDivisionsOrNull, _varianceOnly);
+
             using var wb = new XLWorkbook();
             var ws = wb.AddWorksheet("ECOM Stock Variance");
             string[] headers =
@@ -189,7 +218,7 @@
             ws.Row(1).Style.Font.Bold = true;
 
             int row = 2;
-            foreach (var r in FilteredRows)
+            foreach (var r in all)
             {
                 ws.Cell(row, 1).Value  = r.Country;
                 ws.Cell(row, 2).Value  = r.Itemcode;
