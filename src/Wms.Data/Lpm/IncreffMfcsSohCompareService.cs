@@ -14,8 +14,9 @@ namespace Wms.Data.Lpm;
 ///   MFCS_SOH   -> RACKS.dbo.lpm_locstock    (MFCS online-store stock;
 ///                 StoreID = 'ONLINE' for UAE, 'ONLINEKSA' for KSA)
 ///
-/// Variance (= ABS(IncreffSOH - MFCS_SOH)) is a PERSISTED computed column on the
-/// table itself, not written here — it derives automatically on insert.
+/// Variance (= MFCS_SOH - IncreffSOH, signed — negative when IncreffSOH is
+/// bigger) is a PERSISTED computed column on the table itself, not written
+/// here — it derives automatically on insert.
 ///
 /// Division/Department/Class/Subclass/Family are denormalized in at write time
 /// from DATAREPORTING.dbo.vUPC_SUBCLASS (LEFT JOIN on Itemcode, deduped to one
