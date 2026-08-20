@@ -86,6 +86,7 @@ public class Program
         builder.Services.AddScoped<CountingCompletionTodayService>();
         builder.Services.AddScoped<WarehouseBoxesService>();
         builder.Services.AddScoped<WarehouseSohSummaryService>();
+        builder.Services.AddScoped<EcomStockVarianceReportService>();
         builder.Services.AddScoped<TransferGinGrnService>();
         builder.Services.AddScoped<ShipmentStatusService>();
         builder.Services.AddScoped<SyncDataCountService>();

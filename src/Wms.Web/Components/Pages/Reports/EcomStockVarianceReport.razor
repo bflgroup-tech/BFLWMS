@@ -1,0 +1,151 @@
+@page "/reports/ecom-stock-variance"
+@rendermode RenderMode.InteractiveServer
+@using Wms.Core
+@using Wms.Data.Lpm
+@using MudBlazor
+@attribute [Authorize(Policy = MenuKeys.RPT_ECOM_STOCK_VARIANCE)]
+@inject EcomStockVarianceReportService Svc
+@inject ICurrentUser CurrentUser
+
+<PageTitle>WMS - ECOM Stock Variance Report</PageTitle>
+
+<div class="aiwms-page-header">
+    <h2>ECOM Stock Variance Report</h2>
+    <p style="color:var(--text-secondary)">Compares dbo.LPM_ECOM_SOH_COMPARISON (IncreffSOH vs MFCS_SOH) against DATAREPORTING.dbo.vUPC_SUBCLASS for the item's Division/Department/Class/Subclass/Family. Run IncreffSohFromGCP then IncreffMfcsSohCompare on the Nightly Batches admin page first for fresh data.</p>
+</div>
+
+<div class="aiwms-section">
+    <div style="display:grid; grid-template-columns: 1fr 1fr auto; gap:12px; align-items:end;">
+        <div>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COUNTRY (select any)</label>
+            <MudSelect T="string" Dense="true" MultiSelection="true" SelectAll="true" Placeholder="All"
+                       Variant="Variant.Outlined" Margin="Margin.Dense"
+                       SelectedValues="_selectedCountries" SelectedValuesChanged="@(v => _selectedCountries = v.ToHashSet())">
+                @foreach (var c in _countries) { <MudSelectItem T="string" Value="@c">@c</MudSelectItem> }
+            </MudSelect>
+        </div>
+        <div>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">DIVISION (select any)</label>
+            <MudSelect T="string" Dense="true" MultiSelection="true" SelectAll="true" Placeholder="All"
+                       Variant="Variant.Outlined" Margin="Margin.Dense"
+                       SelectedValues="_selectedDivisions" SelectedValuesChanged="@(v => _selectedDivisions = v.ToHashSet())">
+                @foreach (var d in _divisions) { <MudSelectItem T="string" Value="@d">@d</MudSelectItem> }
+            </MudSelect>
+        </div>
+        <div style="display:flex; gap:8px">
+            <button class="aiwms-btn aiwms-btn-primary" @onclick="LoadAsync" disabled="@_loading">@(_loading ? "Loading..." : "Load")</button>
+            <button class="aiwms-btn aiwms-btn-secondary" @onclick="ClearFilters" disabled="@_loading">Clear Filters</button>
+        </div>
+    </div>
+
+    @if (!string.IsNullOrEmpty(_message))
+    {
+        <div class="aiwms-alert @(_isError ? "error" : "info")" style="margin-top:12px">@_message</div>
+    }
+</div>
+
+@if (_loaded)
+{
+    <div class="aiwms-section">
+        <div class="aiwms-card-header">ECOM Stock Variance - @_rows.Count row(s)</div>
+        <div style="overflow-x:auto">
+        <table class="aiwms-table aiwms-table-dense">
+            <thead>
+                <tr>
+                    <th>Country</th>
+                    <th>Itemcode</th>
+                    <th style="text-align:right">IncreffSOH</th>
+                    <th style="text-align:right">MFCS_SOH</th>
+                    <th style="text-align:right">Variance</th>
+                    <th>Division</th>
+                    <th>Department</th>
+                    <th>Class</th>
+                    <th>Subclass</th>
+                    <th>Family</th>
+                    <th style="white-space:nowrap">Last Refreshed</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var r in _rows)
+                {
+                    <tr>
+                        <td>@r.Country</td>
+                        <td style="font-family:var(--font-mono)">@r.Itemcode</td>
+                        <td style="text-align:right">@r.IncreffSOH.ToString("N0")</td>
+                        <td style="text-align:right">@r.MFCS_SOH.ToString("N0")</td>
+                        <td style="text-align:right; font-weight:@(r.Variance == 0 ? "400" : "700")">@r.Variance.ToString("N0")</td>
+                        <td style="word-break:break-word">@r.Division</td>
+                        <td style="word-break:break-word">@r.Department</td>
+                        <td style="word-break:break-word">@r.Class</td>
+                        <td style="word-break:break-word">@r.Subclass</td>
+                        <td style="word-break:break-word">@r.Family</td>
+                        <td style="white-space:nowrap">@r.CreateTS.ToString("dd-MMM-yyyy HH:mm")</td>
+                    </tr>
+                }
+                @if (_rows.Count == 0)
+                {
+                    <tr><td colspan="11" style="color:var(--text-secondary)">No rows for the selected filters.</td></tr>
+                }
+            </tbody>
+        </table>
+        </div>
+    </div>
+}
+
+@code {
+    private List<string> _countries = new();
+    private HashSet<string> _selectedCountries = new();
+    private List<string> _divisions = new();
+    private HashSet<string> _selectedDivisions = new();
+    private bool _loading;
+    private bool _loaded;
+    private string _message = "";
+    private bool _isError;
+    private List<EcomStockVarianceRow> _rows = new();
+
+    // null (no argument at all) means "genuinely unrestricted"; a user with zero
+    // country grants gets the deny-by-default empty (non-null) list instead of
+    // silently falling back to "show everything" — same convention as PoCountingReport.
+    private IEnumerable<string>? EffectiveCountriesOrNull =>
+        _selectedCountries.Count > 0 ? _selectedCountries
+        : CurrentUser.HasAllCountriesAccess ? null
+        : _countries;
+
+    private IEnumerable<string>? EffectiveDivisionsOrNull =>
+        _selectedDivisions.Count > 0 ? _selectedDivisions : null;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            await CurrentUser.EnsureLoadedAsync();
+            var list = await Svc.GetCountriesAsync();
+            _countries = CurrentUser.FilterCountries(list).ToList();
+            _divisions = await Svc.GetDivisionsAsync();
+        }
+        catch { /* fall back to empty lists if the lookup fails */ }
+    }
+
+    private async Task LoadAsync()
+    {
+        _loading = true; _message = ""; _isError = false;
+        try
+        {
+            _rows = await Svc.GetReportAsync(EffectiveCountriesOrNull, EffectiveDivisionsOrNull);
+            _loaded = true;
+            if (_rows.Count == 0) _message = "No rows for the selected filters.";
+        }
+        catch (Exception ex) { _message = ex.Message; _isError = true; }
+        finally { _loading = false; }
+    }
+
+    private void ClearFilters()
+    {
+        _selectedCountries = new();
+        _selectedDivisions = new();
+        _rows = new();
+        _loaded = false;
+        _message = "";
+        _isError = false;
+    }
+}
