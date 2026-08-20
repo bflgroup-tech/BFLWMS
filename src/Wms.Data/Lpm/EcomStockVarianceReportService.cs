@@ -9,18 +9,17 @@ public record EcomStockVarianceRow(
     string? Division, string? Department, string? Class, string? Subclass, string? Family);
 
 /// <summary>
-/// Backing service for the ECOM Stock Variance Report — joins
-/// dbo.LPM_ECOM_SOH_COMPARISON (populated by IncreffMfcsSohCompareService's
-/// Refresh Now) to DATAREPORTING.dbo.vUPC_SUBCLASS on Itemcode, for the
-/// Division/Department/Class/Subclass/Family breakdown. Filterable by
-/// Country and Division; no row cap — the page loads the full matching set
-/// (up to 326K+ rows unfiltered) by design.
+/// Backing service for the ECOM Stock Variance Report — reads
+/// dbo.LPM_ECOM_SOH_COMPARISON directly. Division/Department/Class/Subclass/
+/// Family are denormalized into that table at write time by
+/// IncreffMfcsSohCompareService's Refresh Now (from DATAREPORTING.dbo.vUPC_SUBCLASS),
+/// so this report no longer joins the 20M-row view itself at read time.
+/// Filterable by Country and Division; no row cap — the page loads the full
+/// matching set (up to 326K+ rows unfiltered) by design.
 /// </summary>
 public class EcomStockVarianceReportService(IOnPremConnectionResolver resolver)
 {
     private const int ConnectTimeoutSeconds = 60;
-    // Unfiltered load can be 300K+ rows against a 20M-row view join — the default
-    // 60s used elsewhere in this file's siblings isn't enough headroom here.
     private const int CommandTimeoutSeconds = 300;
 
     private static string WithConnectTimeout(string cs)
@@ -46,13 +45,13 @@ public class EcomStockVarianceReportService(IOnPremConnectionResolver resolver)
         return rows.Where(s => !string.IsNullOrWhiteSpace(s)).ToList();
     }
 
-    /// <summary>Division list for the filter — every distinct Division in
-    /// DATAREPORTING.dbo.vUPC_SUBCLASS, the same view this report joins to.</summary>
+    /// <summary>Division list for the filter — every distinct Division actually
+    /// present in LPM_ECOM_SOH_COMPARISON (denormalized at write time).</summary>
     public async Task<List<string>> GetDivisionsAsync(CancellationToken ct = default)
     {
         await using var c = OpenOnPremBackup();
         var rows = await c.QueryAsync<string>(new CommandDefinition(@"
-            SELECT DISTINCT Division FROM DATAREPORTING.dbo.vUPC_SUBCLASS
+            SELECT DISTINCT Division FROM dbo.LPM_ECOM_SOH_COMPARISON
              WHERE Division IS NOT NULL AND Division <> ''
              ORDER BY Division",
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
@@ -63,8 +62,8 @@ public class EcomStockVarianceReportService(IOnPremConnectionResolver resolver)
     // "match nothing" (a deny-by-default caller with zero country grants) — same
     // convention as ReportsService.GetPoCountingAsync.
     private const string FilterWhereSql = @"
-             WHERE (@noCountryFilter = 1 OR a.Country IN @countries)
-               AND (@noDivisionFilter = 1 OR b.Division IN @divisions)";
+             WHERE (@noCountryFilter = 1 OR Country IN @countries)
+               AND (@noDivisionFilter = 1 OR Division IN @divisions)";
 
     private static object BuildFilterParams(IEnumerable<string>? countries, IEnumerable<string>? divisions) => new
     {
@@ -79,12 +78,11 @@ public class EcomStockVarianceReportService(IOnPremConnectionResolver resolver)
     {
         await using var c = OpenOnPremBackup();
         var rows = await c.QueryAsync<EcomStockVarianceRow>(new CommandDefinition($@"
-            SELECT a.Country, a.Itemcode, a.IncreffSOH, a.MFCS_SOH, a.Variance, a.CreateTS,
-                   b.Division, b.Department, b.class AS Class, b.subclass AS Subclass, b.Family
-              FROM dbo.LPM_ECOM_SOH_COMPARISON a
-              LEFT JOIN DATAREPORTING.dbo.vUPC_SUBCLASS b ON a.Itemcode = b.Itemcode
+            SELECT Country, Itemcode, IncreffSOH, MFCS_SOH, Variance, CreateTS,
+                   Division, Department, Class, Subclass, Family
+              FROM dbo.LPM_ECOM_SOH_COMPARISON
             {FilterWhereSql}
-             ORDER BY a.Country, a.Itemcode;",
+             ORDER BY Country, Itemcode;",
             BuildFilterParams(countries, divisions),
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         return rows.AsList();
