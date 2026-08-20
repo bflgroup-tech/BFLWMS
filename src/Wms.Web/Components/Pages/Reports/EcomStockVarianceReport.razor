@@ -15,7 +15,7 @@
 </div>
 
 <div class="aiwms-section">
-    <div style="display:grid; grid-template-columns: 1fr 1fr auto; gap:12px; align-items:end;">
+    <div style="display:grid; grid-template-columns: 1fr 1fr 1fr auto; gap:12px; align-items:end;">
         <div>
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COUNTRY (select any)</label>
             <MudSelect T="string" Dense="true" MultiSelection="true" SelectAll="true" Placeholder="All"
@@ -32,11 +32,23 @@
                 @foreach (var d in _divisions) { <MudSelectItem T="string" Value="@d">@d</MudSelectItem> }
             </MudSelect>
         </div>
+        <div>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">DEPARTMENT (select any)</label>
+            <MudSelect T="string" Dense="true" MultiSelection="true" SelectAll="true" Placeholder="All"
+                       Variant="Variant.Outlined" Margin="Margin.Dense"
+                       SelectedValues="_selectedDepartments" SelectedValuesChanged="@(v => _selectedDepartments = v.ToHashSet())">
+                @foreach (var d in _departments) { <MudSelectItem T="string" Value="@d">@d</MudSelectItem> }
+            </MudSelect>
+        </div>
         <div style="display:flex; gap:8px">
-            <button class="aiwms-btn aiwms-btn-primary" @onclick="LoadAsync" disabled="@_loading">@(_loading ? "Loading..." : "Load")</button>
+            <button class="aiwms-btn aiwms-btn-primary" @onclick="LoadAsync" disabled="@(_loading || !HasAnyFilter)">@(_loading ? "Loading..." : "Load")</button>
             <button class="aiwms-btn aiwms-btn-secondary" @onclick="ClearFilters" disabled="@_loading">Clear Filters</button>
         </div>
     </div>
+    @if (!HasAnyFilter)
+    {
+        <p style="font-size:11px; color:var(--text-secondary); margin-top:6px">Select at least one Country, Division, or Department — the unfiltered table is 300,000+ rows, too many to load at once.</p>
+    }
 
     @if (!string.IsNullOrEmpty(_message))
     {
@@ -97,11 +109,22 @@
     private HashSet<string> _selectedCountries = new();
     private List<string> _divisions = new();
     private HashSet<string> _selectedDivisions = new();
+    private List<string> _departments = new();
+    private HashSet<string> _selectedDepartments = new();
     private bool _loading;
     private bool _loaded;
     private string _message = "";
     private bool _isError;
     private List<EcomStockVarianceRow> _rows = new();
+
+    // The unfiltered table is 300,000+ rows — far too many for this unpaginated
+    // HTML grid. Load refuses (via GetReportCountAsync) past this, regardless of
+    // which filter(s) got the count down; the button-level HasAnyFilter gate below
+    // is just the fast, obvious first line of defense.
+    private const int RowCap = 5000;
+
+    private bool HasAnyFilter =>
+        _selectedCountries.Count > 0 || _selectedDivisions.Count > 0 || _selectedDepartments.Count > 0;
 
     // null (no argument at all) means "genuinely unrestricted"; a user with zero
     // country grants gets the deny-by-default empty (non-null) list instead of
@@ -114,6 +137,9 @@
     private IEnumerable<string>? EffectiveDivisionsOrNull =>
         _selectedDivisions.Count > 0 ? _selectedDivisions : null;
 
+    private IEnumerable<string>? EffectiveDepartmentsOrNull =>
+        _selectedDepartments.Count > 0 ? _selectedDepartments : null;
+
     protected override async Task OnInitializedAsync()
     {
         try
@@ -121,17 +147,29 @@
             await CurrentUser.EnsureLoadedAsync();
             var list = await Svc.GetCountriesAsync();
             _countries = CurrentUser.FilterCountries(list).ToList();
+            // Pre-select the first country so Load is usable immediately without
+            // an extra click — an unfiltered load is refused anyway (HasAnyFilter).
+            if (_countries.Count > 0) _selectedCountries = new() { _countries[0] };
             _divisions = await Svc.GetDivisionsAsync();
+            _departments = await Svc.GetDepartmentsAsync();
         }
         catch { /* fall back to empty lists if the lookup fails */ }
     }
 
     private async Task LoadAsync()
     {
-        _loading = true; _message = ""; _isError = false;
+        _loading = true; _message = ""; _isError = false; _loaded = false; _rows = new();
         try
         {
-            _rows = await Svc.GetReportAsync(EffectiveCountriesOrNull, EffectiveDivisionsOrNull);
+            var count = await Svc.GetReportCountAsync(EffectiveCountriesOrNull, EffectiveDivisionsOrNull, EffectiveDepartmentsOrNull);
+            if (count > RowCap)
+            {
+                _message = $"{count:N0} rows match — narrow by Department (or Division/Country) to bring it under {RowCap:N0}.";
+                _isError = true;
+                return;
+            }
+
+            _rows = await Svc.GetReportAsync(EffectiveCountriesOrNull, EffectiveDivisionsOrNull, EffectiveDepartmentsOrNull);
             _loaded = true;
             if (_rows.Count == 0) _message = "No rows for the selected filters.";
         }
@@ -143,6 +181,7 @@
     {
         _selectedCountries = new();
         _selectedDivisions = new();
+        _selectedDepartments = new();
         _rows = new();
         _loaded = false;
         _message = "";
