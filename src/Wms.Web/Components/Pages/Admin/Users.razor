@@ -407,6 +407,13 @@
         // and Container Allocation actually read.
         if (!_countries.Any(c => string.Equals(c, OtsPoAllocationService.BflGroup, StringComparison.OrdinalIgnoreCase)))
             _countries.Insert(0, OtsPoAllocationService.BflGroup);
+
+        // "Online" is the e-commerce channel on Warehouse Stock On Hand (RACKS.dbo.MFCS_LOCSTOCK,
+        // not a real warehouse) — its DataSettings row has SIMCountry='ECOM', so the SIM list
+        // never includes it either. Grant it here like BFLGroup above, otherwise no non-admin
+        // can ever be given access to it on that report.
+        if (!_countries.Any(c => string.Equals(c, "Online", StringComparison.OrdinalIgnoreCase)))
+            _countries.Insert(0, "Online");
         await Reload();
     }
 

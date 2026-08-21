@@ -521,7 +521,17 @@ else if (_loadedOnce)
             var list = await Svc.GetCountriesAsync();
             var excluded = new[] { "ECOM", "Ex2Locations", "Oman" };
             list = list.Where(c => !excluded.Contains(c, StringComparer.OrdinalIgnoreCase)).ToList();
+
+            // "Online" isn't a SIMCountry (its DataSettings row has SIMCountry='ECOM', which
+            // stays excluded above) -- it's a separate e-commerce channel with its own store
+            // ID/source table (RACKS.dbo.MFCS_LOCSTOCK), added here BEFORE FilterCountries so
+            // it's gated by the user's Country Access grant exactly like every real country
+            // (Admin bypasses it; anyone else needs "Online" explicitly granted).
+            if (!list.Any(c => string.Equals(c, "Online", StringComparison.OrdinalIgnoreCase)))
+                list.Add("Online");
+
             list = Me.FilterCountries(list).ToList();
+
             if (list.Count > 0)
             {
                 _countries = list;
@@ -597,6 +607,30 @@ else if (_loadedOnce)
             foreach (var country in _selectedCountries)
             {
                 if (string.Equals(country, "UAE", StringComparison.OrdinalIgnoreCase)) continue;
+
+                // Online is a virtual e-commerce channel (RACKS.dbo.MFCS_LOCSTOCK), not a
+                // physical warehouse -- WhBoxItemsSource/storage capacity/aging don't apply
+                // to it, so it gets its own calls instead of falling into the generic
+                // per-country block below. SOH Detail (Division/Season) do apply, resolved
+                // via FINALUPC against vUPC_SUBCLASS / USA.dbo.UPCBARCODES.ItemType.
+                if (string.Equals(country, "Online", StringComparison.OrdinalIgnoreCase))
+                {
+                    try
+                    {
+                        var onlineStock = await SohSvc.GetStockOnHandForOnlineAsync();
+                        _groupTotals[(country, true)] = onlineStock;
+                        _stockByWarehouse[(country, country)] = onlineStock;
+                    }
+                    catch { /* no RMSStoreID configured for ShopName 'Online' -- skip it entirely */ }
+
+                    try { _sohDivisionByCountry[country] = await SohSvc.GetSohByDivisionForOnlineAsync(); }
+                    catch { /* leave unset -- combined SOH Detail (Division) just won't include Online */ }
+
+                    try { _sohSeasonByCountry[country] = await SohSvc.GetSohBySeasonForOnlineAsync(); }
+                    catch { /* leave unset -- combined SOH Detail (Seasonal) just won't include Online */ }
+
+                    continue;
+                }
 
                 try
                 {

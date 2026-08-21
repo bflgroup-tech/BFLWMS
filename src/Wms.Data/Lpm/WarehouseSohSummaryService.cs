@@ -156,6 +156,44 @@ public class WarehouseSohSummaryService(IOnPremConnectionResolver resolver)
             rdr.GetInt64(0), rdr.GetInt64(1), rdr.GetInt64(2), rdr.GetInt64(3), rdr.GetInt64(4), rdr.GetInt64(5));
     }
 
+    /// <summary>Stock On Hand for the Online channel -- a virtual e-commerce store, not a
+    /// physical warehouse, so there's no Box/Pallet concept (those stay 0). Store ID is
+    /// resolved from bfldata.dbo.DataSettings.RMSStoreID (ShopName = 'Online'), then summed
+    /// straight from RACKS.dbo.MFCS_LOCSTOCK -- a different source table entirely from the
+    /// WHBoxItems(Export) family the physical-warehouse countries use.</summary>
+    public async Task<WhStockOnHand> GetStockOnHandForOnlineAsync(CancellationToken ct = default)
+    {
+        await using var c = OpenOnPremBackup();
+        int storeId = await ResolveOnlineStoreIdAsync(c, ct);
+
+        await using var cmd = c.CreateCommand();
+        cmd.CommandText = @"
+            SELECT
+                TotalQuantity   = CAST(ISNULL(SUM(SOH_QTY), 0) AS BIGINT),
+                TotalActiveSkus = CAST(COUNT(DISTINCT SKU) AS BIGINT)
+              FROM RACKS.dbo.MFCS_LOCSTOCK
+             WHERE MFCS_STOREID = @storeId";
+        var p = cmd.CreateParameter();
+        p.ParameterName = "@storeId";
+        p.Value = storeId;
+        cmd.Parameters.Add(p);
+        cmd.CommandTimeout = CommandTimeoutSeconds;
+        await using var rdr = await cmd.ExecuteReaderAsync(ct);
+        await rdr.ReadAsync(ct);
+        return new WhStockOnHand(rdr.GetInt64(0), 0, 0, 0, 0, rdr.GetInt64(1));
+    }
+
+    private static async Task<int> ResolveOnlineStoreIdAsync(SqlConnection c, CancellationToken ct)
+    {
+        await using var idCmd = c.CreateCommand();
+        idCmd.CommandText = "SELECT TOP 1 RMSStoreID FROM BFLDATA.dbo.DataSettings WHERE ShopName = 'Online' AND RMSStoreID IS NOT NULL";
+        idCmd.CommandTimeout = CommandTimeoutSeconds;
+        var v = await idCmd.ExecuteScalarAsync(ct);
+        if (v is null)
+            throw new InvalidOperationException("No RMSStoreID configured in bfldata.dbo.DataSettings for ShopName 'Online'.");
+        return Convert.ToInt32(v);
+    }
+
     // W=Winter; everything else (S, plus the negligible C/H codes -- 15 rows combined,
     // out of ~860k) folds into Summer, per explicit confirmation. "Non-seasonal" is kept
     // as a defensive fallback for any future/unseen code, not something live data hits today.
@@ -277,6 +315,86 @@ public class WarehouseSohSummaryService(IOnPremConnectionResolver resolver)
         var result = new List<SohSeasonRow>();
         while (await rdr.ReadAsync(ct))
             result.Add(new SohSeasonRow(rdr.GetString(0), rdr.GetInt64(1), rdr.GetInt64(2), rdr.GetInt64(3)));
+        return result;
+    }
+
+    /// <summary>"SOH Detail — Division Level" for Online -- joined on FINALUPC (not SKU,
+    /// which barely matches vUPC_SUBCLASS.itemcode at all; FINALUPC matches ~99.7% of
+    /// live Online rows). Box/Pallet counts stay 0 -- Online has no such concept.</summary>
+    public async Task<List<SohDivisionRow>> GetSohByDivisionForOnlineAsync(CancellationToken ct = default)
+    {
+        await using var c = OpenOnPremBackup();
+        int storeId = await ResolveOnlineStoreIdAsync(c, ct);
+
+        await using var cmd = c.CreateCommand();
+        cmd.CommandText = @"
+            ;WITH ItemDiv AS (
+                SELECT itemcode, Division = MIN(Division)
+                  FROM Datareporting.dbo.vUPC_SUBCLASS
+                 GROUP BY itemcode
+            )
+            SELECT
+                Division = ISNULL(v.Division, 'Unknown'),
+                SohQty   = CAST(ISNULL(SUM(m.SOH_QTY), 0) AS BIGINT)
+              FROM RACKS.dbo.MFCS_LOCSTOCK m
+              LEFT JOIN ItemDiv v ON v.itemcode = m.FINALUPC
+             WHERE m.MFCS_STOREID = @storeId
+             GROUP BY ISNULL(v.Division, 'Unknown')
+             ORDER BY Division";
+        var p = cmd.CreateParameter();
+        p.ParameterName = "@storeId";
+        p.Value = storeId;
+        cmd.Parameters.Add(p);
+        cmd.CommandTimeout = CommandTimeoutSeconds;
+        await using var rdr = await cmd.ExecuteReaderAsync(ct);
+        var result = new List<SohDivisionRow>();
+        while (await rdr.ReadAsync(ct))
+            result.Add(new SohDivisionRow(rdr.GetString(0), rdr.GetInt64(1), 0, 0));
+        return result;
+    }
+
+    /// <summary>"SOH Detail — Seasonal Level" for Online -- Online items have no Season
+    /// field of their own (unlike WHBoxItems.Season, set on the physical box), so it's
+    /// resolved via USA.dbo.UPCBARCODES.ItemType (same W/S/C/H convention), joined on
+    /// FINALUPC. UPCBARCODES has ~53k duplicate UPC rows out of ~18.4M (confirmed live),
+    /// so it's deduped to one ItemType per UPC (MIN) before joining -- same fan-out fix
+    /// as vUPC_SUBCLASS above, and confirmed live: without the dedup this join inflates
+    /// the row count for this store from 180,110 to 195,625.</summary>
+    public async Task<List<SohSeasonRow>> GetSohBySeasonForOnlineAsync(CancellationToken ct = default)
+    {
+        await using var c = OpenOnPremBackup();
+        int storeId = await ResolveOnlineStoreIdAsync(c, ct);
+
+        await using var cmd = c.CreateCommand();
+        cmd.CommandText = $@"
+            ;WITH ItemSeason AS (
+                SELECT UPC, ItemType = MIN(ItemType)
+                  FROM USA.dbo.UPCBARCODES
+                 GROUP BY UPC
+            )
+            SELECT
+                Season = CASE WHEN u.ItemType = 'W' THEN 'Winter'
+                              WHEN u.ItemType IN ('S', 'C', 'H') THEN 'Summer'
+                              ELSE 'Non-seasonal'
+                         END,
+                SohQty = CAST(ISNULL(SUM(m.SOH_QTY), 0) AS BIGINT)
+              FROM RACKS.dbo.MFCS_LOCSTOCK m
+              LEFT JOIN ItemSeason u ON u.UPC = m.FINALUPC
+             WHERE m.MFCS_STOREID = @storeId
+             GROUP BY CASE WHEN u.ItemType = 'W' THEN 'Winter'
+                           WHEN u.ItemType IN ('S', 'C', 'H') THEN 'Summer'
+                           ELSE 'Non-seasonal'
+                      END
+             ORDER BY Season";
+        var p = cmd.CreateParameter();
+        p.ParameterName = "@storeId";
+        p.Value = storeId;
+        cmd.Parameters.Add(p);
+        cmd.CommandTimeout = CommandTimeoutSeconds;
+        await using var rdr = await cmd.ExecuteReaderAsync(ct);
+        var result = new List<SohSeasonRow>();
+        while (await rdr.ReadAsync(ct))
+            result.Add(new SohSeasonRow(rdr.GetString(0), rdr.GetInt64(1), 0, 0));
         return result;
     }
 
