@@ -18,6 +18,13 @@ namespace Wms.Web.Hosting;
 /// Gated on the dbo.WmsRptCountryConfig row (JobName='IncreffMfcsSohCompare',
 /// Country=''); missing or inactive means the loop no-ops. Lives in-process,
 /// relies on App Service Always On — same shape as WeeklyOtsBatchService.
+///
+/// RunOnceAsync also re-checks ScheduledJobService.HasSuccessfulRunTodayAsync for
+/// itself (not just the upstream job) and takes TryAcquireJobLockAsync before
+/// doing any work — same fix applied to OtsWeeklyService/VolumeGroupWeeklyService
+/// after a scale-out event produced duplicate rows: every App Service instance
+/// runs every HostedService, and this timer's in-process "fired today" flag
+/// resets on every deploy restart.
 /// </summary>
 public class IncreffMfcsSohCompareBatchService(IServiceProvider sp, ILogger<IncreffMfcsSohCompareBatchService> log)
     : BackgroundService
@@ -83,10 +90,29 @@ public class IncreffMfcsSohCompareBatchService(IServiceProvider sp, ILogger<Incr
             return true;
         }
 
-        if (!await jobs.HasSucceededTodayAsync(IncreffSohFromGcpService.JobName, ct))
+        if (!await jobs.HasSuccessfulRunTodayAsync(IncreffSohFromGcpService.JobName, ct))
         {
             log.LogWarning("IncreffMfcsSohCompareBatchService: IncreffSohFromGCP has not succeeded today yet — deferring, will retry on the next wake.");
             return false;
+        }
+
+        // A deploy restart resets this timer's in-process "fired today" flag, so
+        // without this check every restart after 08:15 would re-run the compare.
+        if (await jobs.HasSuccessfulRunTodayAsync(IncreffMfcsSohCompareService.JobName, ct))
+        {
+            log.LogInformation("IncreffMfcsSohCompareBatchService: already succeeded today — nothing to do.");
+            return true;
+        }
+
+        // Every App Service instance runs this HostedService — skip rather than
+        // duplicate the compare if another instance is already running it.
+        await using var jobLock = await jobs.TryAcquireJobLockAsync(IncreffMfcsSohCompareService.JobName, ct);
+        if (!jobLock.Acquired)
+        {
+            var skipId = await jobs.StartRunAsync(IncreffMfcsSohCompareService.JobName, "Daily", null, "Timer", ct);
+            await jobs.FinishRunAsync(skipId, "Skipped", 0,
+                "Another instance is already running this job — skipped to avoid a duplicate compare.", ct);
+            return true;
         }
 
         var runId = await jobs.StartRunAsync(IncreffMfcsSohCompareService.JobName, "Daily", null, "Timer", ct);
