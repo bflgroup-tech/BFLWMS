@@ -226,6 +226,37 @@ public class ScheduledJobService(IOnPremConnectionResolver resolver)
     }
 
     /// <summary>Last completed run per JobName, for the "Last run" column.</summary>
+    /// <summary>
+    /// True when this job already has a Success row for today (GST).
+    ///
+    /// The timers used an in-process "have I fired today" flag, which a restart
+    /// resets — so every deploy after the fire time triggered a full catch-up run.
+    /// On 2026-08-21 that produced five OtsWeekly runs: the 07:00 pair, then two
+    /// more at 09:29 and another at 09:44, one per deploy restart.
+    ///
+    /// Asking the run log instead means a job fires at its scheduled time and a
+    /// later restart does nothing, while a restart after a genuinely MISSED run
+    /// still catches up — which is the only case the catch-up existed for. Being
+    /// shared state, it also holds across instances rather than per-process.
+    ///
+    /// StartTS is already stored in GST (DATEADD(hour, 4, ...)), so the comparison
+    /// is against the GST date, not UTC.
+    /// </summary>
+    public async Task<bool> HasSuccessfulRunTodayAsync(string jobName, CancellationToken ct = default)
+    {
+        var todayGst = DateTime.UtcNow.AddHours(4).Date;
+        await using var c = OpenWms();
+        var hit = await c.ExecuteScalarAsync<int?>(new CommandDefinition(@"
+            SELECT TOP 1 1
+              FROM dbo.WmsRptJobRun WITH (NOLOCK)
+             WHERE JobName = @j
+               AND Status = 'Success'
+               AND CAST(StartTS AS date) = @dt",
+            new { j = jobName, dt = todayGst },
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        return hit == 1;
+    }
+
     public async Task<Dictionary<string, RptJobRunRow>> GetLastRunPerJobAsync(CancellationToken ct = default)
     {
         await using var c = OpenWms();
