@@ -79,6 +79,17 @@
             @(_busy && _busyKind == "vg-view" ? "Loading…" : "View Volume Groups")
         </button>
     </div>
+    <div style="margin-top:10px">
+        <label style="display:inline-flex; align-items:center; gap:6px; font-size:12px; cursor:pointer"
+               title="When ticked, UAE and OMAN take DC SOH from racks..WHBoxItems (PalletCategory = 'Eligible') instead of leaving it at 0 — neither country is an Ex2 export location, so LPM_Ex2LocationConfig gives them nothing. The per-division total is ONE POOL shared across UAE and OMAN stores together, split in proportion to Week Sales, the same way every other country's DC SOH is split. Saved to WmsAppConfig, so the 07:00 scheduled run uses it too.">
+            <input type="checkbox" checked="@_uaeOmanDcSoh" disabled="@_busy"
+                   @onchange="@(e => ToggleUaeOmanDcSohAsync((bool)e.Value!))" />
+            <b>Apply UAE/OMAN DC SOH</b> from racks..WHBoxItems (Eligible), pooled across UAE + OMAN and split by Week Sales
+        </label>
+        <span style="font-size:11px; color:var(--text-secondary); margin-left:8px">
+            Applies to Generate <b>and</b> the 07:00 scheduled run — takes effect on the next Generate.
+        </span>
+    </div>
     @if (!string.IsNullOrEmpty(_message))
     {
         <div class="aiwms-alert @(_isError ? "error" : "info")" style="margin-top:12px">@_message</div>
@@ -447,6 +458,9 @@
     private List<string> _warnings = new();
     private List<string> _validationIssues = new();
     private bool _proceedAnyway;
+    // Mirrors WmsAppConfig — not page state — so the scheduled run honours the same
+    // setting. See OtsPoAllocationService.UaeOmanDcSohConfigKey.
+    private bool _uaeOmanDcSoh;
 
     // Volume Group panel state (populated by View Volume Groups button)
     private bool _vgShow;
@@ -649,6 +663,8 @@
         try
         {
             _currentOtsWk = await Svc.GetCurrentOtsWkAsync(_month == 0 ? null : _month, _year == 0 ? null : _year);
+            try { _uaeOmanDcSoh = await Svc.GetUaeOmanDcSohEnabledAsync(); }
+            catch { _uaeOmanDcSoh = false; }   // config unreachable -> show unticked, never block the page
             _countries = await Svc.GetCountriesAsync();
             _countries = Me.FilterCountries(_countries).ToList();
             // Without BFLGroup access the default selection is invalid — flip to the
@@ -761,6 +777,27 @@
 
     // BFLGroup run — always BflGroup regardless of the Country picker, so this
     // button cannot be aimed at the wrong table by a stray dropdown selection.
+    // Writes straight through to WmsAppConfig rather than holding page state, so the
+    // 07:00 scheduled run reads the same value. Takes effect on the next Generate —
+    // it does not retro-change rows already persisted.
+    private async Task ToggleUaeOmanDcSohAsync(bool enabled)
+    {
+        try
+        {
+            await Svc.SetUaeOmanDcSohEnabledAsync(enabled, Me.Name ?? "");
+            _uaeOmanDcSoh = enabled;
+            _isError = false;
+            _message = enabled
+                ? "UAE/OMAN DC SOH is ON — racks..WHBoxItems (Eligible) pooled across UAE + OMAN, split by Week Sales. Applies to Generate and the 07:00 run. Re-run Generate to see it."
+                : "UAE/OMAN DC SOH is OFF — those countries fall back to LPM_Ex2LocationConfig (typically 0). Re-run Generate to see it.";
+        }
+        catch (Exception ex)
+        {
+            // Leave the checkbox reflecting the stored value, not the click.
+            ShowError($"Could not save the UAE/OMAN DC SOH setting: {ex.Message}");
+        }
+    }
+
     private Task GenerateGroupVolumeGroupAsync() =>
         RunVolumeGroupGenerateAsync(OtsPoAllocationService.BflGroup, "vg-gen-group", "dbo.StoreDivGrade");
 

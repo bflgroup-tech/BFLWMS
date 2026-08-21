@@ -103,6 +103,53 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         return rows.AsList();
     }
 
+    /// <summary>
+    /// WmsAppConfig key for the UAE/OMAN DC SOH toggle.
+    ///
+    /// Deliberately stored as config rather than as a page-only checkbox: the OTS
+    /// batch fires at 07:00 with no UI, so a checkbox living in page state would
+    /// apply to the manual Generate and silently NOT to the scheduled run. Both
+    /// paths read this key, so they cannot diverge.
+    /// </summary>
+    public const string UaeOmanDcSohConfigKey = "OtsUaeOmanDcSoh";
+
+    /// <summary>Countries that share the single racks..WHBoxItems DC SOH pool.</summary>
+    private static readonly HashSet<string> PooledDcSohCountries =
+        new(new[] { "UAE", "OMAN" }, StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// True when UAE + OMAN should take a DC SOH figure from
+    /// racks..WHBoxItems (PalletCategory = 'Eligible') instead of leaving it at
+    /// whatever LPM_Ex2LocationConfig yields (typically nothing, since neither is
+    /// an Ex2 export location). Default OFF, so behaviour is unchanged until
+    /// somebody ticks it.
+    /// </summary>
+    public async Task<bool> GetUaeOmanDcSohEnabledAsync(CancellationToken ct = default)
+    {
+        await using var c = OpenWms();
+        var v = await c.ExecuteScalarAsync<string?>(new CommandDefinition(
+            "SELECT TOP 1 ConfigValue FROM dbo.WmsAppConfig WITH (NOLOCK) WHERE ConfigKey = @k",
+            new { k = UaeOmanDcSohConfigKey },
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        return !string.IsNullOrWhiteSpace(v)
+               && v.Trim().StartsWith("Y", StringComparison.OrdinalIgnoreCase);
+    }
+
+    public async Task SetUaeOmanDcSohEnabledAsync(bool enabled, string updatedBy, CancellationToken ct = default)
+    {
+        await using var c = OpenWms();
+        await c.ExecuteAsync(new CommandDefinition(@"
+            MERGE dbo.WmsAppConfig AS t
+            USING (SELECT @k AS ConfigKey) AS s ON t.ConfigKey = s.ConfigKey
+            WHEN MATCHED THEN
+              UPDATE SET ConfigValue = @v, UpdatedTS = DATEADD(hour, 4, SYSUTCDATETIME()), UpdatedBy = @u
+            WHEN NOT MATCHED THEN
+              INSERT (ConfigKey, ConfigValue, UpdatedTS, UpdatedBy)
+              VALUES (@k, @v, DATEADD(hour, 4, SYSUTCDATETIME()), @u);",
+            new { k = UaeOmanDcSohConfigKey, v = enabled ? "Y" : "N", u = updatedBy },
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+    }
+
     /// <summary>Latest RunTS on the persisted table for a (Month, Year). Null =
     /// never generated. Used by the razor page to show "last generated" info.</summary>
     public async Task<DateTime?> GetLastGeneratedTsAsync(int month, int year, CancellationToken ct = default)
@@ -409,6 +456,10 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         var filter = string.IsNullOrWhiteSpace(country) || string.Equals(country, BflGroup, StringComparison.OrdinalIgnoreCase)
             ? null : country;
 
+        // Read once, up front — both the Generate button and the 07:00 batch land
+        // here, so the toggle applies identically to each.
+        var uaeOmanDcSohEnabled = await GetUaeOmanDcSohEnabledAsync(ct);
+
         // 1) Base rows (reliable — well-known columns): LPM_EOM_Output +
         //    Divisions (name) + DataSettings (store name) + WmsCountryOtsWeeks.
         List<BaseRow> baseRows;
@@ -653,6 +704,33 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                 commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
             return rows.ToDictionary(r => (r.Country, r.DivCode), r => (r.InTransitTotal, r.Ex2DcTotal));
         }, () => new Dictionary<(string, int), (int, int)>());
+
+        // 3a) UAE + OMAN DC SOH per DivCode from racks..WHBoxItems (config-gated).
+        //     Neither country is an Ex2 export location, so LPM_Ex2LocationConfig
+        //     yields them nothing and their Ex2 DC SOH sits at 0. When the toggle is
+        //     on, the local warehouse's eligible stock stands in for it.
+        //
+        //     Per DivCode via ItemCode -> vupc_subclass.DivID, matching how every
+        //     other country's Ex2 DC SOH is derived. racks..WHBoxItems has no
+        //     country column — it is one physical warehouse — so the per-division
+        //     total is ONE POOL shared across UAE and OMAN stores together, not
+        //     counted once for each country.
+        var uaeOmanDcTask = uaeOmanDcSohEnabled
+            ? SafeAsync(warnings, "UAE/OMAN DC SOH (racks..WHBoxItems)", async () =>
+            {
+                await using var c = OpenOnPremBackup();
+                var rows = await c.QueryAsync<(int DivCode, int Qty)>(new CommandDefinition(@"
+                    SELECT v.DivID AS DivCode, SUM(ISNULL(b.Qty, 0)) AS Qty
+                      FROM racks.dbo.WHBoxItems b WITH (NOLOCK)
+                      JOIN datareporting.dbo.vupc_subclass v WITH (NOLOCK)
+                        ON v.itemcode = b.ItemCode
+                     WHERE b.PalletCategory = 'Eligible'
+                       AND v.DivID IS NOT NULL
+                     GROUP BY v.DivID",
+                    commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+                return rows.ToDictionary(r => r.DivCode, r => r.Qty);
+            }, () => new Dictionary<int, int>())
+            : Task.FromResult(new Dictionary<int, int>());
 
         // 3b) LeadIntransit + LeadDCSOH per (Country, DivCode) — filtered by a
         //     per-country LPMDt cutoff = 1st of the month that
@@ -944,13 +1022,14 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
             return rows.ToDictionary(r => (r.Country ?? "", r.StoreID, r.DivCode), r => r.Qty);
         }, () => new Dictionary<(string, string, int), int>());
 
-        await Task.WhenAll(sohTask, ex2Task, leadTask, weekSalesTask, storeCountTask, wipTask);
+        await Task.WhenAll(sohTask, ex2Task, leadTask, weekSalesTask, storeCountTask, wipTask, uaeOmanDcTask);
         var sohByKey            = sohTask.Result;
         var ex2ByKey            = ex2Task.Result;
         var leadByKey           = leadTask.Result;
         var weekSalesByKey      = weekSalesTask.Result;
         var storeCountByCountry = storeCountTask.Result;
         var wipByKey            = wipTask.Result;
+        var uaeOmanDcByDiv      = uaeOmanDcTask.Result;
 
         // 7) Merge + compute OTS Qty / OTS %.
         //
@@ -1061,6 +1140,43 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                 perRowEx2Dc[key]         = e2Share[i];
                 perRowLeadIntransit[key] = liFloor + (i < liRem ? 1 : 0);
                 perRowLeadDcSoh[key]     = ldFloor + (i < ldRem ? 1 : 0);
+            }
+        }
+
+        // UAE + OMAN DC SOH — ONE POOL per division shared across both countries,
+        // overriding whatever the per-(Country, DivCode) pass produced for them.
+        //
+        // Done as a separate pass rather than inside the loop above because the loop
+        // groups by (Country, DivCode) and this pool spans two countries: splitting
+        // within each group separately would hand each country a full share of the
+        // same physical warehouse stock.
+        //
+        // Stores are ordered Country then StoreID so the largest-remainder leftover
+        // lands deterministically across runs.
+        if (uaeOmanDcSohEnabled && uaeOmanDcByDiv.Count > 0)
+        {
+            foreach (var divGroup in baseRows
+                         .Where(b => PooledDcSohCountries.Contains((b.Country ?? "").Trim()))
+                         .GroupBy(b => b.DivCode))
+            {
+                if (!uaeOmanDcByDiv.TryGetValue(divGroup.Key, out var divTotal) || divTotal <= 0) continue;
+
+                var pooledStores = divGroup
+                    .OrderBy(s => s.Country, StringComparer.OrdinalIgnoreCase)
+                    .ThenBy(s => s.StoreID, StringComparer.Ordinal)
+                    .ToList();
+                if (pooledStores.Count == 0) continue;
+
+                var pooledWeights = pooledStores
+                    .Select(s => weekSalesByKey.TryGetValue((s.StoreID, s.DivCode), out var w) ? Math.Max(0, w) : 0)
+                    .ToArray();
+                var pooledShares = SplitByWeight(divTotal, pooledWeights, pooledWeights.Sum(), pooledStores.Count);
+
+                for (var i = 0; i < pooledStores.Count; i++)
+                {
+                    var s = pooledStores[i];
+                    perRowEx2Dc[(s.Country, s.StoreID, s.DivCode)] = pooledShares[i];
+                }
             }
         }
 
