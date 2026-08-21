@@ -106,6 +106,12 @@ public class Program
         builder.Services.AddScoped<WeeklySalesFromGcpService>();
         builder.Services.AddScoped<VolumeGroupWeeklyService>();
 
+        // Weekly warehouse-stock-last-day pull from BigQuery (mvp-data-bi.cdm_silver.
+        // wh_stock_last_day) into dbo.WMS_WHSTOCK_LASTDAY, filtered per active country
+        // (unlike WeeklySalesFromGCP's source, this one already carries its own Country
+        // column). Same "BigQuery" config section as WeeklySalesFromGcpService above.
+        builder.Services.AddScoped<WhStockLastDayFromGcpService>();
+
         // On-demand ECOM SOH pull from BigQuery (mvp-data-bi.Ecom_Bronze.INCREFF_*_SOH)
         // into LPMSIM's dbo.LPM_ECOM_INCREFF_SOH. No timer yet — Refresh Now only.
         builder.Services.AddScoped<IncreffSohFromGcpService>();
@@ -125,6 +131,7 @@ public class Program
         builder.Services.AddHttpClient<Wms.Data.Robotic.ChuteMappingService>();
         builder.Services.AddHostedService<Wms.Web.Hosting.NightlyBatchService>();
         builder.Services.AddHostedService<Wms.Web.Hosting.WeeklySalesBatchService>();
+        builder.Services.AddHostedService<Wms.Web.Hosting.WhStockLastDayBatchService>();
         builder.Services.AddHostedService<Wms.Web.Hosting.WeeklyVolumeGroupBatchService>();
         builder.Services.AddHostedService<Wms.Web.Hosting.WeeklyOtsBatchService>();
         builder.Services.AddHostedService<Wms.Web.Hosting.ToteMasterScheduledService>();

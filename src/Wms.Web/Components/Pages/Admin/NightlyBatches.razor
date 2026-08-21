@@ -7,6 +7,7 @@
 @attribute [Authorize(Policy = MenuKeys.ADMIN_NIGHTLY_BATCHES)]
 @inject MissingExcessSnapshotService Snap
 @inject WeeklySalesFromGcpService Gcp
+@inject WhStockLastDayFromGcpService WhStock
 @inject VolumeGroupWeeklyService Vg
 @inject OtsWeeklyService OtsJob
 @inject ScheduledJobService Jobs
@@ -81,6 +82,7 @@
             <select @bind="_newCountryJob" style="padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;">
                 <option value="@MissingExcessSnapshotService.JobName">@MissingExcessSnapshotService.JobName</option>
                 <option value="@VolumeGroupWeeklyService.JobName">@VolumeGroupWeeklyService.JobName</option>
+                <option value="@WhStockLastDayFromGcpService.JobName">@WhStockLastDayFromGcpService.JobName</option>
             </select>
         </div>
         <div>
@@ -90,7 +92,7 @@
         <button class="aiwms-btn aiwms-btn-secondary" @onclick="AddCountryAsync" disabled="@(_busy || string.IsNullOrWhiteSpace(_newCountry))">Add (inactive)</button>
     </div>
     <p style="font-size:11px; color:var(--text-secondary); margin-top:8px">
-        Only MissingExcessSnapshot and VolumeGroupWeekly run per country. The rest are single-instance jobs and already have their row above.
+        Only MissingExcessSnapshot, VolumeGroupWeekly, and WhStockLastDayFromGCP run per country. The rest are single-instance jobs and already have their row above.
     </p>
 
     @if (!string.IsNullOrEmpty(_message))
@@ -230,6 +232,21 @@
                 active => ToggleAndReloadAsync(() => Gcp.SetCountryActiveAsync("", active), WeeklySalesFromGcpService.JobName, active),
                 new() { ("Refresh Now", EventCallback.Factory.Create(this, RefreshGcpNowAsync)) }));
 
+            // 2b. WhStockLastDayFromGCP — per country (unlike WeeklySalesFromGCP, this
+            //     source already carries its own Country column, so "active" filters
+            //     which countries' rows get upserted from one shared BigQuery pull),
+            //     daily 11:15 (see Wms.Web.Hosting.WhStockLastDayBatchService).
+            foreach (var c in await WhStock.GetCountryConfigAsync())
+            {
+                var country = c.Country;
+                list.Add(new JobVm(
+                    WhStockLastDayFromGcpService.JobName, "Daily 11:15", country,
+                    c.IsActive, c.UpdatedTS, c.UpdatedBy,
+                    c.IsActive ? NextDailyFireGst(new(11, 15, 0)) : null,
+                    active => ToggleAndReloadAsync(() => WhStock.SetCountryActiveAsync(country, active), country, active),
+                    new() { ("Refresh Now", EventCallback.Factory.Create(this, () => RefreshWhStockNowAsync(country))) }));
+            }
+
             // 3. VolumeGroupWeekly — per country, Monday 04:00.
             foreach (var c in await Vg.GetCountryConfigAsync())
             {
@@ -350,6 +367,8 @@
         {
             if (_newCountryJob == VolumeGroupWeeklyService.JobName)
                 await Vg.SetCountryActiveAsync(name, false);
+            else if (_newCountryJob == WhStockLastDayFromGcpService.JobName)
+                await WhStock.SetCountryActiveAsync(name, false);
             else
                 await Snap.SetCountryActiveAsync(name, false);
 
@@ -437,6 +456,24 @@
         {
             await Vg.FinishJobRunAsync(runId, "Failed", null, ex.Message);
             Show($"VG generate failed: {ex.Message}", true);
+        }
+        finally { _busy = false; await RefreshLogAsync(); }
+    }
+
+    private async Task RefreshWhStockNowAsync(string country)
+    {
+        _busy = true; Show($"Refreshing WhStockLastDayFromGCP for {country}…", false); await InvokeAsync(StateHasChanged);
+        var runId = await WhStock.StartJobRunAsync("OnDemand", country, CurrentUser.Name ?? "");
+        try
+        {
+            var rows = await WhStock.RefreshCountryAsync(country);
+            await WhStock.FinishJobRunAsync(runId, "Success", rows, null, null);
+            Show($"{country} WhStockLastDay done — {rows} rows.", false);
+        }
+        catch (Exception ex)
+        {
+            await WhStock.FinishJobRunAsync(runId, "Failed", null, 0, ex.Message);
+            Show($"Refresh failed: {ex.Message}", true);
         }
         finally { _busy = false; await RefreshLogAsync(); }
     }
