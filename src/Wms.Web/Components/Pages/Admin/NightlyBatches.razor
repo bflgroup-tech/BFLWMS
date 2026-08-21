@@ -286,24 +286,23 @@
                     new() { ("Send Now", EventCallback.Factory.Create(this, () => RunPgrNowAsync(pgr))) }));
             }
 
-            // 8. IncreffSohFromGCP — on-demand only (no timer yet). Toggle is inert
-            //    today; it's there so a future timer has an activation row ready.
+            // 8. IncreffSohFromGCP — daily 08:00 GST (Wms.Web.Hosting.IncreffSohFromGcpBatchService).
             var increff = await Jobs.GetSingleRowAsync(IncreffSohFromGcpService.JobName);
             list.Add(new JobVm(
-                IncreffSohFromGcpService.JobName, "On-demand", null,
+                IncreffSohFromGcpService.JobName, "Daily 08:00", null,
                 increff.IsActive, increff.UpdatedTS, increff.UpdatedBy,
-                null,
+                increff.IsActive ? NextDailyFireGst(new(8, 0, 0)) : null,
                 active => ToggleSingleAsync(IncreffSohFromGcpService.JobName, active),
                 new() { ("Refresh Now", EventCallback.Factory.Create(this, RefreshIncreffNowAsync)) }));
 
-            // 9. IncreffMfcsSohCompare — on-demand only. Compares LPM_ECOM_INCREFF_SOH
-            //    against RACKS.dbo.lpm_locstock; run IncreffSohFromGCP first for a
-            //    fresh compare.
+            // 9. IncreffMfcsSohCompare — daily 08:15 GST, a fixed 15-minute offset after
+            //    IncreffSohFromGCP (not a wait-chain — Wms.Web.Hosting.IncreffMfcsSohCompareBatchService
+            //    defers and retries hourly if that job hasn't succeeded yet today).
             var compare = await Jobs.GetSingleRowAsync(IncreffMfcsSohCompareService.JobName);
             list.Add(new JobVm(
-                IncreffMfcsSohCompareService.JobName, "On-demand", null,
+                IncreffMfcsSohCompareService.JobName, "Daily 08:15", null,
                 compare.IsActive, compare.UpdatedTS, compare.UpdatedBy,
-                null,
+                compare.IsActive ? NextDailyFireGst(new(8, 15, 0)) : null,
                 active => ToggleSingleAsync(IncreffMfcsSohCompareService.JobName, active),
                 new() { ("Refresh Now", EventCallback.Factory.Create(this, RefreshIncreffCompareNowAsync)) }));
         }

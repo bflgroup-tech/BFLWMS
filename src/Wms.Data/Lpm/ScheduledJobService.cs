@@ -1,8 +1,44 @@
+using System.Data;
 using Dapper;
 using Microsoft.Data.SqlClient;
 using Wms.Data.Configuration;
 
 namespace Wms.Data.Lpm;
+
+/// <summary>
+/// Holds a cross-instance mutex for one scheduled job. Dispose releases it.
+/// <see cref="Acquired"/> is false when another instance already holds it.
+/// </summary>
+public sealed class ScheduledJobLock : IAsyncDisposable
+{
+    private readonly SqlConnection? _conn;
+    private readonly string? _resource;
+
+    internal ScheduledJobLock(SqlConnection? conn, string? resource, bool acquired)
+    {
+        _conn = conn; _resource = resource; Acquired = acquired;
+    }
+
+    public bool Acquired { get; }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_conn is null) return;
+        try
+        {
+            if (Acquired && _resource is not null)
+            {
+                var p = new DynamicParameters();
+                p.Add("@Resource",  _resource);
+                p.Add("@LockOwner", "Session");
+                await _conn.ExecuteAsync(new CommandDefinition(
+                    "sp_releaseapplock", p, commandType: CommandType.StoredProcedure));
+            }
+        }
+        catch { /* closing the session releases it anyway */ }
+        await _conn.DisposeAsync();
+    }
+}
 
 /// <summary>
 /// Generic activation + run-log access over the two shared Nightly Batches tables
@@ -27,6 +63,59 @@ public class ScheduledJobService(IOnPremConnectionResolver resolver)
         var c = new SqlConnection(resolver.GetWmsAzureConnectionString());
         c.Open();
         return c;
+    }
+
+    // ---------------- Cross-instance job lock ----------------
+
+    /// <summary>
+    /// Tries to take an exclusive, cross-instance lock for a scheduled job.
+    ///
+    /// EVERY App Service instance runs EVERY HostedService, so on a scaled-out app
+    /// the same job fires once per instance. Observed on 2026-08-21: two OtsWeekly
+    /// runs a second apart (07:01:11 and 07:01:12) from two different builds, which
+    /// left DUPLICATE rows per (OTSDate, StoreID, DivCode) — because Generate is
+    /// DELETE-then-INSERT and the two interleaved. Downstream, allocation builds its
+    /// OTS lookup last-write-wins, so it then picked between the duplicates at random.
+    ///
+    /// sp_getapplock with @LockTimeout = 0 means the loser returns immediately
+    /// rather than queueing to run the same work twice. Session-scoped, so the lock
+    /// lives as long as the returned object holds its connection open.
+    ///
+    /// This is a safety net, not a substitute for the app being single-instance —
+    /// but it makes a scale-out event harmless instead of data-corrupting.
+    /// </summary>
+    public async Task<ScheduledJobLock> TryAcquireJobLockAsync(string jobName, CancellationToken ct = default)
+    {
+        var resource = $"WmsScheduledJob:{jobName}";
+        SqlConnection? c = null;
+        try
+        {
+            c = OpenWms();
+            var p = new DynamicParameters();
+            p.Add("@Resource",    resource);
+            p.Add("@LockMode",    "Exclusive");
+            p.Add("@LockOwner",   "Session");
+            p.Add("@LockTimeout", 0);
+            p.Add("@ret", dbType: DbType.Int32, direction: ParameterDirection.ReturnValue);
+
+            await c.ExecuteAsync(new CommandDefinition(
+                "sp_getapplock", p, commandType: CommandType.StoredProcedure,
+                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+
+            // >= 0 granted (0 immediately, 1 after waiting); negative = not granted.
+            var rc = p.Get<int>("@ret");
+            if (rc >= 0) return new ScheduledJobLock(c, resource, true);
+
+            await c.DisposeAsync();
+            return new ScheduledJobLock(null, null, false);
+        }
+        catch
+        {
+            // A lock we cannot take must not stop the job — degrade to today's
+            // behaviour (run anyway) rather than silently skipping the work.
+            if (c is not null) await c.DisposeAsync();
+            return new ScheduledJobLock(null, null, true);
+        }
     }
 
     // ---------------- Activation (dbo.WmsRptCountryConfig) ----------------
@@ -116,7 +205,58 @@ public class ScheduledJobService(IOnPremConnectionResolver resolver)
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
     }
 
+    /// <summary>
+    /// Has this job completed successfully today (GST)? For a job that must run
+    /// after another one on a fixed offset timer (not a wait-chain) — the second
+    /// timer checks this before firing and defers/retries hourly if the upstream
+    /// job hasn't landed yet today. StartTS is already stamped in GST by every
+    /// writer, so no extra timezone conversion is needed here.
+    /// </summary>
+    public async Task<bool> HasSucceededTodayAsync(string jobName, CancellationToken ct = default)
+    {
+        var todayGst = DateTime.UtcNow.AddHours(4).Date;
+        await using var c = OpenWms();
+        return await c.ExecuteScalarAsync<bool>(new CommandDefinition(@"
+            SELECT CASE WHEN EXISTS (
+                SELECT 1 FROM dbo.WmsRptJobRun
+                 WHERE JobName = @j AND Status = 'Success' AND CAST(StartTS AS DATE) = @today
+            ) THEN 1 ELSE 0 END;",
+            new { j = jobName, today = todayGst },
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+    }
+
     /// <summary>Last completed run per JobName, for the "Last run" column.</summary>
+    /// <summary>
+    /// True when this job already has a Success row for today (GST).
+    ///
+    /// The timers used an in-process "have I fired today" flag, which a restart
+    /// resets — so every deploy after the fire time triggered a full catch-up run.
+    /// On 2026-08-21 that produced five OtsWeekly runs: the 07:00 pair, then two
+    /// more at 09:29 and another at 09:44, one per deploy restart.
+    ///
+    /// Asking the run log instead means a job fires at its scheduled time and a
+    /// later restart does nothing, while a restart after a genuinely MISSED run
+    /// still catches up — which is the only case the catch-up existed for. Being
+    /// shared state, it also holds across instances rather than per-process.
+    ///
+    /// StartTS is already stored in GST (DATEADD(hour, 4, ...)), so the comparison
+    /// is against the GST date, not UTC.
+    /// </summary>
+    public async Task<bool> HasSuccessfulRunTodayAsync(string jobName, CancellationToken ct = default)
+    {
+        var todayGst = DateTime.UtcNow.AddHours(4).Date;
+        await using var c = OpenWms();
+        var hit = await c.ExecuteScalarAsync<int?>(new CommandDefinition(@"
+            SELECT TOP 1 1
+              FROM dbo.WmsRptJobRun WITH (NOLOCK)
+             WHERE JobName = @j
+               AND Status = 'Success'
+               AND CAST(StartTS AS date) = @dt",
+            new { j = jobName, dt = todayGst },
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        return hit == 1;
+    }
+
     public async Task<Dictionary<string, RptJobRunRow>> GetLastRunPerJobAsync(CancellationToken ct = default)
     {
         await using var c = OpenWms();
