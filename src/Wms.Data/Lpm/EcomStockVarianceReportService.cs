@@ -70,15 +70,17 @@ public class EcomStockVarianceReportService(IOnPremConnectionResolver resolver)
         return rows.Where(s => !string.IsNullOrWhiteSpace(s)).ToList();
     }
 
-    // Junk/placeholder divisions that never represent real stock — excluded
-    // everywhere in this report (the filter dropdown and every query), not
-    // just filterable out. Same "DATA MIGRATION -D" placeholder ReportsService
-    // already excludes from the PO Counting Report's Division filter.
+    // Junk/placeholder divisions that never represent a real classification —
+    // rows are KEPT (they still carry real SOH/Variance data), but Division/
+    // Department/Class/Subclass/Family are blanked to NULL for them (see
+    // ClassificationSelectSql) rather than showing the placeholder text. Same
+    // "DATA MIGRATION -D" placeholder ReportsService already excludes from the
+    // PO Counting Report's Division filter.
     private static readonly string[] ExcludedDivisions = ["DATA MIGRATION -D", "DATA MIGRATION", "BFL Services"];
 
     /// <summary>Division list for the filter — every distinct Division actually
     /// present in LPM_ECOM_SOH_COMPARISON (denormalized at write time), minus the
-    /// junk placeholders this report never shows.</summary>
+    /// junk placeholders that are blanked out in the report itself.</summary>
     public async Task<List<string>> GetDivisionsAsync(CancellationToken ct = default)
     {
         await using var c = OpenOnPremBackup();
@@ -91,15 +93,23 @@ public class EcomStockVarianceReportService(IOnPremConnectionResolver resolver)
         return rows.Where(s => !string.IsNullOrWhiteSpace(s)).ToList();
     }
 
+    // Blanks Division/Department/Class/Subclass/Family to NULL when Division is
+    // one of the junk placeholders — the row itself is still selected, only the
+    // classification columns are hidden.
+    private const string ClassificationSelectSql = @"
+                   CASE WHEN Division IN @excludedDivisions THEN NULL ELSE Division   END AS Division,
+                   CASE WHEN Division IN @excludedDivisions THEN NULL ELSE Department END AS Department,
+                   CASE WHEN Division IN @excludedDivisions THEN NULL ELSE Class      END AS Class,
+                   CASE WHEN Division IN @excludedDivisions THEN NULL ELSE Subclass   END AS Subclass,
+                   CASE WHEN Division IN @excludedDivisions THEN NULL ELSE Family     END AS Family";
+
     // countries/divisions: null means unrestricted; an empty-but-non-null list means
     // "match nothing" (a deny-by-default caller with zero country grants) — same
-    // convention as ReportsService.GetPoCountingAsync. The junk-division exclusion
-    // is unconditional — not something a caller can opt back into.
+    // convention as ReportsService.GetPoCountingAsync.
     private const string FilterWhereSql = @"
              WHERE (@noCountryFilter = 1 OR Country IN @countries)
                AND (@noDivisionFilter = 1 OR Division IN @divisions)
-               AND (@varianceOnly = 0 OR Variance <> 0)
-               AND (Division IS NULL OR Division NOT IN @excludedDivisions)";
+               AND (@varianceOnly = 0 OR Variance <> 0)";
 
     private static object BuildFilterParams(
         IEnumerable<string>? countries, IEnumerable<string>? divisions, bool varianceOnly) => new
@@ -139,7 +149,7 @@ public class EcomStockVarianceReportService(IOnPremConnectionResolver resolver)
         await using var c = OpenOnPremBackup();
         var rows = await c.QueryAsync<EcomStockVarianceRow>(new CommandDefinition($@"
             SELECT Country, Itemcode, IncreffSOH, MFCS_SOH, Variance, CreateTS,
-                   Division, Department, Class, Subclass, Family
+                   {ClassificationSelectSql}
               FROM dbo.LPM_ECOM_SOH_COMPARISON
             {FilterWhereSql}
              ORDER BY Country, Itemcode
@@ -167,7 +177,7 @@ public class EcomStockVarianceReportService(IOnPremConnectionResolver resolver)
         await using var c = OpenOnPremBackup();
         var rows = await c.QueryAsync<EcomStockVarianceRow>(new CommandDefinition($@"
             SELECT Country, Itemcode, IncreffSOH, MFCS_SOH, Variance, CreateTS,
-                   Division, Department, Class, Subclass, Family
+                   {ClassificationSelectSql}
               FROM dbo.LPM_ECOM_SOH_COMPARISON
             {FilterWhereSql}
              ORDER BY Country, Itemcode;",
