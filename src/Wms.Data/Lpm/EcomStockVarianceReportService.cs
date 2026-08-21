@@ -70,26 +70,36 @@ public class EcomStockVarianceReportService(IOnPremConnectionResolver resolver)
         return rows.Where(s => !string.IsNullOrWhiteSpace(s)).ToList();
     }
 
+    // Junk/placeholder divisions that never represent real stock — excluded
+    // everywhere in this report (the filter dropdown and every query), not
+    // just filterable out. Same "DATA MIGRATION -D" placeholder ReportsService
+    // already excludes from the PO Counting Report's Division filter.
+    private static readonly string[] ExcludedDivisions = ["DATA MIGRATION -D", "DATA MIGRATION", "BFL Services"];
+
     /// <summary>Division list for the filter — every distinct Division actually
-    /// present in LPM_ECOM_SOH_COMPARISON (denormalized at write time).</summary>
+    /// present in LPM_ECOM_SOH_COMPARISON (denormalized at write time), minus the
+    /// junk placeholders this report never shows.</summary>
     public async Task<List<string>> GetDivisionsAsync(CancellationToken ct = default)
     {
         await using var c = OpenOnPremBackup();
         var rows = await c.QueryAsync<string>(new CommandDefinition(@"
             SELECT DISTINCT Division FROM dbo.LPM_ECOM_SOH_COMPARISON
-             WHERE Division IS NOT NULL AND Division <> ''
+             WHERE Division IS NOT NULL AND Division <> '' AND Division NOT IN @excluded
              ORDER BY Division",
+            new { excluded = ExcludedDivisions },
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         return rows.Where(s => !string.IsNullOrWhiteSpace(s)).ToList();
     }
 
     // countries/divisions: null means unrestricted; an empty-but-non-null list means
     // "match nothing" (a deny-by-default caller with zero country grants) — same
-    // convention as ReportsService.GetPoCountingAsync.
+    // convention as ReportsService.GetPoCountingAsync. The junk-division exclusion
+    // is unconditional — not something a caller can opt back into.
     private const string FilterWhereSql = @"
              WHERE (@noCountryFilter = 1 OR Country IN @countries)
                AND (@noDivisionFilter = 1 OR Division IN @divisions)
-               AND (@varianceOnly = 0 OR Variance <> 0)";
+               AND (@varianceOnly = 0 OR Variance <> 0)
+               AND (Division IS NULL OR Division NOT IN @excludedDivisions)";
 
     private static object BuildFilterParams(
         IEnumerable<string>? countries, IEnumerable<string>? divisions, bool varianceOnly) => new
@@ -99,6 +109,7 @@ public class EcomStockVarianceReportService(IOnPremConnectionResolver resolver)
         divisions = divisions?.Where(s => !string.IsNullOrWhiteSpace(s)).ToArray() ?? Array.Empty<string>(),
         noDivisionFilter = divisions is null ? 1 : 0,
         varianceOnly = varianceOnly ? 1 : 0,
+        excludedDivisions = ExcludedDivisions,
     };
 
     /// <summary>Row count + sums over the WHOLE filtered set, for the totals row and
@@ -140,6 +151,7 @@ public class EcomStockVarianceReportService(IOnPremConnectionResolver resolver)
                 divisions = divisions?.Where(s => !string.IsNullOrWhiteSpace(s)).ToArray() ?? Array.Empty<string>(),
                 noDivisionFilter = divisions is null ? 1 : 0,
                 varianceOnly = varianceOnly ? 1 : 0,
+                excludedDivisions = ExcludedDivisions,
                 offset,
                 pageSize = PageSize,
             },
