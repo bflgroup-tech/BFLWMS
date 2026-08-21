@@ -21,6 +21,7 @@ namespace Wms.Data.Lpm;
 public class VolumeGroupWeeklyService(
     IOnPremConnectionResolver resolver,
     OtsPoAllocationService otsSvc,
+    ScheduledJobService jobs,
     ICurrentUser user)
 {
     public const string JobName = "VolumeGroupWeekly";
@@ -109,6 +110,18 @@ public class VolumeGroupWeeklyService(
         var results = new List<(string Country, int Rows, string? Error)>();
         var countries = await GetActiveCountriesAsync(ct);
         if (countries.Count == 0) return results;
+
+        // One instance only — see ScheduledJobService.TryAcquireJobLockAsync. VG is
+        // also DELETE-then-bulk-insert, so concurrent instances would duplicate
+        // StoreDivGrade rows exactly as they did WmsOtsPoAllocationRun.
+        await using var jobLock = await jobs.TryAcquireJobLockAsync(JobName, ct);
+        if (!jobLock.Acquired)
+        {
+            var skipId = await StartJobRunAsync(mode, null, triggeredBy, ct);
+            await FinishJobRunAsync(skipId, "Skipped", 0,
+                "Another instance is already running this job — skipped to avoid duplicate rows.", ct);
+            return results;
+        }
 
         var nowGst = DateTime.UtcNow.AddHours(4);
         var month  = nowGst.Month;

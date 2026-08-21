@@ -701,11 +701,32 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                 throw new InvalidOperationException(
                     $"{runOption} needs an OTS for PO Allocation run generated TODAY ({nowGst:dd/MM/yyyy} GST) " +
                     "in the picked Allocation Countries with TgtEOM > 50. Go to OTS for PO Allocation → Generate, then re-run Process.");
+            // Last-write-wins here is only safe because the source is one run per
+            // (OTSDate, StoreID, DivCode). Concurrent scheduled instances broke that
+            // on 2026-08-21 — two OtsWeekly runs a second apart left duplicate rows,
+            // and this loop then picked between them arbitrarily, so the same
+            // container allocated differently on identical inputs.
+            //
+            // Take the row with the HIGHEST OtsQtyToday on a tie so the choice is at
+            // least deterministic, and count the collisions so a corrupted OTS table
+            // is visible rather than silently changing allocation.
+            var duplicateKeys = 0;
             foreach (var r in otsRunRowsList)
             {
-                otsRunByKey[(r.StoreID, r.DivCode)] = r;
-                runningOtsQty[(r.StoreID, r.DivCode)] = r.OtsQtyToday;
+                var key = (r.StoreID, r.DivCode);
+                if (otsRunByKey.TryGetValue(key, out var existing))
+                {
+                    duplicateKeys++;
+                    if (r.OtsQtyToday <= existing.OtsQtyToday) continue;
+                }
+                otsRunByKey[key] = r;
+                runningOtsQty[key] = r.OtsQtyToday;
             }
+            if (duplicateKeys > 0)
+                Console.Error.WriteLine(
+                    $"[ContainerAllocation] WARN: {duplicateKeys} duplicate (StoreID, DivCode) row(s) in " +
+                    $"WmsOtsPoAllocationRun for OTSDate {nowGst:yyyy-MM-dd} — more than one OTS run persisted " +
+                    "for today. Re-run Generate to clear them.");
         }
 
         var distinctDivs = divByItem.Values.Where(d => d > 0).Distinct().ToArray();
