@@ -1130,29 +1130,41 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                             PoQty: line.Qty, DivCode: divCode, BlockReason: "No SkuMax band (LPM_SkuMaxBands)"));
                     }
 
-                    // ECOM Manual Priority — when the operator ticks the checkbox
-                    // on the page, we honour WmsManualAllocation.AllocationQty for
-                    // (StoreID=ONLINE, itemcode) before any OTS-based pass runs.
-                    // ONLINE is then removed from `eligible` so Passes 1-4 don't
-                    // touch it. The row is tagged as Pass1Qty (per user spec) so
-                    // no schema change is needed. Cap = min(manual qty, remaining).
+                    // ECOM Manual Priority — when the operator ticks the checkbox on
+                    // the page, WmsManualAllocation.AllocationQty for (ONLINE, itemcode)
+                    // is honoured before any OTS-based pass runs, and ONLINE takes
+                    // NOTHING beyond it. Cap = min(manual qty, remaining), tagged as
+                    // Pass1Qty so no schema change is needed.
+                    //
+                    // ONLINE is removed from `eligible` for EVERY item while the toggle
+                    // is on — not only for items that happen to have a manual row.
+                    // Previously the removal sat inside the "took something" branch, so
+                    // on items with no manual figure ONLINE stayed in the running and
+                    // won stock through Passes 1b-4 like any other store. On AEINT8070
+                    // that made ECOM 1,760 against a manual total of 760.
+                    //
+                    // The point of setting a manual number is to control ECOM's take,
+                    // so the toggle now means exactly that: ECOM gets the manual qty
+                    // and the rest of the container goes to the other countries.
                     OtsRunLookupRow? ecomOtsRow = null;
                     int ecomPreAllocTake = 0;
                     // The manual figure itself, kept separately so the trace row can
                     // show the cap even when `remaining` clipped the take (or left
                     // nothing to take at all).
                     int ecomManualCap = 0;
-                    if (ecomManualPriority
-                        && !IsSimSkuBlocked("ONLINE")
-                        && initialAllocByKey.TryGetValue(("ONLINE", line.ItemCode.ToUpperInvariant()), out var ecomManualQty)
-                        && ecomManualQty > 0)
+                    if (ecomManualPriority)
                     {
-                        ecomManualCap = ecomManualQty;
-                        ecomPreAllocTake = Math.Min(ecomManualQty, remaining);
-                        if (ecomPreAllocTake > 0)
+                        // Capture the OTS row before removing, so the Pass 1a trace can
+                        // still report ONLINE's VolumeGroup / LiveOtsPct.
+                        ecomOtsRow = eligible.FirstOrDefault(r => string.Equals(r.StoreID, "ONLINE", StringComparison.OrdinalIgnoreCase));
+                        eligible.RemoveAll(r => string.Equals(r.StoreID, "ONLINE", StringComparison.OrdinalIgnoreCase));
+
+                        if (!IsSimSkuBlocked("ONLINE")
+                            && initialAllocByKey.TryGetValue(("ONLINE", line.ItemCode.ToUpperInvariant()), out var ecomManualQty)
+                            && ecomManualQty > 0)
                         {
-                            ecomOtsRow = eligible.FirstOrDefault(r => string.Equals(r.StoreID, "ONLINE", StringComparison.OrdinalIgnoreCase));
-                            eligible.RemoveAll(r => string.Equals(r.StoreID, "ONLINE", StringComparison.OrdinalIgnoreCase));
+                            ecomManualCap = ecomManualQty;
+                            ecomPreAllocTake = Math.Min(ecomManualQty, remaining);
                         }
                     }
 

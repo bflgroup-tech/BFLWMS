@@ -13,6 +13,12 @@ namespace Wms.Web.Hosting;
 /// Gated on the dbo.WmsRptCountryConfig row (JobName='IncreffSohFromGCP',
 /// Country=''); missing or inactive means the loop no-ops. Lives in-process,
 /// relies on App Service Always On — same shape as NightlyBatchService.
+///
+/// RunOnceAsync re-checks ScheduledJobService.HasSuccessfulRunTodayAsync and
+/// takes TryAcquireJobLockAsync before doing any work — same fix applied to
+/// OtsWeeklyService/VolumeGroupWeeklyService after a scale-out event produced
+/// duplicate rows: every App Service instance runs every HostedService, and
+/// this timer's in-process "fired today" flag resets on every deploy restart.
 /// </summary>
 public class IncreffSohFromGcpBatchService(IServiceProvider sp, ILogger<IncreffSohFromGcpBatchService> log)
     : BackgroundService
@@ -67,6 +73,25 @@ public class IncreffSohFromGcpBatchService(IServiceProvider sp, ILogger<IncreffS
         if (!await jobs.IsActiveAsync(IncreffSohFromGcpService.JobName, ScheduledJobService.SingleRowKey, ct))
         {
             log.LogInformation("IncreffSohFromGcpBatchService: job is inactive — nothing to do.");
+            return;
+        }
+
+        // A deploy restart resets this timer's in-process "fired today" flag, so
+        // without this check every restart after 08:00 would re-run the pull.
+        if (await jobs.HasSuccessfulRunTodayAsync(IncreffSohFromGcpService.JobName, ct))
+        {
+            log.LogInformation("IncreffSohFromGcpBatchService: already succeeded today — nothing to do.");
+            return;
+        }
+
+        // Every App Service instance runs this HostedService — skip rather than
+        // duplicate the BigQuery pull if another instance is already running it.
+        await using var jobLock = await jobs.TryAcquireJobLockAsync(IncreffSohFromGcpService.JobName, ct);
+        if (!jobLock.Acquired)
+        {
+            var skipId = await jobs.StartRunAsync(IncreffSohFromGcpService.JobName, "Daily", null, "Timer", ct);
+            await jobs.FinishRunAsync(skipId, "Skipped", 0,
+                "Another instance is already running this job — skipped to avoid a duplicate pull.", ct);
             return;
         }
 
