@@ -111,6 +111,12 @@ public class VolumeGroupWeeklyService(
         var countries = await GetActiveCountriesAsync(ct);
         if (countries.Count == 0) return results;
 
+        // Already done today? Same reason as OtsWeekly — a deploy restart clears the
+        // timer's in-process flag and would otherwise re-run the whole generate. Only
+        // Timer runs are gated; an operator's Run Now is always honoured.
+        if (triggeredBy == "Timer" && await jobs.HasSuccessfulRunTodayAsync(JobName, ct))
+            return results;
+
         // One instance only — see ScheduledJobService.TryAcquireJobLockAsync. VG is
         // also DELETE-then-bulk-insert, so concurrent instances would duplicate
         // StoreDivGrade rows exactly as they did WmsOtsPoAllocationRun.

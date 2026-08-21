@@ -46,6 +46,13 @@ public class OtsWeeklyService(
     {
         var nowGst = DateTime.UtcNow.AddHours(4);
 
+        // Already done today? A deploy restart resets the timer's in-process "fired
+        // today" flag, so without this every deploy after 07:00 re-ran the whole
+        // generate. Only Timer runs are gated — an operator clicking Run Now means it
+        // deliberately, and should not be silently ignored.
+        if (triggeredBy == "Timer" && await jobs.HasSuccessfulRunTodayAsync(JobName, ct))
+            return (0, null);
+
         // One instance only. Every App Service instance runs this HostedService, and
         // Generate is DELETE-then-INSERT, so two concurrent runs interleave and leave
         // duplicate rows per (OTSDate, StoreID, DivCode). Skip rather than queue —
