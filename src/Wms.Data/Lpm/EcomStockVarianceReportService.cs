@@ -48,6 +48,18 @@ public class EcomStockVarianceReportService(IOnPremConnectionResolver resolver)
         return c;
     }
 
+    /// <summary>When IncreffMfcsSohCompareService last rebuilt the table — every row
+    /// shares the same CreateTS (one TRUNCATE + INSERT per run), so MAX is exact,
+    /// not an approximation. Independent of Country/Division/Variance filters, so
+    /// it still shows a value even when the current filter matches zero rows.</summary>
+    public async Task<DateTime?> GetLastRefreshedAsync(CancellationToken ct = default)
+    {
+        await using var c = OpenOnPremBackup();
+        return await c.ExecuteScalarAsync<DateTime?>(new CommandDefinition(
+            "SELECT MAX(CreateTS) FROM dbo.LPM_ECOM_SOH_COMPARISON",
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+    }
+
     /// <summary>Countries actually present in LPM_ECOM_SOH_COMPARISON (currently UAE/KSA).</summary>
     public async Task<List<string>> GetCountriesAsync(CancellationToken ct = default)
     {
