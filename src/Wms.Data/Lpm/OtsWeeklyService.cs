@@ -45,6 +45,20 @@ public class OtsWeeklyService(
         string mode, string triggeredBy, CancellationToken ct = default)
     {
         var nowGst = DateTime.UtcNow.AddHours(4);
+
+        // One instance only. Every App Service instance runs this HostedService, and
+        // Generate is DELETE-then-INSERT, so two concurrent runs interleave and leave
+        // duplicate rows per (OTSDate, StoreID, DivCode). Skip rather than queue —
+        // the other instance is already doing exactly this work.
+        await using var jobLock = await jobs.TryAcquireJobLockAsync(JobName, ct);
+        if (!jobLock.Acquired)
+        {
+            var skipId = await jobs.StartRunAsync(JobName, mode, null, triggeredBy, ct);
+            await jobs.FinishRunAsync(skipId, "Skipped", 0,
+                "Another instance is already running this job — skipped to avoid duplicate rows.", ct);
+            return (0, null);
+        }
+
         var runId  = await jobs.StartRunAsync(JobName, mode, null, triggeredBy, ct);
         try
         {

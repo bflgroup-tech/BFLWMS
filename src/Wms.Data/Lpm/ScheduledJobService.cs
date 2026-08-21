@@ -1,8 +1,44 @@
+using System.Data;
 using Dapper;
 using Microsoft.Data.SqlClient;
 using Wms.Data.Configuration;
 
 namespace Wms.Data.Lpm;
+
+/// <summary>
+/// Holds a cross-instance mutex for one scheduled job. Dispose releases it.
+/// <see cref="Acquired"/> is false when another instance already holds it.
+/// </summary>
+public sealed class ScheduledJobLock : IAsyncDisposable
+{
+    private readonly SqlConnection? _conn;
+    private readonly string? _resource;
+
+    internal ScheduledJobLock(SqlConnection? conn, string? resource, bool acquired)
+    {
+        _conn = conn; _resource = resource; Acquired = acquired;
+    }
+
+    public bool Acquired { get; }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_conn is null) return;
+        try
+        {
+            if (Acquired && _resource is not null)
+            {
+                var p = new DynamicParameters();
+                p.Add("@Resource",  _resource);
+                p.Add("@LockOwner", "Session");
+                await _conn.ExecuteAsync(new CommandDefinition(
+                    "sp_releaseapplock", p, commandType: CommandType.StoredProcedure));
+            }
+        }
+        catch { /* closing the session releases it anyway */ }
+        await _conn.DisposeAsync();
+    }
+}
 
 /// <summary>
 /// Generic activation + run-log access over the two shared Nightly Batches tables
@@ -27,6 +63,59 @@ public class ScheduledJobService(IOnPremConnectionResolver resolver)
         var c = new SqlConnection(resolver.GetWmsAzureConnectionString());
         c.Open();
         return c;
+    }
+
+    // ---------------- Cross-instance job lock ----------------
+
+    /// <summary>
+    /// Tries to take an exclusive, cross-instance lock for a scheduled job.
+    ///
+    /// EVERY App Service instance runs EVERY HostedService, so on a scaled-out app
+    /// the same job fires once per instance. Observed on 2026-08-21: two OtsWeekly
+    /// runs a second apart (07:01:11 and 07:01:12) from two different builds, which
+    /// left DUPLICATE rows per (OTSDate, StoreID, DivCode) — because Generate is
+    /// DELETE-then-INSERT and the two interleaved. Downstream, allocation builds its
+    /// OTS lookup last-write-wins, so it then picked between the duplicates at random.
+    ///
+    /// sp_getapplock with @LockTimeout = 0 means the loser returns immediately
+    /// rather than queueing to run the same work twice. Session-scoped, so the lock
+    /// lives as long as the returned object holds its connection open.
+    ///
+    /// This is a safety net, not a substitute for the app being single-instance —
+    /// but it makes a scale-out event harmless instead of data-corrupting.
+    /// </summary>
+    public async Task<ScheduledJobLock> TryAcquireJobLockAsync(string jobName, CancellationToken ct = default)
+    {
+        var resource = $"WmsScheduledJob:{jobName}";
+        SqlConnection? c = null;
+        try
+        {
+            c = OpenWms();
+            var p = new DynamicParameters();
+            p.Add("@Resource",    resource);
+            p.Add("@LockMode",    "Exclusive");
+            p.Add("@LockOwner",   "Session");
+            p.Add("@LockTimeout", 0);
+            p.Add("@ret", dbType: DbType.Int32, direction: ParameterDirection.ReturnValue);
+
+            await c.ExecuteAsync(new CommandDefinition(
+                "sp_getapplock", p, commandType: CommandType.StoredProcedure,
+                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+
+            // >= 0 granted (0 immediately, 1 after waiting); negative = not granted.
+            var rc = p.Get<int>("@ret");
+            if (rc >= 0) return new ScheduledJobLock(c, resource, true);
+
+            await c.DisposeAsync();
+            return new ScheduledJobLock(null, null, false);
+        }
+        catch
+        {
+            // A lock we cannot take must not stop the job — degrade to today's
+            // behaviour (run anyway) rather than silently skipping the work.
+            if (c is not null) await c.DisposeAsync();
+            return new ScheduledJobLock(null, null, true);
+        }
     }
 
     // ---------------- Activation (dbo.WmsRptCountryConfig) ----------------
