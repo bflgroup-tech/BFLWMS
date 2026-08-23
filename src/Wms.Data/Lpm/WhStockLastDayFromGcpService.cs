@@ -4,7 +4,6 @@ using Google.Apis.Auth.OAuth2;
 using Google.Cloud.BigQuery.V2;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Options;
-using Wms.Core;
 using Wms.Data.Configuration;
 using Wms.Data.Gcp;
 using Dapper;
@@ -25,17 +24,18 @@ public record WhStockLastDayGcpRow(
 /// then filtered per active country before each country's upsert -- "active"
 /// here controls which countries' rows get written, not which query runs.
 ///
-/// Country activation + job-run log reuse dbo.WmsRptCountryConfig / dbo.WmsRptJobRun
-/// on the Azure WMS DB, scoped by JobName, same pattern as WeeklySalesFromGcpService.
+/// Country activation, job-run log, and the cross-instance lock all live in the
+/// shared ScheduledJobService (see WhStockLastDayBatchService) rather than a
+/// duplicated copy here -- this class only knows how to fetch and upsert.
 ///
 /// NOTE: the filter match is `Country` (case-insensitive) against BigQuery's own
 /// Country string values -- these haven't been sampled against WMS's country
 /// naming (UAE/KSA/Bahrain/...) yet. If a country shows 0 rows upserted despite
 /// being active and the feed clearly containing that country's data, the BigQuery
 /// value likely doesn't match the WMS country name exactly -- check via "Refresh
-/// Now" before relying on the weekly timer.
+/// Now" before relying on the daily timer.
 /// </summary>
-public class WhStockLastDayFromGcpService(IOnPremConnectionResolver resolver, IOptions<GcpBigQueryOptions> gcpOpts, IConfiguration configuration, ICurrentUser user)
+public class WhStockLastDayFromGcpService(IOnPremConnectionResolver resolver, IOptions<GcpBigQueryOptions> gcpOpts, IConfiguration configuration)
 {
     private const int ConnectTimeoutSeconds = 60;
     private const int CommandTimeoutSeconds = 600;
@@ -52,92 +52,11 @@ public class WhStockLastDayFromGcpService(IOnPremConnectionResolver resolver, IO
         return b.ConnectionString;
     }
 
-    private SqlConnection OpenWms()
-    {
-        var c = new SqlConnection(WithConnectTimeout(resolver.GetWmsAzureConnectionString()));
-        c.Open();
-        return c;
-    }
-
     private SqlConnection OpenOnPremBackup()
     {
         var c = new SqlConnection(WithConnectTimeout(resolver.GetOnPremBackupConnectionString()));
         c.Open();
         return c;
-    }
-
-    // ====================== Country config (shared WmsRptCountryConfig, scoped by JobName) ======================
-
-    public async Task<List<RptCountryConfigRow>> GetCountryConfigAsync(CancellationToken ct = default)
-    {
-        await using var c = OpenWms();
-        var rows = await c.QueryAsync<RptCountryConfigRow>(new CommandDefinition(
-            "SELECT Country, IsActive, UpdatedTS, UpdatedBy FROM dbo.WmsRptCountryConfig WHERE JobName = @j ORDER BY Country",
-            new { j = JobName }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-        return rows.AsList();
-    }
-
-    public async Task<List<string>> GetActiveCountriesAsync(CancellationToken ct = default)
-    {
-        await using var c = OpenWms();
-        var rows = await c.QueryAsync<string>(new CommandDefinition(
-            "SELECT Country FROM dbo.WmsRptCountryConfig WHERE JobName = @j AND IsActive = 1 ORDER BY Country",
-            new { j = JobName }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-        return rows.AsList();
-    }
-
-    public async Task SetCountryActiveAsync(string country, bool isActive, CancellationToken ct = default)
-    {
-        await using var c = OpenWms();
-        await c.ExecuteAsync(new CommandDefinition(@"
-            MERGE dbo.WmsRptCountryConfig AS t
-            USING (SELECT @j AS JobName, @c AS Country) AS s
-              ON t.JobName = s.JobName AND t.Country = s.Country
-            WHEN MATCHED THEN
-              UPDATE SET IsActive = @a, UpdatedTS = DATEADD(hour, 4, SYSUTCDATETIME()), UpdatedBy = @u
-            WHEN NOT MATCHED THEN
-              INSERT (JobName, Country, IsActive, UpdatedTS, UpdatedBy)
-              VALUES (@j, @c, @a, DATEADD(hour, 4, SYSUTCDATETIME()), @u);",
-            new { j = JobName, c = country, a = isActive, u = user.Name },
-            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-    }
-
-    // ====================== Job-run log (shared WmsRptJobRun) ======================
-
-    public async Task<long> StartJobRunAsync(string mode, string? country, string triggeredBy, CancellationToken ct = default)
-    {
-        await using var c = OpenWms();
-        var id = await c.ExecuteScalarAsync<long>(new CommandDefinition(@"
-            INSERT INTO dbo.WmsRptJobRun (JobName, Country, Mode, StartTS, Status, TriggeredBy)
-            OUTPUT INSERTED.RunId
-            VALUES (@j, @c, @m, DATEADD(hour, 4, SYSUTCDATETIME()), 'Running', @t);",
-            new { j = JobName, c = country, m = mode, t = triggeredBy },
-            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-        return id;
-    }
-
-    public async Task FinishJobRunAsync(long runId, string status, int? rowsProcessed, int? datesProcessed, string? errorMessage, CancellationToken ct = default)
-    {
-        await using var c = OpenWms();
-        await c.ExecuteAsync(new CommandDefinition(@"
-            UPDATE dbo.WmsRptJobRun
-               SET EndTS = DATEADD(hour, 4, SYSUTCDATETIME()), Status = @s, RowsProcessed = @r,
-                   DatesProcessed = @d, ErrorMessage = @e
-             WHERE RunId = @id;",
-            new { id = runId, s = status, r = rowsProcessed, d = datesProcessed, e = errorMessage },
-            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-    }
-
-    /// <summary>True if a Timer-triggered run of the given mode already started today
-    /// (GST). Guards against re-firing after an app restart resets the hosted service's
-    /// in-memory "already ran today" tracker — restarts happen mid-day on every deploy.</summary>
-    public async Task<bool> HasFiredTodayAsync(string mode, DateTime todayGst, CancellationToken ct = default)
-    {
-        await using var c = OpenWms();
-        var lastStart = await c.ExecuteScalarAsync<DateTime?>(new CommandDefinition(
-            "SELECT MAX(StartTS) FROM dbo.WmsRptJobRun WHERE JobName = @j AND Mode = @m AND TriggeredBy = 'Timer'",
-            new { j = JobName, m = mode }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-        return lastStart is not null && lastStart.Value.Date == todayGst.Date;
     }
 
     // ====================== BigQuery fetch ======================
