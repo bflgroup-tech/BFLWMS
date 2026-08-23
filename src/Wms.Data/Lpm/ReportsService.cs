@@ -218,6 +218,26 @@ public class ReportsService(IOnPremConnectionResolver resolver)
         return Enumerable.Range(quarterBase + monthStartInQuarter, monthLen).ToList();
     }
 
+    // True on Sunday GST — the start of the WH production week (06:00 GST -> 06:00 GST
+    // next day), and the point where this week's tmpPlanningTarget row is most likely
+    // to not have landed yet from whoever loads it. Used only to decide whether a
+    // zeroed-out current week should fall back to last week's Merch Need instead of
+    // showing 0 -- confirmed live for QATAR week 34 (2026-08-23), which had no rows at
+    // all in tmpPlanningTarget while weeks 31-33 did.
+    private static bool IsSundayGst() => DateTime.UtcNow.AddHours(4).DayOfWeek == DayOfWeek.Sunday;
+
+    private async Task<MerchNeedRow?> QueryMerchNeedAsync(SqlConnection c, string country, int week, int daysInWeek, CancellationToken ct)
+    {
+        var monthWeeks = WeeksInSameMonth(week);
+        return await c.QuerySingleOrDefaultAsync<MerchNeedRow>(new CommandDefinition(@"
+            SELECT MerchNeedMonth = CAST(ROUND(ISNULL(SUM(CASE WHEN Week IN @monthWeeks THEN Target ELSE 0 END), 0), 0) AS BIGINT),
+                   MerchNeedWeek  = CAST(ROUND(ISNULL(SUM(CASE WHEN Week = @week THEN Target ELSE 0 END), 0), 0) AS BIGINT),
+                   MerchNeedDay   = CAST(ROUND(ISNULL(SUM(CASE WHEN Week = @week THEN Target ELSE 0 END), 0) / @daysInWeek, 0) AS BIGINT)
+              FROM LPMSIM.dbo.tmpPlanningTarget
+             WHERE Country = @country AND Week IN @monthWeeks",
+            new { country, week, monthWeeks, daysInWeek }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+    }
+
     /// <summary>
     /// Merch Need (Month/Week/Day) for a country and selected week, from
     /// LPMSIM.dbo.tmpPlanningTarget (Country, Week, Division, Target). Read via
@@ -225,27 +245,39 @@ public class ReportsService(IOnPremConnectionResolver resolver)
     /// Week reads that week's Target sum; Day divides it by daysInWeek (7, unless the
     /// selected week is the year's truncated final week); Month sums across the 4-4-5
     /// month bucket containing the selected week.
+    ///
+    /// On a Sunday, a selected week with zero Target (nothing loaded for it yet) falls
+    /// back to the previous week's Merch Need instead of showing 0 — one week back
+    /// only, not a chain further into the past.
     /// </summary>
     public async Task<MerchNeedRow> GetMerchNeedAsync(string country, int week, int daysInWeek = 7, CancellationToken ct = default)
     {
         await using var c = OpenOnPremBackup();
-        var monthWeeks = WeeksInSameMonth(week);
-        var row = await c.QuerySingleOrDefaultAsync<MerchNeedRow>(new CommandDefinition(@"
-            SELECT MerchNeedMonth = CAST(ROUND(ISNULL(SUM(CASE WHEN Week IN @monthWeeks THEN Target ELSE 0 END), 0), 0) AS BIGINT),
-                   MerchNeedWeek  = CAST(ROUND(ISNULL(SUM(CASE WHEN Week = @week THEN Target ELSE 0 END), 0), 0) AS BIGINT),
-                   MerchNeedDay   = CAST(ROUND(ISNULL(SUM(CASE WHEN Week = @week THEN Target ELSE 0 END), 0) / @daysInWeek, 0) AS BIGINT)
-              FROM LPMSIM.dbo.tmpPlanningTarget
-             WHERE Country = @country AND Week IN @monthWeeks",
-            new { country, week, monthWeeks, daysInWeek }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-        return row ?? new MerchNeedRow(0, 0, 0);
+        var row = await QueryMerchNeedAsync(c, country, week, daysInWeek, ct) ?? new MerchNeedRow(0, 0, 0);
+        if (row.MerchNeedWeek == 0 && week > 1 && IsSundayGst())
+            row = await QueryMerchNeedAsync(c, country, week - 1, daysInWeek, ct) ?? row;
+        return row;
     }
 
     /// <summary>Merch Need (Month/Week/Day) per Division for a country and selected week,
     /// from LPMSIM.dbo.tmpPlanningTarget. DivCode is always 0 — this table has no DivCode
-    /// column, only a Division name, and callers match on Division name, not DivCode.</summary>
+    /// column, only a Division name, and callers match on Division name, not DivCode.
+    /// Same Sunday previous-week fallback as GetMerchNeedAsync, applied when every
+    /// division came back with zero Target for the selected week.</summary>
     public async Task<List<MerchNeedDivisionRow>> GetMerchNeedByDivisionAsync(string country, int week, int daysInWeek = 7, CancellationToken ct = default)
     {
         await using var c = OpenOnPremBackup();
+        var rows = await QueryMerchNeedByDivisionAsync(c, country, week, daysInWeek, ct);
+        if ((rows.Count == 0 || rows.All(r => r.MerchNeedWeek == 0)) && week > 1 && IsSundayGst())
+        {
+            var fallback = await QueryMerchNeedByDivisionAsync(c, country, week - 1, daysInWeek, ct);
+            if (fallback.Count > 0) rows = fallback;
+        }
+        return rows;
+    }
+
+    private async Task<List<MerchNeedDivisionRow>> QueryMerchNeedByDivisionAsync(SqlConnection c, string country, int week, int daysInWeek, CancellationToken ct)
+    {
         var monthWeeks = WeeksInSameMonth(week);
         var rows = await c.QueryAsync<MerchNeedDivisionRow>(new CommandDefinition(@"
             SELECT DivCode = 0, Division,
