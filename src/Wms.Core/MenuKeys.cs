@@ -36,6 +36,7 @@ public static class MenuKeys
     public const string RPT_SHIPMENT_STATUS       = "RPT_SHIPMENT_STATUS";
     public const string RPT_WAREHOUSE_SOH_SUMMARY = "RPT_WAREHOUSE_SOH_SUMMARY";
     public const string RPT_ECOM_STOCK_VARIANCE   = "RPT_ECOM_STOCK_VARIANCE";
+    public const string RPT_SOH_MONTHLY_SUMMARY   = "RPT_SOH_MONTHLY_SUMMARY";
 
     public const string ADMIN_USERS               = "ADMIN_USERS";
     public const string ADMIN_WH_MASTER           = "ADMIN_WH_MASTER";
@@ -101,6 +102,7 @@ public static class MenuKeys
         new MenuEntry(RPT_SHIPMENT_STATUS,   "Reports",             "Shipment Status",           "reports/shipment-status",  new[] { Roles.Admin, Roles.Reports }, "Inbound"),
         new MenuEntry(RPT_WAREHOUSE_SOH_SUMMARY, "Reports",         "Warehouse SOH Summary",     "reports/warehouse-soh-summary", new[] { Roles.Admin, Roles.Reports }),
         new MenuEntry(RPT_ECOM_STOCK_VARIANCE, "Reports",           "ECOM Stock Variance Report","reports/ecom-stock-variance", new[] { Roles.Admin, Roles.Reports }),
+        new MenuEntry(RPT_SOH_MONTHLY_SUMMARY, "Reports",           "SOH Monthly Summary",      "reports/soh-monthly-summary", new[] { Roles.Admin, Roles.Reports }),
         new MenuEntry(RPT_SYNC_DATA_COUNT,   "IT",                 "Sync Data Count",           "reports/sync-data-count",   new[] { Roles.Admin, Roles.Reports }),
 
         new MenuEntry(ADMIN_USERS,           "Admin",               "Users & Roles",             "admin/users",               new[] { Roles.Admin }),

@@ -1,0 +1,281 @@
+@page "/reports/soh-monthly-summary"
+@rendermode RenderMode.InteractiveServer
+@using Wms.Core
+@using Wms.Data.Lpm
+@attribute [Authorize(Policy = MenuKeys.RPT_SOH_MONTHLY_SUMMARY)]
+@inject WarehouseSohSummaryService Svc
+
+<style>
+    .smsum-header { background: var(--bfl-black); color: var(--bfl-yellow); font-family: var(--font-display); font-weight: 800; font-size: 13px; text-transform: uppercase; letter-spacing: .5px; padding: 10px 14px; text-align: center; }
+</style>
+
+<div class="aiwms-page-header">
+    <h2>SOH Monthly Summary</h2>
+    <p>Month-end stock-on-hand by warehouse, from the monthly BigQuery snapshot (dbo.WMS_WHSTOCK_LASTDAY). UAE only for now — other countries follow once this is confirmed.</p>
+</div>
+
+<div class="aiwms-section">
+    <div style="display:flex; gap:12px; align-items:end; flex-wrap:wrap;">
+        <div>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COUNTRY</label>
+            <input value="UAE" disabled style="width:120px; height:36px; box-sizing:border-box; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:var(--bfl-grey-100);" />
+        </div>
+        <div>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">YEAR (Monthly Summary below)</label>
+            <select @bind="_selectedYear" style="width:220px; height:36px; box-sizing:border-box; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;">
+                @foreach (var y in _years)
+                {
+                    <option value="@y">@y</option>
+                }
+            </select>
+        </div>
+        <div>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">MONTH (Season / Pallet Category below)</label>
+            <select @bind="_selectedMonthKey" style="width:220px; height:36px; box-sizing:border-box; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;">
+                @foreach (var d in _availableMonths)
+                {
+                    <option value="@MonthKey(d)">@d.ToString("MMM yyyy")</option>
+                }
+            </select>
+        </div>
+        <button class="aiwms-btn aiwms-btn-primary" style="height:36px; box-sizing:border-box" @onclick="LoadAsync" disabled="@_loading">@(_loading ? "Loading…" : "Load")</button>
+    </div>
+</div>
+
+@if (_loadedOnce)
+{
+    <div class="aiwms-section" style="padding:0; overflow:hidden">
+        <div class="smsum-header">SOH Monthly Summary for the year @_selectedYear</div>
+        <div style="overflow-x:auto">
+            <table class="aiwms-table aiwms-table-dense" style="text-align:center">
+                <thead>
+                    <tr>
+                        <th></th>
+                        @foreach (var wh in MonthlyWarehouses)
+                        {
+                            var (bg, fg) = GroupColor(Array.IndexOf(MonthlyWarehouses, wh));
+                            <th colspan="3" style="text-align:center; background:@bg; color:@fg">@wh</th>
+                        }
+                    </tr>
+                    <tr>
+                        <th></th>
+                        @foreach (var wh in MonthlyWarehouses)
+                        {
+                            <th style="text-align:right">Qty</th>
+                            <th style="text-align:right">No. of Box</th>
+                            <th style="text-align:right">No. of Pallets</th>
+                        }
+                    </tr>
+                </thead>
+                <tbody>
+                    @for (var m = 1; m <= 12; m++)
+                    {
+                        var month = m;
+                        <tr>
+                            <td style="text-align:left; font-weight:700">@MonthLabel(month)</td>
+                            @foreach (var wh in MonthlyWarehouses)
+                            {
+                                var row = _byWarehouseMonth.GetValueOrDefault((wh, month));
+                                <td style="text-align:right">@(row is null ? "—" : row.Qty.ToString("N0"))</td>
+                                <td style="text-align:right">@(row is null ? "—" : row.BoxCount.ToString("N0"))</td>
+                                <td style="text-align:right">@(row is null ? "—" : row.PalletCount.ToString("N0"))</td>
+                            }
+                        </tr>
+                    }
+                    <tr style="font-weight:700; background:#e6f4ea">
+                        <td style="text-align:left">Monthly Avg.</td>
+                        @foreach (var wh in MonthlyWarehouses)
+                        {
+                            var avg = MonthlyAverage(wh);
+                            <td style="text-align:right">@(avg is null ? "—" : avg.Value.Qty.ToString("N0"))</td>
+                            <td style="text-align:right">@(avg is null ? "—" : avg.Value.BoxCount.ToString("N0"))</td>
+                            <td style="text-align:right">@(avg is null ? "—" : avg.Value.PalletCount.ToString("N0"))</td>
+                        }
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+    <p style="font-size:11px; color:var(--text-secondary); margin-top:8px">
+        "Monthly Avg." averages only the months that have data — months with no snapshot yet ("—") aren't counted as zero.
+    </p>
+
+    <div class="aiwms-section" style="padding:0; overflow:hidden">
+        <div class="smsum-header">SOH by Season — All UAE Warehouses (@SelectedMonthLabel)</div>
+        <div style="overflow-x:auto">
+            <table class="aiwms-table aiwms-table-dense" style="text-align:center">
+                <thead>
+                    <tr>
+                        <th></th>
+                        @foreach (var season in SeasonGroups)
+                        {
+                            var (bg, fg) = GroupColor(Array.IndexOf(SeasonGroups, season));
+                            <th colspan="3" style="text-align:center; background:@bg; color:@fg">@season</th>
+                        }
+                    </tr>
+                    <tr>
+                        <th></th>
+                        @foreach (var season in SeasonGroups)
+                        {
+                            <th style="text-align:right">Qty</th>
+                            <th style="text-align:right">Box</th>
+                            <th style="text-align:right">Pallets</th>
+                        }
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var wh in AllUaeWarehouses)
+                    {
+                        <tr>
+                            <td style="text-align:left; font-weight:700">@wh</td>
+                            @foreach (var season in SeasonGroups)
+                            {
+                                var row = _seasonByWarehouse.GetValueOrDefault((wh, season));
+                                <td style="text-align:right">@(row is null ? "—" : row.Qty.ToString("N0"))</td>
+                                <td style="text-align:right">@(row is null ? "—" : row.BoxCount.ToString("N0"))</td>
+                                <td style="text-align:right">@(row is null ? "—" : row.PalletCount.ToString("N0"))</td>
+                            }
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="aiwms-section" style="padding:0; overflow:hidden">
+        <div class="smsum-header">SOH by Pallet Category — All UAE Warehouses (@SelectedMonthLabel)</div>
+        <div style="overflow-x:auto">
+            <table class="aiwms-table aiwms-table-dense" style="text-align:center">
+                <thead>
+                    <tr>
+                        <th></th>
+                        @foreach (var cat in _palletCategories)
+                        {
+                            var (bg, fg) = GroupColor(_palletCategories.IndexOf(cat));
+                            <th colspan="3" style="text-align:center; background:@bg; color:@fg">@cat</th>
+                        }
+                    </tr>
+                    <tr>
+                        <th></th>
+                        @foreach (var cat in _palletCategories)
+                        {
+                            <th style="text-align:right">Qty</th>
+                            <th style="text-align:right">Box</th>
+                            <th style="text-align:right">Pallets</th>
+                        }
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var wh in AllUaeWarehouses)
+                    {
+                        <tr>
+                            <td style="text-align:left; font-weight:700">@wh</td>
+                            @foreach (var cat in _palletCategories)
+                            {
+                                var row = _palletCategoryByWarehouse.GetValueOrDefault((wh, cat));
+                                <td style="text-align:right">@(row is null ? "—" : row.Qty.ToString("N0"))</td>
+                                <td style="text-align:right">@(row is null ? "—" : row.BoxCount.ToString("N0"))</td>
+                                <td style="text-align:right">@(row is null ? "—" : row.PalletCount.ToString("N0"))</td>
+                            }
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    </div>
+}
+
+@code {
+    // Report 1 (Monthly Summary) stays limited to the 3 main warehouses -- its own
+    // mockup only ever showed these. Reports 2/3 (Season / Pallet Category) show
+    // every physical UAE warehouse, alphabetically, matching their own mockup.
+    private static readonly string[] MonthlyWarehouses = { "TECHNO", "YOTO", "JAFZA" };
+    private static readonly string[] AllUaeWarehouses = { "3PLF&B", "BLACKBOX", "JAFZA", "LFL-WH", "TECHNO", "YOTO" };
+    private static readonly string[] SeasonGroups = { "Summer", "Winter" };
+
+    // A fixed pastel palette cycled by column index -- works for any group count
+    // (2 seasons, 3 warehouses, 5 pallet categories, ...) without a per-name map.
+    private static readonly (string Bg, string Fg)[] _palette =
+    {
+        ("#dbeafe", "#1e3a5f"), // blue
+        ("#dcfce7", "#14532d"), // green
+        ("#fef3c7", "#78350f"), // amber
+        ("#ede9fe", "#4c1d95"), // purple
+        ("#fce7f3", "#831843"), // pink
+        ("#ccfbf1", "#134e4a"), // teal
+    };
+
+    private static (string Bg, string Fg) GroupColor(int index) =>
+        _palette[((index % _palette.Length) + _palette.Length) % _palette.Length];
+
+    private int _selectedYear = DateTime.Now.Year;
+    private string _selectedMonthKey = "";
+    private List<int> _years = new();
+    private List<DateTime> _availableMonths = new();
+    private bool _loading;
+    private bool _loadedOnce;
+    private Dictionary<(string Warehouse, int Month), SohMonthlyRow> _byWarehouseMonth = new();
+    private Dictionary<(string Warehouse, string Season), SohSeasonByWarehouseRow> _seasonByWarehouse = new();
+    private Dictionary<(string Warehouse, string PalletCategory), SohPalletCategoryByWarehouseRow> _palletCategoryByWarehouse = new();
+    private List<string> _palletCategories = new();
+
+    // @bind on a <select> with a DateTime-typed field risks a format mismatch between
+    // Blazor's own round-trip formatting and a custom <option value> string -- keying
+    // by a plain "yyyy-MM-dd" string instead sidesteps that entirely.
+    private static string MonthKey(DateTime d) => d.ToString("yyyy-MM-dd");
+
+    private DateTime SelectedMonth =>
+        DateTime.TryParse(_selectedMonthKey, out var d) ? d : (_availableMonths.FirstOrDefault());
+
+    private string SelectedMonthLabel => SelectedMonth.ToString("MMM yyyy");
+
+    protected override async Task OnInitializedAsync()
+    {
+        var thisYear = DateTime.Now.Year;
+        _years = Enumerable.Range(thisYear - 2, 4).Reverse().ToList(); // thisYear+1 .. thisYear-2
+        _selectedYear = thisYear;
+
+        _availableMonths = await Svc.GetAvailableSnapshotDatesAsync("UAE");
+        if (_availableMonths.Count > 0) _selectedMonthKey = MonthKey(_availableMonths[0]); // newest first
+    }
+
+    private static string MonthLabel(int month) =>
+        new DateTime(2000, month, 1).ToString("MMM");
+
+    private (long Qty, long BoxCount, long PalletCount)? MonthlyAverage(string warehouse)
+    {
+        var rows = Enumerable.Range(1, 12)
+            .Select(m => _byWarehouseMonth.GetValueOrDefault((warehouse, m)))
+            .Where(r => r is not null)
+            .Select(r => r!)
+            .ToList();
+        if (rows.Count == 0) return null;
+        return (
+            (long)Math.Round(rows.Average(r => r.Qty)),
+            (long)Math.Round(rows.Average(r => r.BoxCount)),
+            (long)Math.Round(rows.Average(r => r.PalletCount)));
+    }
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        await InvokeAsync(StateHasChanged);
+        try
+        {
+            var monthly = await Svc.GetSohMonthlySummaryAsync("UAE", _selectedYear);
+            _byWarehouseMonth = monthly.ToDictionary(r => (r.Warehouse, r.MonthEnd.Month), r => r);
+
+            var season = await Svc.GetSohSeasonByWarehouseAsync("UAE", SelectedMonth);
+            _seasonByWarehouse = season.ToDictionary(r => (r.Warehouse, r.SeasonGroup), r => r);
+
+            var pallet = await Svc.GetSohPalletCategoryByWarehouseAsync("UAE", SelectedMonth);
+            _palletCategoryByWarehouse = pallet.ToDictionary(r => (r.Warehouse, r.PalletCategory), r => r);
+            _palletCategories = pallet.Select(r => r.PalletCategory).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(x => x).ToList();
+        }
+        finally
+        {
+            _loadedOnce = true;
+            _loading = false;
+        }
+    }
+}
