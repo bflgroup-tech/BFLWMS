@@ -11,6 +11,13 @@ namespace Wms.Web.Hosting;
 /// monthly snapshot, so most daily runs just re-upsert the same rows (a harmless
 /// no-op MERGE) until the month rolls over. Lives in-process; relies on App
 /// Service Always On to be present at fire time.
+///
+/// RunDailyAsync checks ScheduledJobService.HasSuccessfulRunTodayAsync and takes
+/// TryAcquireJobLockAsync before doing any work -- same fix applied to
+/// OtsWeeklyService/VolumeGroupWeeklyService/IncreffSohFromGCP after a scale-out
+/// event produced duplicate rows: every App Service instance runs every
+/// HostedService, and an in-process "fired today" flag alone resets on every
+/// deploy restart and can't see another instance's run.
 /// </summary>
 public class WhStockLastDayBatchService(IServiceProvider sp, ILogger<WhStockLastDayBatchService> log)
     : BackgroundService
@@ -59,22 +66,32 @@ public class WhStockLastDayBatchService(IServiceProvider sp, ILogger<WhStockLast
     private async Task RunDailyAsync(CancellationToken ct)
     {
         await using var scope = sp.CreateAsyncScope();
+        var jobs = scope.ServiceProvider.GetRequiredService<ScheduledJobService>();
         var svc = scope.ServiceProvider.GetRequiredService<WhStockLastDayFromGcpService>();
 
-        // A redeploy restarts the app mid-day, which resets ExecuteAsync's in-memory
-        // "already fired today" tracker — recheck against the persisted job-run log so
-        // a restart doesn't trigger a second same-day BigQuery pull.
-        var nowGst = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, GstTz);
-        if (await svc.HasFiredTodayAsync("Daily", nowGst.Date, ct))
+        // A deploy restart resets this timer's in-process "fired today" flag, so
+        // without this check every restart after 11:15 would re-run the pull.
+        if (await jobs.HasSuccessfulRunTodayAsync(WhStockLastDayFromGcpService.JobName, ct))
         {
-            log.LogInformation("WhStockLastDayBatchService: Daily run already logged for today — skipping (likely a restart).");
+            log.LogInformation("WhStockLastDayBatchService: already succeeded today — nothing to do.");
             return;
         }
 
-        var countries = await svc.GetActiveCountriesAsync(ct);
+        var countries = await jobs.GetActiveCountriesAsync(WhStockLastDayFromGcpService.JobName, ct);
         if (countries.Count == 0)
         {
             log.LogInformation("WhStockLastDayBatchService: no active countries — nothing to do.");
+            return;
+        }
+
+        // Every App Service instance runs this HostedService — skip rather than
+        // duplicate the BigQuery pull if another instance is already running it.
+        await using var jobLock = await jobs.TryAcquireJobLockAsync(WhStockLastDayFromGcpService.JobName, ct);
+        if (!jobLock.Acquired)
+        {
+            var skipId = await jobs.StartRunAsync(WhStockLastDayFromGcpService.JobName, "Daily", null, "Timer", ct);
+            await jobs.FinishRunAsync(skipId, "Skipped", 0,
+                "Another instance is already running this job — skipped to avoid a duplicate pull.", ct);
             return;
         }
 
@@ -88,8 +105,8 @@ public class WhStockLastDayBatchService(IServiceProvider sp, ILogger<WhStockLast
             log.LogError(ex, "WhStockLastDayBatchService: BigQuery fetch FAILED — skipping all countries this run.");
             foreach (var country in countries)
             {
-                var runId = await svc.StartJobRunAsync("Daily", country, "Timer", ct);
-                await svc.FinishJobRunAsync(runId, "Failed", null, 0, ex.Message, CancellationToken.None);
+                var runId = await jobs.StartRunAsync(WhStockLastDayFromGcpService.JobName, "Daily", country, "Timer", ct);
+                await jobs.FinishRunAsync(runId, "Failed", null, ex.Message, CancellationToken.None);
             }
             return;
         }
@@ -97,17 +114,17 @@ public class WhStockLastDayBatchService(IServiceProvider sp, ILogger<WhStockLast
         foreach (var country in countries)
         {
             if (ct.IsCancellationRequested) return;
-            var runId = await svc.StartJobRunAsync("Daily", country, "Timer", ct);
+            var runId = await jobs.StartRunAsync(WhStockLastDayFromGcpService.JobName, "Daily", country, "Timer", ct);
             try
             {
                 var written = await svc.UpsertRowsAsync(country, rows, ct);
-                await svc.FinishJobRunAsync(runId, "Success", written, null, null, ct);
+                await jobs.FinishRunAsync(runId, "Success", written, null, ct);
                 log.LogInformation("WhStockLastDayBatchService: {Country} done — {Rows} rows.", country, written);
             }
             catch (Exception ex)
             {
                 log.LogError(ex, "WhStockLastDayBatchService: {Country} FAILED.", country);
-                await svc.FinishJobRunAsync(runId, "Failed", null, 0, ex.Message, CancellationToken.None);
+                await jobs.FinishRunAsync(runId, "Failed", null, ex.Message, CancellationToken.None);
             }
         }
     }
