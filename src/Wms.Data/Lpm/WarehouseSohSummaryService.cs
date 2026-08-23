@@ -23,6 +23,22 @@ public sealed record SohDivisionRow(string Division, long SohQty, long BoxCount,
 /// future/unseen code, not something live data hits today.</summary>
 public sealed record SohSeasonRow(string Season, long SohQty, long BoxCount, long PalletCount);
 
+/// <summary>One row of the "SOH Monthly Summary" report — one warehouse's rollup for
+/// one month-end snapshot (dbo.WMS_WHSTOCK_LASTDAY.LastDayOfMonth).</summary>
+public sealed record SohMonthlyRow(string Warehouse, DateTime MonthEnd, long Qty, long BoxCount, long PalletCount);
+
+/// <summary>One row of the "SOH by Season — All UAE Warehouses" report — one
+/// (Warehouse, SeasonGroup) cell for a single selected month-end. SeasonGroup is
+/// dbo.WMS_WHSTOCK_LASTDAY.Season ('summer'/'winter'/blank, case-insensitive) mapped
+/// to Winter/Summer -- anything not 'winter' folds into Summer, per explicit
+/// confirmation ("whatever not winter, update as summer") -- no separate
+/// "non-seasonal" bucket, unlike the WHBoxItems.Season convention elsewhere.</summary>
+public sealed record SohSeasonByWarehouseRow(string Warehouse, string SeasonGroup, long Qty, long BoxCount, long PalletCount);
+
+/// <summary>One row of the "SOH by Pallet Category — All UAE Warehouses" report — one
+/// (Warehouse, PalletCategory) cell for a single selected month-end.</summary>
+public sealed record SohPalletCategoryByWarehouseRow(string Warehouse, string PalletCategory, long Qty, long BoxCount, long PalletCount);
+
 /// <summary>
 /// Storage Capacity figures for one warehouse group. For the box+pallet group
 /// (TECHNO/JAFZA/YOTO), FreeBoxRackLocations/FilledBoxLocations are BINRACK-type
@@ -395,6 +411,146 @@ public class WarehouseSohSummaryService(IOnPremConnectionResolver resolver)
         var result = new List<SohSeasonRow>();
         while (await rdr.ReadAsync(ct))
             result.Add(new SohSeasonRow(rdr.GetString(0), rdr.GetInt64(1), 0, 0));
+        return result;
+    }
+
+    /// <summary>"SOH Monthly Summary" -- one row per (Warehouse, month-end) for the given
+    /// country/year, rolled up from dbo.WMS_WHSTOCK_LASTDAY (the monthly BigQuery snapshot
+    /// pulled by WhStockLastDayFromGcpService). Restricted to TECHNO/YOTO/JAFZA -- same
+    /// WarehouseGroupCaseSql folding (TECHNO-E/blank into TECHNO, YOTO-BU into YOTO) as
+    /// the rest of this service, and the same 3 warehouses the report's own mockup shows
+    /// for UAE. Summed across every PalletCategory/Division/Season row for that
+    /// warehouse+month, since the report only cares about the whole-warehouse total.</summary>
+    public async Task<List<SohMonthlyRow>> GetSohMonthlySummaryAsync(string country, int year, CancellationToken ct = default)
+    {
+        await using var c = OpenOnPremBackup();
+        await using var cmd = c.CreateCommand();
+        cmd.CommandText = $@"
+            ;WITH WhGroup AS (
+                SELECT *, WarehouseGroup = {WarehouseGroupCaseSql}
+                  FROM dbo.WMS_WHSTOCK_LASTDAY
+                 WHERE Country = @country AND YEAR(LastDayOfMonth) = @year
+            )
+            SELECT
+                WarehouseGroup,
+                LastDayOfMonth,
+                Qty         = CAST(ISNULL(SUM(Qty), 0) AS BIGINT),
+                BoxCount    = CAST(ISNULL(SUM(BoxCount), 0) AS BIGINT),
+                PalletCount = CAST(ISNULL(SUM(PalletCount), 0) AS BIGINT)
+              FROM WhGroup
+             WHERE WarehouseGroup IN ('TECHNO', 'YOTO', 'JAFZA')
+             GROUP BY WarehouseGroup, LastDayOfMonth
+             ORDER BY LastDayOfMonth, WarehouseGroup";
+        var pCountry = cmd.CreateParameter(); pCountry.ParameterName = "@country"; pCountry.Value = country;
+        var pYear = cmd.CreateParameter(); pYear.ParameterName = "@year"; pYear.Value = year;
+        cmd.Parameters.Add(pCountry);
+        cmd.Parameters.Add(pYear);
+        cmd.CommandTimeout = CommandTimeoutSeconds;
+        await using var rdr = await cmd.ExecuteReaderAsync(ct);
+        var result = new List<SohMonthlyRow>();
+        while (await rdr.ReadAsync(ct))
+            result.Add(new SohMonthlyRow(rdr.GetString(0), rdr.GetDateTime(1), rdr.GetInt64(2), rdr.GetInt64(3), rdr.GetInt64(4)));
+        return result;
+    }
+
+    // Same fold as WarehouseGroupCaseSql (TECHNO-E/blank -> TECHNO, YOTO-BU -> YOTO),
+    // plus LFLWH -> LFL-WH -- a naming variant confirmed live only in this BigQuery-
+    // sourced table, not in RACKS.dbo.WHBoxItems, so it isn't folded into the shared
+    // constant above. 3PLF&B/BLACKBOX/JAFZA/LFL-WH/TECHNO/YOTO come out as 6 distinct
+    // rows, matching the "all UAE warehouses" reports' own mockup.
+    private const string WhStockLastDayWarehouseGroupCaseSql = @"
+        CASE WHEN ISNULL(Warehouse, '') = ''  THEN 'TECHNO'
+             WHEN Warehouse = 'TECHNO-E'      THEN 'TECHNO'
+             WHEN Warehouse = 'YOTO-BU'       THEN 'YOTO'
+             WHEN Warehouse = 'LFLWH'         THEN 'LFL-WH'
+             ELSE Warehouse
+        END";
+
+    /// <summary>Distinct month-end snapshot dates available in dbo.WMS_WHSTOCK_LASTDAY
+    /// for the given country, newest first -- drives the Month filter for the
+    /// per-warehouse Season/Pallet Category reports below.</summary>
+    public async Task<List<DateTime>> GetAvailableSnapshotDatesAsync(string country, CancellationToken ct = default)
+    {
+        await using var c = OpenOnPremBackup();
+        await using var cmd = c.CreateCommand();
+        cmd.CommandText = "SELECT DISTINCT LastDayOfMonth FROM dbo.WMS_WHSTOCK_LASTDAY WHERE Country = @country ORDER BY LastDayOfMonth DESC";
+        var p = cmd.CreateParameter(); p.ParameterName = "@country"; p.Value = country;
+        cmd.Parameters.Add(p);
+        cmd.CommandTimeout = CommandTimeoutSeconds;
+        await using var rdr = await cmd.ExecuteReaderAsync(ct);
+        var result = new List<DateTime>();
+        while (await rdr.ReadAsync(ct))
+            result.Add(rdr.GetDateTime(0));
+        return result;
+    }
+
+    /// <summary>"SOH by Season — All UAE Warehouses" for a single selected month-end --
+    /// one row per (Warehouse, SeasonGroup). Every physical UAE warehouse is its own
+    /// row (see WhStockLastDayWarehouseGroupCaseSql), not folded down to TECHNO/YOTO/
+    /// JAFZA only, per the report's own mockup.</summary>
+    public async Task<List<SohSeasonByWarehouseRow>> GetSohSeasonByWarehouseAsync(string country, DateTime monthEnd, CancellationToken ct = default)
+    {
+        await using var c = OpenOnPremBackup();
+        await using var cmd = c.CreateCommand();
+        cmd.CommandText = $@"
+            ;WITH WhGroup AS (
+                SELECT *,
+                    WarehouseGroup = {WhStockLastDayWarehouseGroupCaseSql},
+                    SeasonGroup = CASE WHEN LOWER(ISNULL(Season, '')) = 'winter' THEN 'Winter' ELSE 'Summer' END
+                  FROM dbo.WMS_WHSTOCK_LASTDAY
+                 WHERE Country = @country AND LastDayOfMonth = @monthEnd
+            )
+            SELECT
+                WarehouseGroup,
+                SeasonGroup,
+                Qty         = CAST(ISNULL(SUM(Qty), 0) AS BIGINT),
+                BoxCount    = CAST(ISNULL(SUM(BoxCount), 0) AS BIGINT),
+                PalletCount = CAST(ISNULL(SUM(PalletCount), 0) AS BIGINT)
+              FROM WhGroup
+             GROUP BY WarehouseGroup, SeasonGroup
+             ORDER BY WarehouseGroup, SeasonGroup";
+        var pCountry = cmd.CreateParameter(); pCountry.ParameterName = "@country"; pCountry.Value = country;
+        var pMonth = cmd.CreateParameter(); pMonth.ParameterName = "@monthEnd"; pMonth.Value = monthEnd;
+        cmd.Parameters.Add(pCountry);
+        cmd.Parameters.Add(pMonth);
+        cmd.CommandTimeout = CommandTimeoutSeconds;
+        await using var rdr = await cmd.ExecuteReaderAsync(ct);
+        var result = new List<SohSeasonByWarehouseRow>();
+        while (await rdr.ReadAsync(ct))
+            result.Add(new SohSeasonByWarehouseRow(rdr.GetString(0), rdr.GetString(1), rdr.GetInt64(2), rdr.GetInt64(3), rdr.GetInt64(4)));
+        return result;
+    }
+
+    /// <summary>"SOH by Pallet Category — All UAE Warehouses" for a single selected
+    /// month-end -- one row per (Warehouse, PalletCategory).</summary>
+    public async Task<List<SohPalletCategoryByWarehouseRow>> GetSohPalletCategoryByWarehouseAsync(string country, DateTime monthEnd, CancellationToken ct = default)
+    {
+        await using var c = OpenOnPremBackup();
+        await using var cmd = c.CreateCommand();
+        cmd.CommandText = $@"
+            ;WITH WhGroup AS (
+                SELECT *, WarehouseGroup = {WhStockLastDayWarehouseGroupCaseSql}
+                  FROM dbo.WMS_WHSTOCK_LASTDAY
+                 WHERE Country = @country AND LastDayOfMonth = @monthEnd
+            )
+            SELECT
+                WarehouseGroup,
+                PalletCategory = ISNULL(PalletCategory, 'Unknown'),
+                Qty         = CAST(ISNULL(SUM(Qty), 0) AS BIGINT),
+                BoxCount    = CAST(ISNULL(SUM(BoxCount), 0) AS BIGINT),
+                PalletCount = CAST(ISNULL(SUM(PalletCount), 0) AS BIGINT)
+              FROM WhGroup
+             GROUP BY WarehouseGroup, ISNULL(PalletCategory, 'Unknown')
+             ORDER BY WarehouseGroup, PalletCategory";
+        var pCountry = cmd.CreateParameter(); pCountry.ParameterName = "@country"; pCountry.Value = country;
+        var pMonth = cmd.CreateParameter(); pMonth.ParameterName = "@monthEnd"; pMonth.Value = monthEnd;
+        cmd.Parameters.Add(pCountry);
+        cmd.Parameters.Add(pMonth);
+        cmd.CommandTimeout = CommandTimeoutSeconds;
+        await using var rdr = await cmd.ExecuteReaderAsync(ct);
+        var result = new List<SohPalletCategoryByWarehouseRow>();
+        while (await rdr.ReadAsync(ct))
+            result.Add(new SohPalletCategoryByWarehouseRow(rdr.GetString(0), rdr.GetString(1), rdr.GetInt64(2), rdr.GetInt64(3), rdr.GetInt64(4)));
         return result;
     }
 
