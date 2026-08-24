@@ -414,36 +414,52 @@ public class WarehouseSohSummaryService(IOnPremConnectionResolver resolver)
         return result;
     }
 
-    /// <summary>"SOH Monthly Summary" -- one row per (Warehouse, month-end) for the given
-    /// country/year, rolled up from dbo.WMS_WHSTOCK_LASTDAY (the monthly BigQuery snapshot
-    /// pulled by WhStockLastDayFromGcpService). Restricted to TECHNO/YOTO/JAFZA -- same
-    /// WarehouseGroupCaseSql folding (TECHNO-E/blank into TECHNO, YOTO-BU into YOTO) as
-    /// the rest of this service, and the same 3 warehouses the report's own mockup shows
-    /// for UAE. Summed across every PalletCategory/Division/Season row for that
-    /// warehouse+month, since the report only cares about the whole-warehouse total.</summary>
-    public async Task<List<SohMonthlyRow>> GetSohMonthlySummaryAsync(string country, int year, CancellationToken ct = default)
+    // UAE's own 3 warehouses (folded the same way as WarehouseGroupCaseSql) plus every
+    // export country as its own single group -- these are single-facility countries,
+    // so no warehouse-level split is needed for them, matching the report's own mockup
+    // (Techno/Yoto/JAFZA/KSA/QATAR/Kuwait/MYS/Bahrain, 8 groups). BAHRAIN currently has
+    // no rows in dbo.WMS_WHSTOCK_LASTDAY (WhStockLastDayFromGCP hasn't landed data for
+    // it yet, or the BigQuery feed has none) -- it's still included here so its column
+    // is ready and just shows "no data" rather than needing another code change later.
+    private const string SohMonthlyGroupLabelCaseSql = @"
+        CASE WHEN Country = 'UAE' AND (ISNULL(Warehouse, '') = '' OR Warehouse IN ('TECHNO', 'TECHNO-E')) THEN 'TECHNO'
+             WHEN Country = 'UAE' AND Warehouse IN ('YOTO', 'YOTO-BU')                                    THEN 'YOTO'
+             WHEN Country = 'UAE' AND Warehouse = 'JAFZA'                                                 THEN 'JAFZA'
+             WHEN Country = 'KSA'                                                                          THEN 'KSA'
+             WHEN Country = 'QATAR'                                                                        THEN 'QATAR'
+             WHEN Country = 'KUWAIT'                                                                       THEN 'KUWAIT'
+             WHEN Country = 'MALAYSIA'                                                                     THEN 'MYS'
+             WHEN Country = 'BAHRAIN'                                                                      THEN 'BAHRAIN'
+             ELSE NULL
+        END";
+
+    /// <summary>"SOH Monthly Summary" -- one row per (group, month-end) for the given
+    /// year, rolled up from dbo.WMS_WHSTOCK_LASTDAY (the monthly BigQuery snapshot
+    /// pulled by WhStockLastDayFromGcpService). 8 fixed groups: UAE's TECHNO/YOTO/JAFZA
+    /// plus KSA/QATAR/KUWAIT/MYS/BAHRAIN as single-facility country totals. Summed
+    /// across every PalletCategory/Division/Season row for that group+month, since the
+    /// report only cares about the whole-group total.</summary>
+    public async Task<List<SohMonthlyRow>> GetSohMonthlySummaryAsync(int year, CancellationToken ct = default)
     {
         await using var c = OpenOnPremBackup();
         await using var cmd = c.CreateCommand();
         cmd.CommandText = $@"
-            ;WITH WhGroup AS (
-                SELECT *, WarehouseGroup = {WarehouseGroupCaseSql}
+            ;WITH Grp AS (
+                SELECT *, GroupLabel = {SohMonthlyGroupLabelCaseSql}
                   FROM dbo.WMS_WHSTOCK_LASTDAY
-                 WHERE Country = @country AND YEAR(LastDayOfMonth) = @year
+                 WHERE YEAR(LastDayOfMonth) = @year
             )
             SELECT
-                WarehouseGroup,
+                GroupLabel,
                 LastDayOfMonth,
                 Qty         = CAST(ISNULL(SUM(Qty), 0) AS BIGINT),
                 BoxCount    = CAST(ISNULL(SUM(BoxCount), 0) AS BIGINT),
                 PalletCount = CAST(ISNULL(SUM(PalletCount), 0) AS BIGINT)
-              FROM WhGroup
-             WHERE WarehouseGroup IN ('TECHNO', 'YOTO', 'JAFZA')
-             GROUP BY WarehouseGroup, LastDayOfMonth
-             ORDER BY LastDayOfMonth, WarehouseGroup";
-        var pCountry = cmd.CreateParameter(); pCountry.ParameterName = "@country"; pCountry.Value = country;
+              FROM Grp
+             WHERE GroupLabel IS NOT NULL
+             GROUP BY GroupLabel, LastDayOfMonth
+             ORDER BY LastDayOfMonth, GroupLabel";
         var pYear = cmd.CreateParameter(); pYear.ParameterName = "@year"; pYear.Value = year;
-        cmd.Parameters.Add(pCountry);
         cmd.Parameters.Add(pYear);
         cmd.CommandTimeout = CommandTimeoutSeconds;
         await using var rdr = await cmd.ExecuteReaderAsync(ct);
@@ -453,13 +469,15 @@ public class WarehouseSohSummaryService(IOnPremConnectionResolver resolver)
         return result;
     }
 
-    // Same fold as WarehouseGroupCaseSql (TECHNO-E/blank -> TECHNO, YOTO-BU -> YOTO),
-    // plus LFLWH -> LFL-WH -- a naming variant confirmed live only in this BigQuery-
-    // sourced table, not in RACKS.dbo.WHBoxItems, so it isn't folded into the shared
-    // constant above. 3PLF&B/BLACKBOX/JAFZA/LFL-WH/TECHNO/YOTO come out as 6 distinct
-    // rows, matching the "all UAE warehouses" reports' own mockup.
+    // Similar to WarehouseGroupCaseSql (TECHNO-E -> TECHNO, YOTO-BU -> YOTO), plus
+    // LFLWH -> LFL-WH -- a naming variant confirmed live only in this BigQuery-sourced
+    // table, not in RACKS.dbo.WHBoxItems, so it isn't folded into the shared constant
+    // above. Unlike that constant, a blank/NULL Warehouse is kept as its own 'No WH Info'
+    // row instead of folded into TECHNO -- confirmed live this is ~1,000 rows / ~15.6M
+    // Qty for UAE, a real data-quality signal worth monitoring on its own rather than
+    // silently absorbed into TECHNO's total.
     private const string WhStockLastDayWarehouseGroupCaseSql = @"
-        CASE WHEN ISNULL(Warehouse, '') = ''  THEN 'TECHNO'
+        CASE WHEN ISNULL(Warehouse, '') = ''  THEN 'No WH Info'
              WHEN Warehouse = 'TECHNO-E'      THEN 'TECHNO'
              WHEN Warehouse = 'YOTO-BU'       THEN 'YOTO'
              WHEN Warehouse = 'LFLWH'         THEN 'LFL-WH'

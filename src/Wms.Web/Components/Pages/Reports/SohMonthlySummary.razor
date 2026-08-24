@@ -11,15 +11,11 @@
 
 <div class="aiwms-page-header">
     <h2>SOH Monthly Summary</h2>
-    <p>Month-end stock-on-hand by warehouse, from the monthly BigQuery snapshot (dbo.WMS_WHSTOCK_LASTDAY). UAE only for now — other countries follow once this is confirmed.</p>
+    <p>Month-end stock-on-hand from the monthly BigQuery snapshot (dbo.WMS_WHSTOCK_LASTDAY). Monthly Summary below covers UAE by warehouse plus every export country; Season / Pallet Category breakdowns stay UAE-only for now.</p>
 </div>
 
 <div class="aiwms-section">
     <div style="display:flex; gap:12px; align-items:end; flex-wrap:wrap;">
-        <div>
-            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COUNTRY</label>
-            <input value="UAE" disabled style="width:120px; height:36px; box-sizing:border-box; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:var(--bfl-grey-100);" />
-        </div>
         <div>
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">YEAR (Monthly Summary below)</label>
             <select @bind="_selectedYear" style="width:220px; height:36px; box-sizing:border-box; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;">
@@ -51,17 +47,19 @@
                 <thead>
                     <tr>
                         <th></th>
-                        @foreach (var wh in MonthlyWarehouses)
+                        @foreach (var grp in MonthlyGroups)
                         {
-                            var (bg, fg) = GroupColor(Array.IndexOf(MonthlyWarehouses, wh));
-                            <th colspan="3" style="text-align:center; background:@bg; color:@fg">@wh</th>
+                            var idx = Array.IndexOf(MonthlyGroups, grp);
+                            var (bg, fg) = GroupColor(idx);
+                            <th colspan="3" style="text-align:center; background:@bg; color:@fg; @GroupSep(idx)">@grp</th>
                         }
                     </tr>
                     <tr>
                         <th></th>
-                        @foreach (var wh in MonthlyWarehouses)
+                        @foreach (var grp in MonthlyGroups)
                         {
-                            <th style="text-align:right">Qty</th>
+                            var idx = Array.IndexOf(MonthlyGroups, grp);
+                            <th style="text-align:right; @GroupSep(idx)">Qty</th>
                             <th style="text-align:right">No. of Box</th>
                             <th style="text-align:right">No. of Pallets</th>
                         }
@@ -73,10 +71,11 @@
                         var month = m;
                         <tr>
                             <td style="text-align:left; font-weight:700">@MonthLabel(month)</td>
-                            @foreach (var wh in MonthlyWarehouses)
+                            @foreach (var grp in MonthlyGroups)
                             {
-                                var row = _byWarehouseMonth.GetValueOrDefault((wh, month));
-                                <td style="text-align:right">@(row is null ? "—" : row.Qty.ToString("N0"))</td>
+                                var idx = Array.IndexOf(MonthlyGroups, grp);
+                                var row = _byGroupMonth.GetValueOrDefault((grp, month));
+                                <td style="text-align:right; @GroupSep(idx)">@(row is null ? "—" : row.Qty.ToString("N0"))</td>
                                 <td style="text-align:right">@(row is null ? "—" : row.BoxCount.ToString("N0"))</td>
                                 <td style="text-align:right">@(row is null ? "—" : row.PalletCount.ToString("N0"))</td>
                             }
@@ -84,10 +83,11 @@
                     }
                     <tr style="font-weight:700; background:#e6f4ea">
                         <td style="text-align:left">Monthly Avg.</td>
-                        @foreach (var wh in MonthlyWarehouses)
+                        @foreach (var grp in MonthlyGroups)
                         {
-                            var avg = MonthlyAverage(wh);
-                            <td style="text-align:right">@(avg is null ? "—" : avg.Value.Qty.ToString("N0"))</td>
+                            var idx = Array.IndexOf(MonthlyGroups, grp);
+                            var avg = MonthlyAverage(grp);
+                            <td style="text-align:right; @GroupSep(idx)">@(avg is null ? "—" : avg.Value.Qty.ToString("N0"))</td>
                             <td style="text-align:right">@(avg is null ? "—" : avg.Value.BoxCount.ToString("N0"))</td>
                             <td style="text-align:right">@(avg is null ? "—" : avg.Value.PalletCount.ToString("N0"))</td>
                         }
@@ -109,15 +109,17 @@
                         <th></th>
                         @foreach (var season in SeasonGroups)
                         {
-                            var (bg, fg) = GroupColor(Array.IndexOf(SeasonGroups, season));
-                            <th colspan="3" style="text-align:center; background:@bg; color:@fg">@season</th>
+                            var idx = Array.IndexOf(SeasonGroups, season);
+                            var (bg, fg) = GroupColor(idx);
+                            <th colspan="3" style="text-align:center; background:@bg; color:@fg; @GroupSep(idx)">@season</th>
                         }
                     </tr>
                     <tr>
                         <th></th>
                         @foreach (var season in SeasonGroups)
                         {
-                            <th style="text-align:right">Qty</th>
+                            var idx = Array.IndexOf(SeasonGroups, season);
+                            <th style="text-align:right; @GroupSep(idx)">Qty</th>
                             <th style="text-align:right">Box</th>
                             <th style="text-align:right">Pallets</th>
                         }
@@ -130,13 +132,25 @@
                             <td style="text-align:left; font-weight:700">@wh</td>
                             @foreach (var season in SeasonGroups)
                             {
+                                var idx = Array.IndexOf(SeasonGroups, season);
                                 var row = _seasonByWarehouse.GetValueOrDefault((wh, season));
-                                <td style="text-align:right">@(row is null ? "—" : row.Qty.ToString("N0"))</td>
+                                <td style="text-align:right; @GroupSep(idx)">@(row is null ? "—" : row.Qty.ToString("N0"))</td>
                                 <td style="text-align:right">@(row is null ? "—" : row.BoxCount.ToString("N0"))</td>
                                 <td style="text-align:right">@(row is null ? "—" : row.PalletCount.ToString("N0"))</td>
                             }
                         </tr>
                     }
+                    <tr style="font-weight:700; background:#e6f4ea">
+                        <td style="text-align:left">Total</td>
+                        @foreach (var season in SeasonGroups)
+                        {
+                            var idx = Array.IndexOf(SeasonGroups, season);
+                            var (qty, box, pallets) = SeasonTotal(season);
+                            <td style="text-align:right; @GroupSep(idx)">@qty.ToString("N0")</td>
+                            <td style="text-align:right">@box.ToString("N0")</td>
+                            <td style="text-align:right">@pallets.ToString("N0")</td>
+                        }
+                    </tr>
                 </tbody>
             </table>
         </div>
@@ -151,15 +165,17 @@
                         <th></th>
                         @foreach (var cat in _palletCategories)
                         {
-                            var (bg, fg) = GroupColor(_palletCategories.IndexOf(cat));
-                            <th colspan="3" style="text-align:center; background:@bg; color:@fg">@cat</th>
+                            var idx = _palletCategories.IndexOf(cat);
+                            var (bg, fg) = GroupColor(idx);
+                            <th colspan="3" style="text-align:center; background:@bg; color:@fg; @GroupSep(idx)">@cat</th>
                         }
                     </tr>
                     <tr>
                         <th></th>
                         @foreach (var cat in _palletCategories)
                         {
-                            <th style="text-align:right">Qty</th>
+                            var idx = _palletCategories.IndexOf(cat);
+                            <th style="text-align:right; @GroupSep(idx)">Qty</th>
                             <th style="text-align:right">Box</th>
                             <th style="text-align:right">Pallets</th>
                         }
@@ -172,13 +188,25 @@
                             <td style="text-align:left; font-weight:700">@wh</td>
                             @foreach (var cat in _palletCategories)
                             {
+                                var idx = _palletCategories.IndexOf(cat);
                                 var row = _palletCategoryByWarehouse.GetValueOrDefault((wh, cat));
-                                <td style="text-align:right">@(row is null ? "—" : row.Qty.ToString("N0"))</td>
+                                <td style="text-align:right; @GroupSep(idx)">@(row is null ? "—" : row.Qty.ToString("N0"))</td>
                                 <td style="text-align:right">@(row is null ? "—" : row.BoxCount.ToString("N0"))</td>
                                 <td style="text-align:right">@(row is null ? "—" : row.PalletCount.ToString("N0"))</td>
                             }
                         </tr>
                     }
+                    <tr style="font-weight:700; background:#e6f4ea">
+                        <td style="text-align:left">Total</td>
+                        @foreach (var cat in _palletCategories)
+                        {
+                            var idx = _palletCategories.IndexOf(cat);
+                            var (qty, box, pallets) = PalletCategoryTotal(cat);
+                            <td style="text-align:right; @GroupSep(idx)">@qty.ToString("N0")</td>
+                            <td style="text-align:right">@box.ToString("N0")</td>
+                            <td style="text-align:right">@pallets.ToString("N0")</td>
+                        }
+                    </tr>
                 </tbody>
             </table>
         </div>
@@ -186,11 +214,14 @@
 }
 
 @code {
-    // Report 1 (Monthly Summary) stays limited to the 3 main warehouses -- its own
-    // mockup only ever showed these. Reports 2/3 (Season / Pallet Category) show
-    // every physical UAE warehouse, alphabetically, matching their own mockup.
-    private static readonly string[] MonthlyWarehouses = { "TECHNO", "YOTO", "JAFZA" };
-    private static readonly string[] AllUaeWarehouses = { "3PLF&B", "BLACKBOX", "JAFZA", "LFL-WH", "TECHNO", "YOTO" };
+    // Report 1 (Monthly Summary): UAE's 3 main warehouses plus every export country as
+    // its own single-facility group, matching the report's own mockup exactly.
+    private static readonly string[] MonthlyGroups = { "TECHNO", "YOTO", "JAFZA", "KSA", "QATAR", "KUWAIT", "MYS", "BAHRAIN" };
+    // Reports 2/3 (Season / Pallet Category) show every physical UAE warehouse,
+    // alphabetically, matching their own mockup. "No WH Info" is a blank/NULL Warehouse
+    // in the source data, kept as its own row (not folded into TECHNO) so it stays
+    // visible as a data-quality signal to monitor.
+    private static readonly string[] AllUaeWarehouses = { "3PLF&B", "BLACKBOX", "JAFZA", "LFL-WH", "TECHNO", "YOTO", "No WH Info" };
     private static readonly string[] SeasonGroups = { "Summer", "Winter" };
 
     // A fixed pastel palette cycled by column index -- works for any group count
@@ -208,13 +239,18 @@
     private static (string Bg, string Fg) GroupColor(int index) =>
         _palette[((index % _palette.Length) + _palette.Length) % _palette.Length];
 
+    // A light vertical rule before every column group, including the first (marks the
+    // boundary against the row-label column too), so multi-group tables read as
+    // distinct blocks instead of one continuous strip.
+    private static string GroupSep(int index) => "border-left:2px solid #b8c2cc;";
+
     private int _selectedYear = DateTime.Now.Year;
     private string _selectedMonthKey = "";
     private List<int> _years = new();
     private List<DateTime> _availableMonths = new();
     private bool _loading;
     private bool _loadedOnce;
-    private Dictionary<(string Warehouse, int Month), SohMonthlyRow> _byWarehouseMonth = new();
+    private Dictionary<(string Group, int Month), SohMonthlyRow> _byGroupMonth = new();
     private Dictionary<(string Warehouse, string Season), SohSeasonByWarehouseRow> _seasonByWarehouse = new();
     private Dictionary<(string Warehouse, string PalletCategory), SohPalletCategoryByWarehouseRow> _palletCategoryByWarehouse = new();
     private List<string> _palletCategories = new();
@@ -229,6 +265,18 @@
 
     private string SelectedMonthLabel => SelectedMonth.ToString("MMM yyyy");
 
+    private (long Qty, long BoxCount, long PalletCount) SeasonTotal(string season)
+    {
+        var rows = AllUaeWarehouses.Select(wh => _seasonByWarehouse.GetValueOrDefault((wh, season))).Where(r => r is not null).Select(r => r!).ToList();
+        return (rows.Sum(r => r.Qty), rows.Sum(r => r.BoxCount), rows.Sum(r => r.PalletCount));
+    }
+
+    private (long Qty, long BoxCount, long PalletCount) PalletCategoryTotal(string category)
+    {
+        var rows = AllUaeWarehouses.Select(wh => _palletCategoryByWarehouse.GetValueOrDefault((wh, category))).Where(r => r is not null).Select(r => r!).ToList();
+        return (rows.Sum(r => r.Qty), rows.Sum(r => r.BoxCount), rows.Sum(r => r.PalletCount));
+    }
+
     protected override async Task OnInitializedAsync()
     {
         var thisYear = DateTime.Now.Year;
@@ -242,10 +290,10 @@
     private static string MonthLabel(int month) =>
         new DateTime(2000, month, 1).ToString("MMM");
 
-    private (long Qty, long BoxCount, long PalletCount)? MonthlyAverage(string warehouse)
+    private (long Qty, long BoxCount, long PalletCount)? MonthlyAverage(string group)
     {
         var rows = Enumerable.Range(1, 12)
-            .Select(m => _byWarehouseMonth.GetValueOrDefault((warehouse, m)))
+            .Select(m => _byGroupMonth.GetValueOrDefault((group, m)))
             .Where(r => r is not null)
             .Select(r => r!)
             .ToList();
@@ -262,8 +310,8 @@
         await InvokeAsync(StateHasChanged);
         try
         {
-            var monthly = await Svc.GetSohMonthlySummaryAsync("UAE", _selectedYear);
-            _byWarehouseMonth = monthly.ToDictionary(r => (r.Warehouse, r.MonthEnd.Month), r => r);
+            var monthly = await Svc.GetSohMonthlySummaryAsync(_selectedYear);
+            _byGroupMonth = monthly.ToDictionary(r => (r.Warehouse, r.MonthEnd.Month), r => r);
 
             var season = await Svc.GetSohSeasonByWarehouseAsync("UAE", SelectedMonth);
             _seasonByWarehouse = season.ToDictionary(r => (r.Warehouse, r.SeasonGroup), r => r);

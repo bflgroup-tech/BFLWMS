@@ -82,7 +82,6 @@
             <select @bind="_newCountryJob" style="padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;">
                 <option value="@MissingExcessSnapshotService.JobName">@MissingExcessSnapshotService.JobName</option>
                 <option value="@VolumeGroupWeeklyService.JobName">@VolumeGroupWeeklyService.JobName</option>
-                <option value="@WhStockLastDayFromGcpService.JobName">@WhStockLastDayFromGcpService.JobName</option>
             </select>
         </div>
         <div>
@@ -92,7 +91,7 @@
         <button class="aiwms-btn aiwms-btn-secondary" @onclick="AddCountryAsync" disabled="@(_busy || string.IsNullOrWhiteSpace(_newCountry))">Add (inactive)</button>
     </div>
     <p style="font-size:11px; color:var(--text-secondary); margin-top:8px">
-        Only MissingExcessSnapshot, VolumeGroupWeekly, and WhStockLastDayFromGCP run per country. The rest are single-instance jobs and already have their row above.
+        Only MissingExcessSnapshot and VolumeGroupWeekly run per country. The rest are single-instance jobs and already have their row above.
     </p>
 
     @if (!string.IsNullOrEmpty(_message))
@@ -232,20 +231,17 @@
                 active => ToggleAndReloadAsync(() => Gcp.SetCountryActiveAsync("", active), WeeklySalesFromGcpService.JobName, active),
                 new() { ("Refresh Now", EventCallback.Factory.Create(this, RefreshGcpNowAsync)) }));
 
-            // 2b. WhStockLastDayFromGCP — per country (unlike WeeklySalesFromGCP, this
-            //     source already carries its own Country column, so "active" filters
-            //     which countries' rows get upserted from one shared BigQuery pull),
-            //     daily 11:15 (see Wms.Web.Hosting.WhStockLastDayBatchService).
-            foreach (var c in await Jobs.GetConfigAsync(WhStockLastDayFromGcpService.JobName))
-            {
-                var country = c.Country;
-                list.Add(new JobVm(
-                    WhStockLastDayFromGcpService.JobName, "Daily 11:15", country,
-                    c.IsActive, c.UpdatedTS, c.UpdatedBy,
-                    c.IsActive ? NextDailyFireGst(new(11, 15, 0)) : null,
-                    active => ToggleAndReloadAsync(() => Jobs.SetActiveAsync(WhStockLastDayFromGcpService.JobName, country, active, CurrentUser.Name ?? ""), country, active),
-                    new() { ("Refresh Now", EventCallback.Factory.Create(this, () => RefreshWhStockNowAsync(country))) }));
-            }
+            // 2b. WhStockLastDayFromGCP — single row like WeeklySalesFromGCP above
+            //     (this source also already carries its own Country column, so there's
+            //     no per-country "add country" step -- every country the feed has gets
+            //     upserted), daily 11:15 (see Wms.Web.Hosting.WhStockLastDayBatchService).
+            var whstock = await Jobs.GetSingleRowAsync(WhStockLastDayFromGcpService.JobName);
+            list.Add(new JobVm(
+                WhStockLastDayFromGcpService.JobName, "Daily 11:15", null,
+                whstock.IsActive, whstock.UpdatedTS, whstock.UpdatedBy,
+                whstock.IsActive ? NextDailyFireGst(new(11, 15, 0)) : null,
+                active => ToggleAndReloadAsync(() => Jobs.SetActiveAsync(WhStockLastDayFromGcpService.JobName, ScheduledJobService.SingleRowKey, active, CurrentUser.Name ?? ""), WhStockLastDayFromGcpService.JobName, active),
+                new() { ("Refresh Now", EventCallback.Factory.Create(this, RefreshWhStockNowAsync)) }));
 
             // 3. VolumeGroupWeekly — per country, Monday 04:00.
             foreach (var c in await Vg.GetCountryConfigAsync())
@@ -367,8 +363,6 @@
         {
             if (_newCountryJob == VolumeGroupWeeklyService.JobName)
                 await Vg.SetCountryActiveAsync(name, false);
-            else if (_newCountryJob == WhStockLastDayFromGcpService.JobName)
-                await Jobs.SetActiveAsync(WhStockLastDayFromGcpService.JobName, name, false, CurrentUser.Name ?? "");
             else
                 await Snap.SetCountryActiveAsync(name, false);
 
@@ -460,18 +454,22 @@
         finally { _busy = false; await RefreshLogAsync(); }
     }
 
-    private async Task RefreshWhStockNowAsync(string country)
+    private async Task RefreshWhStockNowAsync()
     {
-        _busy = true; Show($"Refreshing WhStockLastDayFromGCP for {country}…", false); await InvokeAsync(StateHasChanged);
-        var runId = await Jobs.StartRunAsync(WhStockLastDayFromGcpService.JobName, "OnDemand", country, CurrentUser.Name ?? "");
+        _busy = true; Show("Refreshing WhStockLastDayFromGCP…", false); await InvokeAsync(StateHasChanged);
         try
         {
-            var rows = await WhStock.RefreshCountryAsync(country);
-            await Jobs.FinishRunAsync(runId, "Success", rows, null);
-            Show($"{country} WhStockLastDay done — {rows} rows.", false);
+            var byCountry = await WhStock.RefreshAllCountriesAsync();
+            foreach (var (country, rows) in byCountry)
+            {
+                var runId = await Jobs.StartRunAsync(WhStockLastDayFromGcpService.JobName, "OnDemand", country, CurrentUser.Name ?? "");
+                await Jobs.FinishRunAsync(runId, "Success", rows, null);
+            }
+            Show($"WhStockLastDayFromGCP done — {byCountry.Sum(r => r.Rows)} rows across {byCountry.Count} countries.", false);
         }
         catch (Exception ex)
         {
+            var runId = await Jobs.StartRunAsync(WhStockLastDayFromGcpService.JobName, "OnDemand", null, CurrentUser.Name ?? "");
             await Jobs.FinishRunAsync(runId, "Failed", null, ex.Message);
             Show($"Refresh failed: {ex.Message}", true);
         }
