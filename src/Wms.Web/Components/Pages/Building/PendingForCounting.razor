@@ -1,0 +1,173 @@
+@page "/counting/pending-for-counting"
+@rendermode RenderMode.InteractiveServer
+@using System.Text
+@using Wms.Core
+@using Wms.Data.Lpm
+@attribute [Authorize(Policy = MenuKeys.PENDING_FOR_COUNTING)]
+@inject PendingForCountingService Svc
+@inject Microsoft.JSInterop.IJSRuntime JS
+
+<PageTitle>WMS — Pending for Counting</PageTitle>
+
+<div class="aiwms-page-header">
+    <h2>Pending for Counting</h2>
+    <p>Containers received on or after the cut-off date whose goods receipt has not been posted (no row in USAPurchase) and which have not been opened for counting (no row in OpenUSACont). Oldest receipt first.</p>
+</div>
+
+<div class="aiwms-section" style="padding:10px 16px;">
+    <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:flex-end;">
+        <div style="flex:0 0 170px;">
+            <label class="aiwms-filter-label" style="white-space:nowrap;">RECEIPT DATE FROM</label>
+            <input type="date" @bind:get="_receiptDtFrom" @bind:set="v => SetIfPlausible(v, d => _receiptDtFrom = d)" @bind:format="yyyy-MM-dd"
+                   style="width:100%; padding:5px 7px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:12px; background:white" />
+        </div>
+        <div style="flex:0 0 200px;">
+            <label class="aiwms-filter-label" style="white-space:nowrap;">CONTAINER / PO</label>
+            <input type="text" @bind="_search" @bind:event="oninput" placeholder="Filter loaded rows…"
+                   style="width:100%; padding:5px 7px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:12px; background:white" />
+        </div>
+        <div style="display:flex; gap:10px;">
+            <button class="aiwms-btn aiwms-btn-primary" @onclick="LoadAsync" disabled="@_loading">
+                @(_loading ? "Loading…" : "Load")
+            </button>
+            <button class="aiwms-btn aiwms-btn-secondary" @onclick="ExportCsvAsync" disabled="@(_loading || _rows.Count == 0)">
+                Export to Excel
+            </button>
+        </div>
+    </div>
+
+    @if (!string.IsNullOrEmpty(_message))
+    {
+        <div class="aiwms-alert @(_isError ? "error" : "info")" style="margin-top:12px">@_message</div>
+    }
+</div>
+
+@if (FilteredRows.Count > 0)
+{
+    <div class="aiwms-section">
+        <div style="overflow:auto; max-height:calc(100vh - 300px);">
+        <table class="aiwms-table aiwms-table-dense" style="table-layout:fixed; width:100%; border-collapse:separate; border-spacing:0;">
+            <colgroup>
+                <col style="width:140px;" />
+                <col style="width:110px;" />
+                <col style="width:110px;" />
+                <col style="width:130px;" />
+                <col style="width:180px;" />
+                <col style="width:100px;" />
+                <col style="width:120px;" />
+            </colgroup>
+            <thead style="position:sticky; top:0; z-index:5; background:var(--bfl-black);">
+                <tr>
+                    <th>Contno</th>
+                    <th>ReceiptDt</th>
+                    <th style="text-align:right;">Ageing Days</th>
+                    <th>PONO</th>
+                    <th>Division</th>
+                    <th style="text-align:right;">Qty</th>
+                    <th>LPM</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var r in FilteredRows)
+                {
+                    <tr>
+                        <td>@r.ContNo</td>
+                        <td>@(r.ReceiptDt?.ToString("dd/MM/yyyy") ?? "")</td>
+                        <td style="text-align:right;">@(r.AgeingDays?.ToString("N0") ?? "")</td>
+                        <td>@r.PONo</td>
+                        <td style="word-break:break-word; white-space:normal;">@r.Division</td>
+                        <td style="text-align:right;">@r.Qty.ToString("N0")</td>
+                        <td>@r.LPM</td>
+                    </tr>
+                }
+            </tbody>
+            <tfoot>
+                <tr style="font-weight:600; border-top:2px solid var(--border-default);">
+                    <td>Total</td>
+                    <td></td>
+                    <td></td>
+                    <td></td>
+                    <td></td>
+                    <td style="text-align:right;">@FilteredRows.Sum(r => r.Qty).ToString("N0")</td>
+                    <td></td>
+                </tr>
+            </tfoot>
+        </table>
+        </div>
+    </div>
+}
+
+@code {
+    private List<PendingForCountingRow> _rows = new();
+    private DateTime _receiptDtFrom = PendingForCountingService.DefaultReceiptDtFrom;
+    private string _search = "";
+
+    private bool   _loading;
+    private string _message = "";
+    private bool   _isError;
+
+    private List<PendingForCountingRow> FilteredRows =>
+        string.IsNullOrWhiteSpace(_search)
+            ? _rows
+            : _rows.Where(r =>
+                  (r.ContNo?.Contains(_search, StringComparison.OrdinalIgnoreCase) ?? false)
+               || (r.PONo?.Contains(_search, StringComparison.OrdinalIgnoreCase)   ?? false))
+              .ToList();
+
+    // A pending worklist is worth showing straight away rather than making the
+    // operator click Load on arrival; the button stays for refresh / date changes.
+    protected override Task OnInitializedAsync() => LoadAsync();
+
+    // <input type="date"> fires change events mid-typing; Blazor parses those
+    // partial values as DateTime.MinValue and would overwrite the field before
+    // the user finishes. Ignore anything implausible rather than committing it.
+    private static void SetIfPlausible(DateTime v, Action<DateTime> apply)
+    {
+        if (v.Year > 1900) apply(v);
+    }
+
+    private async Task LoadAsync()
+    {
+        _loading = true; _message = ""; _rows.Clear();
+        await InvokeAsync(StateHasChanged);
+        try
+        {
+            _rows = await Svc.GetPendingAsync(_receiptDtFrom);
+            var containers = _rows.Select(r => r.ContNo).Distinct().Count();
+            ShowInfo(_rows.Count == 0
+                ? "No containers pending for counting."
+                : $"{containers:N0} container(s) pending — {_rows.Count:N0} row(s), {_rows.Sum(r => r.Qty):N0} pcs.");
+        }
+        catch (Exception ex) { ShowError($"Load failed: {ex.Message}"); }
+        finally { _loading = false; }
+    }
+
+    private async Task ExportCsvAsync()
+    {
+        var rows = FilteredRows;
+        var sb = new StringBuilder();
+        sb.AppendLine("Contno,ReceiptDt,Ageing Days,PONO,Division,Qty,LPM");
+        foreach (var r in rows)
+            sb.AppendLine($"{Csv(r.ContNo)}," +
+                          $"{(r.ReceiptDt.HasValue ? r.ReceiptDt.Value.ToString("yyyy-MM-dd") : "")}," +
+                          $"{r.AgeingDays},{Csv(r.PONo)},{Csv(r.Division)},{r.Qty},{Csv(r.LPM)}");
+        sb.AppendLine($"Total,,,,,{rows.Sum(r => r.Qty)},");
+
+        var b64      = Convert.ToBase64String(Encoding.UTF8.GetBytes(sb.ToString()));
+        var filename = $"PendingForCounting_{_receiptDtFrom:yyyyMMdd}.csv";
+        await JS.InvokeVoidAsync("eval",
+            $"(function(){{var a=document.createElement('a');a.href='data:text/csv;base64,{b64}';" +
+            $"a.download='{filename}';document.body.appendChild(a);a.click();document.body.removeChild(a);}})();");
+    }
+
+    private static string Csv(string? s)
+    {
+        if (s is null) return "";
+        return (s.Contains(',') || s.Contains('"') || s.Contains('\n'))
+            ? "\"" + s.Replace("\"", "\"\"") + "\""
+            : s;
+    }
+
+    private void ShowError(string msg) { _message = msg; _isError = true; }
+    private void ShowInfo(string msg)  { _message = msg; _isError = false; }
+}

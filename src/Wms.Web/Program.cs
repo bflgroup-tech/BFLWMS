@@ -66,6 +66,7 @@ public class Program
         builder.Services.AddScoped<ContainerAllocationService>();
         builder.Services.AddScoped<ContainerAllocationDataSyncService>();
         builder.Services.AddScoped<OpenContainerService>();
+        builder.Services.AddScoped<PendingForCountingService>();
         builder.Services.AddScoped<ManualAllocationService>();
         builder.Services.AddScoped<MaxCapService>();
         builder.Services.AddScoped<Wms.Data.Encoding.ItemEncodingService>();
