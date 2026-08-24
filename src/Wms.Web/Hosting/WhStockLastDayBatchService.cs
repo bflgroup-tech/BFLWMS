@@ -3,14 +3,15 @@ using Wms.Data.Lpm;
 namespace Wms.Web.Hosting;
 
 /// <summary>
-/// Fires EVERY DAY at 11:15 GST (Arabian Standard Time = UTC+04:00). For each
-/// ACTIVE country in WmsRptCountryConfig (scoped to JobName
-/// 'WhStockLastDayFromGCP'), pulls the full wh_stock_last_day feed from BigQuery
-/// once, then MERGE-upserts each active country's slice into
-/// dbo.WMS_WHSTOCK_LASTDAY, logging each run into WmsRptJobRun. The source is a
-/// monthly snapshot, so most daily runs just re-upsert the same rows (a harmless
-/// no-op MERGE) until the month rolls over. Lives in-process; relies on App
-/// Service Always On to be present at fire time.
+/// Fires EVERY DAY at 11:15 GST (Arabian Standard Time = UTC+04:00). Gated on a
+/// single Active toggle (WmsRptCountryConfig, JobName 'WhStockLastDayFromGCP',
+/// Country '' -- same single-row shape WeeklySalesFromGCP uses), not a
+/// per-country activation list: pulls the full wh_stock_last_day feed from
+/// BigQuery once, then MERGE-upserts EVERY distinct country found in it into
+/// dbo.WMS_WHSTOCK_LASTDAY, logging one run per country into WmsRptJobRun. The
+/// source is a monthly snapshot, so most daily runs just re-upsert the same rows
+/// (a harmless no-op MERGE) until the month rolls over. Lives in-process; relies
+/// on App Service Always On to be present at fire time.
 ///
 /// RunDailyAsync checks ScheduledJobService.HasSuccessfulRunTodayAsync and takes
 /// TryAcquireJobLockAsync before doing any work -- same fix applied to
@@ -77,10 +78,9 @@ public class WhStockLastDayBatchService(IServiceProvider sp, ILogger<WhStockLast
             return;
         }
 
-        var countries = await jobs.GetActiveCountriesAsync(WhStockLastDayFromGcpService.JobName, ct);
-        if (countries.Count == 0)
+        if (!await jobs.IsActiveAsync(WhStockLastDayFromGcpService.JobName, ScheduledJobService.SingleRowKey, ct))
         {
-            log.LogInformation("WhStockLastDayBatchService: no active countries — nothing to do.");
+            log.LogInformation("WhStockLastDayBatchService: job is inactive — nothing to do.");
             return;
         }
 
@@ -102,14 +102,19 @@ public class WhStockLastDayBatchService(IServiceProvider sp, ILogger<WhStockLast
         }
         catch (Exception ex)
         {
-            log.LogError(ex, "WhStockLastDayBatchService: BigQuery fetch FAILED — skipping all countries this run.");
-            foreach (var country in countries)
-            {
-                var runId = await jobs.StartRunAsync(WhStockLastDayFromGcpService.JobName, "Daily", country, "Timer", ct);
-                await jobs.FinishRunAsync(runId, "Failed", null, ex.Message, CancellationToken.None);
-            }
+            log.LogError(ex, "WhStockLastDayBatchService: BigQuery fetch FAILED.");
+            var runId = await jobs.StartRunAsync(WhStockLastDayFromGcpService.JobName, "Daily", null, "Timer", ct);
+            await jobs.FinishRunAsync(runId, "Failed", null, ex.Message, CancellationToken.None);
             return;
         }
+
+        // The source carries its own Country column -- no fixed config list, just
+        // whatever countries are actually present in this run's feed.
+        var countries = rows.Select(r => r.Country)
+            .Where(c => !string.IsNullOrWhiteSpace(c))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(c => c, StringComparer.OrdinalIgnoreCase)
+            .ToList();
 
         foreach (var country in countries)
         {

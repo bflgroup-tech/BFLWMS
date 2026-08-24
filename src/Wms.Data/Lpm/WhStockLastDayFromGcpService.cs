@@ -20,20 +20,15 @@ public record WhStockLastDayGcpRow(
 /// Pulls the monthly warehouse-stock-last-day snapshot from BigQuery
 /// (mvp-data-bi.cdm_silver.wh_stock_last_day) and MERGE-upserts it into LPMSIM's
 /// dbo.WMS_WHSTOCK_LASTDAY. Unlike WeeklySalesFromGcpService's source, this one
-/// already carries its own Country column, so the full feed is fetched once and
-/// then filtered per active country before each country's upsert -- "active"
-/// here controls which countries' rows get written, not which query runs.
+/// already carries its own Country column -- rather than a per-country "add
+/// country" activation step (which just meant clicking Add six times for six
+/// countries the feed already has), this job is a single Active toggle: the full
+/// feed is fetched once and every distinct country found in it gets upserted,
+/// same single-row shape WeeklySalesFromGCP already uses on Nightly Batches Status.
 ///
-/// Country activation, job-run log, and the cross-instance lock all live in the
-/// shared ScheduledJobService (see WhStockLastDayBatchService) rather than a
-/// duplicated copy here -- this class only knows how to fetch and upsert.
-///
-/// NOTE: the filter match is `Country` (case-insensitive) against BigQuery's own
-/// Country string values -- these haven't been sampled against WMS's country
-/// naming (UAE/KSA/Bahrain/...) yet. If a country shows 0 rows upserted despite
-/// being active and the feed clearly containing that country's data, the BigQuery
-/// value likely doesn't match the WMS country name exactly -- check via "Refresh
-/// Now" before relying on the daily timer.
+/// Job-run log and the cross-instance lock live in the shared ScheduledJobService
+/// (see WhStockLastDayBatchService) rather than a duplicated copy here -- this
+/// class only knows how to fetch and upsert.
 /// </summary>
 public class WhStockLastDayFromGcpService(IOnPremConnectionResolver resolver, IOptions<GcpBigQueryOptions> gcpOpts, IConfiguration configuration)
 {
@@ -199,11 +194,22 @@ public class WhStockLastDayFromGcpService(IOnPremConnectionResolver resolver, IO
         catch { await tx.RollbackAsync(ct); throw; }
     }
 
-    /// <summary>On-demand "Refresh Now" for one country — fetches the full BigQuery feed
-    /// and upserts just that country's slice.</summary>
-    public async Task<int> RefreshCountryAsync(string country, CancellationToken ct = default)
+    /// <summary>On-demand "Refresh Now" — fetches the full BigQuery feed once and upserts
+    /// every distinct country found in it. There's no per-country activation for this job
+    /// (single Active toggle, like WeeklySalesFromGCP) -- whatever countries the source
+    /// carries get upserted, no "add country" step needed.</summary>
+    public async Task<List<(string Country, int Rows)>> RefreshAllCountriesAsync(CancellationToken ct = default)
     {
         var rows = await FetchFromBigQueryAsync(ct);
-        return await UpsertRowsAsync(country, rows, ct);
+        var countries = rows.Select(r => r.Country)
+            .Where(c => !string.IsNullOrWhiteSpace(c))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(c => c, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var result = new List<(string Country, int Rows)>();
+        foreach (var country in countries)
+            result.Add((country, await UpsertRowsAsync(country, rows, ct)));
+        return result;
     }
 }
