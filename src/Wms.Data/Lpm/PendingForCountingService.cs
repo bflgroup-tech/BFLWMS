@@ -21,6 +21,7 @@ public record PendingForCountingRow(
 ///
 /// A container is pending when it has a bfldata.Contreceipt row on/after the
 /// cut-off date AND:
+///   - its ContType is not 'Non-Trade' (those never get counted), and
 ///   - its RefNo has no row in usa.USAPurchase   (goods receipt not posted), and
 ///   - its ContNo has no row in usa.OpenUSACont  (not opened for counting).
 ///
@@ -73,6 +74,7 @@ public class PendingForCountingService(IOnPremConnectionResolver resolver)
                        ReceiptDt = MAX(cr.ReceiptDt)
                   FROM bfldata.dbo.Contreceipt cr WITH (NOLOCK)
                  WHERE cr.ReceiptDt >= @receiptDtFrom
+                   AND ISNULL(cr.ContType, '') <> 'Non-Trade'
                    AND NOT EXISTS (
                            SELECT 1 FROM usa.dbo.USAPurchase p WITH (NOLOCK)
                             WHERE p.ContNo = cr.RefNo AND p.ContNo <> '')
