@@ -17,6 +17,7 @@
         Upload an Excel (<code>.xlsx</code>) with header row and the columns
         <b>StoreID, ContNo, Itemcode, AllocationQty</b>. All rows must match the container +
         store you pick below. Counting must not have started for this container.
+        For ECOM / ONLINE you can import from <code>ToysInitialAllocationDetail</code> instead of a file.
     </p>
 </div>
 
@@ -89,12 +90,27 @@
 @if (_validated)
 {
     <div class="aiwms-section">
-        <div class="aiwms-card-header">Upload Excel</div>
+        <div class="aiwms-card-header">Load Allocation</div>
         <p style="margin:0 0 10px 0; color:var(--text-secondary); font-size:12px">
             Header row required. Columns: <code>StoreID, ContNo, Itemcode, AllocationQty</code>.
             All rows must have ContNo = <b>@_contno</b> and StoreID = <b>@_storeId</b>.
         </p>
         <InputFile OnChange="OnFileSelected" accept=".xlsx" disabled="@_busy" />
+
+        @if (IsEcomOnline)
+        {
+            <div style="margin-top:14px; padding-top:12px; border-top:1px solid var(--border-default)">
+                <p style="margin:0 0 8px 0; color:var(--text-secondary); font-size:12px">
+                    Or skip the file and pull the allocation straight from
+                    <code>ONLINE..ToysInitialAllocationDetail</code> for container <b>@_contno</b> —
+                    <code>shopqty</code> becomes the allocation qty, aggregated per itemcode.
+                    ECOM / ONLINE only.
+                </p>
+                <button class="aiwms-btn aiwms-btn-secondary" @onclick="ImportFromToysAsync" disabled="@_busy">
+                    Import from Toys Initial Allocation
+                </button>
+            </div>
+        }
     </div>
 }
 
@@ -215,6 +231,42 @@
             ShowInfo($"Container {_contno.Trim()} ok — building not started. Upload your Excel below.");
         }
         catch (Exception ex) { ShowError($"Validation failed: {ex.Message}"); }
+        finally { _busy = false; _busyMsg = null; }
+    }
+
+    // The ToysInitialAllocationDetail feed carries no store dimension — it is the
+    // ECOM online allocation. Gate the button on that pairing so the rows can't be
+    // stamped onto some other country/store by leaving the dropdowns elsewhere.
+    private bool IsEcomOnline =>
+        string.Equals(_country, DefaultCountry, StringComparison.OrdinalIgnoreCase)
+     && string.Equals(_storeId, DefaultStoreId, StringComparison.OrdinalIgnoreCase);
+
+    // Same downstream path as the Excel upload — only the source of the raw rows
+    // differs, so enrichment, preview and Save behave identically.
+    private async Task ImportFromToysAsync()
+    {
+        _busy = true; _busyMsg = "Reading ONLINE..ToysInitialAllocationDetail..."; _message = ""; _rows = new();
+        StateHasChanged();
+        try
+        {
+            var contno  = _contno.Trim();
+            var storeId = _storeId.Trim();
+
+            var parsed = await Svc.LoadToysInitialAllocationAsync(contno, storeId);
+            if (parsed.Count == 0)
+            {
+                ShowError($"No rows with shopqty > 0 in ONLINE..ToysInitialAllocationDetail for container {contno}.");
+                return;
+            }
+
+            _busyMsg = $"Enriching {parsed.Count:N0} row(s) — DivCode, POQty, SOH, SKU Max, EOM...";
+            StateHasChanged();
+            await Task.Yield();
+
+            _rows = await Svc.EnrichRowsAsync(contno, storeId, _country, parsed);
+            ShowInfo($"Imported and enriched {_rows.Count} row(s) from ToysInitialAllocationDetail. Review below, then click Save.");
+        }
+        catch (Exception ex) { ShowError($"Import failed: {ex.Message}"); }
         finally { _busy = false; _busyMsg = null; }
     }
 
