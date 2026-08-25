@@ -1413,6 +1413,13 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
     /// band, i.e. rows written with a blank Grade. Non-zero means the band ranges
     /// for this country do not cover the full AvgSalesPct spread.
     /// </returns>
+    /// <summary>Match key for the two PO-allocation VG override tables. Country and
+    /// StoreID are upper-cased because those tables are hand-keyed through the LpmSim
+    /// screens while LPM_EOM_Output is UPPER — a case mismatch would silently never
+    /// match instead of failing.</summary>
+    private static string VgOverrideKey(string? country, string? storeId, int divCode) =>
+        $"{(country ?? "").Trim().ToUpperInvariant()}|{(storeId ?? "").Trim().ToUpperInvariant()}|{divCode}";
+
     public async Task<(int Rows, int Ungraded)> GenerateStoreDivGradesAsync(int month, int year, string? country = null, CancellationToken ct = default, string? actor = null)
     {
         // country == null OR BflGroup -> GLOBAL run (existing behaviour):
@@ -1658,6 +1665,64 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                     Grade:       grade));
             }
         }
+
+        // 4b) PO-allocation VG overrides. Both tables are owned by LpmSim's Planning
+        //     Config screens (admin/vg-block-po, admin/vg-fixed-po) — nothing in
+        //     LpmSim reads them, WMS applies them here. See LpmSim db/106.
+        //
+        //       LPM_StoreDivVgFixedPO  pins the VG for a (Country, StoreID, DivCode).
+        //       LPM_StoreDivVgBlockPO  drops that store x division entirely.
+        //
+        //     Deliberately an OVERLAY on the finished grades rather than a filter on
+        //     baseRows: SalesAmt, AvgSalesAmt, AvgSalesPct and the Grade-A slot
+        //     allocation all stay exactly as computed, so a pin or a block changes
+        //     ONLY its own row and cannot shift any other store's grade.
+        //
+        //     Keys are upper-cased on both sides. LPM_EOM_Output.Country is UPPER
+        //     but these config tables are typed by hand through the LpmSim screens,
+        //     so a mixed-case 'Oman' would otherwise silently never match — exactly
+        //     how the ADM SkuMax band lookup starved four countries.
+        //
+        //     Both reads are OBJECT_ID-guarded: LpmSim creates these tables at its
+        //     own startup, and a DB where that hasn't happened yet must degrade to
+        //     "no overrides" rather than taking the whole VG batch down.
+        var fixedByKey = (await c.QueryAsync<(string Country, string StoreID, int DivCode, string? VolumeGroup)>(
+            new CommandDefinition(@"
+                IF OBJECT_ID('dbo.LPM_StoreDivVgFixedPO','U') IS NOT NULL
+                    EXEC sp_executesql N'SELECT Country, StoreID, DivCode, VolumeGroup
+                                           FROM dbo.LPM_StoreDivVgFixedPO WITH (NOLOCK)';",
+                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
+            .Where(r => !string.IsNullOrWhiteSpace(r.VolumeGroup))
+            .GroupBy(r => VgOverrideKey(r.Country, r.StoreID, r.DivCode))
+            .ToDictionary(g => g.Key, g => g.First().VolumeGroup!.Trim());
+
+        // IsActive = 0 means BLOCKED here — same inverted convention as every other
+        // block table in LpmSim (LPM_StoreAccess, LPM_StoreDivAccess, ...). A row
+        // with IsActive = 1 has been un-blocked and must be ignored.
+        var blockedKeys = new HashSet<string>(
+            (await c.QueryAsync<(string Country, string StoreID, int DivCode)>(
+                new CommandDefinition(@"
+                IF OBJECT_ID('dbo.LPM_StoreDivVgBlockPO','U') IS NOT NULL
+                    EXEC sp_executesql N'SELECT Country, StoreID, DivCode
+                                           FROM dbo.LPM_StoreDivVgBlockPO WITH (NOLOCK)
+                                          WHERE IsActive = 0';",
+                    commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
+                .Select(r => VgOverrideKey(r.Country, r.StoreID, r.DivCode)));
+
+        if (fixedByKey.Count > 0)
+        {
+            for (var i = 0; i < results.Count; i++)
+            {
+                var r = results[i];
+                if (!fixedByKey.TryGetValue(VgOverrideKey(r.Country, r.StoreID, r.DivCode), out var pinned))
+                    continue;
+                results[i] = r with { Grade = pinned };
+            }
+        }
+
+        // Block last, so a store that is both pinned and blocked ends up blocked.
+        if (blockedKeys.Count > 0)
+            results.RemoveAll(r => blockedKeys.Contains(VgOverrideKey(r.Country, r.StoreID, r.DivCode)));
 
         // 5) DELETE + bulk insert.
         await using var tx = (SqlTransaction)await c.BeginTransactionAsync(ct);
