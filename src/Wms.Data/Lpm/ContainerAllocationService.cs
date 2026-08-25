@@ -818,6 +818,23 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         // per-item; the tier (MinMin/MinMax/IdealMax/MaxMax) then picked per-store
         // based on that store's OTS% vs AvgOTS +/- band. Missing (Div, VG) or
         // PoQty out of any band -> Blocked "No SkuMax band" at pick time.
+        //
+        // Country = 'BFLGROUP' is REQUIRED, not incidental. LPM_SkuMaxBands holds
+        // per-country rows too, and the dictionary below is keyed only by
+        // (DivCode, VolumeGroup) — so without this filter every country's bands for
+        // the same (Div, VG) piled into one list and the "first row that contains
+        // PoQty wins" pick took whichever one SQL happened to return first.
+        // Observed on AEINT8194 item 5715356700232 (DivCode 410, PoQty 500): every
+        // A store capped at 9 — the MinMin of some other country's row — instead of
+        // 4 from BFLGROUP's 251-500 band, so the container drained twice as fast as
+        // intended. BFLGROUP is the live config; the per-country rows are stale.
+        //
+        // UPPER(LTRIM(RTRIM(...))) because this table's Country is hand-maintained
+        // and mixed case ('BFLGroup', 'Oman') — the same casing that starved four
+        // countries in the ADM band lookup.
+        //
+        // ORDER BY PoQtyFrom makes the first-match pick deterministic even if two
+        // BFLGROUP rows ever overlap.
         async Task<Dictionary<(int DivCode, string VG), List<(int From, int To, int? MinMin, int? MinMax, int? IdealMax, int? MaxMax)>>> LoadSkuMaxBands()
         {
             var d = new Dictionary<(int, string), List<(int, int, int?, int?, int?, int?)>>();
@@ -827,7 +844,10 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                 new CommandDefinition(@"
                     SELECT DivCode, VolumeGroup, PoQtyFrom, PoQtyTo, MinMin, MinMax, IdealMax, MaxMax
                       FROM LPMSIM.dbo.LPM_SkuMaxBands WITH (NOLOCK)
-                     WHERE DivCode IN @divs AND IsActive = 1",
+                     WHERE DivCode IN @divs
+                       AND IsActive = 1
+                       AND UPPER(LTRIM(RTRIM(Country))) = 'BFLGROUP'
+                     ORDER BY DivCode, VolumeGroup, PoQtyFrom",
                     new { divs = distinctDivs },
                     commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
             foreach (var r in rows)
