@@ -1454,8 +1454,10 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
 
         // 1b) Anchor = latest fiscal week from LPM_OTS_Output. wk is per-year
         //     (resets each year) so we read (Year, wk) from the row with the
-        //     most recent OTSDate. Weekly rollup rows with (Year1, Week) at
-        //     or before that anchor are eligible.
+        //     most recent OTSDate. Weekly rollup rows STRICTLY BEFORE that
+        //     anchor are eligible — the anchor week is the one currently in
+        //     progress, so its SalesAmt is a part-week figure that would drag
+        //     every store's weighted average down and skew the grading.
         var anchor = (await c.QueryAsync<(int Year, int Week)>(new CommandDefinition(@"
             SELECT TOP 1 YEAR(OTSDate) AS [Year], wk AS [Week]
               FROM dbo.LPM_OTS_Output WITH (NOLOCK)
@@ -1489,7 +1491,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
 
         // 1d) Per (StoreID, DivCode), sum SalesAmt * MonthlyWeightage over
-        //     the up-to-12 most recent LPM_Weekly_SalesAmt rows at/before the
+        //     the up-to-12 most recent LPM_Weekly_SalesAmt rows BEFORE the
         //     anchor. MonthlyWeightage is now the per-week WeightPct from
         //     LPM_WeeklyWeights (populated by 1c above). Since 12 weeks of
         //     weights are configured to sum to 1.0, this SUM directly yields
@@ -1507,7 +1509,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                            ORDER BY Year1 DESC, Week DESC
                        ) AS rn
                   FROM dbo.LPM_Weekly_SalesAmt WITH (NOLOCK)
-                 WHERE (Year1 * 100 + Week) <= @anchorKey
+                 WHERE (Year1 * 100 + Week) < @anchorKey
             )
             SELECT StoreID, DivCode,
                    COUNT(*) AS WeekCount,
