@@ -1,0 +1,21 @@
+<MudDialog>
+    <TitleContent>
+        <MudText Typo="Typo.h6">@Title</MudText>
+    </TitleContent>
+    <DialogContent>
+        <MudChart ChartType="@ChartTypeValue" ChartSeries="@Series" XAxisLabels="@Labels" Width="100%" Height="380px" />
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Close">Close</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public string Title { get; set; } = "";
+    [Parameter] public ChartType ChartTypeValue { get; set; } = ChartType.Line;
+    [Parameter] public List<ChartSeries> Series { get; set; } = new();
+    [Parameter] public string[] Labels { get; set; } = Array.Empty<string>();
+
+    private void Close() => MudDialog.Close();
+}
