@@ -2,23 +2,29 @@
 @rendermode RenderMode.InteractiveServer
 @using Wms.Core
 @using Wms.Data.Lpm
+@using ClosedXML.Excel
 @attribute [Authorize(Policy = MenuKeys.RPT_SOH_MONTHLY_SUMMARY)]
 @inject WarehouseSohSummaryService Svc
+@inject IJSRuntime JS
+@inject IDialogService DialogService
 
 <style>
     .smsum-header { background: var(--bfl-black); color: var(--bfl-yellow); font-family: var(--font-display); font-weight: 800; font-size: 13px; text-transform: uppercase; letter-spacing: .5px; padding: 10px 14px; text-align: center; }
+    .aiwms-icon-btn { background: none; border: none; color: inherit; cursor: pointer; padding: 2px 6px; line-height: 1; border-radius: var(--r-sm); }
+    .aiwms-icon-btn:hover:not(:disabled) { background: rgba(255,255,255,0.15); }
+    .aiwms-icon-btn:disabled { opacity: 0.4; cursor: default; }
 </style>
 
 <div class="aiwms-page-header">
     <h2>SOH Monthly Summary</h2>
-    <p>Month-end stock-on-hand from the monthly BigQuery snapshot (dbo.WMS_WHSTOCK_LASTDAY). Monthly Summary below covers UAE by warehouse plus every export country; Season / Pallet Category breakdowns stay UAE-only for now.</p>
+    <p>Month-end stock-on-hand from the monthly BigQuery snapshot (dbo.WMS_WHSTOCK_LASTDAY). Monthly Summary below covers UAE by warehouse plus every export country; Season / Pallet Category breakdowns are per-country via the filter below.</p>
 </div>
 
 <div class="aiwms-section">
     <div style="display:flex; gap:12px; align-items:end; flex-wrap:wrap;">
         <div>
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">YEAR (Monthly Summary below)</label>
-            <select @bind="_selectedYear" style="width:220px; height:36px; box-sizing:border-box; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;">
+            <select @bind="_selectedYear" style="width:170px; height:36px; box-sizing:border-box; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;">
                 @foreach (var y in _years)
                 {
                     <option value="@y">@y</option>
@@ -26,11 +32,34 @@
             </select>
         </div>
         <div>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COUNTRY (Season / Pallet Category below)</label>
+            <select @bind="_selectedCountry" @bind:after="OnCountryChangedAsync" style="width:170px; height:36px; box-sizing:border-box; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;">
+                @foreach (var c in Countries)
+                {
+                    <option value="@c.Value">@c.Label</option>
+                }
+            </select>
+        </div>
+        <div>
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">MONTH (Season / Pallet Category below)</label>
-            <select @bind="_selectedMonthKey" style="width:220px; height:36px; box-sizing:border-box; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;">
+            <select @bind="_selectedMonthKey" style="width:170px; height:36px; box-sizing:border-box; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" disabled="@(_availableMonths.Count == 0)">
+                @if (_availableMonths.Count == 0)
+                {
+                    <option value="">No data yet</option>
+                }
                 @foreach (var d in _availableMonths)
                 {
                     <option value="@MonthKey(d)">@d.ToString("MMM yyyy")</option>
+                }
+            </select>
+        </div>
+        <div>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">WAREHOUSE (Season / Pallet Category below)</label>
+            <select @bind="_selectedWarehouse" style="width:170px; height:36px; box-sizing:border-box; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" disabled="@(_warehousesForCountry.Count == 0)">
+                <option value="">All Warehouses</option>
+                @foreach (var wh in _warehousesForCountry)
+                {
+                    <option value="@wh">@wh</option>
                 }
             </select>
         </div>
@@ -41,7 +70,17 @@
 @if (_loadedOnce)
 {
     <div class="aiwms-section" style="padding:0; overflow:hidden">
-        <div class="smsum-header">SOH Monthly Summary for the year @_selectedYear</div>
+        <div class="smsum-header" style="display:flex; align-items:center; justify-content:space-between;">
+            <span>SOH Monthly Summary for the year @_selectedYear</span>
+            <span>
+                <button class="aiwms-icon-btn" title="View chart" @onclick="ShowMonthlySummaryChartAsync">
+                    <span class="mi sm" style="color:inherit">bar_chart</span>
+                </button>
+                <button class="aiwms-icon-btn" title="Export to Excel" disabled="@_exporting" @onclick="ExportMonthlySummaryAsync">
+                    <span class="mi sm" style="color:inherit">download</span>
+                </button>
+            </span>
+        </div>
         <div style="overflow-x:auto">
             <table class="aiwms-table aiwms-table-dense" style="text-align:center">
                 <thead>
@@ -101,7 +140,17 @@
     </p>
 
     <div class="aiwms-section" style="padding:0; overflow:hidden">
-        <div class="smsum-header">SOH by Season — All UAE Warehouses (@SelectedMonthLabel)</div>
+        <div class="smsum-header" style="display:flex; align-items:center; justify-content:space-between;">
+            <span>SOH by Season — @SelectedCountryLabel Warehouses (@SelectedMonthLabel)</span>
+            <span>
+                <button class="aiwms-icon-btn" title="View chart" @onclick="ShowSeasonChartAsync">
+                    <span class="mi sm" style="color:inherit">bar_chart</span>
+                </button>
+                <button class="aiwms-icon-btn" title="Export to Excel" disabled="@_exporting" @onclick="ExportSeasonAsync">
+                    <span class="mi sm" style="color:inherit">download</span>
+                </button>
+            </span>
+        </div>
         <div style="overflow-x:auto">
             <table class="aiwms-table aiwms-table-dense" style="text-align:center">
                 <thead>
@@ -126,7 +175,11 @@
                     </tr>
                 </thead>
                 <tbody>
-                    @foreach (var wh in AllUaeWarehouses)
+                    @if (DisplayWarehouses.Count == 0)
+                    {
+                        <tr><td colspan="7" style="font-style:italic; color:var(--text-secondary)">No data for @SelectedCountryLabel / @SelectedMonthLabel yet.</td></tr>
+                    }
+                    @foreach (var wh in DisplayWarehouses)
                     {
                         <tr>
                             <td style="text-align:left; font-weight:700">@wh</td>
@@ -140,24 +193,37 @@
                             }
                         </tr>
                     }
-                    <tr style="font-weight:700; background:#e6f4ea">
-                        <td style="text-align:left">Total</td>
-                        @foreach (var season in SeasonGroups)
-                        {
-                            var idx = Array.IndexOf(SeasonGroups, season);
-                            var (qty, box, pallets) = SeasonTotal(season);
-                            <td style="text-align:right; @GroupSep(idx)">@qty.ToString("N0")</td>
-                            <td style="text-align:right">@box.ToString("N0")</td>
-                            <td style="text-align:right">@pallets.ToString("N0")</td>
-                        }
-                    </tr>
+                    @if (DisplayWarehouses.Count > 1)
+                    {
+                        <tr style="font-weight:700; background:#e6f4ea">
+                            <td style="text-align:left">Total</td>
+                            @foreach (var season in SeasonGroups)
+                            {
+                                var idx = Array.IndexOf(SeasonGroups, season);
+                                var (qty, box, pallets) = SeasonTotal(season);
+                                <td style="text-align:right; @GroupSep(idx)">@qty.ToString("N0")</td>
+                                <td style="text-align:right">@box.ToString("N0")</td>
+                                <td style="text-align:right">@pallets.ToString("N0")</td>
+                            }
+                        </tr>
+                    }
                 </tbody>
             </table>
         </div>
     </div>
 
     <div class="aiwms-section" style="padding:0; overflow:hidden">
-        <div class="smsum-header">SOH by Pallet Category — All UAE Warehouses (@SelectedMonthLabel)</div>
+        <div class="smsum-header" style="display:flex; align-items:center; justify-content:space-between;">
+            <span>SOH by Pallet Category — @SelectedCountryLabel Warehouses (@SelectedMonthLabel)</span>
+            <span>
+                <button class="aiwms-icon-btn" title="View chart" @onclick="ShowPalletCategoryChartAsync">
+                    <span class="mi sm" style="color:inherit">bar_chart</span>
+                </button>
+                <button class="aiwms-icon-btn" title="Export to Excel" disabled="@_exporting" @onclick="ExportPalletCategoryAsync">
+                    <span class="mi sm" style="color:inherit">download</span>
+                </button>
+            </span>
+        </div>
         <div style="overflow-x:auto">
             <table class="aiwms-table aiwms-table-dense" style="text-align:center">
                 <thead>
@@ -182,7 +248,11 @@
                     </tr>
                 </thead>
                 <tbody>
-                    @foreach (var wh in AllUaeWarehouses)
+                    @if (DisplayWarehouses.Count == 0 || _palletCategories.Count == 0)
+                    {
+                        <tr><td style="font-style:italic; color:var(--text-secondary)">No data for @SelectedCountryLabel / @SelectedMonthLabel yet.</td></tr>
+                    }
+                    @foreach (var wh in DisplayWarehouses)
                     {
                         <tr>
                             <td style="text-align:left; font-weight:700">@wh</td>
@@ -196,17 +266,20 @@
                             }
                         </tr>
                     }
-                    <tr style="font-weight:700; background:#e6f4ea">
-                        <td style="text-align:left">Total</td>
-                        @foreach (var cat in _palletCategories)
-                        {
-                            var idx = _palletCategories.IndexOf(cat);
-                            var (qty, box, pallets) = PalletCategoryTotal(cat);
-                            <td style="text-align:right; @GroupSep(idx)">@qty.ToString("N0")</td>
-                            <td style="text-align:right">@box.ToString("N0")</td>
-                            <td style="text-align:right">@pallets.ToString("N0")</td>
-                        }
-                    </tr>
+                    @if (DisplayWarehouses.Count > 1 && _palletCategories.Count > 0)
+                    {
+                        <tr style="font-weight:700; background:#e6f4ea">
+                            <td style="text-align:left">Total</td>
+                            @foreach (var cat in _palletCategories)
+                            {
+                                var idx = _palletCategories.IndexOf(cat);
+                                var (qty, box, pallets) = PalletCategoryTotal(cat);
+                                <td style="text-align:right; @GroupSep(idx)">@qty.ToString("N0")</td>
+                                <td style="text-align:right">@box.ToString("N0")</td>
+                                <td style="text-align:right">@pallets.ToString("N0")</td>
+                            }
+                        </tr>
+                    }
                 </tbody>
             </table>
         </div>
@@ -215,14 +288,25 @@
 
 @code {
     // Report 1 (Monthly Summary): UAE's 3 main warehouses plus every export country as
-    // its own single-facility group, matching the report's own mockup exactly.
+    // its own single-facility group, matching the report's own mockup exactly. Always
+    // shows all 8 -- not affected by the Country filter below (that filter is for
+    // reports 2/3 only).
     private static readonly string[] MonthlyGroups = { "TECHNO", "YOTO", "JAFZA", "KSA", "QATAR", "KUWAIT", "MYS", "BAHRAIN" };
-    // Reports 2/3 (Season / Pallet Category) show every physical UAE warehouse,
-    // alphabetically, matching their own mockup. "No WH Info" is a blank/NULL Warehouse
-    // in the source data, kept as its own row (not folded into TECHNO) so it stays
-    // visible as a data-quality signal to monitor.
-    private static readonly string[] AllUaeWarehouses = { "3PLF&B", "BLACKBOX", "JAFZA", "LFL-WH", "TECHNO", "YOTO", "No WH Info" };
     private static readonly string[] SeasonGroups = { "Summer", "Winter" };
+
+    // Display label -> actual Country value stored in dbo.WMS_WHSTOCK_LASTDAY
+    // (only Malaysia's display label differs from its DB value, matching the
+    // "MYS" column header already used in report 1).
+    public sealed record CountryOption(string Label, string Value);
+    private static readonly CountryOption[] Countries =
+    {
+        new("UAE", "UAE"),
+        new("KSA", "KSA"),
+        new("QATAR", "QATAR"),
+        new("KUWAIT", "KUWAIT"),
+        new("MYS", "MALAYSIA"),
+        new("BAHRAIN", "BAHRAIN"),
+    };
 
     // A fixed pastel palette cycled by column index -- works for any group count
     // (2 seasons, 3 warehouses, 5 pallet categories, ...) without a per-name map.
@@ -245,15 +329,36 @@
     private static string GroupSep(int index) => "border-left:2px solid #b8c2cc;";
 
     private int _selectedYear = DateTime.Now.Year;
+    private string _selectedCountry = "UAE";
     private string _selectedMonthKey = "";
+    private string _selectedWarehouse = "";
     private List<int> _years = new();
     private List<DateTime> _availableMonths = new();
     private bool _loading;
     private bool _loadedOnce;
+    private bool _exporting;
     private Dictionary<(string Group, int Month), SohMonthlyRow> _byGroupMonth = new();
     private Dictionary<(string Warehouse, string Season), SohSeasonByWarehouseRow> _seasonByWarehouse = new();
     private Dictionary<(string Warehouse, string PalletCategory), SohPalletCategoryByWarehouseRow> _palletCategoryByWarehouse = new();
     private List<string> _palletCategories = new();
+
+    // Every distinct warehouse-group actually returned for the selected country --
+    // different countries have different physical warehouses (UAE has 7 groups
+    // including sub-facilities; KSA/KUWAIT have their own single facility plus
+    // "No WH Info"; MALAYSIA/QATAR currently have only "No WH Info"; BAHRAIN
+    // currently has no data at all), so this can't be a fixed list per country.
+    private List<string> _warehousesForCountry = new();
+
+    private string SelectedCountryLabel =>
+        Countries.FirstOrDefault(c => c.Value == _selectedCountry)?.Label ?? _selectedCountry;
+
+    // The warehouse rows actually shown/exported for Season / Pallet Category --
+    // all of the selected country's warehouses, unless the WAREHOUSE filter narrows
+    // it to just one.
+    private List<string> DisplayWarehouses =>
+        string.IsNullOrEmpty(_selectedWarehouse)
+            ? _warehousesForCountry
+            : _warehousesForCountry.Where(w => string.Equals(w, _selectedWarehouse, StringComparison.OrdinalIgnoreCase)).ToList();
 
     // @bind on a <select> with a DateTime-typed field risks a format mismatch between
     // Blazor's own round-trip formatting and a custom <option value> string -- keying
@@ -263,17 +368,17 @@
     private DateTime SelectedMonth =>
         DateTime.TryParse(_selectedMonthKey, out var d) ? d : (_availableMonths.FirstOrDefault());
 
-    private string SelectedMonthLabel => SelectedMonth.ToString("MMM yyyy");
+    private string SelectedMonthLabel => _availableMonths.Count == 0 ? "no data" : SelectedMonth.ToString("MMM yyyy");
 
     private (long Qty, long BoxCount, long PalletCount) SeasonTotal(string season)
     {
-        var rows = AllUaeWarehouses.Select(wh => _seasonByWarehouse.GetValueOrDefault((wh, season))).Where(r => r is not null).Select(r => r!).ToList();
+        var rows = DisplayWarehouses.Select(wh => _seasonByWarehouse.GetValueOrDefault((wh, season))).Where(r => r is not null).Select(r => r!).ToList();
         return (rows.Sum(r => r.Qty), rows.Sum(r => r.BoxCount), rows.Sum(r => r.PalletCount));
     }
 
     private (long Qty, long BoxCount, long PalletCount) PalletCategoryTotal(string category)
     {
-        var rows = AllUaeWarehouses.Select(wh => _palletCategoryByWarehouse.GetValueOrDefault((wh, category))).Where(r => r is not null).Select(r => r!).ToList();
+        var rows = DisplayWarehouses.Select(wh => _palletCategoryByWarehouse.GetValueOrDefault((wh, category))).Where(r => r is not null).Select(r => r!).ToList();
         return (rows.Sum(r => r.Qty), rows.Sum(r => r.BoxCount), rows.Sum(r => r.PalletCount));
     }
 
@@ -283,8 +388,22 @@
         _years = Enumerable.Range(thisYear - 2, 4).Reverse().ToList(); // thisYear+1 .. thisYear-2
         _selectedYear = thisYear;
 
-        _availableMonths = await Svc.GetAvailableSnapshotDatesAsync("UAE");
-        if (_availableMonths.Count > 0) _selectedMonthKey = MonthKey(_availableMonths[0]); // newest first
+        await RefreshAvailableMonthsAsync();
+    }
+
+    private async Task RefreshAvailableMonthsAsync()
+    {
+        _availableMonths = await Svc.GetAvailableSnapshotDatesAsync(_selectedCountry);
+        _selectedMonthKey = _availableMonths.Count > 0 ? MonthKey(_availableMonths[0]) : ""; // newest first
+    }
+
+    // Country changed -- that country's available snapshot dates can differ from the
+    // previous one (e.g. BAHRAIN currently has none at all), so refresh the Month
+    // dropdown to match rather than leaving a stale/invalid selection.
+    private async Task OnCountryChangedAsync()
+    {
+        _selectedWarehouse = ""; // the new country's warehouses differ, so a stale pick would just filter everything out
+        await RefreshAvailableMonthsAsync();
     }
 
     private static string MonthLabel(int month) =>
@@ -313,17 +432,249 @@
             var monthly = await Svc.GetSohMonthlySummaryAsync(_selectedYear);
             _byGroupMonth = monthly.ToDictionary(r => (r.Warehouse, r.MonthEnd.Month), r => r);
 
-            var season = await Svc.GetSohSeasonByWarehouseAsync("UAE", SelectedMonth);
+            var season = await Svc.GetSohSeasonByWarehouseAsync(_selectedCountry, SelectedMonth);
             _seasonByWarehouse = season.ToDictionary(r => (r.Warehouse, r.SeasonGroup), r => r);
 
-            var pallet = await Svc.GetSohPalletCategoryByWarehouseAsync("UAE", SelectedMonth);
+            var pallet = await Svc.GetSohPalletCategoryByWarehouseAsync(_selectedCountry, SelectedMonth);
             _palletCategoryByWarehouse = pallet.ToDictionary(r => (r.Warehouse, r.PalletCategory), r => r);
             _palletCategories = pallet.Select(r => r.PalletCategory).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(x => x).ToList();
+
+            _warehousesForCountry = season.Select(r => r.Warehouse)
+                .Union(pallet.Select(r => r.Warehouse), StringComparer.OrdinalIgnoreCase)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            if (!_warehousesForCountry.Contains(_selectedWarehouse, StringComparer.OrdinalIgnoreCase))
+                _selectedWarehouse = "";
         }
         finally
         {
             _loadedOnce = true;
             _loading = false;
         }
+    }
+
+    // ====================== Charts (one popup dialog per report) ======================
+
+    private async Task ShowMonthlySummaryChartAsync()
+    {
+        // Skip months with no snapshot at all (e.g. before the feed started or after the
+        // latest run) instead of plotting them as a false zero.
+        var monthsWithData = Enumerable.Range(1, 12)
+            .Where(m => MonthlyGroups.Any(grp => _byGroupMonth.ContainsKey((grp, m))))
+            .ToList();
+        var series = MonthlyGroups.Select(grp => new ChartSeries
+        {
+            Name = grp,
+            Data = monthsWithData.Select(m => (double)(_byGroupMonth.GetValueOrDefault((grp, m))?.Qty ?? 0)).ToArray()
+        }).ToList();
+        var labels = monthsWithData.Select(MonthLabel).ToArray();
+        await ShowChartAsync($"SOH Monthly Summary — Qty by Group ({_selectedYear})", ChartType.Line, series, labels);
+    }
+
+    private async Task ShowSeasonChartAsync()
+    {
+        var series = SeasonGroups.Select(season => new ChartSeries
+        {
+            Name = season,
+            Data = DisplayWarehouses.Select(wh => (double)(_seasonByWarehouse.GetValueOrDefault((wh, season))?.Qty ?? 0)).ToArray()
+        }).ToList();
+        await ShowChartAsync($"SOH by Season — {SelectedCountryLabel} ({SelectedMonthLabel})", ChartType.Bar, series, DisplayWarehouses.ToArray());
+    }
+
+    private async Task ShowPalletCategoryChartAsync()
+    {
+        var series = _palletCategories.Select(cat => new ChartSeries
+        {
+            Name = cat,
+            Data = DisplayWarehouses.Select(wh => (double)(_palletCategoryByWarehouse.GetValueOrDefault((wh, cat))?.Qty ?? 0)).ToArray()
+        }).ToList();
+        await ShowChartAsync($"SOH by Pallet Category — {SelectedCountryLabel} ({SelectedMonthLabel})", ChartType.Bar, series, DisplayWarehouses.ToArray());
+    }
+
+    private async Task ShowChartAsync(string title, ChartType chartType, List<ChartSeries> series, string[] labels)
+    {
+        var parameters = new DialogParameters<ChartDialog>
+        {
+            { x => x.Title, title },
+            { x => x.ChartTypeValue, chartType },
+            { x => x.Series, series },
+            { x => x.Labels, labels },
+        };
+        var options = new DialogOptions { MaxWidth = MaxWidth.Large, FullWidth = true, CloseOnEscapeKey = true };
+        await DialogService.ShowAsync<ChartDialog>(title, parameters, options);
+    }
+
+    // ====================== Excel export (all 3 reports, one workbook) ======================
+
+    private async Task ExportMonthlySummaryAsync() =>
+        await ExportSingleSheetAsync($"soh-monthly-summary-{_selectedYear}", AddMonthlySummarySheet);
+
+    private async Task ExportSeasonAsync() =>
+        await ExportSingleSheetAsync($"soh-by-season-{SelectedCountryLabel}", AddSeasonSheet);
+
+    private async Task ExportPalletCategoryAsync() =>
+        await ExportSingleSheetAsync($"soh-by-pallet-category-{SelectedCountryLabel}", AddPalletCategorySheet);
+
+    private async Task ExportSingleSheetAsync(string fileNamePrefix, Action<XLWorkbook> addSheet)
+    {
+        _exporting = true;
+        await InvokeAsync(StateHasChanged);
+        try
+        {
+            using var wb = new XLWorkbook();
+            addSheet(wb);
+
+            using var ms = new MemoryStream();
+            wb.SaveAs(ms);
+            var b64 = Convert.ToBase64String(ms.ToArray());
+            var name = $"{fileNamePrefix}-{DateTime.UtcNow.AddHours(4):yyyyMMdd-HHmm}.xlsx";
+            await JS.InvokeVoidAsync("downloadFileWithPicker", name, b64,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        }
+        finally { _exporting = false; }
+    }
+
+    private void AddMonthlySummarySheet(XLWorkbook wb)
+    {
+        var ws = wb.AddWorksheet($"Monthly Summary {_selectedYear}");
+        var col = 2;
+        foreach (var grp in MonthlyGroups)
+        {
+            ws.Cell(1, col).Value = grp;
+            ws.Range(1, col, 1, col + 2).Merge();
+            ws.Cell(2, col).Value = "Qty";
+            ws.Cell(2, col + 1).Value = "No. of Box";
+            ws.Cell(2, col + 2).Value = "No. of Pallets";
+            col += 3;
+        }
+        ws.Row(1).Style.Font.Bold = true;
+        ws.Row(2).Style.Font.Bold = true;
+
+        for (var m = 1; m <= 12; m++)
+        {
+            var r = m + 2;
+            ws.Cell(r, 1).Value = MonthLabel(m);
+            col = 2;
+            foreach (var grp in MonthlyGroups)
+            {
+                var row = _byGroupMonth.GetValueOrDefault((grp, m));
+                ws.Cell(r, col).Value = row?.Qty;
+                ws.Cell(r, col + 1).Value = row?.BoxCount;
+                ws.Cell(r, col + 2).Value = row?.PalletCount;
+                col += 3;
+            }
+        }
+
+        var avgRow = 15;
+        ws.Cell(avgRow, 1).Value = "Monthly Avg.";
+        ws.Row(avgRow).Style.Font.Bold = true;
+        col = 2;
+        foreach (var grp in MonthlyGroups)
+        {
+            var avg = MonthlyAverage(grp);
+            ws.Cell(avgRow, col).Value = avg?.Qty;
+            ws.Cell(avgRow, col + 1).Value = avg?.BoxCount;
+            ws.Cell(avgRow, col + 2).Value = avg?.PalletCount;
+            col += 3;
+        }
+        ws.Columns().AdjustToContents();
+    }
+
+    private void AddSeasonSheet(XLWorkbook wb)
+    {
+        var ws = wb.AddWorksheet($"Season - {SelectedCountryLabel}");
+        var col = 2;
+        foreach (var season in SeasonGroups)
+        {
+            ws.Cell(1, col).Value = season;
+            ws.Range(1, col, 1, col + 2).Merge();
+            ws.Cell(2, col).Value = "Qty";
+            ws.Cell(2, col + 1).Value = "Box";
+            ws.Cell(2, col + 2).Value = "Pallets";
+            col += 3;
+        }
+        ws.Row(1).Style.Font.Bold = true;
+        ws.Row(2).Style.Font.Bold = true;
+
+        var r = 3;
+        foreach (var wh in DisplayWarehouses)
+        {
+            ws.Cell(r, 1).Value = wh;
+            col = 2;
+            foreach (var season in SeasonGroups)
+            {
+                var row = _seasonByWarehouse.GetValueOrDefault((wh, season));
+                ws.Cell(r, col).Value = row?.Qty;
+                ws.Cell(r, col + 1).Value = row?.BoxCount;
+                ws.Cell(r, col + 2).Value = row?.PalletCount;
+                col += 3;
+            }
+            r++;
+        }
+        if (DisplayWarehouses.Count > 0)
+        {
+            ws.Cell(r, 1).Value = "Total";
+            ws.Row(r).Style.Font.Bold = true;
+            col = 2;
+            foreach (var season in SeasonGroups)
+            {
+                var (qty, box, pallets) = SeasonTotal(season);
+                ws.Cell(r, col).Value = qty;
+                ws.Cell(r, col + 1).Value = box;
+                ws.Cell(r, col + 2).Value = pallets;
+                col += 3;
+            }
+        }
+        ws.Columns().AdjustToContents();
+    }
+
+    private void AddPalletCategorySheet(XLWorkbook wb)
+    {
+        var ws = wb.AddWorksheet($"Pallet Category - {SelectedCountryLabel}");
+        var col = 2;
+        foreach (var cat in _palletCategories)
+        {
+            ws.Cell(1, col).Value = cat;
+            ws.Range(1, col, 1, col + 2).Merge();
+            ws.Cell(2, col).Value = "Qty";
+            ws.Cell(2, col + 1).Value = "Box";
+            ws.Cell(2, col + 2).Value = "Pallets";
+            col += 3;
+        }
+        ws.Row(1).Style.Font.Bold = true;
+        ws.Row(2).Style.Font.Bold = true;
+
+        var r = 3;
+        foreach (var wh in DisplayWarehouses)
+        {
+            ws.Cell(r, 1).Value = wh;
+            col = 2;
+            foreach (var cat in _palletCategories)
+            {
+                var row = _palletCategoryByWarehouse.GetValueOrDefault((wh, cat));
+                ws.Cell(r, col).Value = row?.Qty;
+                ws.Cell(r, col + 1).Value = row?.BoxCount;
+                ws.Cell(r, col + 2).Value = row?.PalletCount;
+                col += 3;
+            }
+            r++;
+        }
+        if (DisplayWarehouses.Count > 0 && _palletCategories.Count > 0)
+        {
+            ws.Cell(r, 1).Value = "Total";
+            ws.Row(r).Style.Font.Bold = true;
+            col = 2;
+            foreach (var cat in _palletCategories)
+            {
+                var (qty, box, pallets) = PalletCategoryTotal(cat);
+                ws.Cell(r, col).Value = qty;
+                ws.Cell(r, col + 1).Value = box;
+                ws.Cell(r, col + 2).Value = pallets;
+                col += 3;
+            }
+        }
+        ws.Columns().AdjustToContents();
     }
 }
