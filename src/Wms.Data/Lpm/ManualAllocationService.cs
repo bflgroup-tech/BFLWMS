@@ -105,6 +105,57 @@ public class ManualAllocationService(IOnPremConnectionResolver resolver, ICurren
         return new(true, null);
     }
 
+    // ========== Import from ONLINE..ToysInitialAllocationDetail ==========
+
+    /// <summary>
+    /// Pulls a ready-made allocation for this container straight out of
+    /// ONLINE.dbo.ToysInitialAllocationDetail instead of an operator's Excel:
+    /// shopqty becomes AllocationQty, aggregated per itemcode.
+    ///
+    /// The source table carries no store dimension — this feed is ECOM / ONLINE
+    /// only, so StoreID is stamped from the caller's (gated) selection rather
+    /// than read from the row.
+    ///
+    /// Result feeds <see cref="EnrichRowsAsync"/> and <see cref="SaveAsync"/>
+    /// unchanged, so an imported set behaves exactly like an uploaded one.
+    ///
+    /// The `ONLINE` database sits on the same server as usa / racks / LPMSIM,
+    /// reached by 3-part name over OnPremBackup — same route
+    /// CountingReportsService uses for Online.dbo.PhotoCheckingResult.
+    /// </summary>
+    public async Task<List<ManualAllocationUploadRow>> LoadToysInitialAllocationAsync(
+        string contno, string storeId, CancellationToken ct = default)
+    {
+        contno  = (contno  ?? "").Trim();
+        storeId = (storeId ?? "").Trim();
+        if (string.IsNullOrEmpty(contno)) return new();
+
+        await using var c = OpenOnPremBackup();
+
+        // CAST to INT server-side rather than relying on the mapping: shopqty is
+        // decimal on some of these legacy tables, and a decimal -> int mapping
+        // failure would take the whole import down.
+        //
+        // HAVING > 0 drops zero-allocation lines — they'd persist as
+        // AllocationQty = 0 rows that the FMMPO ECOM Manual pass ignores anyway
+        // (it requires ecomManualQty > 0), so they are noise in the preview.
+        var rows = await c.QueryAsync<(string Itemcode, int AllocationQty)>(new CommandDefinition(@"
+            SELECT Itemcode      = LTRIM(RTRIM(t.itemcode)),
+                   AllocationQty = SUM(CAST(ISNULL(t.shopqty, 0) AS INT))
+              FROM ONLINE.dbo.ToysInitialAllocationDetail t WITH (NOLOCK)
+             WHERE t.contno = @c
+               AND t.itemcode IS NOT NULL
+               AND LTRIM(RTRIM(t.itemcode)) <> ''
+             GROUP BY LTRIM(RTRIM(t.itemcode))
+            HAVING SUM(CAST(ISNULL(t.shopqty, 0) AS INT)) > 0
+             ORDER BY 1",
+            new { c = contno }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+
+        return rows
+            .Select(r => new ManualAllocationUploadRow(storeId, contno, r.Itemcode, r.AllocationQty))
+            .ToList();
+    }
+
     // ========== Enrichment ==========
 
     public async Task<List<ManualAllocationRow>> EnrichRowsAsync(
