@@ -165,12 +165,19 @@ else
                 <span class="robo-sort-label">SORT</span>
             </button>
 
-            <button class="aiwms-btn aiwms-btn-secondary" style="padding:12px 18px; font-size:14px"
-                    @onclick="PrintLabelAsync"
-                    disabled="@(_lastAlloc is null || _busy)"
-                    title="Print a routing label for the last sorted item">
-                🖨 Print Label
-            </button>
+            <div style="display:flex; flex-direction:column; gap:8px">
+                <button class="aiwms-btn aiwms-btn-secondary" style="padding:12px 18px; font-size:14px"
+                        @onclick="PrintLabelAsync"
+                        disabled="@(_lastAlloc is null || _busy)"
+                        title="Print the price ticket for the last sorted item">
+                    🖨 Print Label
+                </button>
+                <button class="aiwms-btn aiwms-btn-secondary" style="padding:6px 12px; font-size:11px"
+                        @onclick="TestPrinterAsync" disabled="@_busy"
+                        title="Check whether Zebra Browser Print is running on this PC">
+                    Test printer
+                </button>
+            </div>
         </div>
     </div>
 
@@ -536,15 +543,24 @@ else
             // "NO_PRINTER" means Browser Print isn't installed/running here, which
             // is the one case worth falling through to the browser print window for.
             var zebra = await TryPrintZebraAsync(it, al, label, ccy, ccyAr);
-            if (zebra is not null && !zebra.StartsWith("NO_PRINTER"))
+            if (zebra is not null && zebra.StartsWith("OK:"))
             {
-                _globalInfo = zebra.StartsWith("OK:")
-                    ? $"Label sent to {zebra[3..]}."
-                    : $"Zebra print failed: {zebra}";
-                if (label.SalesPrice is null)
-                    _globalInfo += $" No SalesPrice on allocation row {aid} — printed without a price.";
+                _globalInfo = $"Label sent to {zebra[3..]}."
+                            + (label.SalesPrice is null
+                                ? $" No SalesPrice on allocation row {aid} — printed without a price."
+                                : "");
                 return;
             }
+
+            // Anything else falls through to the on-page print, but SAYS WHY first.
+            // The original version returned silently on several paths, which is what
+            // "it's not printing" looked like from the floor.
+            _fallbackReason = zebra switch
+            {
+                null              => "Label module failed to load — using the browser print dialog.",
+                "NO_PRINTER"      => "Zebra Browser Print isn't running on this PC — using the browser print dialog.",
+                _                 => $"Zebra print failed ({zebra}) — using the browser print dialog.",
+            };
 
             // Bars are omitted rather than faked when the code is not EAN-13-able —
             // a ticket with a barcode that scans to the wrong thing is worse than
@@ -589,17 +605,53 @@ else
                 "</div>" +
                 "</body></html>";
 
-            if (label.SalesPrice is null)
-                _globalInfo = $"No SalesPrice on allocation row {aid} — label printed without a price.";
-
+            // Hidden iframe, not window.open — a popup blocker silently kills
+            // window.open, and the old code's `if(!w) return;` meant the click did
+            // absolutely nothing with no message. An iframe is never popup-blocked.
             await JS.InvokeVoidAsync("eval",
-                "(function(){var w=window.open('','_blank','width=520,height=380');" +
-                "if(!w){return;}w.document.write(" + System.Text.Json.JsonSerializer.Serialize(html) + ");" +
-                "w.document.close();w.focus();w.print();w.close();})();");
+                "(function(){var id='__wmsLabelFrame';var old=document.getElementById(id);" +
+                "if(old)old.remove();var f=document.createElement('iframe');f.id=id;" +
+                "f.style.cssText='position:fixed;right:0;bottom:0;width:0;height:0;border:0';" +
+                "document.body.appendChild(f);var d=f.contentWindow.document;d.open();" +
+                "d.write(" + System.Text.Json.JsonSerializer.Serialize(html) + ");d.close();" +
+                "setTimeout(function(){try{f.contentWindow.focus();f.contentWindow.print();}catch(e){}},300);})();");
+
+            _globalInfo = _fallbackReason
+                        + (label.SalesPrice is null
+                            ? $" No SalesPrice on allocation row {aid} — printed without a price."
+                            : "");
         }
         catch (Exception ex) { CaptureException(ex, "PrintLabel failed"); }
+        finally { _busy = false; _fallbackReason = ""; }
+    }
+
+    private string _fallbackReason = "";
+
+    /// <summary>Reports what Zebra Browser Print can see from this PC — the first
+    /// thing to check when a label doesn't come out.</summary>
+    private async Task TestPrinterAsync()
+    {
+        ClearTransient(); _busy = true;
+        try
+        {
+            var js = await LabelJsAsync();
+            var name = await js.InvokeAsync<string>("probePrinter");
+            if (string.IsNullOrWhiteSpace(name))
+                ShowError("Zebra Browser Print did not answer on 127.0.0.1:9100 or :9101. " +
+                          "Install it on this PC (Zebra support site) and set the ZD421 as its default device. " +
+                          "Until then Print Label falls back to the browser print dialog.");
+            else
+                ShowInfo($"Zebra Browser Print is running. Default device: {name}.");
+        }
+        catch (Exception ex)
+        {
+            ShowError($"Could not load the label module (/js/robo-label.js): {ex.Message}");
+        }
         finally { _busy = false; }
     }
+
+    private void ShowError(string m) { _globalErr = m; _globalInfo = null; }
+    private void ShowInfo(string m)  { _globalInfo = m; _globalErr = null; }
 
     // ZD421 defaults. 203 dpi is the standard head; a 300 dpi unit needs Dpi = 300
     // here or the label prints at two-thirds size.
@@ -610,7 +662,7 @@ else
     private IJSObjectReference? _labelJs;
 
     private async Task<IJSObjectReference> LabelJsAsync() =>
-        _labelJs ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/robo-label.js");
+        _labelJs ??= await JS.InvokeAsync<IJSObjectReference>("import", "/js/robo-label.js");
 
     /// <summary>
     /// Returns the module's status string, or null when the module itself could
