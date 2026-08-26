@@ -90,6 +90,7 @@ public class Program
         builder.Services.AddScoped<EcomStockVarianceReportService>();
         builder.Services.AddScoped<TransferGinGrnService>();
         builder.Services.AddScoped<ShipmentStatusService>();
+        builder.Services.AddScoped<YotoVnaDashboardService>();
         builder.Services.AddScoped<SyncDataCountService>();
         builder.Services.AddScoped<MissingExcessSnapshotService>();
         builder.Services.AddScoped<CountingReportsService>();

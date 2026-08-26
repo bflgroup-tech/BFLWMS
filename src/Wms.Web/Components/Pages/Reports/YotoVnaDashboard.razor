@@ -1,0 +1,381 @@
+@page "/reports/yoto-vna-dashboard"
+@rendermode RenderMode.InteractiveServer
+@using Wms.Core
+@using Wms.Data.Lpm
+@attribute [Authorize(Policy = MenuKeys.RPT_YOTO_VNA_DASHBOARD)]
+@inject YotoVnaDashboardService Svc
+
+<style>
+    .yvd-header { background: var(--bfl-black); color: var(--bfl-yellow); font-family: var(--font-display); font-weight: 800; font-size: 13px; text-transform: uppercase; letter-spacing: .5px; padding: 10px 14px; text-align: center; }
+    .yvd-total-row td { font-weight: 700; background: #e6f4ea; }
+    .yvd-section-banner { text-align: center; background: #dbeafe; color: #1e3a5f; font-family: var(--font-display); font-weight: 800; font-size: 15px; text-transform: uppercase; letter-spacing: .5px; padding: 10px 14px; border-radius: var(--r-sm); margin: 24px 0 8px 0; }
+    .yvd-warehouse-badge { display: inline-block; background: var(--bfl-yellow); color: #4a2e00; font-weight: 800; padding: 2px 10px; border-radius: 999px; margin: 0 4px; }
+</style>
+
+<div class="aiwms-page-header">
+    <h2>YOTO VNA Dashboard</h2>
+    <p>Inbound offloading progress at YOTO — Total Imports (AEINT) vs. Local Purchased (AELOC), sourced live from usa..UsaPallets/KNBBoxes (completed) and bfldata..ContReceipt (pending).</p>
+</div>
+
+<div class="aiwms-section">
+    <div style="display:flex; gap:12px; align-items:end; flex-wrap:wrap;">
+        <div>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">VIEW</label>
+            <select @bind="_viewMode" style="width:150px; height:36px; box-sizing:border-box; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;">
+                <option value="Monthly">Monthly</option>
+                <option value="Weekly">Weekly</option>
+            </select>
+        </div>
+        <div>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">YEAR</label>
+            <select @bind="_selectedYear" style="width:130px; height:36px; box-sizing:border-box; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;">
+                @foreach (var y in _years)
+                {
+                    <option value="@y">@y</option>
+                }
+            </select>
+        </div>
+        @if (_viewMode == "Weekly")
+        {
+            <div>
+                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">WEEK</label>
+                <select @bind="_selectedWeek" style="width:190px; height:36px; box-sizing:border-box; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;">
+                    @foreach (var w in Weeks)
+                    {
+                        <option value="@w.Num">W@(w.Num) &middot; @w.Start.ToString("dd-MMM") &rarr; @w.End.ToString("dd-MMM")</option>
+                    }
+                </select>
+            </div>
+        }
+        else
+        {
+            <div>
+                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">MONTH</label>
+                <select @bind="_selectedMonth" style="width:150px; height:36px; box-sizing:border-box; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;">
+                    @for (var m = 1; m <= 12; m++)
+                    {
+                        <option value="@m">@(new DateTime(2000, m, 1).ToString("MMMM"))</option>
+                    }
+                </select>
+            </div>
+        }
+        <button class="aiwms-btn aiwms-btn-primary" style="height:36px; box-sizing:border-box" @onclick="LoadAsync" disabled="@_loading">@(_loading ? "Loading…" : "Load")</button>
+    </div>
+</div>
+
+@if (_loadedOnce)
+{
+    <div class="aiwms-section" style="padding:0; overflow:hidden">
+        <div class="yvd-header">Offloading Shipment Summary — @SelectedPeriodLabel</div>
+        <div style="display:flex; flex-wrap:wrap; gap:0;">
+            <div style="flex:1; min-width:340px; overflow-x:auto; border-right:1px solid var(--border-default);">
+                <table class="aiwms-table aiwms-table-dense" style="text-align:center; width:100%;">
+                    <thead>
+                        <tr><th colspan="4" style="text-align:center">Inbound Shipment Details — Completed offloading</th></tr>
+                        <tr>
+                            <th style="text-align:left">Type</th>
+                            <th style="text-align:right">Containers</th>
+                            <th style="text-align:right">Pallets</th>
+                            <th style="text-align:right">Boxes</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td style="text-align:left">Total Imports AEINT</td>
+                            <td style="text-align:right">@CompletedFor("AEINT").Containers.ToString("N0")</td>
+                            <td style="text-align:right">@CompletedFor("AEINT").Pallets.ToString("N0")</td>
+                            <td style="text-align:right">@CompletedFor("AEINT").Boxes.ToString("N0")</td>
+                        </tr>
+                        <tr>
+                            <td style="text-align:left">Local Purchased AELOC</td>
+                            <td style="text-align:right">@CompletedFor("AELOC").Containers.ToString("N0")</td>
+                            <td style="text-align:right">@CompletedFor("AELOC").Pallets.ToString("N0")</td>
+                            <td style="text-align:right">@CompletedFor("AELOC").Boxes.ToString("N0")</td>
+                        </tr>
+                        <tr class="yvd-total-row">
+                            <td style="text-align:left">Total</td>
+                            <td style="text-align:right">@_completed.Sum(r => r.Containers).ToString("N0")</td>
+                            <td style="text-align:right">@_completed.Sum(r => r.Pallets).ToString("N0")</td>
+                            <td style="text-align:right">@_completed.Sum(r => r.Boxes).ToString("N0")</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+            <div style="flex:1; min-width:280px; overflow-x:auto;">
+                <table class="aiwms-table aiwms-table-dense" style="text-align:center; width:100%;">
+                    <thead>
+                        <tr><th colspan="3" style="text-align:center">Inbound Shipment Details — Pending for offloading (as of today)</th></tr>
+                        <tr>
+                            <th style="text-align:left">Type</th>
+                            <th style="text-align:right">Containers</th>
+                            <th style="text-align:right">Qty</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td style="text-align:left">Total Imports AEINT</td>
+                            <td style="text-align:right">@PendingFor("AEINT").Containers.ToString("N0")</td>
+                            <td style="text-align:right">@PendingFor("AEINT").Qty.ToString("N0")</td>
+                        </tr>
+                        <tr>
+                            <td style="text-align:left">Local Purchased AELOC</td>
+                            <td style="text-align:right">@PendingFor("AELOC").Containers.ToString("N0")</td>
+                            <td style="text-align:right">@PendingFor("AELOC").Qty.ToString("N0")</td>
+                        </tr>
+                        <tr class="yvd-total-row">
+                            <td style="text-align:left">Total</td>
+                            <td style="text-align:right">@_pending.Sum(r => r.Containers).ToString("N0")</td>
+                            <td style="text-align:right">@_pending.Sum(r => r.Qty).ToString("N0")</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    <p style="font-size:11px; color:var(--text-secondary); margin-top:4px">
+        "Pending for offloading" is a live snapshot as of today (not scoped to the filter above), floored to @DateTime.Today.Year-01-01 to exclude years-old abandoned backlog.
+    </p>
+
+    <div class="aiwms-section" style="padding:0; overflow:hidden">
+        <div class="yvd-header">
+            Total Inbound Summary — Offload Containers
+            (@(_viewMode == "Weekly" ? SelectedPeriodLabel : $"{_selectedYear}, by month"))
+        </div>
+        <div style="overflow-x:auto">
+            <table class="aiwms-table aiwms-table-dense" style="text-align:center">
+                <thead>
+                    <tr>
+                        <th style="text-align:left">Inbound Details</th>
+                        @foreach (var p in _periodRows)
+                        {
+                            <th style="text-align:right">@p.PeriodLabel</th>
+                        }
+                        <th style="text-align:right">Total</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td style="text-align:left">No. of Trailers Inbound</td>
+                        @foreach (var p in _periodRows)
+                        {
+                            <td style="text-align:right">@p.Containers.ToString("N0")</td>
+                        }
+                        <td style="text-align:right; font-weight:700">@_periodRows.Sum(p => p.Containers).ToString("N0")</td>
+                    </tr>
+                    <tr>
+                        <td style="text-align:left">No of Pallets</td>
+                        @foreach (var p in _periodRows)
+                        {
+                            <td style="text-align:right">@p.Pallets.ToString("N0")</td>
+                        }
+                        <td style="text-align:right; font-weight:700">@_periodRows.Sum(p => p.Pallets).ToString("N0")</td>
+                    </tr>
+                    <tr>
+                        <td style="text-align:left">No of Boxes</td>
+                        @foreach (var p in _periodRows)
+                        {
+                            <td style="text-align:right">@p.Boxes.ToString("N0")</td>
+                        }
+                        <td style="text-align:right; font-weight:700">@_periodRows.Sum(p => p.Boxes).ToString("N0")</td>
+                    </tr>
+                    <tr>
+                        <td style="text-align:left">No of Pcs</td>
+                        @foreach (var p in _periodRows)
+                        {
+                            <td style="text-align:right">@p.Pcs.ToString("N0")</td>
+                        }
+                        <td style="text-align:right; font-weight:700">@_periodRows.Sum(p => p.Pcs).ToString("N0")</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+    <p style="font-size:11px; color:var(--text-secondary); margin-top:4px">
+        "No of Pcs" is the order quantity (hodata..vUSAOrder.Qty, summed per container) for the containers offloaded in each period — there is no per-box piece count in the source tables.
+    </p>
+
+    <div class="yvd-section-banner">Internal Transfer Summary</div>
+    @foreach (var box in _internalTransfers)
+    {
+        <div class="aiwms-section" style="padding:0; overflow:hidden">
+            <div class="yvd-header">
+                @if (box.Warehouse is not null)
+                {
+                    <span class="yvd-warehouse-badge">@box.Warehouse</span>
+                }
+                @box.Label
+                (@(_viewMode == "Weekly" ? SelectedPeriodLabel : $"{_selectedYear}, by month"))
+            </div>
+            <div style="overflow-x:auto">
+                <table class="aiwms-table aiwms-table-dense" style="text-align:center">
+                    <thead>
+                        <tr>
+                            <th style="text-align:left">Inbound Details</th>
+                            @foreach (var p in box.Periods)
+                            {
+                                <th style="text-align:right">@p.PeriodLabel</th>
+                            }
+                            <th style="text-align:right">Total</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td style="text-align:left">@box.CountLabel</td>
+                            @foreach (var p in box.Periods)
+                            {
+                                <td style="text-align:right">@p.Trips.ToString("N0")</td>
+                            }
+                            <td style="text-align:right; font-weight:700">@box.Periods.Sum(p => p.Trips).ToString("N0")</td>
+                        </tr>
+                        <tr>
+                            <td style="text-align:left">No Of Pallets</td>
+                            @foreach (var p in box.Periods)
+                            {
+                                <td style="text-align:right">@p.Pallets.ToString("N0")</td>
+                            }
+                            <td style="text-align:right; font-weight:700">@box.Periods.Sum(p => p.Pallets).ToString("N0")</td>
+                        </tr>
+                        <tr>
+                            <td style="text-align:left">No of Tote/Box</td>
+                            @foreach (var p in box.Periods)
+                            {
+                                <td style="text-align:right">@p.Boxes.ToString("N0")</td>
+                            }
+                            <td style="text-align:right; font-weight:700">@box.Periods.Sum(p => p.Boxes).ToString("N0")</td>
+                        </tr>
+                        <tr>
+                            <td style="text-align:left">QUANTITY</td>
+                            @foreach (var p in box.Periods)
+                            {
+                                <td style="text-align:right">@p.Quantity.ToString("N0")</td>
+                            }
+                            <td style="text-align:right; font-weight:700">@box.Periods.Sum(p => p.Quantity).ToString("N0")</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    }
+    <p style="font-size:11px; color:var(--text-secondary); margin-top:4px">
+        Sourced from bfldata..vPLTDeliveryDetails. "Total Inbound"/"Total Outbound" are independent live totals, not a sum of the per-warehouse boxes below them — a single trailer can serve more than one route in a day.
+    </p>
+}
+
+@code {
+    private string _viewMode = "Monthly";
+    private int _selectedYear = DateTime.Now.Year;
+    private int _selectedMonth = DateTime.Now.Month;
+    private string _selectedWeek = ComputeCurrentWeekNumber();
+    private List<int> _years = new();
+    private bool _loading;
+    private bool _loadedOnce;
+
+    private List<YotoOffloadGroupRow> _completed = new();
+    private List<YotoPendingGroupRow> _pending = new();
+    private List<YotoInboundPeriodRow> _periodRows = new();
+    private List<YotoInternalTransferBox> _internalTransfers = new();
+
+    private string SelectedPeriodLabel => _viewMode == "Weekly"
+        ? $"W{_selectedWeek} ({SelectedWeekRange.Start:dd-MMM} → {SelectedWeekRange.End:dd-MMM} {_selectedYear})"
+        : $"{new DateTime(2000, _selectedMonth, 1):MMMM} {_selectedYear}";
+
+    private YotoOffloadGroupRow CompletedFor(string group) =>
+        _completed.FirstOrDefault(r => r.Group == group) ?? new YotoOffloadGroupRow(group, 0, 0, 0);
+
+    private YotoPendingGroupRow PendingFor(string group) =>
+        _pending.FirstOrDefault(r => r.Group == group) ?? new YotoPendingGroupRow(group, 0, 0);
+
+    // Same week definition as Production Summary Report: Week 1 starts on the first
+    // Sunday on/after Jan 1 of the selected year, 7-day blocks, last week truncated to
+    // Dec 31 -- reused here (scoped to _selectedYear instead of always "this year") so
+    // the WEEK dropdown and the actual data filter agree on the exact same date ranges.
+    private IEnumerable<(int Num, DateTime Start, DateTime End)> Weeks
+    {
+        get
+        {
+            var week1Start = FirstWeekStart(_selectedYear);
+            var dec31 = new DateTime(_selectedYear, 12, 31);
+            var weekCount = (int)Math.Ceiling(((dec31 - week1Start).Days + 1) / 7.0);
+            for (var i = 0; i < weekCount; i++)
+            {
+                var start = week1Start.AddDays(i * 7);
+                var end = start.AddDays(6);
+                if (end > dec31) end = dec31;
+                yield return (i + 1, start, end);
+            }
+        }
+    }
+
+    private (DateTime Start, DateTime End) SelectedWeekRange
+    {
+        get
+        {
+            var num = int.TryParse(_selectedWeek, out var n) ? n : 1;
+            var range = Weeks.FirstOrDefault(w => w.Num == num);
+            return range == default ? (Weeks.First().Start, Weeks.First().End) : (range.Start, range.End);
+        }
+    }
+
+    private static DateTime FirstWeekStart(int year)
+    {
+        var jan1 = new DateTime(year, 1, 1);
+        var daysUntilSunday = ((int)DayOfWeek.Sunday - (int)jan1.DayOfWeek + 7) % 7;
+        return jan1.AddDays(daysUntilSunday);
+    }
+
+    private static DateTime CurrentProductionDayGst()
+    {
+        var nowGst = DateTime.UtcNow.AddHours(4);
+        return nowGst.Hour < 6 ? nowGst.Date.AddDays(-1) : nowGst.Date;
+    }
+
+    private static string ComputeCurrentWeekNumber()
+    {
+        var today = CurrentProductionDayGst();
+        var week1Start = FirstWeekStart(today.Year);
+        if (today < week1Start) return "1";
+        return (((today - week1Start).Days / 7) + 1).ToString();
+    }
+
+    protected override void OnInitialized()
+    {
+        var thisYear = DateTime.Now.Year;
+        _years = Enumerable.Range(thisYear - 2, 4).Reverse().ToList(); // thisYear+1 .. thisYear-2
+    }
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        await InvokeAsync(StateHasChanged);
+        try
+        {
+            DateTime from, to;
+            if (_viewMode == "Weekly")
+            {
+                (from, to) = SelectedWeekRange;
+                to = to.AddDays(1); // SelectedWeekRange.End is the last included day
+            }
+            else
+            {
+                from = new DateTime(_selectedYear, _selectedMonth, 1);
+                to = from.AddMonths(1);
+            }
+
+            _completed = await Svc.GetCompletedOffloadingAsync(from, to);
+            _pending = await Svc.GetPendingOffloadingAsync();
+
+            _periodRows = _viewMode == "Weekly"
+                ? new List<YotoInboundPeriodRow> { await Svc.GetInboundSummaryForRangeAsync(from, to, SelectedPeriodLabel, int.Parse(_selectedWeek)) }
+                : await Svc.GetMonthlyInboundSummaryAsync(_selectedYear);
+
+            _internalTransfers = _viewMode == "Weekly"
+                ? await Svc.GetInternalTransferForRangeAsync(from, to, SelectedPeriodLabel, int.Parse(_selectedWeek))
+                : await Svc.GetInternalTransferMonthlyAsync(_selectedYear);
+        }
+        finally
+        {
+            _loadedOnce = true;
+            _loading = false;
+        }
+    }
+}
