@@ -81,11 +81,11 @@ function renderLabel(f, widthDots, heightDots) {
     // any stock size. Change these, not the call sites, to retune the layout.
     const L = {
         hdrFont:   0.155, hdrBase:  0.185,
-        descFont:  0.080, descBase: 0.310,
-        codeFont:  0.068, codeBase: 0.405,
+        descFont:  0.098, descBase: 0.310,
+        codeFont:  0.086, codeBase: 0.410,
         barTop:    0.455, barHeight: 0.190,
-        digitFont: 0.078, digitBase: 0.720,
-        footBase:  0.870, priceFont: 0.120, codesFont: 0.058, priceArFont: 0.105,
+        digitFont: 0.098, digitBase: 0.730,
+        footBase:  0.870, priceFont: 0.120, codesFont: 0.058, priceArFont: 0.132,
     };
     const px = frac => Math.round(H * frac);
 
@@ -93,12 +93,17 @@ function renderLabel(f, widthDots, heightDots) {
     g.textAlign = 'center';
     fitText(g, 'BRANDS FOR LESS', widthDots / 2, px(L.hdrBase), W, px(L.hdrFont), '900');
 
-    // Description — English left, Arabic right. Each shrinks within its own half
-    // so a long name can never run into the Arabic.
+    // Description — English left, Arabic right.
+    //
+    // The English is CLIPPED, not shrunk: the reference ticket prints "DKNY Pyjama
+    // Top and" and simply loses "Plaid" rather than reducing the type. Shrinking to
+    // fit would undo the font size on exactly the long names that matter most.
+    // The Arabic still shrinks — dropping trailing characters from RTL text mangles
+    // the word rather than trimming it.
     g.textAlign = 'left';
-    fitText(g, f.descEn || '', pad, px(L.descBase), W * 0.58, px(L.descFont), '700');
+    clipText(g, f.descEn || '', pad, px(L.descBase), W * 0.56, px(L.descFont), '700');
     g.textAlign = 'right';
-    fitText(g, f.descAr || '', widthDots - pad, px(L.descBase), W * 0.38, px(L.descFont * 1.05), '700');
+    fitText(g, f.descAr || '', widthDots - pad, px(L.descBase), W * 0.40, px(L.descFont), '700');
 
     // Hierarchy / item code line
     if (f.codeLine) {
@@ -137,7 +142,7 @@ function renderLabel(f, widthDots, heightDots) {
     }
 
     g.textAlign = 'right';
-    fitText(g, f.priceAr || '', widthDots - pad, fb, W * 0.24, px(L.priceArFont), '800');
+    fitText(g, f.priceAr || '', widthDots - pad, fb, W * 0.30, px(L.priceArFont), '800');
 
     return c;
 }
@@ -152,6 +157,15 @@ function fitText(g, text, x, y, maxW, size, weight) {
         s -= 1;
     } while (true);
     g.fillText(text, x, y);
+}
+
+// Keeps the type size and drops trailing characters instead — what the reference
+// ticket does with a long English description.
+function clipText(g, text, x, y, maxW, size, weight) {
+    g.font = `${weight} ${size}px Arial, Helvetica, sans-serif`;
+    let s = text;
+    while (s.length > 1 && g.measureText(s).width > maxW) s = s.slice(0, -1);
+    g.fillText(s.trimEnd(), x, y);
 }
 
 function spaced(d) { return d.split('').join(' '); }
