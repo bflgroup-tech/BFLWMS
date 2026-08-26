@@ -145,33 +145,6 @@ else
             </button>
         </div>
 
-        <!-- ============== SORT + LABEL PRINT ============== -->
-        <div style="display:flex; align-items:center; justify-content:center; gap:22px; padding:18px 0 6px 0; border-top:1px solid var(--border-default); margin-top:12px">
-            <button class="robo-sort-btn" @onclick="ScanItem"
-                    disabled="@(!_boxOk || _busy || string.IsNullOrWhiteSpace(_itemInput))"
-                    title="Sort the scanned item — same action as pressing Enter in Itemcode">
-                @* Inline SVG so the button carries no external asset (CSP-safe, scales cleanly). *@
-                <svg width="62" height="62" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-                    <line x1="32" y1="6" x2="32" y2="14" stroke="currentColor" stroke-width="3" stroke-linecap="round" />
-                    <circle cx="32" cy="5" r="3.5" fill="currentColor" />
-                    <rect x="12" y="14" width="40" height="30" rx="9" fill="currentColor" />
-                    <circle cx="23" cy="27" r="5" fill="var(--bfl-yellow, #FFD400)" />
-                    <circle cx="41" cy="27" r="5" fill="var(--bfl-yellow, #FFD400)" />
-                    <rect x="24" y="35" width="16" height="4" rx="2" fill="var(--bfl-yellow, #FFD400)" />
-                    <rect x="4" y="22" width="6" height="14" rx="3" fill="currentColor" />
-                    <rect x="54" y="22" width="6" height="14" rx="3" fill="currentColor" />
-                    <rect x="18" y="48" width="28" height="8" rx="4" fill="currentColor" />
-                </svg>
-                <span class="robo-sort-label">SORT</span>
-            </button>
-
-            <button class="aiwms-btn aiwms-btn-secondary" style="padding:12px 18px; font-size:14px"
-                    @onclick="PrintLabelAsync"
-                    disabled="@(_lastAlloc is null || _busy)"
-                    title="Print a routing label for the last sorted item">
-                🖨 Print Label
-            </button>
-        </div>
     </div>
 
     <!-- ============== RIGHT: ITEM DETAILS + RESULT ============== -->
@@ -262,6 +235,35 @@ else
                 @if (_currentBoxNo is not null) { <div><span class="lbl">Box</span> <b>@_currentBoxNo</b></div> }
             </div>
         }
+
+        <!-- ============== SORT + LABEL PRINT ============== -->
+        <div style="display:flex; align-items:center; justify-content:center; gap:22px; padding:18px 0 6px 0; border-top:1px solid var(--border-default); margin-top:14px">
+            <button class="robo-sort-btn" @onclick="ScanItem"
+                    disabled="@(!_boxOk || _busy || string.IsNullOrWhiteSpace(_itemInput))"
+                    title="Sort the scanned item — same action as pressing Enter in Itemcode">
+                @* Robo plate — the sorter tray carrying a piece, on its track.
+                   Inline SVG so the button carries no external asset (CSP-safe,
+                   and it scales with the button rather than pixelating). *@
+                <svg width="60" height="60" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                    <rect x="23" y="9" width="18" height="14" rx="2" fill="currentColor" />
+                    <line x1="32" y1="9" x2="32" y2="23" stroke="var(--bfl-yellow, #FFD400)" stroke-width="2" />
+                    <path d="M8 34 L32 26 L56 34 L32 42 Z" fill="currentColor" />
+                    <path d="M8 34 L8 38 L32 46 L32 42 Z" fill="currentColor" opacity=".55" />
+                    <path d="M56 34 L56 38 L32 46 L32 42 Z" fill="currentColor" opacity=".75" />
+                    <circle cx="20" cy="52" r="4" fill="currentColor" />
+                    <circle cx="44" cy="52" r="4" fill="currentColor" />
+                    <rect x="6" y="57" width="52" height="3" rx="1.5" fill="currentColor" />
+                </svg>
+                <span class="robo-sort-label">SORT</span>
+            </button>
+
+            <button class="aiwms-btn aiwms-btn-secondary" style="padding:12px 18px; font-size:14px"
+                    @onclick="PrintLabelAsync"
+                    disabled="@(_lastAlloc is null || _busy)"
+                    title="Print a routing label for the last sorted item">
+                🖨 Print Label
+            </button>
+        </div>
     </div>
 
 </div>
