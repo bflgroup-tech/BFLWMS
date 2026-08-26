@@ -875,6 +875,60 @@ public class BuildingService(IOnPremConnectionResolver resolver, ICurrentUser us
         return srNo;
     }
 
+    // ==================== 8b. Price-ticket data (Robo Sorting label) ====================
+
+    /// <summary>
+    /// Price + Arabic description for the retail ticket printed after a sort.
+    ///
+    /// Price comes from the ALLOCATION ROW the scan actually resolved to
+    /// (WMS_ContAllocationData.IdNo), not a lookup by itemcode — the same item in
+    /// one container can sit on rows for different countries, and the ticket must
+    /// carry the price for the store this piece was routed to. Country comes off
+    /// the same row and drives the currency.
+    ///
+    /// Arabic description is Asubclass, falling back to Abrand when it is blank.
+    /// It is best-effort: a failure here returns a null ArabicDesc rather than
+    /// throwing, so a missing/renamed hodata.itemmh can never stop a ticket
+    /// printing with the price on it.
+    /// </summary>
+    public async Task<PriceLabelData> GetPriceLabelAsync(
+        int allocationIdNo, string itemCode, CancellationToken ct = default)
+    {
+        decimal? price = null;
+        string? country = null;
+
+        await using (var w = OpenWms())
+        {
+            var sql = @"SELECT TOP 1 SalesPrice, Country
+                          FROM dbo.WMS_ContAllocationData WITH (NOLOCK)
+                         WHERE IdNo = @id";
+            DbOpContext.Set("Read price ticket row from dbo.WMS_ContAllocationData", sql);
+            var row = await w.QueryFirstOrDefaultAsync<(decimal? SalesPrice, string? Country)>(
+                new CommandDefinition(sql, new { id = allocationIdNo }, cancellationToken: ct));
+            price = row.SalesPrice;
+            country = row.Country;
+        }
+
+        string? arabic = null;
+        try
+        {
+            await using var c = OpenOnPremBackup();
+            arabic = await c.ExecuteScalarAsync<string?>(new CommandDefinition(
+                @"SELECT TOP 1 CASE WHEN LTRIM(RTRIM(ISNULL(Asubclass, ''))) <> '' THEN Asubclass
+                                    ELSE Abrand END
+                    FROM hodata.dbo.itemmh WITH (NOLOCK)
+                   WHERE itemcode = @i",
+                new { i = itemCode }, cancellationToken: ct));
+            if (string.IsNullOrWhiteSpace(arabic)) arabic = null;
+        }
+        catch
+        {
+            // Arabic is decoration; the price and barcode are the point.
+        }
+
+        return new PriceLabelData(price, country, arabic);
+    }
+
     // ==================== 9. Attach a tote to an existing open box ====================
     public async Task<(bool Ok, string? Error)> AttachToteToBoxAsync(string boxNo, string toteId, CancellationToken ct = default)
     {

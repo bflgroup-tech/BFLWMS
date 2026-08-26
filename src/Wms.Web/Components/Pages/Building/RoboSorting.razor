@@ -184,7 +184,7 @@ else
         else
         {
             var it = _lastItem;
-            <div class="aiwms-upc-display" style="font-size:14px; padding:4px 8px">
+            <div class="aiwms-upc-display" style="font-size:18px; padding:6px 10px">
                 @it.ItemCode
                 @if (_lastAlloc?.ItemSource is { Length: > 0 } src)
                 {
@@ -202,19 +202,19 @@ else
                           title="Item is not on the container's Order Sheet at all — sourced from @(_lastAlloc?.ItemSource ?? "external").">EXCESS ITEM</span>
                 }
             </div>
-            <div class="aiwms-item-grid" style="grid-template-columns: repeat(3, 1fr); gap:4px 12px; font-size:11px">
-                <div class="cell"><div class="lbl" style="font-size:9px">Description</div><div class="val" style="font-size:11px; line-height:1.2">@it.ItemName</div></div>
-                <div class="cell"><div class="lbl" style="font-size:9px">Style</div><div class="val" style="font-size:11px; line-height:1.2">@it.Style</div></div>
-                <div class="cell"><div class="lbl" style="font-size:9px">Size</div><div class="val" style="font-size:11px; line-height:1.2">@it.Size</div></div>
-                <div class="cell"><div class="lbl" style="font-size:9px">Color</div><div class="val" style="font-size:11px; line-height:1.2">@it.Color</div></div>
-                <div class="cell"><div class="lbl" style="font-size:9px">Brand</div><div class="val" style="font-size:11px; line-height:1.2">@it.Brand</div></div>
-                <div class="cell"><div class="lbl" style="font-size:9px">Gender</div><div class="val" style="font-size:11px; line-height:1.2">@it.Gender</div></div>
-                <div class="cell"><div class="lbl" style="font-size:9px">Season</div><div class="val" style="font-size:11px; line-height:1.2">@it.Season</div></div>
-                <div class="cell"><div class="lbl" style="font-size:9px">HS Code</div><div class="val" style="font-size:11px; line-height:1.2">@it.HsCode</div></div>
-                <div class="cell"><div class="lbl" style="font-size:9px">Division</div><div class="val" style="font-size:11px; line-height:1.2">@it.Division</div></div>
-                <div class="cell"><div class="lbl" style="font-size:9px">Department</div><div class="val" style="font-size:11px; line-height:1.2">@it.Department</div></div>
-                <div class="cell"><div class="lbl" style="font-size:9px">Class</div><div class="val" style="font-size:11px; line-height:1.2">@it.Class</div></div>
-                <div class="cell"><div class="lbl" style="font-size:9px">Family / Subclass</div><div class="val" style="font-size:11px; line-height:1.2">@it.Family @(string.IsNullOrEmpty(it.Subclass) ? "" : " / " + it.Subclass)</div></div>
+            <div class="aiwms-item-grid" style="grid-template-columns: repeat(3, 1fr); gap:8px 14px; font-size:13px">
+                <div class="cell"><div class="lbl" style="font-size:11px">Description</div><div class="val" style="font-size:14px; line-height:1.3">@it.ItemName</div></div>
+                <div class="cell"><div class="lbl" style="font-size:11px">Style</div><div class="val" style="font-size:14px; line-height:1.3">@it.Style</div></div>
+                <div class="cell"><div class="lbl" style="font-size:11px">Size</div><div class="val" style="font-size:14px; line-height:1.3">@it.Size</div></div>
+                <div class="cell"><div class="lbl" style="font-size:11px">Color</div><div class="val" style="font-size:14px; line-height:1.3">@it.Color</div></div>
+                <div class="cell"><div class="lbl" style="font-size:11px">Brand</div><div class="val" style="font-size:14px; line-height:1.3">@it.Brand</div></div>
+                <div class="cell"><div class="lbl" style="font-size:11px">Gender</div><div class="val" style="font-size:14px; line-height:1.3">@it.Gender</div></div>
+                <div class="cell"><div class="lbl" style="font-size:11px">Season</div><div class="val" style="font-size:14px; line-height:1.3">@it.Season</div></div>
+                <div class="cell"><div class="lbl" style="font-size:11px">HS Code</div><div class="val" style="font-size:14px; line-height:1.3">@it.HsCode</div></div>
+                <div class="cell"><div class="lbl" style="font-size:11px">Division</div><div class="val" style="font-size:14px; line-height:1.3">@it.Division</div></div>
+                <div class="cell"><div class="lbl" style="font-size:11px">Department</div><div class="val" style="font-size:14px; line-height:1.3">@it.Department</div></div>
+                <div class="cell"><div class="lbl" style="font-size:11px">Class</div><div class="val" style="font-size:14px; line-height:1.3">@it.Class</div></div>
+                <div class="cell"><div class="lbl" style="font-size:11px">Family / Subclass</div><div class="val" style="font-size:14px; line-height:1.3">@it.Family @(string.IsNullOrEmpty(it.Subclass) ? "" : " / " + it.Subclass)</div></div>
             </div>
         }
 
@@ -512,41 +512,99 @@ else
         finally { _busy = false; _needFocusItem = true; }
     }
 
-    // Opens a print dialog on a small routing label for the piece just sorted.
+    // Retail price ticket for the piece just sorted, in the Brands For Less
+    // format: header, English description left / Arabic right, EAN-13 barcode,
+    // barcode digits, then price + item codes + Arabic price.
+    //
     // Browser-print rather than direct-to-printer: there is no print service or
-    // ZPL pipeline anywhere in this app yet, so this uses what every workstation
+    // ZPL pipeline anywhere in this app, so this uses what every workstation
     // already has. Swap for a label-printer integration when one exists.
     private async Task PrintLabelAsync()
     {
         if (_lastAlloc is not { } al || _lastItem is not { } it) return;
-        var routed = _lastAppliedException is (var exPt, var exName)
-            ? $"{exPt}{(string.IsNullOrEmpty(exName) ? "" : " — " + exName)}"
-            : $"{al.PalletType ?? al.Result}{(string.IsNullOrEmpty(al.PalletTypeName) ? "" : " — " + al.PalletTypeName)}";
+        if (al.AllocationIdNo is not int aid) { _globalErr = "No allocation row to price."; return; }
 
-        var html =
-            "<html><head><title>Label</title><style>" +
-            "@page{size:100mm 60mm;margin:4mm}" +
-            "body{font-family:Arial,Helvetica,sans-serif;margin:0}" +
-            ".r{font-size:26px;font-weight:800;margin:0 0 4px 0}" +
-            ".s{font-size:20px;font-weight:700;margin:0 0 6px 0}" +
-            ".k{font-size:10px;color:#555;text-transform:uppercase;letter-spacing:.05em}" +
-            ".v{font-size:13px;font-weight:600;margin-bottom:4px}" +
-            "</style></head><body>" +
-            $"<div class='r'>{Esc(routed)}</div>" +
-            $"<div class='s'>{Esc(al.StoreId ?? "—")}{(string.IsNullOrEmpty(al.StoreName) ? "" : " — " + Esc(al.StoreName))}</div>" +
-            $"<div class='k'>Item</div><div class='v'>{Esc(it.ItemCode)} · {Esc(it.Style)} · {Esc(it.Size)} · {Esc(it.Color)}</div>" +
-            $"<div class='k'>Container / Box</div><div class='v'>{Esc(_contno)} · {Esc(_currentBoxNo ?? "")}</div>" +
-            $"<div class='k'>Division / PO</div><div class='v'>{Esc(al.Division ?? "—")} · {Esc(al.PoNumber ?? "NA")}</div>" +
-            "</body></html>";
-
+        _busy = true;
         try
         {
+            var label = await Build.GetPriceLabelAsync(aid, it.ItemCode);
+            var (ccy, ccyAr) = CurrencyFor(label.Country ?? al.Country);
+
+            // Bars are omitted rather than faked when the code is not EAN-13-able —
+            // a ticket with a barcode that scans to the wrong thing is worse than
+            // one the operator has to key in.
+            var barsSvg = Wms.Core.Ean13Barcode.ToSvg(it.ItemCode);
+            var digits  = Wms.Core.Ean13Barcode.Normalize(it.ItemCode) ?? it.ItemCode;
+
+            var priceTxt   = label.SalesPrice is { } p ? p.ToString("0.##") : "";
+            var priceAr    = priceTxt.Length == 0 ? "" : ToArabicDigits(priceTxt);
+            var codesLine  = string.Join(" ", new[] { it.Season, it.Style, it.Size }
+                                                 .Where(x => !string.IsNullOrWhiteSpace(x)));
+
+            var html =
+                "<html><head><meta charset='utf-8'><title>Label</title><style>" +
+                "@page{size:100mm 50mm;margin:3mm}" +
+                "body{font-family:Arial,Helvetica,sans-serif;margin:0;color:#000}" +
+                ".hdr{font-size:30px;font-weight:900;letter-spacing:.02em;line-height:1;margin-bottom:6px}" +
+                ".desc{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:6px}" +
+                ".en{font-size:17px;font-weight:700;line-height:1.15;max-width:58%}" +
+                ".ar{font-size:19px;font-weight:700;line-height:1.15;direction:rtl;text-align:right;max-width:40%}" +
+                ".bars{margin:2px 0 1px 0}" +
+                ".num{font-size:19px;font-weight:700;letter-spacing:.16em;margin-bottom:4px}" +
+                ".foot{display:flex;justify-content:space-between;align-items:baseline;gap:10px}" +
+                ".price{font-size:29px;font-weight:900;white-space:nowrap}" +
+                ".codes{font-size:15px;font-weight:600;letter-spacing:.04em}" +
+                ".pricear{font-size:23px;font-weight:800;direction:rtl;white-space:nowrap}" +
+                ".nobc{font-size:11px;color:#444;margin:6px 0}" +
+                "</style></head><body>" +
+                "<div class='hdr'>BRANDS FOR LESS</div>" +
+                "<div class='desc'>" +
+                    $"<div class='en'>{Esc(it.ItemName)}</div>" +
+                    $"<div class='ar'>{Esc(label.ArabicDesc)}</div>" +
+                "</div>" +
+                (barsSvg is null
+                    ? "<div class='nobc'>No EAN-13 barcode — item code is not a 12/13-digit GTIN.</div>"
+                    : $"<div class='bars'>{barsSvg}</div>") +
+                $"<div class='num'>{Esc(digits)}</div>" +
+                "<div class='foot'>" +
+                    $"<div class='price'>{Esc(ccy)} {Esc(priceTxt)}</div>" +
+                    $"<div class='codes'>{Esc(codesLine)}</div>" +
+                    $"<div class='pricear'>{Esc(priceAr)} {Esc(ccyAr)}</div>" +
+                "</div>" +
+                "</body></html>";
+
+            if (label.SalesPrice is null)
+                _globalInfo = $"No SalesPrice on allocation row {aid} — label printed without a price.";
+
             await JS.InvokeVoidAsync("eval",
-                "(function(){var w=window.open('','_blank','width=420,height=320');" +
+                "(function(){var w=window.open('','_blank','width=520,height=380');" +
                 "if(!w){return;}w.document.write(" + System.Text.Json.JsonSerializer.Serialize(html) + ");" +
                 "w.document.close();w.focus();w.print();w.close();})();");
         }
         catch (Exception ex) { CaptureException(ex, "PrintLabel failed"); }
+        finally { _busy = false; }
+    }
+
+    // Ticket currency by country. Short forms match the printed sample ("QR 65"),
+    // not ISO codes.
+    private static (string En, string Ar) CurrencyFor(string? country) =>
+        (country ?? "").Trim().ToUpperInvariant() switch
+        {
+            "QATAR"   => ("QR",  "ر.ق"),
+            "KSA" or "SAUDI" or "SAUDI ARABIA" => ("SR", "ر.س"),
+            "KUWAIT"  => ("KD",  "د.ك"),
+            "BAHRAIN" => ("BD",  "د.ب"),
+            "OMAN"    => ("OMR", "ر.ع"),
+            _         => ("AED", "د.إ"),   // UAE + ECOM
+        };
+
+    // Western digits -> Arabic-Indic, so the price reads as ٦٥ on the RTL side.
+    private static string ToArabicDigits(string s)
+    {
+        var sb = new System.Text.StringBuilder(s.Length);
+        foreach (var ch in s)
+            sb.Append(char.IsDigit(ch) ? (char)('٠' + (ch - '0')) : ch);
+        return sb.ToString();
     }
 
     private static string Esc(string? s) =>
