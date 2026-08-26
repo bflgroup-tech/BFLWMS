@@ -875,62 +875,6 @@ public class BuildingService(IOnPremConnectionResolver resolver, ICurrentUser us
         return srNo;
     }
 
-    // ==================== 8b. Robo Sorting — ledger-only scan ====================
-
-    /// <summary>
-    /// BoxNo stamped on Robo Sorting ledger rows. WMSContBuildScanData.BoxNo is
-    /// NOT NULL and there is no WmsOpenBox behind a robo scan, so the sentinel
-    /// both satisfies the constraint and makes robo rows filterable
-    /// (<c>WHERE BoxNo LIKE '%-ROBO'</c>) against real counting scans.
-    /// </summary>
-    public static string RoboBoxNo(string contno) => $"{contno}-ROBO";
-
-    /// <summary>
-    /// Records one Robo Sorting scan. Same ledger row as
-    /// <see cref="StageItemToBoxAsync"/> writes, minus the box: no WmsOpenBoxItem
-    /// upsert, no tote, BoxNo set to the <see cref="RoboBoxNo"/> sentinel.
-    ///
-    /// The allocation itself is already consumed by ResolveAllocationAsync (Tier 1
-    /// increments QtyIssue; Tier 2/3 insert a row), exactly as in Manual Counting —
-    /// robo scans are real consumption, not a preview, so they also count toward
-    /// the on-the-fly OTS recompute in PickBestStoreAsync.
-    /// </summary>
-    public async Task RecordRoboScanAsync(
-        string contno, string itemCode, AllocationResult alloc,
-        CancellationToken ct = default)
-    {
-        if (alloc.AllocationIdNo is null)
-            throw new InvalidOperationException("RecordRoboScanAsync called with AllocationResult.AllocationIdNo = null.");
-
-        await using var c = OpenWms();
-
-        var ledgerSql = @"
-            INSERT INTO dbo.WMSContBuildScanData
-                (Country, ContNo, Itemcode, StoreID, Result, Division, BoxNo, ToteID,
-                 AllocationIdNo, Tier, Manual, ScannedBy)
-            VALUES
-                (@country, @c, @i, @store, @result, @division, @b, NULL,
-                 @alloc, @tier, @manual, @user);";
-        DbOpContext.Set("Insert robo scan ledger row on dbo.WMSContBuildScanData", ledgerSql);
-        await c.ExecuteAsync(new CommandDefinition(
-            ledgerSql,
-            new
-            {
-                country  = Country,
-                c        = contno,
-                i        = itemCode,
-                store    = alloc.StoreId,
-                result   = alloc.Result,
-                division = alloc.Division,
-                b        = RoboBoxNo(contno),
-                alloc    = alloc.AllocationIdNo.Value,
-                tier     = (byte)alloc.Tier,
-                manual   = alloc.Manual ? "Y" : (string?)null,
-                user     = user.Name
-            },
-            cancellationToken: ct));
-    }
-
     // ==================== 9. Attach a tote to an existing open box ====================
     public async Task<(bool Ok, string? Error)> AttachToteToBoxAsync(string boxNo, string toteId, CancellationToken ct = default)
     {
