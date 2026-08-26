@@ -1575,8 +1575,6 @@ DROP TABLE #Scans, #BatchKind, #ItemDiv;";
         var toDateExclusiveOnly = toDateInclusive.Date.AddDays(2);
 
         // Phase 1 — read raw scans from the country's server into a DataTable.
-        // Transfer Qty is read from the same server (bfldata.dbo.DailyCountCategoryTrf
-        // exists per-country, not just centrally), so it's fetched here too, via connStr.
         var scanTable = BuildScanDataTable();
         long transferQty;
         await using (var countryConn = new SqlConnection(WithConnectTimeout(connStr)))
@@ -1604,25 +1602,34 @@ DROP TABLE #Scans, #BatchKind, #ItemDiv;";
             }
             await countryRdr.CloseAsync();
 
-            transferQty = await GetTransferQtyAsync(countryConn, uaeOnly: false, fromDate, toDateInclusive, ct);
-
-            // Export-warehouse countries' own bfldata.dbo.DailyCountCategoryTrf isn't reliably
-            // populated (confirmed empty for Bahrain), so for any export country, source Transfer
-            // Qty from that country's own dbo.vTransferDetail instead — via this country's own
+            // bfldata.dbo.DailyCountCategoryTrf is a UAE-only table -- it isn't reliably
+            // populated for export countries (confirmed empty for Bahrain) and isn't even
+            // guaranteed to EXIST on every country's own server (confirmed live: "Invalid
+            // object name" for at least one export country), so this method (which only ever
+            // runs for non-UAE countries -- UAE takes the separate code path above in
+            // GetProductionCheckingAsync) never queries it at all. Transfer Qty always comes
+            // from that country's own dbo.vTransferDetail instead — via this country's own
             // connection (connStr), not the central OnPremBackup/LOGBACKUP linked-server path.
             // Can't reuse countryConn above as-is: its InitialCatalog is the scan/amechecking DB,
             // not necessarily the transfer DB, so InitialCatalog is forced to Dataname here (see
-            // WithInitialCatalog). UAE never reaches this method at all (it takes the separate
-            // UAE code path above in GetProductionCheckingAsync).
+            // WithInitialCatalog).
             (string Dataname, string Code)? exportKey;
             await using (var lookupConn = OpenOnPremBackup())
                 exportKey = await GetExportCountryVTransferKeyAsync(lookupConn, country, ct);
+
             if (exportKey is not null)
             {
                 await using var vtdConn = new SqlConnection(WithInitialCatalog(connStr, exportKey.Value.Dataname));
                 await vtdConn.OpenAsync(ct);
                 transferQty = await GetExportCountryTransferQtyFromVTransferDetailAsync(
                     vtdConn, exportKey.Value.Code, fromDate, toDateInclusive, ct);
+            }
+            else
+            {
+                // No ExportActive/ExportWH grant in BFLDATA.dbo.DataSettings for this country,
+                // so there's no known vTransferDetail source either -- 0 rather than falling
+                // back to the UAE-only DailyCountCategoryTrf table.
+                transferQty = 0;
             }
         }
 
