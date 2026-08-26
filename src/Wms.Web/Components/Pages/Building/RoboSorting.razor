@@ -177,6 +177,35 @@ else
                         title="Print a full sample label — no container, box or scan needed">
                     Test print
                 </button>
+
+                @* Label geometry lives on the page, not in a constant, because it is
+                   found by trial against real stock — a redeploy per attempt is not a
+                   workable loop for someone standing at the printer. *@
+                <div style="display:flex; gap:4px; align-items:flex-end; margin-top:2px">
+                    <div style="width:52px">
+                        <label style="display:block; font-size:9px; font-weight:700; color:var(--text-secondary)">W mm</label>
+                        <input type="number" @bind="_labelWidthMm" min="10" max="200"
+                               style="width:100%; padding:3px 4px; font-size:11px; border:1px solid var(--border-default); border-radius:var(--r-sm)" />
+                    </div>
+                    <div style="width:52px">
+                        <label style="display:block; font-size:9px; font-weight:700; color:var(--text-secondary)">H mm</label>
+                        <input type="number" @bind="_labelHeightMm" min="10" max="200"
+                               style="width:100%; padding:3px 4px; font-size:11px; border:1px solid var(--border-default); border-radius:var(--r-sm)" />
+                    </div>
+                    <div style="width:56px">
+                        <label style="display:block; font-size:9px; font-weight:700; color:var(--text-secondary)">DPI</label>
+                        <select @bind="_labelDpi"
+                                style="width:100%; padding:3px 4px; font-size:11px; border:1px solid var(--border-default); border-radius:var(--r-sm)">
+                            <option value="203">203</option>
+                            <option value="300">300</option>
+                        </select>
+                    </div>
+                </div>
+                <button class="aiwms-btn aiwms-btn-secondary" style="padding:4px 10px; font-size:10px"
+                        @onclick="ReadMediaAsync" disabled="@_busy"
+                        title="Ask the printer what media size it is set to">
+                    Read from printer
+                </button>
             </div>
         </div>
     </div>
@@ -652,13 +681,13 @@ else
                 priceAr   = "٦٥ ر.ق",
                 codesFoot = "P6 Q4-QD6006 D7",
             };
-            var opts = new { dpi = LabelDpi, widthMm = LabelWidthMm, heightMm = LabelHeightMm };
+            var opts = new { dpi = _labelDpi, widthMm = _labelWidthMm, heightMm = _labelHeightMm };
 
             var js  = await LabelJsAsync();
             var res = await js.InvokeAsync<string>("printLabel", fields, opts);
 
             if (res.StartsWith("OK:"))
-                ShowInfo($"Test label sent to {res[3..]} — {LabelWidthMm}×{LabelHeightMm}mm at {LabelDpi}dpi.");
+                ShowInfo($"Test label sent to {res[3..]} — {_labelWidthMm}×{_labelHeightMm}mm at {_labelDpi}dpi.");
             else if (res == "NO_PRINTER")
                 ShowError("Zebra Browser Print did not answer on 127.0.0.1:9100 or :9101. " +
                           "Install it on this PC (free, from Zebra's support site) and set the ZD421 " +
@@ -676,11 +705,42 @@ else
     private void ShowError(string m) { _globalErr = m; _globalInfo = null; }
     private void ShowInfo(string m)  { _globalInfo = m; _globalErr = null; }
 
-    // ZD421 defaults. 203 dpi is the standard head; a 300 dpi unit needs Dpi = 300
-    // here or the label prints at two-thirds size.
-    private const int LabelDpi      = 203;
-    private const int LabelWidthMm  = 100;
-    private const int LabelHeightMm = 50;
+    // Label geometry — editable on the page. The first test print came out clipped
+    // on the right and cut off below the barcode because the stock is smaller than
+    // the 100x50mm these used to be hard-coded to, and finding the real size by
+    // redeploying once per guess is not a workable loop.
+    private int _labelWidthMm  = 100;
+    private int _labelHeightMm = 50;
+    private int _labelDpi      = 203;
+
+    /// <summary>Asks the ZD421 what media it is configured for and fills the boxes.
+    /// SGD reads are the flakiest part of Browser Print, so a blank answer means
+    /// "measure it and type it in", not that anything is broken.</summary>
+    private async Task ReadMediaAsync()
+    {
+        ClearTransient(); _busy = true;
+        try
+        {
+            var js = await LabelJsAsync();
+            var res = await js.InvokeAsync<string>("readMedia");
+            var parts = (res ?? "").Split(',');
+            if (parts.Length == 3
+                && int.TryParse(parts[0], out var w) && w > 0
+                && int.TryParse(parts[1], out var h) && h > 0
+                && int.TryParse(parts[2], out var d) && d > 0)
+            {
+                _labelWidthMm = w; _labelHeightMm = h; _labelDpi = d;
+                ShowInfo($"Printer reports {w}×{h}mm at {d}dpi — Test print will use that.");
+            }
+            else
+            {
+                ShowError("The printer didn't report a media size. Measure the label and " +
+                          "type W/H in mm, then Test print.");
+            }
+        }
+        catch (Exception ex) { ShowError($"Read from printer failed: {ex.Message}"); }
+        finally { _busy = false; }
+    }
 
     private IJSObjectReference? _labelJs;
 
@@ -709,7 +769,7 @@ else
                 codesFoot = string.Join(" ", new[] { it.Season, it.Style, it.Size }
                                                  .Where(x => !string.IsNullOrWhiteSpace(x))),
             };
-            var opts = new { dpi = LabelDpi, widthMm = LabelWidthMm, heightMm = LabelHeightMm };
+            var opts = new { dpi = _labelDpi, widthMm = _labelWidthMm, heightMm = _labelHeightMm };
 
             var js = await LabelJsAsync();
             return await js.InvokeAsync<string>("printLabel", fields, opts);
