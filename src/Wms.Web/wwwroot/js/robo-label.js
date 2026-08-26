@@ -73,68 +73,71 @@ function renderLabel(f, widthDots, heightDots) {
 
     const pad = Math.round(widthDots * 0.03);
     const W   = widthDots - pad * 2;
-    let y = 0;
+    const H   = heightDots;
 
-    // Header
-    const hdr = Math.round(heightDots * 0.135);
-    g.font = `900 ${hdr}px Arial, Helvetica, sans-serif`;
+    // Baselines and font sizes below are fractions of label height, measured off
+    // the reference Brands For Less ticket (glyph advance widths against known
+    // string lengths, not eyeballed) so the output holds against the original at
+    // any stock size. Change these, not the call sites, to retune the layout.
+    const L = {
+        hdrFont:   0.155, hdrBase:  0.185,
+        descFont:  0.080, descBase: 0.310,
+        codeFont:  0.068, codeBase: 0.405,
+        barTop:    0.455, barHeight: 0.190,
+        digitFont: 0.078, digitBase: 0.720,
+        footBase:  0.870, priceFont: 0.120, codesFont: 0.058, priceArFont: 0.105,
+    };
+    const px = frac => Math.round(H * frac);
+
+    // Header — centred, heaviest weight on the label.
     g.textAlign = 'center';
-    y += Math.round(heightDots * 0.155);
-    g.fillText('BRANDS FOR LESS', widthDots / 2, y);
+    fitText(g, 'BRANDS FOR LESS', widthDots / 2, px(L.hdrBase), W, px(L.hdrFont), '900');
 
-    // Description — English left, Arabic right. Both shrink to fit their half
-    // rather than overrunning into each other.
-    const desc = Math.round(heightDots * 0.082);
-    y += Math.round(heightDots * 0.10);
+    // Description — English left, Arabic right. Each shrinks within its own half
+    // so a long name can never run into the Arabic.
     g.textAlign = 'left';
-    fitText(g, f.descEn || '', pad, y, W * 0.56, desc, '700');
+    fitText(g, f.descEn || '', pad, px(L.descBase), W * 0.58, px(L.descFont), '700');
     g.textAlign = 'right';
-    fitText(g, f.descAr || '', widthDots - pad, y, W * 0.40, Math.round(desc * 1.1), '700');
+    fitText(g, f.descAr || '', widthDots - pad, px(L.descBase), W * 0.38, px(L.descFont * 1.05), '700');
 
     // Hierarchy / item code line
     if (f.codeLine) {
-        y += Math.round(heightDots * 0.085);
         g.textAlign = 'left';
-        fitText(g, f.codeLine, pad, y, W, Math.round(heightDots * 0.075), '700');
+        fitText(g, f.codeLine, pad, px(L.codeBase), W, px(L.codeFont), '700');
     }
 
-    // Barcode
+    // Barcode — full usable width, whole dots per module so no bar is a fraction
+    // of a dot wide and every one prints the same weight.
     const ean = f.ean13 || '';
     if (ean.length === 13) {
-        const mods  = eanModules(ean);
-        const mw    = Math.max(1, Math.floor(W / mods.length));   // whole dots only
-        const bw    = mw * mods.length;
-        const bx    = Math.round((widthDots - bw) / 2);
-        const bh    = Math.round(heightDots * 0.235);
-        const by    = y + Math.round(heightDots * 0.03);
+        const mods = eanModules(ean);
+        const mw   = Math.max(1, Math.floor(W / mods.length));
+        const bw   = mw * mods.length;
+        const bx   = Math.round((widthDots - bw) / 2);
+        const by   = px(L.barTop);
+        const bh   = px(L.barHeight);
         for (let i = 0; i < mods.length; i++)
             if (mods[i] === '1') g.fillRect(bx + i * mw, by, mw, bh);
-        y = by + bh;
     }
 
-    // Human-readable digits
+    // Human-readable digits, letter-spaced like the original.
     if (ean) {
-        y += Math.round(heightDots * 0.085);
         g.textAlign = 'left';
-        g.font = `700 ${Math.round(heightDots * 0.082)}px Arial, Helvetica, sans-serif`;
-        g.fillText(spaced(ean), pad, y);
+        fitText(g, spaced(ean), pad, px(L.digitBase), W, px(L.digitFont), '700');
     }
 
-    // Footer: price | codes | Arabic price
-    y = heightDots - Math.round(heightDots * 0.045);
+    // Footer: price | codes | Arabic price, all on one baseline.
+    const fb = px(L.footBase);
     g.textAlign = 'left';
-    g.font = `900 ${Math.round(heightDots * 0.125)}px Arial, Helvetica, sans-serif`;
-    g.fillText(f.priceEn || '', pad, y);
+    fitText(g, f.priceEn || '', pad, fb, W * 0.32, px(L.priceFont), '900');
 
     if (f.codesFoot) {
         g.textAlign = 'center';
-        g.font = `700 ${Math.round(heightDots * 0.068)}px Arial, Helvetica, sans-serif`;
-        g.fillText(f.codesFoot, widthDots / 2, y);
+        fitText(g, f.codesFoot, widthDots / 2, fb, W * 0.40, px(L.codesFont), '700');
     }
 
     g.textAlign = 'right';
-    g.font = `800 ${Math.round(heightDots * 0.105)}px Arial, Helvetica, sans-serif`;
-    g.fillText(f.priceAr || '', widthDots - pad, y);
+    fitText(g, f.priceAr || '', widthDots - pad, fb, W * 0.24, px(L.priceArFont), '800');
 
     return c;
 }
@@ -189,8 +192,8 @@ function canvasToZplGraphic(canvas) {
 // a print failure must not lose the scan that produced the label.
 export async function printLabel(fields, opts) {
     const dpi    = (opts && opts.dpi)    || 203;
-    const widthMm  = (opts && opts.widthMm)  || 100;
-    const heightMm = (opts && opts.heightMm) || 50;
+    const widthMm  = (opts && opts.widthMm)  || 50;
+    const heightMm = (opts && opts.heightMm) || 20;
 
     const widthDots  = Math.round(widthMm  / 25.4 * dpi);
     const heightDots = Math.round(heightMm / 25.4 * dpi);
