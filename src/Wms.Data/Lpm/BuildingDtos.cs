@@ -60,6 +60,16 @@ public record AllocationResult(
     string? ItemSource = null,       // "Order Sheet" | "WMS Itemmaster" | "Generated Barcode" | "USA Item Master"
     string? Country = null);         // Country of the resolved allocation row (or current user's country for Tier 3)
 
+/// <summary>
+/// Everything the Robo Sorting price ticket needs beyond what ItemDetails
+/// already carries. ArabicDesc is null when hodata.itemmh has no row for the
+/// item — the label still prints, just without the Arabic line.
+/// </summary>
+public record PriceLabelData(
+    decimal? SalesPrice,
+    string?  Country,
+    string?  ArabicDesc);
+
 /// <summary>Outcome of the LPM Manual Building "Close Logistics" button —
 /// flips WmsKNBBoxes.closed='Y' and writes a row to WmsLogisticsBoxClosure_Log.
 /// PcsScanned is the count of non-reversed scans WMSContBuildScanData rows
