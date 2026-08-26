@@ -8,6 +8,7 @@ namespace Wms.Core;
 public static class MenuKeys
 {
     public const string PENDING_FOR_COUNTING      = "PENDING_FOR_COUNTING";
+    public const string ROBO_SORTING              = "ROBO_SORTING";
     public const string LPM_MANUAL_BUILDING       = "LPM_MANUAL_BUILDING";
     public const string CONTAINER_ALLOCATION      = "CONTAINER_ALLOCATION";
     public const string OTS_FOR_PO_ALLOCATION     = "OTS_FOR_PO_ALLOCATION";
@@ -71,6 +72,7 @@ public static class MenuKeys
     public static readonly IReadOnlyList<MenuEntry> All = new[]
     {
         new MenuEntry(PENDING_FOR_COUNTING,  "Container Counting",  "Pending for Counting",      "counting/pending-for-counting", new[] { Roles.Admin, Roles.WHAssociate, Roles.WHSupervisor, Roles.WHManager }),
+        new MenuEntry(ROBO_SORTING,          "Container Counting",  "Robo Sorting",              "counting/robo-sorting",     new[] { Roles.Admin, Roles.WHAssociate, Roles.WHSupervisor, Roles.WHManager }),
         new MenuEntry(LPM_MANUAL_BUILDING,   "Container Counting",  "LPM Manual Counting",       "counting/manual",           new[] { Roles.Admin, Roles.WHAssociate, Roles.WHSupervisor, Roles.WHManager }),
         new MenuEntry(CONTAINER_ALLOCATION,  "Container Counting",  "Container Allocation",      "counting/container-allocation", new[] { Roles.Admin, Roles.WHManager }),
         new MenuEntry(OTS_FOR_PO_ALLOCATION, "Container Counting",  "OTS for PO Allocation",     "counting/ots-po-allocation", new[] { Roles.Admin, Roles.WHManager }),
