@@ -1,0 +1,451 @@
+@page "/counting/robo-sorting"
+@rendermode RenderMode.InteractiveServer
+@attribute [Authorize(Policy = Wms.Core.MenuKeys.ROBO_SORTING)]
+@using Wms.Core
+@using Wms.Core.Validation
+@using Wms.Data.Auditing
+@using Wms.Data.Lpm
+@inject BuildingService Build
+@inject IActionLogger Audit
+@inject ICurrentUser Me
+@inject IJSRuntime JS
+
+<PageTitle>WMS — Robo Sorting</PageTitle>
+
+<div class="aiwms-page-header">
+    <h2>Robo Sorting</h2>
+    <p>Press <kbd>Enter</kbd> in each field — focus advances automatically. Scan the container once, then scan items continuously. No logistics box, tote or check-in/check-out.</p>
+</div>
+
+@if (string.IsNullOrEmpty(Me.Warehouse))
+{
+    <div class="aiwms-section">
+        <div class="aiwms-alert error">Your user profile has no Warehouse assigned. Ask Admin to set Country + Warehouse first.</div>
+        <div style="margin-top:8px;font-size:12px;color:var(--text-muted);font-family:Consolas,monospace">
+            Diagnostic — auth says you are: <b>@Me.Name</b> | Country=<b>@(Me.Country ?? "(null)")</b> | Warehouse=<b>@(Me.Warehouse ?? "(null)")</b>
+        </div>
+    </div>
+}
+else
+{
+
+@if (!string.IsNullOrEmpty(_globalErr)) { <div class="aiwms-alert error">@_globalErr</div> }
+@if (!string.IsNullOrEmpty(_globalInfo)) { <div class="aiwms-alert info">@_globalInfo</div> }
+
+@if (_lastException is not null)
+{
+    <div class="aiwms-section" style="border-left:4px solid var(--danger);background:#fff5f5">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+            <div>
+                <div style="font-weight:700;color:var(--danger);font-size:14px">@_exContext</div>
+                <div style="font-family:Consolas,monospace;font-size:12px;color:#842029">
+                    @_lastException.GetType().FullName: @_lastException.Message
+                </div>
+                @if (!string.IsNullOrEmpty(_exDbOp))
+                {
+                    <div style="margin-top:6px;font-size:12px;color:#374151"><b>SQL operation:</b> @_exDbOp</div>
+                }
+            </div>
+            <div style="display:flex;gap:6px">
+                <button class="aiwms-btn aiwms-btn-secondary" style="padding:4px 10px;font-size:11px"
+                        @onclick="() => _showStack = !_showStack">@(_showStack ? "Hide" : "Show") full trace</button>
+                <button class="aiwms-btn aiwms-btn-secondary" style="padding:4px 10px;font-size:11px"
+                        @onclick="() => { _lastException = null; _exContext = null; _exDbOp = null; _exDbSql = null; }">Dismiss</button>
+            </div>
+        </div>
+        @if (!string.IsNullOrEmpty(_exDbSql))
+        {
+            <details style="margin-bottom:6px">
+                <summary style="cursor:pointer;font-size:12px;color:#0f172a">Failing SQL</summary>
+                <pre style="background:#0f172a;color:#a7f3d0;padding:10px;border-radius:6px;font-size:11px;overflow:auto;max-height:200px;white-space:pre-wrap">@_exDbSql</pre>
+            </details>
+        }
+        @if (_showStack)
+        {
+            <pre style="background:#1f2937;color:#fef2f2;padding:12px;border-radius:6px;font-size:11px;overflow:auto;max-height:400px;white-space:pre-wrap;word-break:break-word">@_lastException.ToString()</pre>
+        }
+    </div>
+}
+
+<div style="display:grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap:14px; align-items:start">
+
+    <!-- ============== LEFT: INPUTS ============== -->
+    <div class="aiwms-section aiwms-input-frame">
+        <div class="aiwms-card-header">Inputs</div>
+        <div class="aiwms-input-grid">
+            <div class="aiwms-input-row">
+                <label class="aiwms-input-lbl">Cont. No <span class="req">*</span></label>
+                <input @ref="_contRef" @bind="_contInput" @bind:event="oninput" @onkeydown="OnContKey"
+                       class="aiwms-input @(_contOk ? "ok" : "")"
+                       placeholder="AEINT6078" autocomplete="off" disabled="@_busy" />
+            </div>
+            <div class="aiwms-input-row" style="display:grid; grid-template-columns: minmax(0,150px) minmax(0,1fr); gap:12px">
+                <div>
+                    <label class="aiwms-input-lbl">PO No</label>
+                    @* Typed here rather than derived: Manual Counting reads PO off the
+                       logistics box, which Robo Sorting does not have. Blank = NA, which
+                       is what ResolveAllocationAsync already treats as "any PO". *@
+                    <input class="aiwms-input" @bind="_poInput" placeholder="optional"
+                           autocomplete="off" disabled="@(!_contOk || _busy)" />
+                </div>
+                <div>
+                    <label class="aiwms-input-lbl">Exception</label>
+                    <select class="aiwms-input" @bind="_exceptionSelected"
+                            disabled="@(!_contOk || _busy || _exceptionOptions.Count == 0)"
+                            title="Applies to the next scan only, then auto-clears">
+                        <option value="">— none —</option>
+                        @foreach (var e in _exceptionOptions)
+                        {
+                            <option value="@e.PalletType">@e.PalletType — @e.TypeName</option>
+                        }
+                    </select>
+                </div>
+            </div>
+            <div class="aiwms-input-row">
+                <label class="aiwms-input-lbl">Itemcode (UPC) <span class="req">*</span></label>
+                <input @ref="_itemRef"
+                       @bind="_itemInput" @bind:event="oninput"
+                       @onkeydown="OnItemKey"
+                       class="aiwms-input"
+                       placeholder="Scan or type item code" autocomplete="off"
+                       disabled="@(!_contOk || _busy)" />
+            </div>
+        </div>
+
+        <div class="aiwms-input-actions" style="display:flex; gap:10px; align-items:center; flex-wrap:wrap">
+            <button class="aiwms-btn aiwms-btn-secondary" @onclick="ResetAll">Reset all</button>
+            <div style="font-size:13px; color:var(--text-secondary)">
+                Sorted this session: <b style="font-size:14px; color:var(--text-primary)">@_sessionCount</b>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============== RIGHT: ITEM DETAILS + RESULT ============== -->
+    <div class="aiwms-section aiwms-item-frame">
+        <div class="aiwms-card-header">Item Details</div>
+        @if (_lastItem is null)
+        {
+            <div class="aiwms-output-empty">Scan an item to see details &amp; allocation.</div>
+        }
+        else
+        {
+            var it = _lastItem;
+            <div class="aiwms-upc-display" style="font-size:14px; padding:4px 8px">
+                @it.ItemCode
+                @if (_lastAlloc?.ItemSource is { Length: > 0 } src)
+                {
+                    <span class="aiwms-pill" style="margin-left:8px; font-size:10px; background:#eef; color:#334; border:1px solid #ccd"
+                          title="Source: @src">SRC: @src</span>
+                }
+                @if (_lastAlloc?.Tier == Wms.Data.Lpm.AllocationTier.Tier2_OtsOverflow)
+                {
+                    <span class="aiwms-pill" style="margin-left:6px; font-size:10px; background:#fee; color:#933; border:1px solid #f99"
+                          title="Item is in the container's Order Sheet but all planned qty has been issued — surplus piece.">EXCESS QTY</span>
+                }
+                else if (_lastAlloc?.Tier == Wms.Data.Lpm.AllocationTier.Tier3_ManualNewItem)
+                {
+                    <span class="aiwms-pill" style="margin-left:6px; font-size:10px; background:#fee; color:#933; border:1px solid #f99"
+                          title="Item is not on the container's Order Sheet at all — sourced from @(_lastAlloc?.ItemSource ?? "external").">EXCESS ITEM</span>
+                }
+            </div>
+            <div class="aiwms-item-grid" style="grid-template-columns: repeat(3, 1fr); gap:4px 12px; font-size:11px">
+                <div class="cell"><div class="lbl" style="font-size:9px">Description</div><div class="val" style="font-size:11px; line-height:1.2">@it.ItemName</div></div>
+                <div class="cell"><div class="lbl" style="font-size:9px">Style</div><div class="val" style="font-size:11px; line-height:1.2">@it.Style</div></div>
+                <div class="cell"><div class="lbl" style="font-size:9px">Size</div><div class="val" style="font-size:11px; line-height:1.2">@it.Size</div></div>
+                <div class="cell"><div class="lbl" style="font-size:9px">Color</div><div class="val" style="font-size:11px; line-height:1.2">@it.Color</div></div>
+                <div class="cell"><div class="lbl" style="font-size:9px">Brand</div><div class="val" style="font-size:11px; line-height:1.2">@it.Brand</div></div>
+                <div class="cell"><div class="lbl" style="font-size:9px">Gender</div><div class="val" style="font-size:11px; line-height:1.2">@it.Gender</div></div>
+                <div class="cell"><div class="lbl" style="font-size:9px">Season</div><div class="val" style="font-size:11px; line-height:1.2">@it.Season</div></div>
+                <div class="cell"><div class="lbl" style="font-size:9px">HS Code</div><div class="val" style="font-size:11px; line-height:1.2">@it.HsCode</div></div>
+                <div class="cell"><div class="lbl" style="font-size:9px">Division</div><div class="val" style="font-size:11px; line-height:1.2">@it.Division</div></div>
+                <div class="cell"><div class="lbl" style="font-size:9px">Department</div><div class="val" style="font-size:11px; line-height:1.2">@it.Department</div></div>
+                <div class="cell"><div class="lbl" style="font-size:9px">Class</div><div class="val" style="font-size:11px; line-height:1.2">@it.Class</div></div>
+                <div class="cell"><div class="lbl" style="font-size:9px">Family / Subclass</div><div class="val" style="font-size:11px; line-height:1.2">@it.Family @(string.IsNullOrEmpty(it.Subclass) ? "" : " / " + it.Subclass)</div></div>
+            </div>
+        }
+
+        @if (_lastAlloc is { } al)
+        {
+            <div class="aiwms-result-row" style="background:@(_lastAppliedException is null ? "#22c55e" : "#fde68a"); color:@(_lastAppliedException is null ? "#ffffff" : "inherit"); padding:10px 12px; border-radius:var(--r-sm); border:1px solid @(_lastAppliedException is null ? "#16a34a" : "#f59e0b")">
+                <div class="aiwms-result-tag" style="@(_lastAppliedException is null ? "background:#ffffff; color:#166534;" : "")">@(_lastAppliedException is null ? "RESULT" : "EXCEPTION")</div>
+                <div class="aiwms-result-value" style="font-size:22px; font-weight:800; line-height:1.2; color:#ffffff">
+                    @if (_lastAppliedException is (var exPt, var exName))
+                    {
+                        <b>@exPt@(string.IsNullOrEmpty(exName) ? "" : " — " + exName)</b>
+                        <span class="aiwms-pill tier@((int)al.Tier)" style="margin-left:10px;font-size:11px;font-weight:600"
+                              title="Underlying Tier — allocation row @al.AllocationIdNo was tagged with the exception">Tier @((int)al.Tier)</span>
+                    }
+                    else
+                    {
+                        @(al.PalletType ?? al.Result)@(string.IsNullOrEmpty(al.PalletTypeName) ? "" : " — " + al.PalletTypeName)
+                        @if (!string.IsNullOrEmpty(al.Country))
+                        {
+                            <span class="aiwms-pill" style="margin-left:10px;font-size:11px;font-weight:700;background:#ffffff;color:#166534;border:1px solid #16a34a"
+                                  title="Country of the resolved allocation row">@al.Country</span>
+                        }
+                        <span class="aiwms-pill tier@((int)al.Tier)" style="margin-left:10px;font-size:11px;font-weight:600"
+                              title="@TierTitle(al.Tier)">Tier @((int)al.Tier) — @TierShort(al.Tier)</span>
+                        @if (al.Manual)
+                        {
+                            <span class="aiwms-pill tier4" style="margin-left:6px;font-size:11px;background:#fff3cd;color:#664d03;border:1px solid #ffe69c"
+                                  title="Item not in container — added from usa.upcbarcodes at scan time">MANUAL</span>
+                        }
+                    }
+                </div>
+            </div>
+            <div class="aiwms-result-meta">
+                @if (_lastAppliedException is null)
+                {
+                    <div style="grid-column: span 2"><span class="lbl">Store</span> <b>@(al.StoreId ?? "—")</b>@(string.IsNullOrEmpty(al.StoreName) ? "" : $" — {al.StoreName}")</div>
+                    <div><span class="lbl">Division</span> <b>@(al.Division ?? "—")</b></div>
+                }
+                else
+                {
+                    <div style="grid-column: span 3; color:#92400e; font-weight:600">Item held for exception — not routed to a store.</div>
+                }
+                <div><span class="lbl">LPMDt</span> <b>@(al.LpmDt?.ToString("dd/MM/yyyy") ?? "—")</b></div>
+                <div><span class="lbl">PO</span> <b>@(al.PoNumber ?? "NA")</b></div>
+            </div>
+        }
+    </div>
+
+</div>
+
+<div class="aiwms-section" style="margin-top:14px">
+    <div class="aiwms-card-header" style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px">
+        <span>
+            My Scans
+            @if (_contOk) { <text>— container <b>@_contno</b> — @_todayScans.Count scan(s)</text> }
+            else          { <text>— today's scans across all containers — @_todayScans.Count scan(s)</text> }
+        </span>
+        <button class="aiwms-btn aiwms-btn-secondary" style="font-size:11px; padding:4px 10px"
+                @onclick="RefreshTodayScansAsync" disabled="@_busy">Refresh</button>
+    </div>
+    @if (_todayScans.Count == 0)
+    {
+        <div style="padding:14px; font-style:italic; color:var(--text-secondary)">
+            @(_contOk ? $"No scans by you into container {_contno} yet." : "No scans by you today yet.")
+        </div>
+    }
+    else
+    {
+        <div style="max-height:340px; overflow:auto">
+            <table class="aiwms-table aiwms-table-dense" style="font-size:11px">
+                <thead style="position:sticky; top:0; background:white; z-index:1">
+                    <tr>
+                        <th>TrnDate</th><th>Time</th><th>ContNo</th><th>ItemCode</th>
+                        <th>Final Result</th><th>Tier</th><th>Store</th><th>Store Name</th>
+                        <th>Division</th><th>Box</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var r in _todayScans.OrderByDescending(x => x.ScannedTS))
+                    {
+                        <tr>
+                            <td>@r.ScannedTS.ToString("dd/MM/yyyy")</td>
+                            <td>@r.ScannedTS.ToString("HH:mm:ss")</td>
+                            <td style="font-family:var(--font-mono)">@r.ContNo</td>
+                            <td style="font-family:var(--font-mono)"><b>@r.Itemcode</b></td>
+                            <td title="@r.PalletTypeName">@r.PalletType@(string.IsNullOrEmpty(r.PalletTypeName) ? "" : " — " + r.PalletTypeName)@(r.Manual == "Y" ? " ★" : "")</td>
+                            <td><span class="aiwms-pill tier@(r.Tier)" style="font-size:10px; padding:1px 6px">@r.Tier</span></td>
+                            <td style="font-family:var(--font-mono)">@r.StoreID</td>
+                            <td>@r.StoreName</td>
+                            <td>@r.Division</td>
+                            <td style="font-family:var(--font-mono)">@r.BoxNo</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+</div>
+
+}
+
+@code {
+    private bool _busy;
+    private string? _globalErr, _globalInfo;
+    private Exception? _lastException;
+    private string? _exContext, _exDbOp, _exDbSql;
+    private bool _showStack;
+
+    private ElementReference _contRef, _itemRef;
+
+    private string _contInput = "", _contno = "";
+    private bool _contOk;
+
+    // Free-typed, unlike Manual Counting where PO comes off the logistics box.
+    private string _poInput = "";
+    private string? PoNumber => string.IsNullOrWhiteSpace(_poInput) ? null : _poInput.Trim();
+
+    private string _itemInput = "";
+    private ItemDetails? _lastItem;
+    private AllocationResult? _lastAlloc;
+    private int _sessionCount;
+
+    private List<TodayScanRow> _todayScans = new();
+
+    // Exception dropdown — one-shot: applies to next scan, then auto-clears.
+    private List<ExceptionPalletTypeRow> _exceptionOptions = new();
+    private string _exceptionSelected = "";
+    private (string PalletType, string? TypeName)? _lastAppliedException;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await Me.EnsureLoadedAsync();
+        try { _exceptionOptions = await Build.GetExceptionPalletTypesAsync(); }
+        catch { _exceptionOptions = new(); }
+        await RefreshTodayScansAsync();
+    }
+
+    private async Task RefreshTodayScansAsync()
+    {
+        try { _todayScans = await Build.GetTodayScansAsync(contno: _contOk ? _contno : null); }
+        catch { /* keep prior list */ }
+    }
+
+    // Focus survives the re-render that RefreshTodayScansAsync triggers by
+    // scheduling it in OnAfterRenderAsync rather than racing the render pipeline.
+    private bool _needFocusItem;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender && !string.IsNullOrEmpty(Me.Warehouse))
+            await TryFocus(_contRef);
+        if (_needFocusItem)
+        {
+            _needFocusItem = false;
+            await TryFocus(_itemRef);
+        }
+    }
+
+    private async Task OnContKey(KeyboardEventArgs e) { if (e.Key == "Enter") await ValidateContainer(); }
+    private async Task OnItemKey(KeyboardEventArgs e) { if (e.Key == "Enter") await ScanItem(); }
+
+    private async Task ValidateContainer()
+    {
+        ClearTransient(); _busy = true;
+        try
+        {
+            var input = (_contInput ?? "").Trim().ToUpperInvariant();
+            if (string.IsNullOrEmpty(input)) { _globalErr = "Container number is required."; return; }
+            var v = await Build.ValidateContainerAsync(input);
+            if (!v.Ok) { _globalErr = v.Error; await Beep(); return; }
+            _contno = input; _contOk = true;
+            await RefreshTodayScansAsync();
+            await Audit.LogAsync("RoboSorting.Container", _contno, 'X', $"RoboSorting/{_contno}", new { event_ = "validate" });
+            await TryFocus(_itemRef);
+        }
+        catch (Exception ex) { CaptureException(ex, "ValidateContainer failed"); }
+        finally { _busy = false; }
+    }
+
+    private async Task ScanItem()
+    {
+        ClearTransient(); _busy = true;
+        var raw = _itemInput ?? "";
+
+        // Clear the previous item immediately so the panel doesn't show stale data
+        // while the new fetch runs.
+        _lastItem = null; _lastAlloc = null; _lastAppliedException = null;
+        await InvokeAsync(StateHasChanged);
+
+        try
+        {
+            if (!_contOk) { _globalErr = "Validate container first."; return; }
+            if (string.IsNullOrWhiteSpace(raw)) { _globalErr = "Item code is required."; await Beep(); await TryFocus(_itemRef); return; }
+
+            var iv = ItemCodeValidator.Validate(raw);
+            if (!iv.IsValid) { _globalErr = iv.Error; await Beep(); await TryFocus(_itemRef); return; }
+            var code = iv.Normalized;
+
+            var item = await Build.GetItemDetailsAsync(_contno, code);
+            if (item is null || item.Availability == ItemAvailability.NotFound)
+            {
+                _globalErr = $"Item {code} not found in Item Master API, Generated Barcodes, or usa.upcbarcodes. " +
+                             "Add via Item Encoding, or check the WMS Itemmaster API is reachable and this UPC exists there.";
+                await Beep(); await TryFocus(_itemRef); return;
+            }
+
+            var alloc = await Build.ResolveAllocationAsync(_contno, code, PoNumber, item.Style);
+            if (!alloc.Found) { _globalErr = alloc.Error ?? "Could not resolve allocation."; await Beep(); return; }
+
+            // One-shot exception: stamp FinalResult + Remarks on the resolved
+            // WMS_ContAllocationData row, then clear the dropdown.
+            if (!string.IsNullOrEmpty(_exceptionSelected) && alloc.AllocationIdNo is int aid)
+            {
+                var exOpt = _exceptionOptions.FirstOrDefault(e => e.PalletType == _exceptionSelected);
+                var exName = exOpt?.TypeName;
+                var (exOk, exErr) = await Build.ApplyExceptionToAllocationAsync(aid, _exceptionSelected, exName);
+                if (!exOk)
+                {
+                    _globalErr = $"Exception apply failed: {exErr}. Item scan will still record without the exception.";
+                    await Beep();
+                }
+                else
+                {
+                    _lastAppliedException = (_exceptionSelected, exName);
+                }
+                _exceptionSelected = ""; // one-shot: always clear after attempt
+            }
+
+            // Ledger-only — no box, no tote, no WmsOpenBoxItem.
+            await Build.RecordRoboScanAsync(_contno, code, alloc);
+
+            _lastItem = item; _lastAlloc = alloc;
+            _sessionCount++;
+            _itemInput = "";
+            await RefreshTodayScansAsync();
+            _needFocusItem = true;
+        }
+        catch (Exception ex) { CaptureException(ex, $"ScanItem failed (item='{raw}')"); await Beep(); }
+        finally { _busy = false; }
+    }
+
+    private async Task ResetAll()
+    {
+        _contInput = ""; _contno = ""; _contOk = false;
+        _poInput = "";
+        _itemInput = ""; _lastItem = null; _lastAlloc = null;
+        _lastAppliedException = null; _exceptionSelected = "";
+        _sessionCount = 0;
+        ClearTransient();
+        await TryFocus(_contRef);
+    }
+
+    private void ClearTransient() { _globalErr = null; _globalInfo = null; }
+
+    private void CaptureException(Exception ex, string context)
+    {
+        _lastException = ex; _exContext = context;
+        _exDbOp = Wms.Data.Lpm.DbOpContext.CurrentOp;
+        _exDbSql = Wms.Data.Lpm.DbOpContext.CurrentSql;
+        _showStack = false;
+        Console.Error.WriteLine($"[WMS] {context}\n  SQL op: {_exDbOp}\n{ex}");
+        Wms.Data.Lpm.DbOpContext.Clear();
+    }
+
+    private async Task TryFocus(ElementReference r) { try { await r.FocusAsync(); } catch { } }
+
+    private async Task Beep()
+    {
+        try { await JS.InvokeVoidAsync("eval", "var a=new AudioContext();var o=a.createOscillator();o.frequency.value=200;o.connect(a.destination);o.start();setTimeout(()=>o.stop(),120);"); }
+        catch { }
+    }
+
+    private static string TierShort(AllocationTier t) => t switch
+    {
+        AllocationTier.Tier1_HasCapacity   => "matched",
+        AllocationTier.Tier2_OtsOverflow   => "OTS overflow",
+        AllocationTier.Tier3_ManualNewItem => "manual",
+        _ => t.ToString(),
+    };
+
+    private static string TierTitle(AllocationTier t) => t switch
+    {
+        AllocationTier.Tier1_HasCapacity   => "Tier 1 — existing allocation row had capacity (QtyIssue<Qty); QtyIssue incremented.",
+        AllocationTier.Tier2_OtsOverflow   => "Tier 2 — item is in this container but every allocation row is full. Best store picked by remaining OTS (division-scoped, recomputed on the fly).",
+        AllocationTier.Tier3_ManualNewItem => "Tier 3 — item was not in this container. Item details pulled from usa.upcbarcodes; best store picked by remaining OTS.",
+        _ => "",
+    };
+}
