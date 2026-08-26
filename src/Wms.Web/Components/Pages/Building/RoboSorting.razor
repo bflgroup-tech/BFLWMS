@@ -530,6 +530,22 @@ else
             var label = await Build.GetPriceLabelAsync(aid, it.ItemCode);
             var (ccy, ccyAr) = CurrencyFor(label.Country ?? al.Country);
 
+            // Zebra first. The module renders the label to a canvas and ships it as
+            // a ^GFA graphic through Zebra Browser Print on the station — ZPL text
+            // cannot carry Arabic (no resident glyphs, no contextual shaping).
+            // "NO_PRINTER" means Browser Print isn't installed/running here, which
+            // is the one case worth falling through to the browser print window for.
+            var zebra = await TryPrintZebraAsync(it, al, label, ccy, ccyAr);
+            if (zebra is not null && !zebra.StartsWith("NO_PRINTER"))
+            {
+                _globalInfo = zebra.StartsWith("OK:")
+                    ? $"Label sent to {zebra[3..]}."
+                    : $"Zebra print failed: {zebra}";
+                if (label.SalesPrice is null)
+                    _globalInfo += $" No SalesPrice on allocation row {aid} — printed without a price.";
+                return;
+            }
+
             // Bars are omitted rather than faked when the code is not EAN-13-able —
             // a ticket with a barcode that scans to the wrong thing is worse than
             // one the operator has to key in.
@@ -583,6 +599,51 @@ else
         }
         catch (Exception ex) { CaptureException(ex, "PrintLabel failed"); }
         finally { _busy = false; }
+    }
+
+    // ZD421 defaults. 203 dpi is the standard head; a 300 dpi unit needs Dpi = 300
+    // here or the label prints at two-thirds size.
+    private const int LabelDpi      = 203;
+    private const int LabelWidthMm  = 100;
+    private const int LabelHeightMm = 50;
+
+    private IJSObjectReference? _labelJs;
+
+    private async Task<IJSObjectReference> LabelJsAsync() =>
+        _labelJs ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/robo-label.js");
+
+    /// <summary>
+    /// Returns the module's status string, or null when the module itself could
+    /// not be reached. A print problem must never lose the scan that produced the
+    /// label, so every failure path here is a message, not an exception.
+    /// </summary>
+    private async Task<string?> TryPrintZebraAsync(
+        ItemDetails it, AllocationResult al, PriceLabelData label, string ccy, string ccyAr)
+    {
+        try
+        {
+            var priceTxt = label.SalesPrice is { } p ? p.ToString("0.##") : "";
+            var fields = new
+            {
+                descEn    = it.ItemName ?? "",
+                descAr    = label.ArabicDesc ?? "",
+                codeLine  = it.ItemCode ?? "",
+                ean13     = Wms.Core.Ean13Barcode.Normalize(it.ItemCode) ?? "",
+                priceEn   = priceTxt.Length == 0 ? "" : $"{ccy} {priceTxt}",
+                priceAr   = priceTxt.Length == 0 ? "" : $"{ToArabicDigits(priceTxt)} {ccyAr}",
+                codesFoot = string.Join(" ", new[] { it.Season, it.Style, it.Size }
+                                                 .Where(x => !string.IsNullOrWhiteSpace(x))),
+            };
+            var opts = new { dpi = LabelDpi, widthMm = LabelWidthMm, heightMm = LabelHeightMm };
+
+            var js = await LabelJsAsync();
+            return await js.InvokeAsync<string>("printLabel", fields, opts);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[WMS] Zebra print module failed: {ex}");
+            return null;   // fall through to the browser print window
+        }
     }
 
     // Ticket currency by country. Short forms match the printed sample ("QR 65"),
