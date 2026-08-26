@@ -173,9 +173,9 @@ else
                     🖨 Print Label
                 </button>
                 <button class="aiwms-btn aiwms-btn-secondary" style="padding:6px 12px; font-size:11px"
-                        @onclick="TestPrinterAsync" disabled="@_busy"
-                        title="Check whether Zebra Browser Print is running on this PC">
-                    Test printer
+                        @onclick="TestPrintAsync" disabled="@_busy"
+                        title="Print a full sample label — no container, box or scan needed">
+                    Test print
                 </button>
             </div>
         </div>
@@ -627,21 +627,44 @@ else
 
     private string _fallbackReason = "";
 
-    /// <summary>Reports what Zebra Browser Print can see from this PC — the first
-    /// thing to check when a label doesn't come out.</summary>
-    private async Task TestPrinterAsync()
+    /// <summary>
+    /// Fires a complete sample label at the Zebra using the reference ticket's own
+    /// values — no container, box or item scan needed. This is the commissioning
+    /// tool: it proves Browser Print, the printer, the label stock and the DPI
+    /// setting in one click, and it is the only way to check the layout without
+    /// consuming a real allocation.
+    ///
+    /// Values are the sample ticket verbatim, so what comes out can be held against
+    /// the printed original.
+    /// </summary>
+    private async Task TestPrintAsync()
     {
         ClearTransient(); _busy = true;
         try
         {
-            var js = await LabelJsAsync();
-            var name = await js.InvokeAsync<string>("probePrinter");
-            if (string.IsNullOrWhiteSpace(name))
+            var fields = new
+            {
+                descEn    = "DKNY Pyjama Top and Plaid",
+                descAr    = "طقم قميص وشورت",
+                codeLine  = "404-3-8-0065-00-00-T1-T81-0826",
+                ean13     = "5056848418441",
+                priceEn   = "QR 65",
+                priceAr   = "٦٥ ر.ق",
+                codesFoot = "P6 Q4-QD6006 D7",
+            };
+            var opts = new { dpi = LabelDpi, widthMm = LabelWidthMm, heightMm = LabelHeightMm };
+
+            var js  = await LabelJsAsync();
+            var res = await js.InvokeAsync<string>("printLabel", fields, opts);
+
+            if (res.StartsWith("OK:"))
+                ShowInfo($"Test label sent to {res[3..]} — {LabelWidthMm}×{LabelHeightMm}mm at {LabelDpi}dpi.");
+            else if (res == "NO_PRINTER")
                 ShowError("Zebra Browser Print did not answer on 127.0.0.1:9100 or :9101. " +
-                          "Install it on this PC (Zebra support site) and set the ZD421 as its default device. " +
-                          "Until then Print Label falls back to the browser print dialog.");
+                          "Install it on this PC (free, from Zebra's support site) and set the ZD421 " +
+                          "as its default device.");
             else
-                ShowInfo($"Zebra Browser Print is running. Default device: {name}.");
+                ShowError($"Browser Print reached, but the job failed: {res}");
         }
         catch (Exception ex)
         {
