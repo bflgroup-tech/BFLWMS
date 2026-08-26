@@ -233,3 +233,44 @@ export async function probePrinter() {
     const p = await getDefaultPrinter();
     return p ? (p.name || p.uid || 'default printer') : '';
 }
+
+// ---------------------------------------------------------------- media probe
+
+// One SGD round-trip: write the getvar, then read the reply back off the device.
+async function sgd(printer, cmd) {
+    await bpFetch('/write', {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
+        body: JSON.stringify({ device: printer, data: cmd }),
+    });
+    const r = await bpFetch('/read', {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
+        body: JSON.stringify({ device: printer }),
+    });
+    if (!r) return '';
+    return (await r.text()).replace(/"/g, '').trim();
+}
+
+// Asks the ZD421 what it is actually configured for, so the operator does not
+// have to measure the stock. Returns "widthMm,heightMm,dpi" or "" if the printer
+// will not answer — SGD reads are the flakiest part of Browser Print, so the
+// caller must treat a blank as "type it in yourself", not as an error.
+export async function readMedia() {
+    const p = await getDefaultPrinter();
+    if (!p) return '';
+    try {
+        // dots-per-mm -> dpi. ZD421 reports 8 (203dpi) or 12 (300dpi).
+        const dpmm = parseFloat(await sgd(p, '! U1 getvar "internal_wired.printer.dpi"\r\n'))
+                  || parseFloat(await sgd(p, '! U1 getvar "head.resolution.in_dpi"\r\n'));
+        const wDots = parseFloat(await sgd(p, '! U1 getvar "ezpl.print_width"\r\n'));
+        const lDots = parseFloat(await sgd(p, '! U1 getvar "zpl.label_length"\r\n'));
+
+        const dpi = dpmm > 100 ? dpmm : (dpmm >= 11 ? 300 : 203);
+        if (!(wDots > 0) || !(lDots > 0)) return '';
+        const mm = d => Math.round(d / dpi * 25.4);
+        return `${mm(wDots)},${mm(lDots)},${dpi}`;
+    } catch {
+        return '';
+    }
+}
