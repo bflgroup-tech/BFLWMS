@@ -58,13 +58,13 @@
             </colgroup>
             <thead style="position:sticky; top:0; z-index:5; background:var(--bfl-black);">
                 <tr>
-                    <th>Contno</th>
-                    <th>ReceiptDt</th>
-                    <th style="text-align:right;">Ageing Days</th>
-                    <th>PONO</th>
-                    <th>Division</th>
-                    <th style="text-align:right;">Qty</th>
-                    <th>LPM</th>
+                    <th style="cursor:pointer" @onclick='() => Sort("ContNo")'>Contno @Arrow("ContNo")</th>
+                    <th style="cursor:pointer" @onclick='() => Sort("ReceiptDt")'>ReceiptDt @Arrow("ReceiptDt")</th>
+                    <th style="cursor:pointer; text-align:right;" @onclick='() => Sort("AgeingDays")'>Ageing Days @Arrow("AgeingDays")</th>
+                    <th style="cursor:pointer" @onclick='() => Sort("PONo")'>PONO @Arrow("PONo")</th>
+                    <th style="cursor:pointer" @onclick='() => Sort("Division")'>Division @Arrow("Division")</th>
+                    <th style="cursor:pointer; text-align:right;" @onclick='() => Sort("Qty")'>Qty @Arrow("Qty")</th>
+                    <th style="cursor:pointer" @onclick='() => Sort("LPM")'>LPM @Arrow("LPM")</th>
                 </tr>
             </thead>
             <tbody>
@@ -106,13 +106,63 @@
     private string _message = "";
     private bool   _isError;
 
-    private List<PendingForCountingRow> FilteredRows =>
-        string.IsNullOrWhiteSpace(_search)
-            ? _rows
-            : _rows.Where(r =>
-                  (r.ContNo?.Contains(_search, StringComparison.OrdinalIgnoreCase) ?? false)
-               || (r.PONo?.Contains(_search, StringComparison.OrdinalIgnoreCase)   ?? false))
-              .ToList();
+    // Default matches the server's ORDER BY — oldest receipt first, which is the
+    // order the worklist is meant to be worked in.
+    private string _sortKey = "ReceiptDt";
+    private bool   _sortAsc = true;
+
+    private void Sort(string key)
+    {
+        if (_sortKey == key) { _sortAsc = !_sortAsc; return; }
+        _sortKey = key;
+        // First click picks the direction that is actually useful for that column:
+        // worst-first on the numbers (most aged, biggest qty), A-Z on the text.
+        _sortAsc = key is not ("AgeingDays" or "Qty");
+    }
+
+    private string Arrow(string key) => _sortKey != key ? "" : (_sortAsc ? "▲" : "▼");
+
+    // LPM is "SEP-26" / "JAN-27" — sorting those as text puts JAN-27 before
+    // SEP-26, which is backwards. Parse to the month it names so the column
+    // sorts chronologically; anything unparseable falls to the end.
+    private static DateTime LpmOrder(string? lpm) =>
+        DateTime.TryParseExact((lpm ?? "").Trim(), "MMM-yy",
+            System.Globalization.CultureInfo.InvariantCulture,
+            System.Globalization.DateTimeStyles.None, out var d)
+            ? d : DateTime.MaxValue;
+
+    private List<PendingForCountingRow> FilteredRows
+    {
+        get
+        {
+            IEnumerable<PendingForCountingRow> rows = _rows;
+
+            if (!string.IsNullOrWhiteSpace(_search))
+                rows = rows.Where(r =>
+                       (r.ContNo?.Contains(_search, StringComparison.OrdinalIgnoreCase) ?? false)
+                    || (r.PONo?.Contains(_search, StringComparison.OrdinalIgnoreCase)   ?? false));
+
+            Func<PendingForCountingRow, object?> key = _sortKey switch
+            {
+                "ContNo"     => r => r.ContNo,
+                "ReceiptDt"  => r => r.ReceiptDt ?? DateTime.MaxValue,
+                "AgeingDays" => r => r.AgeingDays ?? int.MinValue,
+                "PONo"       => r => r.PONo ?? "",
+                "Division"   => r => r.Division ?? "",
+                "Qty"        => r => r.Qty,
+                "LPM"        => r => LpmOrder(r.LPM),
+                _            => r => r.ReceiptDt ?? DateTime.MaxValue,
+            };
+
+            // Container then PO as the tie-break, so rows of the same container
+            // stay together whichever column is sorted.
+            rows = _sortAsc
+                ? rows.OrderBy(key).ThenBy(r => r.ContNo).ThenBy(r => r.PONo)
+                : rows.OrderByDescending(key).ThenBy(r => r.ContNo).ThenBy(r => r.PONo);
+
+            return rows.ToList();
+        }
+    }
 
     // A pending worklist is worth showing straight away rather than making the
     // operator click Load on arrival; the button stays for refresh / date changes.

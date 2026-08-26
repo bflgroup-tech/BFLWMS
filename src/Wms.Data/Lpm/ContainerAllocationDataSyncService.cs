@@ -373,7 +373,8 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
             }
         }
 
-        // 3. Build the target DataTable (mirrors BuildAzureMirrorDataTable layout).
+        // 3. Build the target DataTable (Azure column layout, aggregated rows —
+        //    the reverse pull is a legacy backfill, not the per-piece sync path).
         var dt = BuildReversePullDataTable(sourceRows, orgLookup, subclassLookup);
 
         // 4. Bulk-copy to Azure dbo.WMS_ContAllocationData.
@@ -624,10 +625,14 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
         if (sourceRows.Count == 0)
             return new DataSyncResult(false, $"Allocation: no approved rows found for container {contno}.", null, 0);
 
-        // Price gate for the legacy destination — BEFORE any row is written. Items at
-        // printing stores must have a price; the pre-flight generates the missing ones
-        // via stp_FindExportSalesPrice and reports whatever it could not resolve.
-        if (destination == DataSyncDestination.WmsProductionDb)
+        // Price gate — BEFORE any row is written. Items at printing stores must have a
+        // price; the pre-flight generates the missing ones via stp_FindExportSalesPrice
+        // and reports whatever it could not resolve.
+        //
+        // Applies to Azure as well as the legacy destination now that both write
+        // per-piece rows carrying OrPrice: a sticker printing without a price is the
+        // same failure either side.
+        if (destination is DataSyncDestination.WmsProductionDb or DataSyncDestination.AzureWmsDb)
         {
             var (missingPrices, generatedPrices) = await PreflightWmsProdPricesAsync(contno, ct);
             if (missingPrices.Count > 0)
@@ -655,7 +660,7 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
             switch (destination)
             {
                 case DataSyncDestination.AzureWmsDb:
-                    rowsCopied = await CopyToAzureWmsAsync(sourceRows, ct);
+                    (rowsCopied, warning) = await CopyToAzureWmsAsync(sourceRows, ct);
                     break;
                 case DataSyncDestination.WmsProductionDb:
                     (rowsCopied, warning) = await CopyToWmsProductionDbAsync(sourceRows, ct);
@@ -748,10 +753,29 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
 
     // ----- destination writers -----
 
-    private async Task<int> CopyToAzureWmsAsync(List<SourceRow> rows, CancellationToken ct)
+    /// <summary>
+    /// Azure now follows the SAME shape as WMS-Prod-DB: one row per piece,
+    /// enriched from bfldata.dbo.DataSettings + RFSalesPrice + RFIDTransfer.
+    /// It was a straight column-for-column mirror of the LPMSIM rows before.
+    ///
+    /// Returns the exploded row count plus any non-fatal RefNo / DataSettings
+    /// warnings, matching CopyToWmsProductionDbAsync.
+    /// </summary>
+    private async Task<(int RowsCopied, string? Warning)> CopyToAzureWmsAsync(List<SourceRow> rows, CancellationToken ct)
     {
-        // Mirror table — straight column-for-column SqlBulkCopy from SourceRow.
-        var dt = BuildAzureMirrorDataTable(rows);
+        var settings = await LoadProdStoreSettingsAsync(rows.Select(r => r.StoreID), ct);
+        var prices   = await LoadRfSalesPricesAsync(rows.Select(r => r.Itemcode), settings, ct);
+        var (refNos, refNoFailures) = await ResolveRefNosAsync(settings, ct);
+
+        var unmatchedStores = rows
+            .Select(r => r.StoreID?.Trim() ?? "")
+            .Where(s => s.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Where(s => !settings.ContainsKey(s))
+            .ToList();
+
+        var dt = BuildAzurePerPieceDataTable(rows, settings, prices, refNos);
+
         await using var conn = OpenWms();
         using var bulk = new SqlBulkCopy(conn)
         {
@@ -762,7 +786,14 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
         foreach (System.Data.DataColumn col in dt.Columns)
             bulk.ColumnMappings.Add(col.ColumnName, col.ColumnName);
         await bulk.WriteToServerAsync(dt, ct);
-        return rows.Count;
+
+        var warnings = new List<string>();
+        if (refNoFailures.Count > 0)
+            warnings.Add($"RefNo resolution failed for shop(s): {string.Join(", ", refNoFailures)}");
+        if (unmatchedStores.Count > 0)
+            warnings.Add($"Store(s) with no row in DataSettings (RefNo left blank): {string.Join(", ", unmatchedStores)}");
+
+        return (dt.Rows.Count, warnings.Count > 0 ? string.Join(" | ", warnings) : null);
     }
 
     /// <summary>Returns the exploded row count plus a summary of any non-fatal
@@ -1164,7 +1195,131 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
 
     // ===================== DataTable builders =====================
 
-    private static System.Data.DataTable BuildAzureMirrorDataTable(List<SourceRow> rows)
+    /// <summary>
+    /// Azure dbo.WMS_ContAllocationData, one row PER PIECE — the same shape
+    /// BuildPhotoCheckingResultDataTable produces for WMS-Prod-DB, mapped onto
+    /// Azure's own column set plus the six added by
+    /// db/azure_migrate_wms_contallocationdata_add_prod_fields.sql.
+    ///
+    /// Three deliberate differences from the WMS-Prod-DB builder, each because
+    /// Azure's copy of this table is READ BACK by Manual Counting / Robo Sorting
+    /// while PhotoCheckingResult is not:
+    ///
+    ///   * Qty and AllocatedQty are both 1, and QtyIssue is forced to 0. Tier 1
+    ///     of the scan engine looks for ISNULL(QtyIssue,0) &lt; ISNULL(AllocatedQty,0)
+    ///     and increments QtyIssue, so each row is exactly one available piece.
+    ///     Passing the source QtyIssue through (as the Prod builder does) would
+    ///     silently make pieces unscannable.
+    ///   * Barcode keeps the plain barcode. Prod overwrites it with the composite
+    ///     "Barcode/OrPrice/RefNo" sticker text; doing that here would change the
+    ///     meaning of a column the counting side already reads.
+    ///   * SalesPrice keeps the source allocation's numeric value — Azure's column
+    ///     is DECIMAL(18,4), and the RFSalesPrice figure lands in OrPrice instead.
+    ///
+    /// NOTE: the descriptive aggregate columns (POQty, PrevAllocatedQty,
+    /// Phase2Qty, SkuMax) now REPEAT on every piece of an allocation. They
+    /// describe the source allocation, not the piece — do not SUM them.
+    /// </summary>
+    private static System.Data.DataTable BuildAzurePerPieceDataTable(
+        List<SourceRow> rows,
+        Dictionary<string, ProdStoreSettings> settings,
+        Dictionary<(string Dataname, string Itemcode), decimal> prices,
+        Dictionary<string, string> refNos)
+    {
+        var dt = BuildAzureMirrorSchema();
+
+        foreach (var r in rows)
+        {
+            var pieces = r.AllocatedQty ?? r.POQty ?? 0;
+            if (pieces <= 0) continue;
+
+            var storeId = r.StoreID?.Trim() ?? "";
+            settings.TryGetValue(storeId, out var st);
+            var printY = st?.PrintFlagYes == true;
+
+            // OrPrice only when the store prints stickers; 0 rather than NULL when
+            // it doesn't, matching PhotoCheckingResult.
+            double orPrice = 0.0;
+            if (printY && st is not null)
+            {
+                var dn = st.Dataname?.Trim();
+                var ic = r.Itemcode?.Trim();
+                if (!string.IsNullOrEmpty(dn) && !string.IsNullOrEmpty(ic)
+                    && prices.TryGetValue((dn, ic), out var p))
+                    orPrice = (double)p;
+            }
+
+            // Stores with a blank ShopName share the "" RefNo bucket by design —
+            // see ResolveRefNosAsync.
+            var shopKey = (st?.ShopName ?? "").Trim();
+            var refNo = printY && refNos.TryGetValue(shopKey, out var rn) ? rn : "";
+
+            for (var i = 0; i < pieces; i++)
+            {
+                dt.Rows.Add(
+                    (object?)r.BatchNo          ?? DBNull.Value,
+                    (object?)r.ContNo           ?? DBNull.Value,
+                    (object?)r.Country          ?? DBNull.Value,
+                    (object?)r.TrnDate          ?? DBNull.Value,
+                    (object?)r.Time1            ?? DBNull.Value,
+                    (object?)r.UPC              ?? DBNull.Value,
+                    (object?)r.Itemcode         ?? DBNull.Value,
+                    (object?)r.Barcode          ?? DBNull.Value,
+                    // GroupCode from usa.dbo.usaorgfile for this (ContNo, ItemCode),
+                    // falling back to the allocation's own value — same as Prod.
+                    (object?)(r.UsaGroupCode ?? r.GroupCode) ?? DBNull.Value,
+                    (object?)r.POQty            ?? DBNull.Value,
+                    (object?)r.SkuMax           ?? DBNull.Value,
+                    1,                                   // AllocatedQty — one piece
+                    (object?)r.PrevAllocatedQty ?? DBNull.Value,
+                    0,                                   // QtyIssue — nothing scanned yet
+                    1,                                   // Qty — one piece
+                    (object?)r.Phase2Qty        ?? DBNull.Value,
+                    (object?)r.StoreID          ?? DBNull.Value,
+                    (object?)r.TcmContno        ?? DBNull.Value,
+                    (object?)r.Itemname         ?? DBNull.Value,
+                    (object?)r.BuildingCategory ?? DBNull.Value,
+                    (object?)r.LPMDt            ?? DBNull.Value,
+                    (object?)r.LPMBoxNO         ?? DBNull.Value,
+                    (object?)r.ORAPONo          ?? DBNull.Value,
+                    (object?)r.Division         ?? DBNull.Value,
+                    (object?)r.Brand            ?? DBNull.Value,
+                    (object?)r.DivCode          ?? DBNull.Value,
+                    (object?)r.Department       ?? DBNull.Value,
+                    (object?)r.Season           ?? DBNull.Value,
+                    (object?)r.Style            ?? DBNull.Value,
+                    (object?)r.Size             ?? DBNull.Value,
+                    ParseDecimalOrDbNull(r.SalesPrice),
+                    (object?)r.ResultType       ?? DBNull.Value,
+                    (object?)r.FinalResult      ?? DBNull.Value,
+                    // Result comes from the store's DataSettings row, as on Prod —
+                    // falls back to the allocation's own Result when the store has
+                    // no DataSettings row rather than writing NULL.
+                    (object?)(st?.POAllocationResult ?? r.Result) ?? DBNull.Value,
+                    (object?)r.Remarks          ?? DBNull.Value,
+                    (object?)r.OTS              ?? DBNull.Value,
+                    (object?)r.Color            ?? DBNull.Value,
+                    (object?)r.Gender           ?? DBNull.Value,
+                    (object?)r.HsCode           ?? DBNull.Value,
+                    (object?)r.Class            ?? DBNull.Value,
+                    (object?)r.Family           ?? DBNull.Value,
+                    (object?)r.Subclass         ?? DBNull.Value,
+                    (object?)r.PriorityRank     ?? DBNull.Value,
+                    (object?)r.MnwToday         ?? DBNull.Value,
+                    printY ? "Y" : "N",                  // PrintFlag
+                    st?.RfidFlagYes == true ? "Y" : "N", // RfidFlag
+                    st?.Company ?? "",                   // Company
+                    (object?)st?.ShopCode       ?? DBNull.Value,
+                    orPrice,                             // OrPrice
+                    refNo);                              // RefNo
+            }
+        }
+        return dt;
+    }
+
+    /// <summary>Column layout shared by the per-piece Azure builder — kept next to
+    /// it so the DataTable order and the Rows.Add order cannot drift apart.</summary>
+    private static System.Data.DataTable BuildAzureMirrorSchema()
     {
         var dt = new System.Data.DataTable();
         dt.Columns.Add("BatchNo",          typeof(int));
@@ -1181,6 +1336,7 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
         dt.Columns.Add("AllocatedQty",     typeof(int));
         dt.Columns.Add("PrevAllocatedQty", typeof(int));
         dt.Columns.Add("QtyIssue",         typeof(int));
+        dt.Columns.Add("Qty",              typeof(int));
         dt.Columns.Add("Phase2Qty",        typeof(int));
         dt.Columns.Add("StoreID",          typeof(string));
         dt.Columns.Add("TcmContno",        typeof(string));
@@ -1210,54 +1366,12 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
         dt.Columns.Add("Subclass",         typeof(string));
         dt.Columns.Add("PriorityRank",     typeof(int));
         dt.Columns.Add("MnwToday",         typeof(int));
-
-        foreach (var r in rows)
-        {
-            dt.Rows.Add(
-                (object?)r.BatchNo          ?? DBNull.Value,
-                (object?)r.ContNo           ?? DBNull.Value,
-                (object?)r.Country          ?? DBNull.Value,
-                (object?)r.TrnDate          ?? DBNull.Value,
-                (object?)r.Time1            ?? DBNull.Value,
-                (object?)r.UPC              ?? DBNull.Value,
-                (object?)r.Itemcode         ?? DBNull.Value,
-                (object?)r.Barcode          ?? DBNull.Value,
-                (object?)r.GroupCode        ?? DBNull.Value,
-                (object?)r.POQty            ?? DBNull.Value,
-                (object?)r.SkuMax           ?? DBNull.Value,
-                (object?)r.AllocatedQty     ?? DBNull.Value,
-                (object?)r.PrevAllocatedQty ?? DBNull.Value,
-                (object?)r.QtyIssue         ?? DBNull.Value,
-                (object?)r.Phase2Qty        ?? DBNull.Value,
-                (object?)r.StoreID          ?? DBNull.Value,
-                (object?)r.TcmContno        ?? DBNull.Value,
-                (object?)r.Itemname         ?? DBNull.Value,
-                (object?)r.BuildingCategory ?? DBNull.Value,
-                (object?)r.LPMDt            ?? DBNull.Value,
-                (object?)r.LPMBoxNO         ?? DBNull.Value,
-                (object?)r.ORAPONo          ?? DBNull.Value,
-                (object?)r.Division         ?? DBNull.Value,
-                (object?)r.Brand            ?? DBNull.Value,
-                (object?)r.DivCode          ?? DBNull.Value,
-                (object?)r.Department       ?? DBNull.Value,
-                (object?)r.Season           ?? DBNull.Value,
-                (object?)r.Style            ?? DBNull.Value,
-                (object?)r.Size             ?? DBNull.Value,
-                ParseDecimalOrDbNull(r.SalesPrice),
-                (object?)r.ResultType       ?? DBNull.Value,
-                (object?)r.FinalResult      ?? DBNull.Value,
-                (object?)r.Result           ?? DBNull.Value,
-                (object?)r.Remarks          ?? DBNull.Value,
-                (object?)r.OTS              ?? DBNull.Value,
-                (object?)r.Color            ?? DBNull.Value,
-                (object?)r.Gender           ?? DBNull.Value,
-                (object?)r.HsCode           ?? DBNull.Value,
-                (object?)r.Class            ?? DBNull.Value,
-                (object?)r.Family           ?? DBNull.Value,
-                (object?)r.Subclass         ?? DBNull.Value,
-                (object?)r.PriorityRank     ?? DBNull.Value,
-                (object?)r.MnwToday         ?? DBNull.Value);
-        }
+        dt.Columns.Add("PrintFlag",        typeof(string));
+        dt.Columns.Add("RfidFlag",         typeof(string));
+        dt.Columns.Add("Company",          typeof(string));
+        dt.Columns.Add("ShopCode",         typeof(string));
+        dt.Columns.Add("OrPrice",          typeof(double));
+        dt.Columns.Add("RefNo",            typeof(string));
         return dt;
     }
 
