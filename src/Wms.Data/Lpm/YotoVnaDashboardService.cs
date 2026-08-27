@@ -196,7 +196,7 @@ public class YotoVnaDashboardService(IOnPremConnectionResolver resolver)
     // trailerno) across all partners is naturally <= the sum of per-partner counts).
     private static readonly (string Label, string CountLabel, string? From, string? To)[] InternalTransferDefs =
     {
-        ("Total Inbound",       "NO. OF CONTAINERS", null,     "YOTO"),
+        ("Total Inbound",       "NO. OF TRAILERS",   null,     "YOTO"),
         ("Total Outbound",      "NO. OF TRAILERS",   "YOTO",   null),
         ("Inbound from JAFZA",  "NO. OF TRAILERS",   "JAFZA",  "YOTO"),
         ("Outbound to JAFZA",   "NO. OF TRAILERS",   "YOTO",   "JAFZA"),

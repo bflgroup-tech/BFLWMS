@@ -30,10 +30,16 @@
 <div class="aiwms-section">
     <div style="display:flex; gap:12px; align-items:end; flex-wrap:wrap;">
         <div>
-            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">VIEW</label>
-            <select @bind="_viewMode" style="width:150px; height:36px; box-sizing:border-box; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;">
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">VIEW / WEEK</label>
+            <select @bind="_selectedPeriod" style="width:230px; height:36px; box-sizing:border-box; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;">
                 <option value="Monthly">Monthly</option>
-                <option value="Weekly">Weekly</option>
+                <option value="WeeklyAgg">Weekly (all weeks of selected month)</option>
+                <optgroup label="Or pick a specific week">
+                    @foreach (var w in Weeks)
+                    {
+                        <option value="W@(w.Num)">W@(w.Num) &middot; @w.Start.ToString("dd-MMM") &rarr; @w.End.ToString("dd-MMM")</option>
+                    }
+                </optgroup>
             </select>
         </div>
         <div>
@@ -45,19 +51,7 @@
                 }
             </select>
         </div>
-        @if (_viewMode == "Weekly")
-        {
-            <div>
-                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">WEEK</label>
-                <select @bind="_selectedWeek" style="width:190px; height:36px; box-sizing:border-box; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;">
-                    @foreach (var w in Weeks)
-                    {
-                        <option value="@w.Num">W@(w.Num) &middot; @w.Start.ToString("dd-MMM") &rarr; @w.End.ToString("dd-MMM")</option>
-                    }
-                </select>
-            </div>
-        }
-        else
+        @if (IsMonthly || IsWeeklyAgg)
         {
             <div>
                 <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">MONTH</label>
@@ -162,7 +156,7 @@
         <div class="yvd-header">
             <span>
                 Total Inbound Summary — Offload Containers
-                (@(_viewMode == "Weekly" ? SelectedPeriodLabel : $"{_selectedYear}, by month"))
+                (@PeriodSuffixLabel)
             </span>
             @MinimizeToggle(_totalInboundCollapsed, () => _totalInboundCollapsed = !_totalInboundCollapsed)
         </div>
@@ -237,7 +231,7 @@
                         <span class="yvd-warehouse-badge">@box.Warehouse</span>
                     }
                     @box.Label
-                    (@(_viewMode == "Weekly" ? SelectedPeriodLabel : $"{_selectedYear}, by month"))
+                    (@PeriodSuffixLabel)
                 </span>
                 @MinimizeToggle(boxCollapsed, () => { if (!_internalTransferCollapsed.Add(box.Label)) _internalTransferCollapsed.Remove(box.Label); })
             </div>
@@ -303,10 +297,11 @@
 }
 
 @code {
-    private string _viewMode = "Monthly";
+    // "Monthly" | "WeeklyAgg" (all weeks of the selected month, as columns) | "W{n}" (one
+    // specific week only) -- one unified dropdown instead of a separate VIEW + WEEK pair.
+    private string _selectedPeriod = "Monthly";
     private int _selectedYear = DateTime.Now.Year;
     private int _selectedMonth = DateTime.Now.Month;
-    private string _selectedWeek = ComputeCurrentWeekNumber();
     private List<int> _years = new();
     private bool _loading;
     private bool _loadedOnce;
@@ -321,9 +316,24 @@
     private List<YotoInboundPeriodRow> _periodRows = new();
     private List<YotoInternalTransferBox> _internalTransfers = new();
 
-    private string SelectedPeriodLabel => _viewMode == "Weekly"
-        ? $"W{_selectedWeek} ({SelectedWeekRange.Start:dd-MMM} → {SelectedWeekRange.End:dd-MMM} {_selectedYear})"
+    private bool IsMonthly => _selectedPeriod == "Monthly";
+    private bool IsWeeklyAgg => _selectedPeriod == "WeeklyAgg";
+    private bool IsSpecificWeek => !IsMonthly && !IsWeeklyAgg;
+
+    private int SelectedWeekNum =>
+        IsSpecificWeek && _selectedPeriod.Length > 1 && int.TryParse(_selectedPeriod[1..], out var n) ? n : 1;
+
+    private string SelectedPeriodLabel =>
+        IsSpecificWeek ? $"W{SelectedWeekNum} ({SelectedWeekRange.Start:dd-MMM} → {SelectedWeekRange.End:dd-MMM} {_selectedYear})"
+        : IsWeeklyAgg   ? $"{new DateTime(2000, _selectedMonth, 1):MMMM} {_selectedYear}, by week"
         : $"{new DateTime(2000, _selectedMonth, 1):MMMM} {_selectedYear}";
+
+    // Same "(...)" suffix used in the Total Inbound Summary / Internal Transfer box headers
+    // and their matching Excel export titles -- Monthly's own text is unchanged from before.
+    private string PeriodSuffixLabel =>
+        IsSpecificWeek ? SelectedPeriodLabel
+        : IsWeeklyAgg   ? $"{new DateTime(2000, _selectedMonth, 1):MMMM} {_selectedYear}, by week"
+        : $"{_selectedYear}, by month";
 
     // "@DateTime.Today.Year-01-01" previously here was NOT a date string -- Razor parsed
     // it as integer subtraction (Year - 1 - 1), silently showing the wrong value. This is
@@ -361,8 +371,7 @@
     {
         get
         {
-            var num = int.TryParse(_selectedWeek, out var n) ? n : 1;
-            var range = Weeks.FirstOrDefault(w => w.Num == num);
+            var range = Weeks.FirstOrDefault(w => w.Num == SelectedWeekNum);
             return range == default ? (Weeks.First().Start, Weeks.First().End) : (range.Start, range.End);
         }
     }
@@ -372,20 +381,6 @@
         var jan1 = new DateTime(year, 1, 1);
         var daysUntilSunday = ((int)DayOfWeek.Sunday - (int)jan1.DayOfWeek + 7) % 7;
         return jan1.AddDays(daysUntilSunday);
-    }
-
-    private static DateTime CurrentProductionDayGst()
-    {
-        var nowGst = DateTime.UtcNow.AddHours(4);
-        return nowGst.Hour < 6 ? nowGst.Date.AddDays(-1) : nowGst.Date;
-    }
-
-    private static string ComputeCurrentWeekNumber()
-    {
-        var today = CurrentProductionDayGst();
-        var week1Start = FirstWeekStart(today.Year);
-        if (today < week1Start) return "1";
-        return (((today - week1Start).Days / 7) + 1).ToString();
     }
 
     protected override async Task OnInitializedAsync()
@@ -401,28 +396,58 @@
         await InvokeAsync(StateHasChanged);
         try
         {
-            DateTime from, to;
-            if (_viewMode == "Weekly")
+            var monthStart = new DateTime(_selectedYear, _selectedMonth, 1);
+            var monthEnd = monthStart.AddMonths(1);
+
+            if (IsMonthly)
             {
-                (from, to) = SelectedWeekRange;
-                to = to.AddDays(1); // SelectedWeekRange.End is the last included day
+                // Unchanged from before -- Jan-Dec columns for the whole year.
+                _completed = await Svc.GetCompletedOffloadingAsync(monthStart, monthEnd);
+                _pending = await Svc.GetPendingOffloadingAsync();
+                _periodRows = await Svc.GetMonthlyInboundSummaryAsync(_selectedYear);
+                _internalTransfers = await Svc.GetInternalTransferMonthlyAsync(_selectedYear);
             }
-            else
+            else if (IsWeeklyAgg)
             {
-                from = new DateTime(_selectedYear, _selectedMonth, 1);
-                to = from.AddMonths(1);
+                // Every calendar week (Sun-Sat) that overlaps the selected month, as columns --
+                // reuses the same single-range service calls the specific-week branch below
+                // uses, once per overlapping week, then stitches the results together.
+                _completed = await Svc.GetCompletedOffloadingAsync(monthStart, monthEnd);
+                _pending = await Svc.GetPendingOffloadingAsync();
+
+                var weeksInMonth = Weeks.Where(w => w.Start < monthEnd && w.End >= monthStart).ToList();
+
+                var periodRows = new List<YotoInboundPeriodRow>();
+                var perWeekTransfers = new List<List<YotoInternalTransferBox>>();
+                foreach (var w in weeksInMonth)
+                {
+                    var wFrom = w.Start;
+                    var wTo = w.End.AddDays(1);
+                    var label = $"W{w.Num}";
+                    periodRows.Add(await Svc.GetInboundSummaryForRangeAsync(wFrom, wTo, label, w.Num));
+                    perWeekTransfers.Add(await Svc.GetInternalTransferForRangeAsync(wFrom, wTo, label, w.Num));
+                }
+                _periodRows = periodRows;
+
+                // Each week's call returns all 8 boxes with one period each, in the same
+                // (Total Inbound, Total Outbound, JAFZA in/out, ...) order every time --
+                // grouping by Label across weeks stitches each box's periods back together
+                // in week order without needing to re-sort afterward.
+                _internalTransfers = perWeekTransfers
+                    .SelectMany(list => list)
+                    .GroupBy(b => b.Label)
+                    .Select(g => new YotoInternalTransferBox(g.First().Label, g.First().CountLabel, g.First().Warehouse, g.SelectMany(b => b.Periods).ToList()))
+                    .ToList();
             }
-
-            _completed = await Svc.GetCompletedOffloadingAsync(from, to);
-            _pending = await Svc.GetPendingOffloadingAsync();
-
-            _periodRows = _viewMode == "Weekly"
-                ? new List<YotoInboundPeriodRow> { await Svc.GetInboundSummaryForRangeAsync(from, to, SelectedPeriodLabel, int.Parse(_selectedWeek)) }
-                : await Svc.GetMonthlyInboundSummaryAsync(_selectedYear);
-
-            _internalTransfers = _viewMode == "Weekly"
-                ? await Svc.GetInternalTransferForRangeAsync(from, to, SelectedPeriodLabel, int.Parse(_selectedWeek))
-                : await Svc.GetInternalTransferMonthlyAsync(_selectedYear);
+            else // specific week
+            {
+                var (weekStart, weekEndInclusive) = SelectedWeekRange;
+                var weekEnd = weekEndInclusive.AddDays(1);
+                _completed = await Svc.GetCompletedOffloadingAsync(weekStart, weekEnd);
+                _pending = await Svc.GetPendingOffloadingAsync();
+                _periodRows = new List<YotoInboundPeriodRow> { await Svc.GetInboundSummaryForRangeAsync(weekStart, weekEnd, SelectedPeriodLabel, SelectedWeekNum) };
+                _internalTransfers = await Svc.GetInternalTransferForRangeAsync(weekStart, weekEnd, SelectedPeriodLabel, SelectedWeekNum);
+            }
         }
         finally
         {
@@ -512,7 +537,7 @@
     private int WriteTotalInboundBlock(IXLWorksheet ws, int row)
     {
         row = WriteSectionTitle(ws, row,
-            $"Total Inbound Summary — Offload Containers ({(_viewMode == "Weekly" ? SelectedPeriodLabel : $"{_selectedYear}, by month")})");
+            $"Total Inbound Summary — Offload Containers ({PeriodSuffixLabel})");
 
         ws.Cell(row, 1).Value = "Inbound Details";
         var col = 2;
@@ -533,7 +558,7 @@
     {
         var title = box.Warehouse is not null ? $"{box.Warehouse} — {box.Label}" : box.Label;
         row = WriteSectionTitle(ws, row,
-            $"{title} ({(_viewMode == "Weekly" ? SelectedPeriodLabel : $"{_selectedYear}, by month")})");
+            $"{title} ({PeriodSuffixLabel})");
 
         ws.Cell(row, 1).Value = "Inbound Details";
         var col = 2;
