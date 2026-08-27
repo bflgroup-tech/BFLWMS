@@ -40,6 +40,7 @@ public static class MenuKeys
     public const string RPT_ECOM_STOCK_VARIANCE   = "RPT_ECOM_STOCK_VARIANCE";
     public const string RPT_SOH_MONTHLY_SUMMARY   = "RPT_SOH_MONTHLY_SUMMARY";
     public const string RPT_YOTO_VNA_DASHBOARD    = "RPT_YOTO_VNA_DASHBOARD";
+    public const string RPT_WAREHOUSE_INCENTIVES  = "RPT_WAREHOUSE_INCENTIVES";
 
     public const string ADMIN_USERS               = "ADMIN_USERS";
     public const string ADMIN_WH_MASTER           = "ADMIN_WH_MASTER";
@@ -109,6 +110,7 @@ public static class MenuKeys
         new MenuEntry(RPT_ECOM_STOCK_VARIANCE, "Reports",           "ECOM Stock Variance Report","reports/ecom-stock-variance", new[] { Roles.Admin, Roles.Reports }),
         new MenuEntry(RPT_SOH_MONTHLY_SUMMARY, "Reports",           "SOH Monthly Summary",      "reports/soh-monthly-summary", new[] { Roles.Admin, Roles.Reports }),
         new MenuEntry(RPT_YOTO_VNA_DASHBOARD,  "Reports",           "YOTO VNA Dashboard",      "reports/yoto-vna-dashboard", new[] { Roles.Admin, Roles.Reports }),
+        new MenuEntry(RPT_WAREHOUSE_INCENTIVES, "Reports",          "Warehouse Incentives",    "reports/warehouse-incentives", new[] { Roles.Admin, Roles.Reports }),
         new MenuEntry(RPT_SYNC_DATA_COUNT,   "IT",                 "Sync Data Count",           "reports/sync-data-count",   new[] { Roles.Admin, Roles.Reports }),
 
         new MenuEntry(ADMIN_USERS,           "Admin",               "Users & Roles",             "admin/users",               new[] { Roles.Admin }),

@@ -1,0 +1,210 @@
+@page "/reports/warehouse-incentives"
+@rendermode RenderMode.InteractiveServer
+@using Wms.Core
+@using Wms.Data.Lpm
+@using ClosedXML.Excel
+@using MudBlazor
+@attribute [Authorize(Policy = MenuKeys.RPT_WAREHOUSE_INCENTIVES)]
+@inject WarehouseIncentivesService Svc
+@inject IJSRuntime JS
+
+<PageTitle>WMS - Warehouse Incentives</PageTitle>
+
+<div class="aiwms-page-header">
+    <h2>Warehouse Incentives</h2>
+    <p style="color:var(--text-secondary)">UAE/TECHNO checking counts per employee per day, from USA.dbo.AMEChecking and BFLDATA.dbo.JAFZAChecking. A checking scan between midnight and 05:00 is credited to the previous day. Employee names aren't available (PAYROLL isn't reachable from this app) — EmpCode only.</p>
+</div>
+
+<div class="aiwms-section">
+    <div style="display:grid; grid-template-columns: auto auto 1fr 1fr 1fr auto; gap:12px; align-items:end;">
+        <div>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">FROM</label>
+            <input type="date" @bind="_from" @bind:format="yyyy-MM-dd" max="@DateTime.Today.ToString("yyyy-MM-dd")" style="padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
+        </div>
+        <div>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">TO</label>
+            <input type="date" @bind="_to" @bind:format="yyyy-MM-dd" max="@DateTime.Today.ToString("yyyy-MM-dd")" style="padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
+        </div>
+        <div>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">AREA (select any)</label>
+            <MudSelect T="string" Dense="true" MultiSelection="true" SelectAll="true" Placeholder="All"
+                       Variant="Variant.Outlined" Margin="Margin.Dense"
+                       SelectedValues="_selectedAreas" SelectedValuesChanged="@(v => _selectedAreas = v.ToHashSet())">
+                @foreach (var a in Areas) { <MudSelectItem T="string" Value="@a">@a</MudSelectItem> }
+            </MudSelect>
+        </div>
+        <div>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">DIVISION (select any)</label>
+            <MudSelect T="string" Dense="true" MultiSelection="true" SelectAll="true" Placeholder="All"
+                       Variant="Variant.Outlined" Margin="Margin.Dense"
+                       SelectedValues="_selectedDivisions" SelectedValuesChanged="@(v => _selectedDivisions = v.ToHashSet())">
+                @foreach (var d in _divisions) { <MudSelectItem T="string" Value="@d">@d</MudSelectItem> }
+            </MudSelect>
+        </div>
+        <div>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">EMP CODE</label>
+            <input @bind="_empCode" @bind:event="oninput" placeholder="e.g. RT01" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
+        </div>
+        <div style="display:flex; gap:8px">
+            <button class="aiwms-btn" style="background:var(--s-live); color:#fff; border-radius:10px;"
+                    @onclick="LoadAsync" disabled="@(_loading || _from > _to)">
+                <span class="mi" style="font-size:16px;">play_arrow</span> @(_loading ? "Loading..." : "Load")
+            </button>
+            <button class="aiwms-btn" style="background:#fff; color:var(--text-primary); border:1.5px solid var(--border-strong); border-radius:10px;"
+                    @onclick="ClearFilters" disabled="@_loading">
+                <span class="mi" style="font-size:16px;">refresh</span> Clear Filters
+            </button>
+            <button class="aiwms-btn" style="background:#fff; color:var(--s-active); border:1.5px solid var(--s-active); border-radius:10px;"
+                    @onclick="ExportExcelAsync" disabled="@(_exporting || _rows.Count == 0)">
+                <span class="mi" style="font-size:16px;">download</span> @(_exporting ? "Exporting..." : "Export Excel")
+            </button>
+        </div>
+    </div>
+
+    <p style="font-size:11px; color:var(--text-secondary); margin-top:8px">
+        A wider date range takes longer — roughly 10-15s per week of data. Default range is the last 7 days.
+    </p>
+
+    @if (!string.IsNullOrEmpty(_message))
+    {
+        <div class="aiwms-alert @(_isError ? "error" : "info")" style="margin-top:12px">@_message</div>
+    }
+</div>
+
+@if (_loaded)
+{
+    <div class="aiwms-section">
+        <div class="aiwms-card-header">Warehouse Incentives - @_rows.Count.ToString("N0") row(s)</div>
+        <div style="overflow-x:auto">
+        <table class="aiwms-table aiwms-table-dense">
+            <thead>
+                <tr>
+                    <th>Country</th>
+                    <th>Warehouse</th>
+                    <th>Type</th>
+                    <th>Area</th>
+                    <th>Date</th>
+                    <th>Emp Code</th>
+                    <th>Division</th>
+                    <th style="text-align:right">Qty</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr style="font-weight:700; background:var(--surface-1, #f7f7f5);">
+                    <td colspan="7">Total</td>
+                    <td style="text-align:right">@_rows.Sum(r => r.Qty).ToString("N0")</td>
+                </tr>
+                @foreach (var r in _rows)
+                {
+                    <tr>
+                        <td>@r.Country</td>
+                        <td>@r.Warehouse</td>
+                        <td>@r.Type</td>
+                        <td>@r.Area</td>
+                        <td style="white-space:nowrap">@r.TrnDate.ToString("dd-MMM-yyyy")</td>
+                        <td style="font-family:var(--font-mono)">@r.EmpCode</td>
+                        <td style="word-break:break-word">@r.Division</td>
+                        <td style="text-align:right">@r.Qty.ToString("N0")</td>
+                    </tr>
+                }
+                @if (_rows.Count == 0)
+                {
+                    <tr><td colspan="8" style="color:var(--text-secondary)">No rows for the selected filters.</td></tr>
+                }
+            </tbody>
+        </table>
+        </div>
+    </div>
+}
+
+@code {
+    private static readonly string[] Areas = ["AUTO", "MANUAL"];
+
+    private DateTime _from = DateTime.Today.AddDays(-6);
+    private DateTime _to = DateTime.Today;
+    private HashSet<string> _selectedAreas = new();
+    private List<string> _divisions = new();
+    private HashSet<string> _selectedDivisions = new();
+    private string _empCode = "";
+    private bool _loading;
+    private bool _loaded;
+    private string _message = "";
+    private bool _isError;
+    private bool _exporting;
+    private List<WarehouseIncentiveRow> _rows = new();
+
+    private IEnumerable<string>? EffectiveAreasOrNull =>
+        _selectedAreas.Count > 0 ? _selectedAreas : null;
+
+    private IEnumerable<string>? EffectiveDivisionsOrNull =>
+        _selectedDivisions.Count > 0 ? _selectedDivisions : null;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try { _divisions = await Svc.GetDivisionsAsync(); }
+        catch { /* fall back to empty list if the lookup fails */ }
+    }
+
+    private async Task LoadAsync()
+    {
+        _loading = true; _message = ""; _isError = false; await InvokeAsync(StateHasChanged);
+        try
+        {
+            _rows = await Svc.GetReportAsync(_from, _to, EffectiveAreasOrNull, EffectiveDivisionsOrNull, _empCode);
+            _loaded = true;
+            if (_rows.Count == 0) _message = "No rows for the selected filters.";
+        }
+        catch (Exception ex) { _message = ex.Message; _isError = true; }
+        finally { _loading = false; }
+    }
+
+    private void ClearFilters()
+    {
+        _from = DateTime.Today.AddDays(-6);
+        _to = DateTime.Today;
+        _selectedAreas = new();
+        _selectedDivisions = new();
+        _empCode = "";
+        _rows = new();
+        _loaded = false;
+        _message = "";
+        _isError = false;
+    }
+
+    private async Task ExportExcelAsync()
+    {
+        if (_rows.Count == 0) return;
+        _exporting = true;
+        try
+        {
+            using var wb = new XLWorkbook();
+            var ws = wb.AddWorksheet("Warehouse Incentives");
+            string[] headers = { "Country", "Warehouse", "Type", "Area", "Date", "Emp Code", "Division", "Qty" };
+            for (int i = 0; i < headers.Length; i++) ws.Cell(1, i + 1).Value = headers[i];
+            ws.Row(1).Style.Font.Bold = true;
+
+            int row = 2;
+            foreach (var r in _rows)
+            {
+                ws.Cell(row, 1).Value = r.Country;
+                ws.Cell(row, 2).Value = r.Warehouse;
+                ws.Cell(row, 3).Value = r.Type;
+                ws.Cell(row, 4).Value = r.Area;
+                ws.Cell(row, 5).Value = r.TrnDate.ToString("dd-MMM-yyyy");
+                ws.Cell(row, 6).Value = r.EmpCode;
+                ws.Cell(row, 7).Value = r.Division;
+                ws.Cell(row, 8).Value = r.Qty;
+                row++;
+            }
+            ws.Columns().AdjustToContents();
+
+            using var ms = new MemoryStream();
+            wb.SaveAs(ms);
+            var b64 = Convert.ToBase64String(ms.ToArray());
+            var name = $"warehouse-incentives-{_from:yyyyMMdd}-{_to:yyyyMMdd}.xlsx";
+            await JS.InvokeVoidAsync("downloadFileWithPicker", name, b64,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        }
+        finally { _exporting = false; }
+    }
+}
