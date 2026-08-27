@@ -2,14 +2,24 @@
 @rendermode RenderMode.InteractiveServer
 @using Wms.Core
 @using Wms.Data.Lpm
+@using ClosedXML.Excel
 @attribute [Authorize(Policy = MenuKeys.RPT_YOTO_VNA_DASHBOARD)]
 @inject YotoVnaDashboardService Svc
+@inject ICurrentUser CurrentUser
+@inject IJSRuntime JS
 
 <style>
-    .yvd-header { background: var(--bfl-black); color: var(--bfl-yellow); font-family: var(--font-display); font-weight: 800; font-size: 13px; text-transform: uppercase; letter-spacing: .5px; padding: 10px 14px; text-align: center; }
+    .yvd-header { position: relative; background: var(--bfl-black); color: var(--bfl-yellow); font-family: var(--font-display); font-weight: 800; font-size: 13px; text-transform: uppercase; letter-spacing: .5px; padding: 10px 40px; text-align: center; }
+    .yvd-header .aiwms-icon-btn { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); }
     .yvd-total-row td { font-weight: 700; background: #e6f4ea; }
-    .yvd-section-banner { text-align: center; background: #dbeafe; color: #1e3a5f; font-family: var(--font-display); font-weight: 800; font-size: 15px; text-transform: uppercase; letter-spacing: .5px; padding: 10px 14px; border-radius: var(--r-sm); margin: 24px 0 8px 0; }
+    .yvd-section-banner { text-align: center; background: #dcfce7; color: #14532d; font-family: var(--font-display); font-weight: 800; font-size: 15px; text-transform: uppercase; letter-spacing: .5px; padding: 10px 14px; border-radius: var(--r-sm); margin: 24px 0 8px 0; }
     .yvd-warehouse-badge { display: inline-block; background: var(--bfl-yellow); color: #4a2e00; font-weight: 800; padding: 2px 10px; border-radius: 999px; margin: 0 4px; }
+    .aiwms-icon-btn { background: none; border: none; color: inherit; cursor: pointer; padding: 2px 6px; line-height: 1; border-radius: var(--r-sm); }
+    .aiwms-icon-btn:hover:not(:disabled) { background: rgba(255,255,255,0.15); }
+    .aiwms-icon-btn:disabled { opacity: 0.4; cursor: default; }
+    .yvd-export-btn { background: #dcfce7; color: #14532d; border: 1px solid #14532d40; }
+    .yvd-export-btn:hover:not(:disabled) { background: #bbf7d0; }
+    .yvd-export-btn:disabled { opacity: 0.5; cursor: default; }
 </style>
 
 <div class="aiwms-page-header">
@@ -60,13 +70,21 @@
             </div>
         }
         <button class="aiwms-btn aiwms-btn-primary" style="height:36px; box-sizing:border-box" @onclick="LoadAsync" disabled="@_loading">@(_loading ? "Loading…" : "Load")</button>
+        <button class="aiwms-btn yvd-export-btn" style="height:36px; width:36px; box-sizing:border-box; display:flex; align-items:center; justify-content:center; padding:0;" title="Download all data (one sheet)" @onclick="ExportAllAsync" disabled="@(!_loadedOnce || _exporting)">
+            <span class="mi sm">download</span>
+        </button>
     </div>
 </div>
 
 @if (_loadedOnce)
 {
     <div class="aiwms-section" style="padding:0; overflow:hidden">
-        <div class="yvd-header">Offloading Shipment Summary — @SelectedPeriodLabel</div>
+        <div class="yvd-header">
+            <span>Offloading Shipment Summary — @SelectedPeriodLabel</span>
+            @MinimizeToggle(_offloadingCollapsed, () => _offloadingCollapsed = !_offloadingCollapsed)
+        </div>
+        @if (!_offloadingCollapsed)
+        {
         <div style="display:flex; flex-wrap:wrap; gap:0;">
             <div style="flex:1; min-width:340px; overflow-x:auto; border-right:1px solid var(--border-default);">
                 <table class="aiwms-table aiwms-table-dense" style="text-align:center; width:100%;">
@@ -104,7 +122,7 @@
             <div style="flex:1; min-width:280px; overflow-x:auto;">
                 <table class="aiwms-table aiwms-table-dense" style="text-align:center; width:100%;">
                     <thead>
-                        <tr><th colspan="3" style="text-align:center">Inbound Shipment Details — Pending for offloading (as of today)</th></tr>
+                        <tr><th colspan="3" style="text-align:center">Inbound Shipment Details — Pending for offloading (as of today, since @PendingFloorLabel)</th></tr>
                         <tr>
                             <th style="text-align:left">Type</th>
                             <th style="text-align:right">Containers</th>
@@ -131,16 +149,25 @@
                 </table>
             </div>
         </div>
+        }
     </div>
+    @if (CurrentUser.HasAllCountriesAccess)
+    {
     <p style="font-size:11px; color:var(--text-secondary); margin-top:4px">
-        "Pending for offloading" is a live snapshot as of today (not scoped to the filter above), floored to @DateTime.Today.Year-01-01 to exclude years-old abandoned backlog.
+        "Pending for offloading" is a live snapshot as of today (not scoped to the filter above), floored to @PendingFloorLabel to exclude years-old abandoned backlog.
     </p>
+    }
 
     <div class="aiwms-section" style="padding:0; overflow:hidden">
         <div class="yvd-header">
-            Total Inbound Summary — Offload Containers
-            (@(_viewMode == "Weekly" ? SelectedPeriodLabel : $"{_selectedYear}, by month"))
+            <span>
+                Total Inbound Summary — Offload Containers
+                (@(_viewMode == "Weekly" ? SelectedPeriodLabel : $"{_selectedYear}, by month"))
+            </span>
+            @MinimizeToggle(_totalInboundCollapsed, () => _totalInboundCollapsed = !_totalInboundCollapsed)
         </div>
+        @if (!_totalInboundCollapsed)
+        {
         <div style="overflow-x:auto">
             <table class="aiwms-table aiwms-table-dense" style="text-align:center">
                 <thead>
@@ -189,23 +216,33 @@
                 </tbody>
             </table>
         </div>
+        }
     </div>
+    @if (CurrentUser.HasAllCountriesAccess)
+    {
     <p style="font-size:11px; color:var(--text-secondary); margin-top:4px">
         "No of Pcs" is the order quantity (hodata..vUSAOrder.Qty, summed per container) for the containers offloaded in each period — there is no per-box piece count in the source tables.
     </p>
+    }
 
     <div class="yvd-section-banner">Internal Transfer Summary</div>
     @foreach (var box in _internalTransfers)
     {
+        var boxCollapsed = _internalTransferCollapsed.Contains(box.Label);
         <div class="aiwms-section" style="padding:0; overflow:hidden">
             <div class="yvd-header">
-                @if (box.Warehouse is not null)
-                {
-                    <span class="yvd-warehouse-badge">@box.Warehouse</span>
-                }
-                @box.Label
-                (@(_viewMode == "Weekly" ? SelectedPeriodLabel : $"{_selectedYear}, by month"))
+                <span>
+                    @if (box.Warehouse is not null)
+                    {
+                        <span class="yvd-warehouse-badge">@box.Warehouse</span>
+                    }
+                    @box.Label
+                    (@(_viewMode == "Weekly" ? SelectedPeriodLabel : $"{_selectedYear}, by month"))
+                </span>
+                @MinimizeToggle(boxCollapsed, () => { if (!_internalTransferCollapsed.Add(box.Label)) _internalTransferCollapsed.Remove(box.Label); })
             </div>
+            @if (!boxCollapsed)
+            {
             <div style="overflow-x:auto">
                 <table class="aiwms-table aiwms-table-dense" style="text-align:center">
                     <thead>
@@ -254,11 +291,15 @@
                     </tbody>
                 </table>
             </div>
+            }
         </div>
     }
+    @if (CurrentUser.HasAllCountriesAccess)
+    {
     <p style="font-size:11px; color:var(--text-secondary); margin-top:4px">
         Sourced from bfldata..vPLTDeliveryDetails. "Total Inbound"/"Total Outbound" are independent live totals, not a sum of the per-warehouse boxes below them — a single trailer can serve more than one route in a day.
     </p>
+    }
 }
 
 @code {
@@ -269,6 +310,11 @@
     private List<int> _years = new();
     private bool _loading;
     private bool _loadedOnce;
+    private bool _exporting;
+
+    private bool _offloadingCollapsed;
+    private bool _totalInboundCollapsed;
+    private HashSet<string> _internalTransferCollapsed = new();
 
     private List<YotoOffloadGroupRow> _completed = new();
     private List<YotoPendingGroupRow> _pending = new();
@@ -278,6 +324,11 @@
     private string SelectedPeriodLabel => _viewMode == "Weekly"
         ? $"W{_selectedWeek} ({SelectedWeekRange.Start:dd-MMM} → {SelectedWeekRange.End:dd-MMM} {_selectedYear})"
         : $"{new DateTime(2000, _selectedMonth, 1):MMMM} {_selectedYear}";
+
+    // "@DateTime.Today.Year-01-01" previously here was NOT a date string -- Razor parsed
+    // it as integer subtraction (Year - 1 - 1), silently showing the wrong value. This is
+    // the actual Jan-1-of-current-year floor GetPendingOffloadingAsync applies server-side.
+    private static string PendingFloorLabel => new DateTime(DateTime.Today.Year, 1, 1).ToString("dd-MMM-yyyy");
 
     private YotoOffloadGroupRow CompletedFor(string group) =>
         _completed.FirstOrDefault(r => r.Group == group) ?? new YotoOffloadGroupRow(group, 0, 0, 0);
@@ -337,8 +388,9 @@
         return (((today - week1Start).Days / 7) + 1).ToString();
     }
 
-    protected override void OnInitialized()
+    protected override async Task OnInitializedAsync()
     {
+        await CurrentUser.EnsureLoadedAsync();
         var thisYear = DateTime.Now.Year;
         _years = Enumerable.Range(thisYear - 2, 4).Reverse().ToList(); // thisYear+1 .. thisYear-2
     }
@@ -377,5 +429,134 @@
             _loadedOnce = true;
             _loading = false;
         }
+    }
+
+    // Small icon button for section headers — glyph reflects the action the click
+    // performs (minus to minimize, plus to expand), same pattern as Production
+    // Summary Report's section minimize toggles.
+    private RenderFragment MinimizeToggle(bool collapsed, Action toggle) => __builder =>
+    {
+        <button type="button" class="aiwms-icon-btn" title="@(collapsed ? "Expand" : "Minimize")" @onclick="toggle">
+            <span class="mi sm">@(collapsed ? "add" : "remove")</span>
+        </button>
+    };
+
+    // ====================== Excel export (everything on the page, one sheet) ======================
+
+    private async Task ExportAllAsync()
+    {
+        _exporting = true;
+        await InvokeAsync(StateHasChanged);
+        try
+        {
+            using var wb = new XLWorkbook();
+            var ws = wb.AddWorksheet("YOTO VNA Dashboard");
+            var row = 1;
+
+            row = WriteOffloadingBlock(ws, row);
+            row = WriteTotalInboundBlock(ws, row);
+            foreach (var box in _internalTransfers)
+                row = WriteInternalTransferBlock(ws, row, box);
+
+            ws.Columns().AdjustToContents();
+
+            using var ms = new MemoryStream();
+            wb.SaveAs(ms);
+            var b64 = Convert.ToBase64String(ms.ToArray());
+            var name = $"yoto-vna-dashboard-{DateTime.UtcNow.AddHours(4):yyyyMMdd-HHmm}.xlsx";
+            await JS.InvokeVoidAsync("downloadFileWithPicker", name, b64,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        }
+        finally { _exporting = false; }
+    }
+
+    private static int WriteSectionTitle(IXLWorksheet ws, int row, string title)
+    {
+        ws.Cell(row, 1).Value = title;
+        ws.Cell(row, 1).Style.Font.Bold = true;
+        ws.Cell(row, 1).Style.Font.FontSize = 13;
+        return row + 1;
+    }
+
+    private int WriteOffloadingBlock(IXLWorksheet ws, int row)
+    {
+        row = WriteSectionTitle(ws, row, $"Offloading Shipment Summary — {SelectedPeriodLabel}");
+
+        row = WriteSectionTitle(ws, row, "Completed offloading");
+        ws.Cell(row, 1).Value = "Type"; ws.Cell(row, 2).Value = "Containers"; ws.Cell(row, 3).Value = "Pallets"; ws.Cell(row, 4).Value = "Boxes";
+        ws.Row(row).Style.Font.Bold = true; row++;
+        foreach (var (group, label) in new[] { ("AEINT", "Total Imports AEINT"), ("AELOC", "Local Purchased AELOC") })
+        {
+            var r = CompletedFor(group);
+            ws.Cell(row, 1).Value = label; ws.Cell(row, 2).Value = r.Containers; ws.Cell(row, 3).Value = r.Pallets; ws.Cell(row, 4).Value = r.Boxes;
+            row++;
+        }
+        ws.Cell(row, 1).Value = "Total"; ws.Cell(row, 2).Value = _completed.Sum(r => r.Containers); ws.Cell(row, 3).Value = _completed.Sum(r => r.Pallets); ws.Cell(row, 4).Value = _completed.Sum(r => r.Boxes);
+        ws.Row(row).Style.Font.Bold = true; row += 2;
+
+        row = WriteSectionTitle(ws, row, $"Pending for offloading (as of today, since {PendingFloorLabel})");
+        ws.Cell(row, 1).Value = "Type"; ws.Cell(row, 2).Value = "Containers"; ws.Cell(row, 3).Value = "Qty";
+        ws.Row(row).Style.Font.Bold = true; row++;
+        foreach (var (group, label) in new[] { ("AEINT", "Total Imports AEINT"), ("AELOC", "Local Purchased AELOC") })
+        {
+            var r = PendingFor(group);
+            ws.Cell(row, 1).Value = label; ws.Cell(row, 2).Value = r.Containers; ws.Cell(row, 3).Value = r.Qty;
+            row++;
+        }
+        ws.Cell(row, 1).Value = "Total"; ws.Cell(row, 2).Value = _pending.Sum(r => r.Containers); ws.Cell(row, 3).Value = _pending.Sum(r => r.Qty);
+        ws.Row(row).Style.Font.Bold = true; row += 2;
+
+        return row;
+    }
+
+    private int WriteTotalInboundBlock(IXLWorksheet ws, int row)
+    {
+        row = WriteSectionTitle(ws, row,
+            $"Total Inbound Summary — Offload Containers ({(_viewMode == "Weekly" ? SelectedPeriodLabel : $"{_selectedYear}, by month")})");
+
+        ws.Cell(row, 1).Value = "Inbound Details";
+        var col = 2;
+        foreach (var p in _periodRows) { ws.Cell(row, col).Value = p.PeriodLabel; col++; }
+        ws.Cell(row, col).Value = "Total";
+        ws.Row(row).Style.Font.Bold = true; row++;
+
+        row = WritePeriodMetricRow(ws, row, "No. of Trailers Inbound", _periodRows, p => p.Containers);
+        row = WritePeriodMetricRow(ws, row, "No of Pallets", _periodRows, p => p.Pallets);
+        row = WritePeriodMetricRow(ws, row, "No of Boxes", _periodRows, p => p.Boxes);
+        row = WritePeriodMetricRow(ws, row, "No of Pcs", _periodRows, p => p.Pcs);
+        row++;
+
+        return row;
+    }
+
+    private int WriteInternalTransferBlock(IXLWorksheet ws, int row, YotoInternalTransferBox box)
+    {
+        var title = box.Warehouse is not null ? $"{box.Warehouse} — {box.Label}" : box.Label;
+        row = WriteSectionTitle(ws, row,
+            $"{title} ({(_viewMode == "Weekly" ? SelectedPeriodLabel : $"{_selectedYear}, by month")})");
+
+        ws.Cell(row, 1).Value = "Inbound Details";
+        var col = 2;
+        foreach (var p in box.Periods) { ws.Cell(row, col).Value = p.PeriodLabel; col++; }
+        ws.Cell(row, col).Value = "Total";
+        ws.Row(row).Style.Font.Bold = true; row++;
+
+        row = WritePeriodMetricRow(ws, row, box.CountLabel, box.Periods, p => p.Trips);
+        row = WritePeriodMetricRow(ws, row, "No Of Pallets", box.Periods, p => p.Pallets);
+        row = WritePeriodMetricRow(ws, row, "No of Tote/Box", box.Periods, p => p.Boxes);
+        row = WritePeriodMetricRow(ws, row, "QUANTITY", box.Periods, p => p.Quantity);
+        row++;
+
+        return row;
+    }
+
+    private static int WritePeriodMetricRow<T>(IXLWorksheet ws, int row, string label, List<T> periods, Func<T, int> value)
+    {
+        ws.Cell(row, 1).Value = label;
+        var col = 2;
+        foreach (var p in periods) { ws.Cell(row, col).Value = value(p); col++; }
+        ws.Cell(row, col).Value = periods.Sum(value);
+        ws.Cell(row, col).Style.Font.Bold = true;
+        return row + 1;
     }
 }
