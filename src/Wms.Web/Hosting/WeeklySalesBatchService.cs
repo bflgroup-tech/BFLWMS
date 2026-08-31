@@ -3,40 +3,56 @@ using Wms.Data.Lpm;
 namespace Wms.Web.Hosting;
 
 /// <summary>
-/// Fires every day at 01:00 GST (Arabian Standard Time = UTC+04:00).
+/// Fires once a week, Sunday 01:00 GST (Arabian Standard Time = UTC+04:00).
 /// For each ACTIVE country in WmsRptCountryConfig (scoped to JobName
 /// 'WeeklySalesFromGCP'), pulls the full weekly-sales feed from BigQuery once
 /// and MERGE-upserts it into that country's on-prem LPM_Weekly_SalesAmt, logging
 /// each run into WmsRptJobRun. Lives in-process; relies on App Service Always On
 /// to be present at fire time.
 /// </summary>
-// TEMP TEST MODE — fires every 15 minutes instead of daily 01:00 GST, and skips the
-// "already fired today" guard, so the ADC cold-start retry fix can be verified without
-// waiting for the next real 01:00 fire. REVERT before merging to main: restore the
-// daily 01:00 GST loop and the HasFiredTodayAsync guard in RunWeeklyAsync below.
 public class WeeklySalesBatchService(IServiceProvider sp, ILogger<WeeklySalesBatchService> log)
     : BackgroundService
 {
-    private static readonly TimeSpan TestFireInterval = TimeSpan.FromMinutes(15);
+    private static readonly TimeSpan FireTimeGst = new(1, 0, 0);
+    private static readonly TimeZoneInfo GstTz =
+        TimeZoneInfo.FindSystemTimeZoneById(OperatingSystem.IsWindows() ? "Arabian Standard Time" : "Asia/Dubai");
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        log.LogInformation("WeeklySalesBatchService started. TEST MODE: firing every {Interval}.", TestFireInterval);
+        log.LogInformation("WeeklySalesBatchService started. Fire time: Sunday 01:00 GST.");
+        DateTime? lastFireGstDate = null;
 
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
-                log.LogInformation("WeeklySalesBatchService: firing test run at {Now} UTC.", DateTime.UtcNow);
-                await RunWeeklyAsync(stoppingToken);
+                var nowUtc = DateTime.UtcNow;
+                var nowGst = TimeZoneInfo.ConvertTimeFromUtc(nowUtc, GstTz);
+                var todayFireGst = nowGst.Date.Add(FireTimeGst);
+
+                var shouldFireNow = nowGst.DayOfWeek == DayOfWeek.Sunday
+                    && nowGst >= todayFireGst
+                    && (lastFireGstDate is null || lastFireGstDate.Value < nowGst.Date);
+
+                if (shouldFireNow)
+                {
+                    log.LogInformation("WeeklySalesBatchService: firing weekly run at {Now}.", nowGst);
+                    await RunWeeklyAsync(stoppingToken);
+                    lastFireGstDate = nowGst.Date;
+                    continue;
+                }
+
+                // Sleep up to 1 hour at a time (defensive wakeups) so a missed
+                // Sunday window (e.g. app restart) is still caught same-day.
+                var sleep = TimeSpan.FromHours(1);
+                await Task.Delay(sleep, stoppingToken);
             }
             catch (OperationCanceledException) { break; }
             catch (Exception ex)
             {
-                log.LogError(ex, "WeeklySalesBatchService: unexpected error in loop.");
+                log.LogError(ex, "WeeklySalesBatchService: unexpected error in loop; retrying in 5 minutes.");
+                try { await Task.Delay(TimeSpan.FromMinutes(5), stoppingToken); } catch { break; }
             }
-
-            try { await Task.Delay(TestFireInterval, stoppingToken); } catch { break; }
         }
     }
 
@@ -45,8 +61,15 @@ public class WeeklySalesBatchService(IServiceProvider sp, ILogger<WeeklySalesBat
         await using var scope = sp.CreateAsyncScope();
         var svc = scope.ServiceProvider.GetRequiredService<WeeklySalesFromGcpService>();
 
-        // TEMP TEST MODE — HasFiredTodayAsync guard skipped so the 15-minute test
-        // interval can actually re-fire; restore it when reverting to the daily schedule.
+        // A redeploy restarts the app mid-day, which resets ExecuteAsync's in-memory
+        // "already fired today" tracker — recheck against the persisted job-run log so
+        // a restart on a Sunday doesn't trigger a second same-day BigQuery pull.
+        var nowGst = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, GstTz);
+        if (await svc.HasFiredTodayAsync("Weekly", nowGst.Date, ct))
+        {
+            log.LogInformation("WeeklySalesBatchService: Weekly run already logged for today — skipping (likely a restart).");
+            return;
+        }
 
         var countries = await svc.GetActiveCountriesAsync(ct);
         if (countries.Count == 0)
@@ -65,7 +88,7 @@ public class WeeklySalesBatchService(IServiceProvider sp, ILogger<WeeklySalesBat
             log.LogError(ex, "WeeklySalesBatchService: BigQuery fetch FAILED — skipping all countries this run.");
             foreach (var country in countries)
             {
-                var runId = await svc.StartJobRunAsync("Daily", country, "Timer", ct);
+                var runId = await svc.StartJobRunAsync("Weekly", country, "Timer", ct);
                 await svc.FinishJobRunAsync(runId, "Failed", null, 0, ex.Message, CancellationToken.None);
             }
             return;
@@ -74,7 +97,7 @@ public class WeeklySalesBatchService(IServiceProvider sp, ILogger<WeeklySalesBat
         foreach (var country in countries)
         {
             if (ct.IsCancellationRequested) return;
-            var runId = await svc.StartJobRunAsync("Daily", country, "Timer", ct);
+            var runId = await svc.StartJobRunAsync("Weekly", country, "Timer", ct);
             try
             {
                 var written = await svc.UpsertRowsAsync(country, rows, ct);
