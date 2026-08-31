@@ -117,18 +117,15 @@ public class WeeklySalesBatchService(IServiceProvider sp, ILogger<WeeklySalesBat
         // All countries physically share the same on-prem LPM_Weekly_SalesAmt table
         // (see class doc above), so one successful country upsert is enough to make
         // the aggregate refresh worth running — chained here rather than on its own
-        // timer so it always reflects the feed that just landed.
+        // timer or toggle so it always reflects the feed that just landed.
         if (anySucceeded)
         {
             var turns = scope.ServiceProvider.GetRequiredService<LpmSalesTurnsRefreshService>();
-            if (await turns.IsActiveAsync(ct))
-            {
-                var (turnsRows, turnsError) = await turns.RunOnceAsync("Weekly", "Timer", ct);
-                if (turnsError is null)
-                    log.LogInformation("WeeklySalesBatchService: LPM_SalesTurns refreshed — {Rows} rows.", turnsRows);
-                else
-                    log.LogError("WeeklySalesBatchService: LPM_SalesTurns refresh FAILED — {Error}", turnsError);
-            }
+            var (turnsRows, turnsError) = await turns.RunOnceAsync("Weekly", "Timer", ct);
+            if (turnsError is null)
+                log.LogInformation("WeeklySalesBatchService: LPM_SalesTurns refreshed — {Rows} rows.", turnsRows);
+            else
+                log.LogError("WeeklySalesBatchService: LPM_SalesTurns refresh FAILED — {Error}", turnsError);
         }
     }
 }

@@ -10,7 +10,6 @@
 @inject WhStockLastDayFromGcpService WhStock
 @inject VolumeGroupWeeklyService Vg
 @inject OtsWeeklyService OtsJob
-@inject LpmSalesTurnsRefreshService SalesTurns
 @inject ScheduledJobService Jobs
 @inject IncreffSohFromGcpService IncreffSoh
 @inject IncreffMfcsSohCompareService IncreffCompare
@@ -232,17 +231,6 @@
                 active => ToggleAndReloadAsync(() => Gcp.SetCountryActiveAsync("", active), WeeklySalesFromGcpService.JobName, active),
                 new() { ("Refresh Now", EventCallback.Factory.Create(this, RefreshGcpNowAsync)) }));
 
-            // 2a. LpmSalesTurnsRefresh — single row, chained right after WeeklySalesFromGCP
-            //     succeeds each Sunday (see WeeklySalesBatchService.RunWeeklyAsync). No
-            //     independent timer, so "next fire" mirrors its parent job's.
-            var salesTurns = await Jobs.GetSingleRowAsync(LpmSalesTurnsRefreshService.JobName);
-            list.Add(new JobVm(
-                LpmSalesTurnsRefreshService.JobName, "After WeeklySalesFromGCP", null,
-                salesTurns.IsActive, salesTurns.UpdatedTS, salesTurns.UpdatedBy,
-                salesTurns.IsActive ? NextWeeklyFireGst(new(1, 0, 0), DayOfWeek.Sunday) : null,
-                active => ToggleSingleAsync(LpmSalesTurnsRefreshService.JobName, active),
-                new() { ("Refresh Now", EventCallback.Factory.Create(this, RefreshSalesTurnsNowAsync)) }));
-
             // 2b. WhStockLastDayFromGCP — single row like WeeklySalesFromGCP above
             //     (this source also already carries its own Country column, so there's
             //     no per-country "add country" step -- every country the feed has gets
@@ -440,18 +428,6 @@
         {
             await Gcp.FinishJobRunAsync(runId, "Failed", null, 0, ex.Message);
             Show($"Refresh failed: {ex.Message}", true);
-        }
-        finally { _busy = false; await RefreshLogAsync(); }
-    }
-
-    private async Task RefreshSalesTurnsNowAsync()
-    {
-        _busy = true; Show("Refreshing LPM_SalesTurns…", false); await InvokeAsync(StateHasChanged);
-        try
-        {
-            var (rows, err) = await SalesTurns.RunOnceAsync("OnDemand", CurrentUser.Name ?? "");
-            if (err is null) Show($"LPM_SalesTurns refreshed — {rows:N0} rows.", false);
-            else             Show($"LPM_SalesTurns refresh failed: {err}", true);
         }
         finally { _busy = false; await RefreshLogAsync(); }
     }

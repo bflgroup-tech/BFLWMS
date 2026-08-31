@@ -9,10 +9,9 @@ namespace Wms.Data.Lpm;
 /// GST month/year from dbo.LPM_Weekly_SalesAmt — delete-then-insert a fresh
 /// per-(StoreID, DivCode, Year1, Month1) aggregate, restricted to DivCodes that
 /// exist in dbo.Division (drops junk/retired division codes from the aggregate).
-/// Chained right after
-/// WeeklySalesBatchService's Sunday 01:00 GST BigQuery pull succeeds, so it
-/// aggregates the feed that just landed; also exposed as its own "Refresh Now" on
-/// the Nightly Batches admin page. Job-run log reuses the shared dbo.WmsRptJobRun
+/// Chained unconditionally right after WeeklySalesBatchService's Sunday 01:00 GST
+/// BigQuery pull succeeds for at least one country — no independent schedule or
+/// activation toggle of its own. Job-run log reuses the shared dbo.WmsRptJobRun
 /// via ScheduledJobService, single-row (Country = ""), same convention as
 /// OtsWeeklyService.
 /// </summary>
@@ -29,9 +28,6 @@ public class LpmSalesTurnsRefreshService(IOnPremConnectionResolver resolver, Sch
         c.Open();
         return c;
     }
-
-    public Task<bool> IsActiveAsync(CancellationToken ct = default) =>
-        jobs.IsActiveAsync(JobName, ScheduledJobService.SingleRowKey, ct);
 
     // LPM_Weekly_SalesAmt is the source of truth and is left untouched — only the
     // LPM_SalesTurns aggregate is cleared and rebuilt for the two target months.
