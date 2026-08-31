@@ -219,75 +219,98 @@ public class ReportsService(IOnPremConnectionResolver resolver)
     }
 
     // True on Sunday GST — the start of the WH production week (06:00 GST -> 06:00 GST
-    // next day), and the point where this week's tmpPlanningTarget row is most likely
+    // next day), and the point where this week's BFL_MFP_OUTBOUND_T1 rows are most likely
     // to not have landed yet from whoever loads it. Used only to decide whether a
     // zeroed-out current week should fall back to last week's Merch Need instead of
-    // showing 0 -- confirmed live for QATAR week 34 (2026-08-23), which had no rows at
-    // all in tmpPlanningTarget while weeks 31-33 did.
+    // showing 0 -- from Monday onward the selected week's own data is expected to be
+    // loaded and shown as-is, no fallback.
     private static bool IsSundayGst() => DateTime.UtcNow.AddHours(4).DayOfWeek == DayOfWeek.Sunday;
 
-    private async Task<MerchNeedRow?> QueryMerchNeedAsync(SqlConnection c, string country, int week, int daysInWeek, CancellationToken ct)
+    /// <summary>Country -> Territory code (LPM_MfpTerritoryMap.SIMCountry -> Territory),
+    /// the same lookup GetDivisionCapVsTargetAsync uses. Null if the country has no active
+    /// mapping row.</summary>
+    private async Task<string?> ResolveTerritoryAsync(SqlConnection c, string country, CancellationToken ct)
+    {
+        return await c.QuerySingleOrDefaultAsync<string?>(new CommandDefinition(@"
+            SELECT TOP 1 Territory
+              FROM LPMSIM.dbo.LPM_MfpTerritoryMap WITH (NOLOCK)
+             WHERE SIMCountry = @country AND IsActive = 1",
+            new { country }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+    }
+
+    private async Task<MerchNeedRow?> QueryMerchNeedAsync(SqlConnection c, string territoryCode, int year, int week, int daysInWeek, CancellationToken ct)
     {
         var monthWeeks = WeeksInSameMonth(week);
         return await c.QuerySingleOrDefaultAsync<MerchNeedRow>(new CommandDefinition(@"
-            SELECT MerchNeedMonth = CAST(ROUND(ISNULL(SUM(CASE WHEN Week IN @monthWeeks THEN Target ELSE 0 END), 0), 0) AS BIGINT),
-                   MerchNeedWeek  = CAST(ROUND(ISNULL(SUM(CASE WHEN Week = @week THEN Target ELSE 0 END), 0), 0) AS BIGINT),
-                   MerchNeedDay   = CAST(ROUND(ISNULL(SUM(CASE WHEN Week = @week THEN Target ELSE 0 END), 0) / @daysInWeek, 0) AS BIGINT)
-              FROM LPMSIM.dbo.tmpPlanningTarget
-             WHERE Country = @country AND Week IN @monthWeeks",
-            new { country, week, monthWeeks, daysInWeek }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            SELECT MerchNeedMonth = CAST(ROUND(ISNULL(SUM(CASE WHEN Week IN @monthWeeks THEN merch_need ELSE 0 END), 0), 0) AS BIGINT),
+                   MerchNeedWeek  = CAST(ROUND(ISNULL(SUM(CASE WHEN Week = @week THEN merch_need ELSE 0 END), 0), 0) AS BIGINT),
+                   MerchNeedDay   = CAST(ROUND(ISNULL(SUM(CASE WHEN Week = @week THEN merch_need ELSE 0 END), 0) / @daysInWeek, 0) AS BIGINT)
+              FROM LPMSIM.dbo.BFL_MFP_OUTBOUND_T1 WITH (NOLOCK)
+             WHERE territory = @territoryCode AND Year = @year AND Week IN @monthWeeks",
+            new { territoryCode, year, week, monthWeeks, daysInWeek }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
     }
 
     /// <summary>
     /// Merch Need (Month/Week/Day) for a country and selected week, from
-    /// LPMSIM.dbo.tmpPlanningTarget (Country, Week, Division, Target). Read via
-    /// OnPremBackup like LPMSIM_Batch — no per-country connection-string dance needed.
-    /// Week reads that week's Target sum; Day divides it by daysInWeek (7, unless the
+    /// LPMSIM.dbo.BFL_MFP_OUTBOUND_T1 (territory, Year, Week, division, merch_need) — the
+    /// same source and Country->Territory resolution (LPM_MfpTerritoryMap) already used by
+    /// the Daily Transfer Qty by Warehouse and Division Comparison sections, so all three
+    /// now agree on one Merch Need source instead of two different tables on the same page.
+    /// Week reads that week's merch_need sum; Day divides it by daysInWeek (7, unless the
     /// selected week is the year's truncated final week); Month sums across the 4-4-5
-    /// month bucket containing the selected week.
+    /// month bucket containing the selected week. Zero (not an error) if the country has
+    /// no active territory mapping.
     ///
-    /// On a Sunday, a selected week with zero Target (nothing loaded for it yet) falls
-    /// back to the previous week's Merch Need instead of showing 0 — one week back
-    /// only, not a chain further into the past.
+    /// On a Sunday, a selected week with zero merch_need (nothing loaded for it yet) falls
+    /// back to the previous week's Merch Need instead of showing 0 — one week back only,
+    /// not a chain further into the past. From Monday onward that week's own data is
+    /// expected to already be loaded, so no fallback applies then.
     /// </summary>
-    public async Task<MerchNeedRow> GetMerchNeedAsync(string country, int week, int daysInWeek = 7, CancellationToken ct = default)
+    public async Task<MerchNeedRow> GetMerchNeedAsync(string country, int year, int week, int daysInWeek = 7, CancellationToken ct = default)
     {
         await using var c = OpenOnPremBackup();
-        var row = await QueryMerchNeedAsync(c, country, week, daysInWeek, ct) ?? new MerchNeedRow(0, 0, 0);
+        var territoryCode = await ResolveTerritoryAsync(c, country, ct);
+        if (territoryCode is null) return new MerchNeedRow(0, 0, 0);
+
+        var row = await QueryMerchNeedAsync(c, territoryCode, year, week, daysInWeek, ct) ?? new MerchNeedRow(0, 0, 0);
         if (row.MerchNeedWeek == 0 && week > 1 && IsSundayGst())
-            row = await QueryMerchNeedAsync(c, country, week - 1, daysInWeek, ct) ?? row;
+            row = await QueryMerchNeedAsync(c, territoryCode, year, week - 1, daysInWeek, ct) ?? row;
         return row;
     }
 
     /// <summary>Merch Need (Month/Week/Day) per Division for a country and selected week,
-    /// from LPMSIM.dbo.tmpPlanningTarget. DivCode is always 0 — this table has no DivCode
-    /// column, only a Division name, and callers match on Division name, not DivCode.
-    /// Same Sunday previous-week fallback as GetMerchNeedAsync, applied when every
-    /// division came back with zero Target for the selected week.</summary>
-    public async Task<List<MerchNeedDivisionRow>> GetMerchNeedByDivisionAsync(string country, int week, int daysInWeek = 7, CancellationToken ct = default)
+    /// from LPMSIM.dbo.BFL_MFP_OUTBOUND_T1 joined to LPMSIM.dbo.Division on DivCode (a real
+    /// DivCode this time, unlike the old tmpPlanningTarget-backed version which had none).
+    /// Same Sunday previous-week fallback as GetMerchNeedAsync, applied when every division
+    /// came back with zero merch_need for the selected week.</summary>
+    public async Task<List<MerchNeedDivisionRow>> GetMerchNeedByDivisionAsync(string country, int year, int week, int daysInWeek = 7, CancellationToken ct = default)
     {
         await using var c = OpenOnPremBackup();
-        var rows = await QueryMerchNeedByDivisionAsync(c, country, week, daysInWeek, ct);
+        var territoryCode = await ResolveTerritoryAsync(c, country, ct);
+        if (territoryCode is null) return new List<MerchNeedDivisionRow>();
+
+        var rows = await QueryMerchNeedByDivisionAsync(c, territoryCode, year, week, daysInWeek, ct);
         if ((rows.Count == 0 || rows.All(r => r.MerchNeedWeek == 0)) && week > 1 && IsSundayGst())
         {
-            var fallback = await QueryMerchNeedByDivisionAsync(c, country, week - 1, daysInWeek, ct);
+            var fallback = await QueryMerchNeedByDivisionAsync(c, territoryCode, year, week - 1, daysInWeek, ct);
             if (fallback.Count > 0) rows = fallback;
         }
         return rows;
     }
 
-    private async Task<List<MerchNeedDivisionRow>> QueryMerchNeedByDivisionAsync(SqlConnection c, string country, int week, int daysInWeek, CancellationToken ct)
+    private async Task<List<MerchNeedDivisionRow>> QueryMerchNeedByDivisionAsync(SqlConnection c, string territoryCode, int year, int week, int daysInWeek, CancellationToken ct)
     {
         var monthWeeks = WeeksInSameMonth(week);
         var rows = await c.QueryAsync<MerchNeedDivisionRow>(new CommandDefinition(@"
-            SELECT DivCode = 0, Division,
-                   MerchNeedMonth = CAST(ROUND(ISNULL(SUM(CASE WHEN Week IN @monthWeeks THEN Target ELSE 0 END), 0), 0) AS BIGINT),
-                   MerchNeedWeek  = CAST(ROUND(ISNULL(SUM(CASE WHEN Week = @week THEN Target ELSE 0 END), 0), 0) AS BIGINT),
-                   MerchNeedDay   = CAST(ROUND(ISNULL(SUM(CASE WHEN Week = @week THEN Target ELSE 0 END), 0) / @daysInWeek, 0) AS BIGINT)
-              FROM LPMSIM.dbo.tmpPlanningTarget
-             WHERE Country = @country AND Week IN @monthWeeks
-             GROUP BY Division",
-            new { country, week, monthWeeks, daysInWeek }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            SELECT DivCode = d.DivCode, Division = d.Division,
+                   MerchNeedMonth = CAST(ROUND(ISNULL(SUM(CASE WHEN o.Week IN @monthWeeks THEN o.merch_need ELSE 0 END), 0), 0) AS BIGINT),
+                   MerchNeedWeek  = CAST(ROUND(ISNULL(SUM(CASE WHEN o.Week = @week THEN o.merch_need ELSE 0 END), 0), 0) AS BIGINT),
+                   MerchNeedDay   = CAST(ROUND(ISNULL(SUM(CASE WHEN o.Week = @week THEN o.merch_need ELSE 0 END), 0) / @daysInWeek, 0) AS BIGINT)
+              FROM LPMSIM.dbo.BFL_MFP_OUTBOUND_T1 o WITH (NOLOCK)
+              JOIN LPMSIM.dbo.Division d WITH (NOLOCK) ON d.DivCode = o.division
+             WHERE o.territory = @territoryCode AND o.Year = @year AND o.Week IN @monthWeeks
+             GROUP BY d.DivCode, d.Division",
+            new { territoryCode, year, week, monthWeeks, daysInWeek }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         return rows.AsList();
     }
 
