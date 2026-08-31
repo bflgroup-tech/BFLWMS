@@ -7,7 +7,9 @@ namespace Wms.Data.Lpm;
 /// <summary>
 /// Refreshes dbo.LPM_SalesTurns (on LPMSIM, on-prem) for the current and previous
 /// GST month/year from dbo.LPM_Weekly_SalesAmt — delete-then-insert a fresh
-/// per-(StoreID, DivCode, Year1, Month1) aggregate. Chained right after
+/// per-(StoreID, DivCode, Year1, Month1) aggregate, restricted to DivCodes that
+/// exist in dbo.Division (drops junk/retired division codes from the aggregate).
+/// Chained right after
 /// WeeklySalesBatchService's Sunday 01:00 GST BigQuery pull succeeds, so it
 /// aggregates the feed that just landed; also exposed as its own "Refresh Now" on
 /// the Nightly Batches admin page. Job-run log reuses the shared dbo.WmsRptJobRun
@@ -42,8 +44,9 @@ public class LpmSalesTurnsRefreshService(IOnPremConnectionResolver resolver, Sch
         INSERT INTO dbo.LPM_SalesTurns
         SELECT StoreID, DivCode, Year1, Month1, SUM(SalesQty) Soldqty, 0 TurnsQty, GETDATE(), SUM(SalesAmt) SalesAmt
           FROM dbo.LPM_Weekly_SalesAmt
-         WHERE (Year1 = @curYear AND Month1 = @curMonth)
-            OR (Year1 = @prevYear AND Month1 = @prevMonth)
+         WHERE ((Year1 = @curYear AND Month1 = @curMonth)
+             OR (Year1 = @prevYear AND Month1 = @prevMonth))
+           AND DivCode IN (SELECT DivCode FROM dbo.Division)
          GROUP BY StoreID, DivCode, Year1, Month1;";
 
     /// <summary>
