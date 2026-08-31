@@ -676,11 +676,23 @@
             _years = _monthYears.Select(x => x.Year).Distinct().OrderByDescending(y => y).ToList();
             if (_years.Count > 0)
             {
-                var today = _rundate;
-                _year  = _years.Contains(today.Year) ? today.Year : _years.First();
+                // Open on the fiscal month the CURRENT WEEK sits in, not the calendar
+                // month. Fiscal months don't start on the 1st, so in the last days of
+                // a calendar month the current week already belongs to the next fiscal
+                // month — defaulting to the calendar month showed a period the OTS run
+                // had already moved past. Falls back to the run date if the fiscal
+                // calendar has nothing for the current week.
+                (int Month, int Year)? fiscal = null;
+                try { fiscal = await Svc.GetCurrentFiscalMonthYearAsync(); }
+                catch { /* fall back to the run date below */ }
+
+                var wantYear  = fiscal?.Year  ?? _rundate.Year;
+                var wantMonth = fiscal?.Month ?? _rundate.Month;
+
+                _year  = _years.Contains(wantYear) ? wantYear : _years.First();
                 UpdateMonthsForYear();
-                _month = _monthsForSelectedYear.Contains(today.Month)
-                            ? today.Month
+                _month = _monthsForSelectedYear.Contains(wantMonth)
+                            ? wantMonth
                             : _monthsForSelectedYear.FirstOrDefault();
             }
             await RefreshDivisionsAsync();

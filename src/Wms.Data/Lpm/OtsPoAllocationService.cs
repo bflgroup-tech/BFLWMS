@@ -150,6 +150,44 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
     }
 
+    /// <summary>
+    /// (Month, Year) that the CURRENT fiscal week falls in, per BFL_MFP_OUTBOUND_T1 —
+    /// what the page should open on.
+    ///
+    /// The calendar date is the wrong default: fiscal months do not start on the 1st,
+    /// so on the last days of a calendar month the current week already belongs to the
+    /// next fiscal month, and opening on the calendar month shows a period the OTS run
+    /// is no longer working to.
+    ///
+    /// Anchored on (YEAR(OTSDate), wk) rather than wk alone — week numbers reset each
+    /// year, so the number on its own is ambiguous.
+    ///
+    /// Returns null when either lookup comes up empty; the caller falls back to the
+    /// run date rather than showing nothing.
+    /// </summary>
+    public async Task<(int Month, int Year)?> GetCurrentFiscalMonthYearAsync(CancellationToken ct = default)
+    {
+        await using var c = OpenOnPremBackup();
+
+        var anchor = (await c.QueryAsync<(int Year, int Week)>(new CommandDefinition(@"
+            SELECT TOP 1 YEAR(OTSDate) AS [Year], wk AS [Week]
+              FROM dbo.LPM_OTS_Output WITH (NOLOCK)
+             WHERE wk IS NOT NULL
+             ORDER BY OTSDate DESC, wk DESC",
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).FirstOrDefault();
+        if (anchor.Week <= 0) return null;
+
+        var row = (await c.QueryAsync<(int Month, int Year)>(new CommandDefinition(@"
+            SELECT TOP 1 [month] AS [Month], [year] AS [Year]
+              FROM dbo.BFL_MFP_OUTBOUND_T1 WITH (NOLOCK)
+             WHERE [week] = @w AND [year] = @y
+               AND [month] IS NOT NULL",
+            new { w = anchor.Week, y = anchor.Year },
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).FirstOrDefault();
+
+        return row.Month is >= 1 and <= 12 ? (row.Month, row.Year) : null;
+    }
+
     /// <summary>Latest RunTS on the persisted table for a (Month, Year). Null =
     /// never generated. Used by the razor page to show "last generated" info.</summary>
     public async Task<DateTime?> GetLastGeneratedTsAsync(int month, int year, CancellationToken ct = default)
