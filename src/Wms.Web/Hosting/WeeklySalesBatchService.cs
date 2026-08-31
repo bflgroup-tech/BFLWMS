@@ -7,8 +7,9 @@ namespace Wms.Web.Hosting;
 /// For each ACTIVE country in WmsRptCountryConfig (scoped to JobName
 /// 'WeeklySalesFromGCP'), pulls the full weekly-sales feed from BigQuery once
 /// and MERGE-upserts it into that country's on-prem LPM_Weekly_SalesAmt, logging
-/// each run into WmsRptJobRun. Lives in-process; relies on App Service Always On
-/// to be present at fire time.
+/// each run into WmsRptJobRun. On success, chains LpmSalesTurnsRefreshService to
+/// rebuild dbo.LPM_SalesTurns for the current + previous GST month. Lives
+/// in-process; relies on App Service Always On to be present at fire time.
 /// </summary>
 public class WeeklySalesBatchService(IServiceProvider sp, ILogger<WeeklySalesBatchService> log)
     : BackgroundService
@@ -94,6 +95,7 @@ public class WeeklySalesBatchService(IServiceProvider sp, ILogger<WeeklySalesBat
             return;
         }
 
+        var anySucceeded = false;
         foreach (var country in countries)
         {
             if (ct.IsCancellationRequested) return;
@@ -103,11 +105,29 @@ public class WeeklySalesBatchService(IServiceProvider sp, ILogger<WeeklySalesBat
                 var written = await svc.UpsertRowsAsync(country, rows, ct);
                 await svc.FinishJobRunAsync(runId, "Success", written, null, null, ct);
                 log.LogInformation("WeeklySalesBatchService: {Country} done — {Rows} rows.", country, written);
+                anySucceeded = true;
             }
             catch (Exception ex)
             {
                 log.LogError(ex, "WeeklySalesBatchService: {Country} FAILED.", country);
                 await svc.FinishJobRunAsync(runId, "Failed", null, 0, ex.Message, CancellationToken.None);
+            }
+        }
+
+        // All countries physically share the same on-prem LPM_Weekly_SalesAmt table
+        // (see class doc above), so one successful country upsert is enough to make
+        // the aggregate refresh worth running — chained here rather than on its own
+        // timer so it always reflects the feed that just landed.
+        if (anySucceeded)
+        {
+            var turns = scope.ServiceProvider.GetRequiredService<LpmSalesTurnsRefreshService>();
+            if (await turns.IsActiveAsync(ct))
+            {
+                var (turnsRows, turnsError) = await turns.RunOnceAsync("Weekly", "Timer", ct);
+                if (turnsError is null)
+                    log.LogInformation("WeeklySalesBatchService: LPM_SalesTurns refreshed — {Rows} rows.", turnsRows);
+                else
+                    log.LogError("WeeklySalesBatchService: LPM_SalesTurns refresh FAILED — {Error}", turnsError);
             }
         }
     }

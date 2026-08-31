@@ -128,6 +128,10 @@ public class Program
         builder.Services.AddScoped<ScheduledJobService>();
         builder.Services.AddScoped<OtsWeeklyService>();
 
+        // Aggregates dbo.LPM_Weekly_SalesAmt into dbo.LPM_SalesTurns for the current +
+        // previous GST month, chained after WeeklySalesFromGCP succeeds each Sunday.
+        builder.Services.AddScoped<LpmSalesTurnsRefreshService>();
+
         // Robotics chute-mapping/status APIs used by the Chute Mapping page.
         builder.Services.Configure<Wms.Data.Robotic.RoboticApiOptions>(
             builder.Configuration.GetSection(Wms.Data.Robotic.RoboticApiOptions.SectionName));
