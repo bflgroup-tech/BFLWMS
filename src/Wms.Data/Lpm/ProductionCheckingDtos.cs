@@ -39,13 +39,14 @@ public sealed record ProductionCheckingResult(
     long                                TransferQty,
     List<Ex2ShopRow>                   Ex2Shops);
 
-/// <summary>Merch Need (Month/Week/Day) totals for a country's current calendar month, from LPM_EOM_Output.</summary>
+/// <summary>Merch Need (Month/Week/Day) totals for a country and selected week, from
+/// LPMSIM.dbo.BFL_MFP_OUTBOUND_T1 (see ReportsService.GetMerchNeedAsync).</summary>
 public sealed record MerchNeedRow(
     long MerchNeedMonth,
     long MerchNeedWeek,
     long MerchNeedDay);
 
-/// <summary>Merch Need (Month/Week/Day), broken down per Division, for a country's current calendar month.</summary>
+/// <summary>Merch Need (Month/Week/Day), broken down per Division, for a country and selected week.</summary>
 public sealed record MerchNeedDivisionRow(
     int  DivCode,
     string Division,

@@ -1015,6 +1015,7 @@ else if (_loadedOnce && VisibleRows().Count == 0)
                 .Select(x => (x.End - x.Start).Days + 1)
                 .DefaultIfEmpty(7)
                 .First();
+            var weekRange = Weeks.FirstOrDefault(x => x.Num == selectedWeekNum);
             for (int i = 0; i < countries.Count; i++)
             {
                 var country = countries[i];
@@ -1034,13 +1035,14 @@ else if (_loadedOnce && VisibleRows().Count == 0)
                 _transferQtyByCountry[country] = result.TransferQty;
                 _ex2ShopsByCountry[country] = result.Ex2Shops;
 
-                // Merch Need reads LPMSIM.dbo.tmpPlanningTarget directly, keyed off the
-                // selected week (4-4-5 month bucket) — independent of the per-country scan
-                // connection above, so fetch it even for countries with no scan connection.
-                try { _merchNeedByCountry[country] = await Svc.GetMerchNeedAsync(country, selectedWeekNum, selectedWeekDayCount); }
+                // Merch Need reads LPMSIM.dbo.BFL_MFP_OUTBOUND_T1 (via each country's
+                // Territory mapping), keyed off the selected week (4-4-5 month bucket) —
+                // independent of the per-country scan connection above, so fetch it even
+                // for countries with no scan connection.
+                try { _merchNeedByCountry[country] = await Svc.GetMerchNeedAsync(country, weekRange.Start.Year, selectedWeekNum, selectedWeekDayCount); }
                 catch (Exception mnEx) { merchNeedErrors.Add($"{country}: {mnEx.Message}"); _merchNeedByCountry[country] = new MerchNeedRow(0, 0, 0); }
 
-                try { _merchNeedByCountryDivision[country] = await Svc.GetMerchNeedByDivisionAsync(country, selectedWeekNum, selectedWeekDayCount); }
+                try { _merchNeedByCountryDivision[country] = await Svc.GetMerchNeedByDivisionAsync(country, weekRange.Start.Year, selectedWeekNum, selectedWeekDayCount); }
                 catch (Exception mnEx) { merchNeedErrors.Add($"{country} (by division): {mnEx.Message}"); _merchNeedByCountryDivision[country] = new(); }
             }
 
@@ -1049,7 +1051,6 @@ else if (_loadedOnce && VisibleRows().Count == 0)
             // column; everyone else (regardless of whether a Section Access grant or the
             // single-country auto-visibility rule made the section visible at all) only ever
             // sees columns for the countries their own Country Access actually lists.
-            var weekRange = Weeks.FirstOrDefault(x => x.Num == selectedWeekNum);
             _dtbwColumns.Clear(); _dtbwDaily.Clear(); _dtbwMerchNeeds.Clear();
             if (CanSeeDtbwSection)
             {
