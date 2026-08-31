@@ -145,14 +145,16 @@ public class WeeklySalesFromGcpService(IOnPremConnectionResolver resolver, IOpti
     private static decimal? ParseDecimal(object? value) =>
         value is null ? null : decimal.Parse(value.ToString()!, System.Globalization.CultureInfo.InvariantCulture);
 
-    // A cold App Service start can leave a Key-Vault-referenced credential setting
-    // (GCP_SERVICE_ACCOUNT_JSON / BigQuery:CredentialsPath) unresolved for the first
-    // few seconds, so bare ADC discovery fails right after a restart even though the
-    // setting is fine moments later. The Monday 01:00 GST Timer fire is the trigger
-    // most likely to land on a just-restarted instance, so retry client creation with
-    // backoff before giving up.
+    // The 01:00 GST Timer fire is consistently the first request the App Service sees
+    // after its overnight idle window, so it's the request that pays for a full cold
+    // start — runtime init, DI, and Key-Vault-referenced credential resolution
+    // (GCP_SERVICE_ACCOUNT_JSON / BigQuery:CredentialsPath) — which can run well past
+    // a few seconds. A manual "Refresh Now" click always lands on an already-warm
+    // instance, which is why only the scheduled run fails. Retry client creation with
+    // backoff generous enough to outlast a full cold start before giving up.
     private static readonly TimeSpan[] CredentialRetryDelays =
-        [TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(15), TimeSpan.FromSeconds(30)];
+        [TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(20), TimeSpan.FromSeconds(40),
+         TimeSpan.FromSeconds(60), TimeSpan.FromSeconds(90)];
 
     private static async Task<BigQueryClient> CreateBigQueryClientAsync(
         string projectId, GcpBigQueryOptions opts, IConfiguration configuration, CancellationToken ct)
