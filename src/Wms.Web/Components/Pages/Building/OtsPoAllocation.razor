@@ -81,10 +81,10 @@
     </div>
     <div style="margin-top:10px">
         <label style="display:inline-flex; align-items:center; gap:6px; font-size:12px; cursor:pointer"
-               title="When ticked, UAE and OMAN take DC SOH from racks..WHBoxItems (PalletCategory = 'Eligible') instead of leaving it at 0 — neither country is an Ex2 export location, so LPM_Ex2LocationConfig gives them nothing. The per-division total is ONE POOL shared across UAE and OMAN stores together, split in proportion to Week Sales, the same way every other country's DC SOH is split. Saved to WmsAppConfig, so the 07:00 scheduled run uses it too.">
+               title="When ticked, the UAE distribution centre's eligible stock (racks..WHBoxItems, PalletCategory = 'Eligible') is spread across EVERY country's stores except ECOM and ADDED to their existing Ex2 DC SOH — the DC supplies all markets, and a country with its own export warehouse holds that stock as well as its DC share. One pool per division, split in proportion to Week Sales. Only stock whose LPMDt falls in the near horizon counts: current + next month up to the 14th, current + next two months from the 15th. Saved to WmsAppConfig, so the 07:00 scheduled run uses it too.">
             <input type="checkbox" checked="@_uaeOmanDcSoh" disabled="@_busy"
                    @onchange="@(e => ToggleUaeOmanDcSohAsync((bool)e.Value!))" />
-            <b>Apply UAE/OMAN DC SOH</b> from racks..WHBoxItems (Eligible), pooled across UAE + OMAN and split by Week Sales
+            <b>Add UAE DC SOH</b> from racks..WHBoxItems (Eligible) — LPMDt current+next month (to the 14th) or +2 months (15th on), split by Week Sales across all countries except ECOM
         </label>
         <span style="font-size:11px; color:var(--text-secondary); margin-left:8px">
             Applies to Generate <b>and</b> the 07:00 scheduled run — takes effect on the next Generate.
