@@ -97,7 +97,7 @@
                 <span style="font-weight:700">ECOM:</span>
                 <select @bind="_ecomMode" disabled="@_busy"
                         style="padding:4px 8px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:12px; background:white; margin-left:4px"
-                        title="Manual — ECOM takes its WmsManualAllocation qty and nothing more; ONLINE is removed from the normal passes. PO allocation logic — ECOM competes as an ordinary store on Volume Group + SKU Max tier and the manual qty is ignored. Either way ECOM is capped PER DIVISION at its LPM_POAllocationMaxPct share of that division's PO Qty in the container.">
+                        title="Manual — ECOM takes its WmsManualAllocation qty and nothing more; ONLINE is removed from the normal passes. PO allocation logic — ECOM competes as an ordinary store on Volume Group + SKU Max tier and the manual qty is ignored. Either way ECOM is capped PER DIVISION at its LPM_POAllocationMaxPct share of that division&apos;s PO Qty in the container — set per (Country, DivCode), with DivCode 0 as the country-wide default.">
                     <option value="manual">Follow Manual Allocation</option>
                     <option value="po">Follow PO Allocation logic</option>
                 </select>

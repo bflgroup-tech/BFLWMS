@@ -328,6 +328,21 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         if (lines.Count == 0) return new(result, blocked, trace);
 
         var distinctItemCodes = lines.Select(l => l.ItemCode).Distinct().ToArray();
+
+        // Wave 1's item lookups used `itemcode IN @items`, which Dapper expands to ONE
+        // PARAMETER PER CODE. On a large container that is a statement carrying a
+        // thousand-plus parameters — a fresh plan compiled every run, no reuse, and the
+        // salesprice lookup repeats it once PER ALLOCATION COUNTRY (eight of them on a
+        // full run), so the cost multiplies. It also sits under SQL Server's hard
+        // 2100-parameter ceiling, which a big enough container would eventually hit.
+        //
+        // Same fix already used by ManualAllocationService and JafzaRoboProductionService:
+        // send the list as ONE csv parameter, split it into an indexed temp table
+        // server-side, then join. One plan, one parameter, no ceiling.
+        //
+        // Every task below opens its own connection, so the #temp tables are
+        // session-scoped and cannot collide despite running in parallel.
+        var itemCodesCsv = string.Join(",", distinctItemCodes);
         var hasCountryFilter  = allocationCountries is { Count: > 0 };
         var countryFilter     = hasCountryFilter ? allocationCountries!.ToArray() : Array.Empty<string>();
         var nowGst            = DateTime.UtcNow.AddHours(4);
@@ -339,10 +354,13 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         {
             await using var c1 = OpenOnPremBackup();
             return (await c1.QueryAsync<(string itemcode, int? DivID, string? Division, string? Department)>(new CommandDefinition(@"
-                SELECT itemcode, DivID, Division, Department
-                FROM datareporting.dbo.vupc_subclass WITH (NOLOCK)
-                WHERE itemcode IN @items",
-                new { items = distinctItemCodes }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
+                SELECT DISTINCT CAST(value AS VARCHAR(50)) AS ItemCode INTO #caMetaItems FROM STRING_SPLIT(@itemCodesCsv, ',');
+                CREATE CLUSTERED INDEX IX_caMetaItems ON #caMetaItems(ItemCode);
+
+                SELECT v.itemcode, v.DivID, v.Division, v.Department
+                FROM datareporting.dbo.vupc_subclass v WITH (NOLOCK)
+                INNER JOIN #caMetaItems i ON i.ItemCode = v.itemcode;",
+                new { itemCodesCsv }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
                 .GroupBy(r => r.itemcode)
                 .ToDictionary(g => g.Key, g => (g.First().DivID, g.First().Division, g.First().Department), StringComparer.OrdinalIgnoreCase);
         }
@@ -375,16 +393,20 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         {
             await using var c1 = OpenOnPremBackup();
             return (await c1.QueryAsync<(string itemcode, string? itemname, string? vendor, string? season, string? Style, string? Size)>(new CommandDefinition(@"
-                SELECT itemcode,
-                       MAX(itemname) AS itemname,
-                       MAX(vendor)   AS vendor,
-                       MAX(season)   AS season,
-                       MAX(Style)    AS Style,
-                       MAX([Size])   AS [Size]
-                FROM usa.dbo.USAOrgFile WITH (NOLOCK)
-                WHERE contno = @c AND itemcode IN @items
-                GROUP BY itemcode",
-                new { c = contno, items = distinctItemCodes }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
+                SELECT DISTINCT CAST(value AS VARCHAR(50)) AS ItemCode INTO #caOrgItems FROM STRING_SPLIT(@itemCodesCsv, ',');
+                CREATE CLUSTERED INDEX IX_caOrgItems ON #caOrgItems(ItemCode);
+
+                SELECT o.itemcode,
+                       MAX(o.itemname) AS itemname,
+                       MAX(o.vendor)   AS vendor,
+                       MAX(o.season)   AS season,
+                       MAX(o.Style)    AS Style,
+                       MAX(o.[Size])   AS [Size]
+                FROM usa.dbo.USAOrgFile o WITH (NOLOCK)
+                INNER JOIN #caOrgItems i ON i.ItemCode = o.itemcode
+                WHERE o.contno = @c
+                GROUP BY o.itemcode;",
+                new { c = contno, itemCodesCsv }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
                 .ToDictionary(r => r.itemcode, r => (r.itemname, r.vendor, r.season, r.Style, r.Size), StringComparer.OrdinalIgnoreCase);
         }
 
@@ -459,10 +481,13 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                     if (string.Equals(sc, "UAE", StringComparison.OrdinalIgnoreCase))
                     {
                         var rows = (await cc.QueryAsync<(string itemcode, decimal? salesrate)>(new CommandDefinition(@"
-                            SELECT itemcode, salesrate
-                            FROM hodata.dbo.salesprice WITH (NOLOCK)
-                            WHERE itemcode IN @items",
-                            new { items = distinctItemCodes }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).ToList();
+                            SELECT DISTINCT CAST(value AS VARCHAR(50)) AS ItemCode INTO #caPriceItems FROM STRING_SPLIT(@itemCodesCsv, ',');
+                            CREATE CLUSTERED INDEX IX_caPriceItems ON #caPriceItems(ItemCode);
+
+                            SELECT p.itemcode, p.salesrate
+                            FROM hodata.dbo.salesprice p WITH (NOLOCK)
+                            INNER JOIN #caPriceItems i ON i.ItemCode = p.itemcode;",
+                            new { itemCodesCsv }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).ToList();
                         return (sc, rows);
                     }
                     var dataName = await cc.ExecuteScalarAsync<string?>(new CommandDefinition(@"
@@ -472,11 +497,15 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                         new { c = sc }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
                     if (string.IsNullOrWhiteSpace(dataName)) return (sc, new());
                     if (!Regex.IsMatch(dataName, @"^[A-Za-z0-9_]+$")) return (sc, new());
-                    var sql = $@"SELECT itemcode, salesrate
-                                   FROM {dataName}.dbo.RFSalesprice WITH (NOLOCK)
-                                  WHERE itemcode IN @items";
+                    var sql = $@"
+                        SELECT DISTINCT CAST(value AS VARCHAR(50)) AS ItemCode INTO #caRfPriceItems FROM STRING_SPLIT(@itemCodesCsv, ',');
+                        CREATE CLUSTERED INDEX IX_caRfPriceItems ON #caRfPriceItems(ItemCode);
+
+                        SELECT p.itemcode, p.salesrate
+                          FROM {dataName}.dbo.RFSalesprice p WITH (NOLOCK)
+                          INNER JOIN #caRfPriceItems i ON i.ItemCode = p.itemcode;";
                     var rows2 = (await cc.QueryAsync<(string itemcode, decimal? salesrate)>(new CommandDefinition(
-                        sql, new { items = distinctItemCodes }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).ToList();
+                        sql, new { itemCodesCsv }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).ToList();
                     return (sc, rows2);
                 }
                 catch (Exception ex)
@@ -555,11 +584,14 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                 return d;
             await using var c1 = OpenOnPremBackup();
             var rows = await c1.QueryAsync<(string storeid, string itemcode, int SOH)>(new CommandDefinition(@"
-                SELECT storeid, itemcode, SUM(CAST(ISNULL(SOH,0) AS INT)) AS SOH
-                  FROM racks.dbo.LPM_locstock WITH (NOLOCK)
-                 WHERE itemcode IN @codes
-                 GROUP BY storeid, itemcode",
-                new { codes = distinctItemCodes }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+                SELECT DISTINCT CAST(value AS VARCHAR(50)) AS ItemCode INTO #caSohItems FROM STRING_SPLIT(@itemCodesCsv, ',');
+                CREATE CLUSTERED INDEX IX_caSohItems ON #caSohItems(ItemCode);
+
+                SELECT l.storeid, l.itemcode, SUM(CAST(ISNULL(l.SOH,0) AS INT)) AS SOH
+                  FROM racks.dbo.LPM_locstock l WITH (NOLOCK)
+                  INNER JOIN #caSohItems i ON i.ItemCode = l.itemcode
+                 GROUP BY l.storeid, l.itemcode;",
+                new { itemCodesCsv }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
             foreach (var r in rows)
                 d[(r.storeid.ToUpperInvariant(), r.itemcode.ToUpperInvariant())] = r.SOH;
             return d;
@@ -571,28 +603,34 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         // to it, and it won't fall back to the LPM_SKUMaxRule band. (Item,
         // Store) pairs missing from the table proceed with the band logic
         // as before.
-        // Per-country ceiling on how much of a container's PO Qty that country may
-        // take. Keyed by the Country the allocation rows carry, so 'ECOM' caps the
-        // online channel. A country with NO ROW is uncapped — a missing row must
-        // never silently zero someone's allocation.
-        async Task<Dictionary<string, decimal>> LoadPoAllocationMaxPct()
+        // Ceiling on how much of a container's PO Qty a country may take, per
+        // DIVISION. Keyed by (Country, DivCode) from the allocation rows, so 'ECOM'
+        // caps the online channel.
+        //
+        // DivCode 0 is the country-wide default; a specific DivCode overrides it.
+        // Resolution is exact -> default -> uncapped, so a country with no row at
+        // all allocates unrestricted. A missing row must never silently zero
+        // someone's allocation.
+        async Task<Dictionary<(string Country, int DivCode), decimal>> LoadPoAllocationMaxPct()
         {
-            var d = new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase);
+            var d = new Dictionary<(string, int), decimal>();
             if (runOption != RunOption.FillSKUMaxRoundRobin && runOption != RunOption.FillMinMinPlusOthers)
                 return d;
             try
             {
                 await using var c1 = OpenOnPremBackup();
-                var rows = await c1.QueryAsync<(string Country, decimal Pct)>(new CommandDefinition(
-                    @"SELECT Country, POAllocationMaxPct
+                var rows = await c1.QueryAsync<(string Country, int DivCode, decimal Pct)>(new CommandDefinition(
+                    @"SELECT Country, ISNULL(DivCode, 0) AS DivCode, POAllocationMaxPct
                         FROM LPMSIM.dbo.LPM_POAllocationMaxPct WITH (NOLOCK)
                        WHERE Country IS NOT NULL AND POAllocationMaxPct > 0",
                     commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-                foreach (var r in rows) d[r.Country.Trim()] = r.Pct;
+                foreach (var r in rows)
+                    d[(r.Country.Trim().ToUpperInvariant(), r.DivCode)] = r.Pct;
             }
             catch
             {
-                // Table not deployed yet -> no caps, same as before it existed.
+                // Table (or the DivCode column) not deployed yet -> no caps, same as
+                // before the cap existed.
             }
             return d;
         }
@@ -604,10 +642,13 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                 return blocked;
             await using var c1 = OpenOnPremBackup();
             var rows = await c1.QueryAsync<(string StoreId, string Itemcode, int SkuMax)>(new CommandDefinition(
-                @"SELECT StoreId, Itemcode, ISNULL(SkuMax, 0) AS SkuMax
-                    FROM LPMSIM.dbo.LPM_SimItemSkuMax WITH (NOLOCK)
-                   WHERE Itemcode IN @codes",
-                new { codes = distinctItemCodes }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+                @"SELECT DISTINCT CAST(value AS VARCHAR(50)) AS ItemCode INTO #caSkuMaxItems FROM STRING_SPLIT(@itemCodesCsv, ',');
+                  CREATE CLUSTERED INDEX IX_caSkuMaxItems ON #caSkuMaxItems(ItemCode);
+
+                  SELECT s.StoreId, s.Itemcode, ISNULL(s.SkuMax, 0) AS SkuMax
+                    FROM LPMSIM.dbo.LPM_SimItemSkuMax s WITH (NOLOCK)
+                    INNER JOIN #caSkuMaxItems i ON i.ItemCode = s.Itemcode;",
+                new { itemCodesCsv }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
             foreach (var r in rows)
                 if (r.SkuMax == 0)
                     blocked.Add((r.StoreId.ToUpperInvariant(), r.Itemcode.ToUpperInvariant()));
@@ -730,30 +771,38 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         // nothing regardless of their size.
         //
         // FLOOR, not round: rounding up would let ECOM exceed the configured %.
-        // No configured row = uncapped (int.MaxValue), matching pre-cap behaviour —
-        // a missing row must never silently zero a country.
-        var ecomPctConfigured  = poMaxPctByCountry.TryGetValue(EcomCountry, out var ecomPct) && ecomPct > 0;
+        // A division with no percentage configured is uncapped, matching pre-cap
+        // behaviour — an unseeded division must never silently zero a country.
+        //
+        // Percentage resolution per division: exact (ECOM, div), then the (ECOM, 0)
+        // country-wide default, then nothing.
+        decimal? EcomPctFor(int divCode) =>
+            poMaxPctByCountry.TryGetValue((EcomCountry, divCode), out var exact) ? exact
+            : poMaxPctByCountry.TryGetValue((EcomCountry, 0), out var dflt)      ? dflt
+            : null;
+
         var ecomAllowanceByDiv = new Dictionary<int, int>();
-        if (ecomPctConfigured)
+        foreach (var g in lines.GroupBy(l => divByItem.TryGetValue(l.ItemCode, out var d) ? d : 0))
         {
-            foreach (var g in lines.GroupBy(l => divByItem.TryGetValue(l.ItemCode, out var d) ? d : 0))
-                ecomAllowanceByDiv[g.Key] =
-                    (int)Math.Min(int.MaxValue,
-                        (long)Math.Floor(g.Sum(l => (long)l.Qty) * (double)ecomPct / 100.0));
+            var pct = EcomPctFor(g.Key);
+            if (pct is not > 0) continue;           // absent from the dictionary = uncapped
+            ecomAllowanceByDiv[g.Key] =
+                (int)Math.Min(int.MaxValue,
+                    (long)Math.Floor(g.Sum(l => (long)l.Qty) * (double)pct.Value / 100.0));
         }
         var ecomTakenByDiv = new Dictionary<int, int>();
 
         int EcomRemainingAllowance(int divCode)
         {
-            if (!ecomPctConfigured) return int.MaxValue;
-            var allow = ecomAllowanceByDiv.TryGetValue(divCode, out var a) ? a : 0;
+            // No entry = this division has no configured percentage = uncapped.
+            if (!ecomAllowanceByDiv.TryGetValue(divCode, out var allow)) return int.MaxValue;
             var taken = ecomTakenByDiv.TryGetValue(divCode, out var t) ? t : 0;
             return Math.Max(0, allow - taken);
         }
 
         void SpendEcom(int divCode, int qty)
         {
-            if (!ecomPctConfigured || qty <= 0) return;
+            if (qty <= 0 || !ecomAllowanceByDiv.ContainsKey(divCode)) return;
             ecomTakenByDiv[divCode] = (ecomTakenByDiv.TryGetValue(divCode, out var t) ? t : 0) + qty;
         }
 
