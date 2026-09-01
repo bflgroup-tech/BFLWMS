@@ -1113,7 +1113,8 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         // TgtEOM per current spec:
         //   WkReduction = (PrevMonthEOM - TgtEOM) / weeksInMonth
         //   CurrentEOW  = PrevMonthEOM - (WkReduction * weeksElapsedSoFar)
-        //   OTS Qty     = CurrentEOW + WeekSales - SOH - InTransit - Ex2DcSoh - CountingWIP
+        //   OTS Qty     = CurrentEOW + WeekSales - SOH - InTransit - Ex2DcSoh
+        //                 - UaeDcSoh - CountingWIP
         //   OTS %       = OTS Qty / CurrentEOW * 100  (0 when CurrentEOW <= 0)
         // Only supply arriving inside the country's lead window counts (Lead
         // InTransit + Lead DC SOH). For countries with no Lead tracking (UAE,
