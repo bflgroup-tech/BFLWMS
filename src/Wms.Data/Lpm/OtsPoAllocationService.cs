@@ -113,9 +113,29 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
     /// </summary>
     public const string UaeOmanDcSohConfigKey = "OtsUaeOmanDcSoh";
 
-    /// <summary>Countries that share the single racks..WHBoxItems DC SOH pool.</summary>
-    private static readonly HashSet<string> PooledDcSohCountries =
-        new(new[] { "UAE", "OMAN" }, StringComparer.OrdinalIgnoreCase);
+    /// <summary>
+    /// The one country excluded from the UAE DC SOH spread — the online channel is
+    /// not served from the physical DC, so giving it a slice would divert stock the
+    /// shops are meant to get.
+    /// </summary>
+    private const string DcSohExcludedCountry = "ECOM";
+
+    /// <summary>
+    /// Half-open [From, To) LPMDt window for the UAE DC SOH pool.
+    ///
+    /// Up to and including the 14th, only stock planned for the current and next
+    /// month counts; from the 15th the horizon opens to a third month, because by
+    /// mid-month the current month's stock is largely committed and buying has to
+    /// look further out.
+    ///
+    /// Half-open on purpose: LPMDt carrying a time component would be dropped by a
+    /// BETWEEN against the last day of the month.
+    /// </summary>
+    internal static (DateTime From, DateTime To) DcSohLpmWindow(DateTime todayGst)
+    {
+        var from = new DateTime(todayGst.Year, todayGst.Month, 1);
+        return (from, from.AddMonths(todayGst.Day <= 14 ? 2 : 3));
+    }
 
     /// <summary>
     /// True when UAE + OMAN should take a DC SOH figure from
@@ -743,18 +763,24 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
             return rows.ToDictionary(r => (r.Country, r.DivCode), r => (r.InTransitTotal, r.Ex2DcTotal));
         }, () => new Dictionary<(string, int), (int, int)>());
 
-        // 3a) UAE + OMAN DC SOH per DivCode from racks..WHBoxItems (config-gated).
-        //     Neither country is an Ex2 export location, so LPM_Ex2LocationConfig
-        //     yields them nothing and their Ex2 DC SOH sits at 0. When the toggle is
-        //     on, the local warehouse's eligible stock stands in for it.
+        // 3a) UAE DC SOH per DivCode from racks..WHBoxItems (config-gated).
+        //
+        //     racks..WHBoxItems is the UAE distribution centre — one physical
+        //     warehouse, no country column — and it supplies every market. So this
+        //     is a single per-division pool that gets spread across ALL countries'
+        //     stores (bar ECOM) in the merge below, ADDED on top of whatever each
+        //     country already holds in its own export warehouse.
+        //
+        //     Only stock planned for the near horizon counts: LPMDt inside
+        //     DcSohLpmWindow (current + next month up to the 14th, current + next
+        //     two from the 15th). Taking the whole eligible pool would count stock
+        //     planned months out as if it were available to this month's OTS.
         //
         //     Per DivCode via ItemCode -> vupc_subclass.DivID, matching how every
-        //     other country's Ex2 DC SOH is derived. racks..WHBoxItems has no
-        //     country column — it is one physical warehouse — so the per-division
-        //     total is ONE POOL shared across UAE and OMAN stores together, not
-        //     counted once for each country.
+        //     other country's Ex2 DC SOH is derived.
+        var dcWindow = DcSohLpmWindow(DateTime.UtcNow.AddHours(4));
         var uaeOmanDcTask = uaeOmanDcSohEnabled
-            ? SafeAsync(warnings, "UAE/OMAN DC SOH (racks..WHBoxItems)", async () =>
+            ? SafeAsync(warnings, "UAE DC SOH (racks..WHBoxItems)", async () =>
             {
                 await using var c = OpenOnPremBackup();
                 var rows = await c.QueryAsync<(int DivCode, int Qty)>(new CommandDefinition(@"
@@ -764,7 +790,10 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                         ON v.itemcode = b.ItemCode
                      WHERE b.PalletCategory = 'Eligible'
                        AND v.DivID IS NOT NULL
+                       AND b.LPMDt >= @winFrom
+                       AND b.LPMDt <  @winTo
                      GROUP BY v.DivID",
+                    new { winFrom = dcWindow.From, winTo = dcWindow.To },
                     commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
                 return rows.ToDictionary(r => r.DivCode, r => r.Qty);
             }, () => new Dictionary<int, int>())
@@ -1181,20 +1210,31 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
             }
         }
 
-        // UAE + OMAN DC SOH — ONE POOL per division shared across both countries,
-        // overriding whatever the per-(Country, DivCode) pass produced for them.
+        // UAE DC SOH — ONE POOL per division from the UAE distribution centre, spread
+        // across EVERY country's stores except ECOM and ADDED to whatever Ex2 DC SOH
+        // the per-(Country, DivCode) pass already gave them.
         //
-        // Done as a separate pass rather than inside the loop above because the loop
-        // groups by (Country, DivCode) and this pool spans two countries: splitting
-        // within each group separately would hand each country a full share of the
-        // same physical warehouse stock.
+        // ADDED, not overwritten: a country with its own export warehouse holds that
+        // stock as well as its share of the UAE DC, so replacing would erase supply
+        // that genuinely exists. UAE and OMAN are unaffected by the distinction —
+        // neither is an Ex2 export location, so their base is 0 either way.
+        //
+        // A separate pass rather than part of the loop above because that loop groups
+        // by (Country, DivCode) and this pool spans ALL countries: splitting inside
+        // each group would hand every country a full share of the same physical stock.
+        //
+        // ECOM is excluded — the online channel is not served from the DC, so a slice
+        // for it would divert stock the shops are meant to get. It is dropped from the
+        // weights as well as the distribution, so the shops' shares add back to the
+        // full pool rather than leaving ECOM's portion unallocated.
         //
         // Stores are ordered Country then StoreID so the largest-remainder leftover
         // lands deterministically across runs.
         if (uaeOmanDcSohEnabled && uaeOmanDcByDiv.Count > 0)
         {
             foreach (var divGroup in baseRows
-                         .Where(b => PooledDcSohCountries.Contains((b.Country ?? "").Trim()))
+                         .Where(b => !string.Equals((b.Country ?? "").Trim(), DcSohExcludedCountry,
+                                                    StringComparison.OrdinalIgnoreCase))
                          .GroupBy(b => b.DivCode))
             {
                 if (!uaeOmanDcByDiv.TryGetValue(divGroup.Key, out var divTotal) || divTotal <= 0) continue;
@@ -1213,7 +1253,8 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                 for (var i = 0; i < pooledStores.Count; i++)
                 {
                     var s = pooledStores[i];
-                    perRowEx2Dc[(s.Country, s.StoreID, s.DivCode)] = pooledShares[i];
+                    var key = (s.Country, s.StoreID, s.DivCode);
+                    perRowEx2Dc[key] = (perRowEx2Dc.TryGetValue(key, out var own) ? own : 0) + pooledShares[i];
                 }
             }
         }

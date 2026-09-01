@@ -81,10 +81,10 @@
     </div>
     <div style="margin-top:10px">
         <label style="display:inline-flex; align-items:center; gap:6px; font-size:12px; cursor:pointer"
-               title="When ticked, UAE and OMAN take DC SOH from racks..WHBoxItems (PalletCategory = 'Eligible') instead of leaving it at 0 — neither country is an Ex2 export location, so LPM_Ex2LocationConfig gives them nothing. The per-division total is ONE POOL shared across UAE and OMAN stores together, split in proportion to Week Sales, the same way every other country's DC SOH is split. Saved to WmsAppConfig, so the 07:00 scheduled run uses it too.">
+               title="When ticked, the UAE distribution centre's eligible stock (racks..WHBoxItems, PalletCategory = 'Eligible') is spread across EVERY country's stores except ECOM and ADDED to their existing Ex2 DC SOH — the DC supplies all markets, and a country with its own export warehouse holds that stock as well as its DC share. One pool per division, split in proportion to Week Sales. Only stock whose LPMDt falls in the near horizon counts: current + next month up to the 14th, current + next two months from the 15th. Saved to WmsAppConfig, so the 07:00 scheduled run uses it too.">
             <input type="checkbox" checked="@_uaeOmanDcSoh" disabled="@_busy"
                    @onchange="@(e => ToggleUaeOmanDcSohAsync((bool)e.Value!))" />
-            <b>Apply UAE/OMAN DC SOH</b> from racks..WHBoxItems (Eligible), pooled across UAE + OMAN and split by Week Sales
+            <b>Add UAE DC SOH</b> from racks..WHBoxItems (Eligible) — LPMDt current+next month (to the 14th) or +2 months (15th on), split by Week Sales across all countries except ECOM
         </label>
         <span style="font-size:11px; color:var(--text-secondary); margin-left:8px">
             Applies to Generate <b>and</b> the 07:00 scheduled run — takes effect on the next Generate.
@@ -205,40 +205,71 @@
                 Filtered: @fRows.Count of @_rows.Count row(s).
             </div>
         }
+        @* Same text as the header tooltips, from the same ColumnLogic table — but
+           readable without hovering, and printable when someone asks how a number
+           was arrived at. *@
+        <details style="margin-top:10px">
+            <summary style="cursor:pointer; font-size:12px; font-weight:700; color:var(--text-secondary)">
+                How each column is computed
+            </summary>
+            <div style="margin-top:8px; max-height:420px; overflow:auto">
+                <table class="aiwms-table aiwms-table-dense" style="font-size:11.5px; width:100%">
+                    <thead style="position:sticky; top:0; background:white; z-index:1">
+                        <tr><th style="width:170px">Column</th><th>Logic</th></tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var c in ColumnLogic)
+                        {
+                            <tr>
+                                <td style="font-weight:700; white-space:nowrap">@c.Label</td>
+                                <td style="white-space:normal; line-height:1.45">@c.Logic</td>
+                            </tr>
+                            @if (c.Key == "NoOfLeadWeeks")
+                            {
+                                <tr>
+                                    <td style="font-weight:700; white-space:nowrap">Week Sales</td>
+                                    <td style="white-space:normal; line-height:1.45">@WeekSalesHeaderTitle()</td>
+                                </tr>
+                            }
+                        }
+                    </tbody>
+                </table>
+            </div>
+        </details>
     </div>
     <div class="aiwms-section" style="padding:0; overflow:hidden">
         <div style="max-height:640px; overflow:auto">
             <table class="aiwms-table aiwms-table-dense" style="font-size:11.5px">
                 <thead style="position:sticky; top:0; background:white; z-index:1">
                     <tr>
-                        @SortHeader("Country",         "Country",   "160px", title: "LPM_EOM_Output.Country")
-                        @SortHeader("StoreID",         "StoreID",   "120px", title: "LPM_EOM_Output.StoreID")
-                        @SortHeader("StoreName",       "Store Name","260px", title: "bfldata.DataSettings.PBFullname (LEFT JOIN on StoreID)")
-                        @SortHeader("DivCode",         "Divcode",   null,  true, title: "LPM_EOM_Output.DivCode")
-                        @SortHeader("Division",        "Division",  "220px", title: "LPMSIM.Division.Division (LEFT JOIN on DivCode)")
-                        @SortHeader("VolumeGroup",     "Volume Group", title: "Latest StoreDivGrade.Grade for (Store, Div) at or before this Month/Year; falls back to LPM_EOM_Output.VolumeGroup if never Generated")
-                        @SortHeader("EOMMonth",        "EOM Month", title: "Formatted MMM-yyyy of the picked (Month, Year)")
-                        @SortHeader("TgtEOMMonth",     "Tgt EOM Month", title: "MMM-yyyy of the month that TgtEOM was read from — determined by (currentWk + N - 1) per country; falls back to EOM Month if MFP has no calendar entry")
-                        @SortHeader("TgtEOM",          "Tgt EOM",  null, true, title: "LPM_EOM_Output.TargetEOM for (Tgt EOM Month, Store, Div)")
-                        @SortHeader("PrevEOMMonth",    "Prev EOM Month", title: "MMM-yyyy of the month before Tgt EOM Month (used as PrevMonthEOM's source)")
-                        @SortHeader("PrevMonthEOM",    "Prev Month EOM", null, true, title: "LPM_EOM_Output.TargetEOM for (Prev EOM Month, Store, Div); 0 if missing")
-                        @SortHeader("DivisorWeeks",    "Divisor Weeks", null, true, title: "Number of fiscal weeks in the TARGET EOM month — the month that lastWk (= Current Week + No. of Lead Weeks) falls in, per BFL_MFP_OUTBOUND_T1. This is the Week Adjustment divisor, so it varies by country with lead weeks.")
-                        @SortHeader("WeekAdjustment",  "Week Adjustment", null, true, title: "(TgtEOM − PrevMonthEOM) / Divisor Weeks; positive = scaling up, negative = winding down; 0 when PrevMonthEOM = 0. Displayed rounded — Current EOW uses the unrounded value.")
-                        @SortHeader("CurrentWeek",     "Current Week", null, true, title: "Latest wk in LPM_OTS_Output — the fiscal week the run is anchored on. Same for every row.")
-                        @SortHeader("TargetWeek",      "Target Week", null, true, title: "Current Week + No. of Lead Weeks — the fiscal week the lead horizon reaches. Its month is the Tgt EOM Month.")
-                        @SortHeader("WeeksMultiplier", "Weeks Multiplier", null, true, title: "Target Week − last week of the month BEFORE the target month, i.e. how many weeks INTO the target month the target week sits. This multiplies Week Adjustment (it is NOT No. of Lead Weeks).")
-                        @SortHeader("CurrentEOW",      "Current EOW",     null, true, title: "PrevMonthEOM + (Week Adjustment × Weeks Multiplier); falls back to TgtEOM when PrevMonthEOM = 0")
-                        @SortHeader("SOHToday",        "SOH Today", null, true, title: "SUM(SOH) from racks.LPM_locstock for this (Store, Div)")
-                        @SortHeader("NoOfLeadWeeks",   "No. of Lead Weeks", null, true, title: "WmsCountryOtsWeeks.Weeks for the store's Country — how far forward the lead horizon reaches (defaults to 1 when missing). Drives Target Week; the CurrentEOW multiplier is Weeks Multiplier.")
+                        @SortHeader("Country",         "Country",   "160px", title: Logic("Country"))
+                        @SortHeader("StoreID",         "StoreID",   "120px", title: Logic("StoreID"))
+                        @SortHeader("StoreName",       "Store Name","260px", title: Logic("StoreName"))
+                        @SortHeader("DivCode",         "Divcode",   null,  true, title: Logic("DivCode"))
+                        @SortHeader("Division",        "Division",  "220px", title: Logic("Division"))
+                        @SortHeader("VolumeGroup",     "Volume Group", title: Logic("VolumeGroup"))
+                        @SortHeader("EOMMonth",        "EOM Month", title: Logic("EOMMonth"))
+                        @SortHeader("TgtEOMMonth",     "Tgt EOM Month", title: Logic("TgtEOMMonth"))
+                        @SortHeader("TgtEOM",          "Tgt EOM",  null, true, title: Logic("TgtEOM"))
+                        @SortHeader("PrevEOMMonth",    "Prev EOM Month", title: Logic("PrevEOMMonth"))
+                        @SortHeader("PrevMonthEOM",    "Prev Month EOM", null, true, title: Logic("PrevMonthEOM"))
+                        @SortHeader("DivisorWeeks",    "Divisor Weeks", null, true, title: Logic("DivisorWeeks"))
+                        @SortHeader("WeekAdjustment",  "Week Adjustment", null, true, title: Logic("WeekAdjustment"))
+                        @SortHeader("CurrentWeek",     "Current Week", null, true, title: Logic("CurrentWeek"))
+                        @SortHeader("TargetWeek",      "Target Week", null, true, title: Logic("TargetWeek"))
+                        @SortHeader("WeeksMultiplier", "Weeks Multiplier", null, true, title: Logic("WeeksMultiplier"))
+                        @SortHeader("CurrentEOW",      "Current EOW",     null, true, title: Logic("CurrentEOW"))
+                        @SortHeader("SOHToday",        "SOH Today", null, true, title: Logic("SOHToday"))
+                        @SortHeader("NoOfLeadWeeks",   "No. of Lead Weeks", null, true, title: Logic("NoOfLeadWeeks"))
                         @SortHeader("WeekSales",       "Week Sales", null, true, title: WeekSalesHeaderTitle())
-                        @SortHeader("InTransit",       "InTransit", null, true, title: "(Ex2SOH + boxsoh) for the (Country, DivCode), split across that group's stores in proportion to Week Sales (largest-remainder, so the parts sum exactly). UAE = 0.")
-                        @SortHeader("Ex2DcSoh",        "Ex2 DC SOH", null, true, title: "r1whsoh for the (Country, DivCode), split across that group's stores in proportion to Week Sales (largest-remainder). Falls back to an equal split when the division has no weekly sales.")
-                        @SortHeader("CountingWIP",     "Counting WIP", null, true, title: "SUM(AllocatedQty) for approved-but-not-completed containers per (Store, Div)")
-                        @SortHeader("OtsQtyToday",     "OTS Qty Today", null, true, title: "CurrentEOW + WeekSales − SOH − InTransit − Ex2DcSoh − CountingWIP  (all committed supply is subtracted; Lead InTransit / Lead DC SOH are shown for reference but are not part of the formula)")
-                        @SortHeader("OtsPercentToday", "OTS % Today", null, true, title: "OtsQtyToday / CurrentEOW × 100; 0 when CurrentEOW ≤ 0")
-                        @SortHeader("OtsTodayRequired","OTS Today Required", null, true, title: "max(0, OtsQtyToday) — clipped to zero (negative OTS means over-stocked, no purchase needed)")
-                        @SortHeader("LeadIntransit",   "Lead InTransit", null, true, title: "REFERENCE ONLY — not in the OTS formula. P2EXPORT..vTransferDetail qty (via racks..InTransit_ExportShipment intransit='Y') whose LPMDt is on/before the 1st of the month that (today + LeadWeeks*7) lands in. Equal split across (Country, DivCode) stores. UAE = 0.")
-                        @SortHeader("LeadDCSOH",       "Lead DC SOH",    null, true, title: "REFERENCE ONLY — not in the OTS formula. {DataName}..whboxitemexport qty whose LPMDt is on/before the same cutoff as Lead InTransit. Equal split across (Country, DivCode) stores.")
+                        @SortHeader("InTransit",       "InTransit", null, true, title: Logic("InTransit"))
+                        @SortHeader("Ex2DcSoh",        "Ex2 DC SOH", null, true, title: Logic("Ex2DcSoh"))
+                        @SortHeader("CountingWIP",     "Counting WIP", null, true, title: Logic("CountingWIP"))
+                        @SortHeader("OtsQtyToday",     "OTS Qty Today", null, true, title: Logic("OtsQtyToday"))
+                        @SortHeader("OtsPercentToday", "OTS % Today", null, true, title: Logic("OtsPercentToday"))
+                        @SortHeader("OtsTodayRequired","OTS Today Required", null, true, title: Logic("OtsTodayRequired"))
+                        @SortHeader("LeadIntransit",   "Lead InTransit", null, true, title: Logic("LeadIntransit"))
+                        @SortHeader("LeadDCSOH",       "Lead DC SOH",    null, true, title: Logic("LeadDCSOH"))
                     </tr>
                 </thead>
                 <tbody>
@@ -981,6 +1012,47 @@
         builder.CloseElement();
         builder.CloseElement();
     };
+
+    // Single source for "how is this column computed". Feeds BOTH the header
+    // tooltips and the visible reference panel, so the two cannot drift — which they
+    // already had: the Ex2 DC SOH tooltip still described the old UAE/OMAN-only
+    // behaviour after the pool was spread across every country.
+    //
+    // Week Sales is absent on purpose — its explanation depends on the loaded data,
+    // so it comes from WeekSalesHeaderTitle() at both call sites.
+    private static readonly (string Key, string Label, string Logic)[] ColumnLogic =
+    {
+        ("Country",         "Country",            "LPM_EOM_Output.Country."),
+        ("StoreID",         "StoreID",            "LPM_EOM_Output.StoreID."),
+        ("StoreName",       "Store Name",         "bfldata.DataSettings.PBFullname, LEFT JOINed on StoreID."),
+        ("DivCode",         "Divcode",            "LPM_EOM_Output.DivCode."),
+        ("Division",        "Division",           "LPMSIM.Division.Division, LEFT JOINed on DivCode."),
+        ("VolumeGroup",     "Volume Group",       "Latest StoreDivGrade.Grade for (Store, Div) at or before this Month/Year. Falls back to LPM_EOM_Output.VolumeGroup when Generate Volume Group has never run."),
+        ("EOMMonth",        "EOM Month",          "The picked (Month, Year), formatted MMM-yyyy."),
+        ("TgtEOMMonth",     "Tgt EOM Month",      "MMM-yyyy of the month Target Week falls in, per BFL_MFP_OUTBOUND_T1. Varies by country because lead weeks do. Falls back to EOM Month when the fiscal calendar has no entry."),
+        ("TgtEOM",          "Tgt EOM",            "LPM_EOM_Output.TargetEOM for (Tgt EOM Month, Store, Div)."),
+        ("PrevEOMMonth",    "Prev EOM Month",     "The month before Tgt EOM Month — the source month for Prev Month EOM."),
+        ("PrevMonthEOM",    "Prev Month EOM",     "LPM_EOM_Output.TargetEOM for (Prev EOM Month, Store, Div); 0 when missing."),
+        ("DivisorWeeks",    "Divisor Weeks",      "Count of fiscal weeks in the TARGET EOM month, per BFL_MFP_OUTBOUND_T1. This is the Week Adjustment divisor, so it varies by country with lead weeks."),
+        ("WeekAdjustment",  "Week Adjustment",    "(Tgt EOM − Prev Month EOM) ÷ Divisor Weeks. Positive = scaling up, negative = winding down; 0 when Prev Month EOM = 0. Displayed rounded — Current EOW uses the unrounded value."),
+        ("CurrentWeek",     "Current Week",       "Latest wk in LPM_OTS_Output — the fiscal week the run is anchored on. Identical on every row."),
+        ("TargetWeek",      "Target Week",        "Current Week + No. of Lead Weeks — the fiscal week the lead horizon reaches. Its month is the Tgt EOM Month."),
+        ("WeeksMultiplier", "Weeks Multiplier",   "Target Week − the last week of the month BEFORE the target month: how many weeks INTO the target month the target week sits. This multiplies Week Adjustment — it is NOT No. of Lead Weeks."),
+        ("CurrentEOW",      "Current EOW",        "Prev Month EOM + (Week Adjustment × Weeks Multiplier). Falls back to Tgt EOM when Prev Month EOM = 0."),
+        ("SOHToday",        "SOH Today",          "SUM(SOH) from racks.LPM_locstock for this (Store, Div). ECOM sums the ONLINE and ONLINEKSA stores together."),
+        ("NoOfLeadWeeks",   "No. of Lead Weeks",  "WmsCountryOtsWeeks.Weeks for the store's Country; defaults to 1 when missing. Drives Target Week — the Current EOW multiplier is Weeks Multiplier, not this."),
+        ("InTransit",       "InTransit",          "SUM(Ex2SOH + BoxSOH) from LPM_Ex2ItemSOH for the (Country, DivCode), split across that group's stores in proportion to Week Sales (largest-remainder, so the parts sum exactly). UAE = 0 — it is the origin, nothing is in transit to it."),
+        ("Ex2DcSoh",        "Ex2 DC SOH",         "Two parts added together. (1) SUM(R1WHSOH) from LPM_Ex2ItemSOH for the (Country, DivCode) — that country's own export-warehouse stock — split across its stores in proportion to Week Sales. (2) When the UAE DC SOH toggle is on, that store's share of the UAE distribution centre: racks..WHBoxItems where PalletCategory = 'Eligible' and LPMDt falls in the near horizon (current + next month to the 14th, current + next two from the 15th), pooled per division and split by Week Sales across every country's stores EXCEPT ECOM. Both splits fall back to an equal share when a division has no weekly sales."),
+        ("CountingWIP",     "Counting WIP",       "SUM(AllocatedQty) for containers approved but not yet completed, per (Store, Div)."),
+        ("OtsQtyToday",     "OTS Qty Today",      "Current EOW + Week Sales − SOH Today − InTransit − Ex2 DC SOH − Counting WIP. Every committed supply is subtracted. Lead InTransit and Lead DC SOH are shown for reference and are NOT in this formula."),
+        ("OtsPercentToday", "OTS % Today",        "OTS Qty Today ÷ Current EOW × 100; 0 when Current EOW ≤ 0."),
+        ("OtsTodayRequired","OTS Today Required", "max(0, OTS Qty Today) — clipped at zero, since negative OTS means over-stocked and nothing needs buying."),
+        ("LeadIntransit",   "Lead InTransit",     "REFERENCE ONLY — not in the OTS formula. P2EXPORT..vTransferDetail qty (via racks..InTransit_ExportShipment where intransit = 'Y') whose LPMDt is on or before the 1st of the month that (today + LeadWeeks × 7) lands in. Equal split across the (Country, DivCode) stores. UAE = 0."),
+        ("LeadDCSOH",       "Lead DC SOH",        "REFERENCE ONLY — not in the OTS formula. [{DataName}]..WHBoxItemsExport qty whose LPMDt is on or before the same cutoff as Lead InTransit. Equal split across the (Country, DivCode) stores."),
+    };
+
+    private static string Logic(string key) =>
+        ColumnLogic.FirstOrDefault(c => c.Key == key).Logic ?? "";
 
     private RenderFragment SortHeader(string key, string label, string? width = null, bool numeric = false, string? title = null) => builder =>
     {
