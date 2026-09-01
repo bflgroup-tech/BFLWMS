@@ -101,6 +101,10 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         IProgress<AllocationProgress>? progress = null,
         RunOption runOption = RunOption.FillSKUMax,
         IReadOnlyCollection<string>? allocationCountries = null,
+        // Only the Manual mode consumes WmsManualAllocation, so only it needs the
+        // sheet present. Defaulted true so an omitted argument keeps the old
+        // (stricter) behaviour rather than silently dropping the gate.
+        bool ecomManualPriority = true,
         CancellationToken ct = default)
     {
         var steps = new List<ValidationStep>();
@@ -211,7 +215,12 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
             //    ONLINE row for this container, FillSKUMax+RR has nothing to
             //    cap ECOM against — block Process here so the operator uploads
             //    the sheet first.
-            var wantsEcom = (runOption == RunOption.FillSKUMaxRoundRobin || runOption == RunOption.FillMinMinPlusOthers)
+            //    Manual mode ONLY. Under "Follow PO Allocation logic" ONLINE competes
+            //    as an ordinary store on Volume Group + SKU Max tier and the manual
+            //    sheet is never read, so demanding it would block a run that has no
+            //    use for it.
+            var wantsEcom = ecomManualPriority
+                            && (runOption == RunOption.FillSKUMaxRoundRobin || runOption == RunOption.FillMinMinPlusOthers)
                             && allocationCountries is not null
                             && allocationCountries.Any(x => string.Equals(x, "ECOM", StringComparison.OrdinalIgnoreCase));
             if (wantsEcom)
