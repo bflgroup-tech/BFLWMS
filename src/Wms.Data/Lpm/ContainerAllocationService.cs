@@ -571,6 +571,32 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         // to it, and it won't fall back to the LPM_SKUMaxRule band. (Item,
         // Store) pairs missing from the table proceed with the band logic
         // as before.
+        // Per-country ceiling on how much of a container's PO Qty that country may
+        // take. Keyed by the Country the allocation rows carry, so 'ECOM' caps the
+        // online channel. A country with NO ROW is uncapped — a missing row must
+        // never silently zero someone's allocation.
+        async Task<Dictionary<string, decimal>> LoadPoAllocationMaxPct()
+        {
+            var d = new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase);
+            if (runOption != RunOption.FillSKUMaxRoundRobin && runOption != RunOption.FillMinMinPlusOthers)
+                return d;
+            try
+            {
+                await using var c1 = OpenOnPremBackup();
+                var rows = await c1.QueryAsync<(string Country, decimal Pct)>(new CommandDefinition(
+                    @"SELECT Country, POAllocationMaxPct
+                        FROM LPMSIM.dbo.LPM_POAllocationMaxPct WITH (NOLOCK)
+                       WHERE Country IS NOT NULL AND POAllocationMaxPct > 0",
+                    commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+                foreach (var r in rows) d[r.Country.Trim()] = r.Pct;
+            }
+            catch
+            {
+                // Table not deployed yet -> no caps, same as before it existed.
+            }
+            return d;
+        }
+
         async Task<HashSet<(string StoreId, string ItemCode)>> LoadSimSkuMaxBlocked()
         {
             var blocked = new HashSet<(string, string)>();
@@ -658,6 +684,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         var w1_receiptDt      = LoadContainerReceiptDt();
         var w1_initialAlloc   = LoadInitialAllocAndTopN();
         var w1_otsRunRows     = LoadOtsRunRows();
+        var w1_poMaxPct         = LoadPoAllocationMaxPct();
         var w1_simSkuMaxBlocked = LoadSimSkuMaxBlocked();
         var w1_itemSohByStore = LoadItemSohByStore();
         var w1_otsBandPct     = LoadOtsBandPct();
@@ -667,7 +694,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
             w1_itemMeta, w1_deptBlocks, w1_divBlocks, w1_orgByItem,
             w1_storeNameById, w1_palletByStore, w1_priority, w1_mnw,
             w1_prices, w1_completed, w1_receiptDt, w1_initialAlloc, w1_otsRunRows,
-            w1_simSkuMaxBlocked, w1_itemSohByStore, w1_otsBandPct, w1_vgOrder);
+            w1_simSkuMaxBlocked, w1_itemSohByStore, w1_otsBandPct, w1_vgOrder, w1_poMaxPct);
 
         var itemMeta          = await w1_itemMeta;
         var deptBlocks        = await w1_deptBlocks;
@@ -682,6 +709,26 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         var containerReceiptDt = await w1_receiptDt;
         var (initialAllocByKey, fillRRTopN) = await w1_initialAlloc;
         var otsRunRowsList    = await w1_otsRunRows;
+        var poMaxPctByCountry = await w1_poMaxPct;
+
+        // ECOM's ceiling for the WHOLE container: a percentage of total PO Qty,
+        // from LPM_POAllocationMaxPct. Computed once here, not per item line —
+        // the cap is a container-level budget, so early lines can consume it all
+        // and later lines then get nothing for ECOM.
+        //
+        // int.MaxValue when no row exists = uncapped, matching pre-cap behaviour.
+        // FLOOR, not round: rounding up would let ECOM exceed the configured %.
+        const string EcomCountry = "ECOM";
+        var containerPoQty = lines.Sum(l => (long)l.Qty);
+        var ecomAllowance  = poMaxPctByCountry.TryGetValue(EcomCountry, out var ecomPct) && ecomPct > 0
+            ? (int)Math.Min(int.MaxValue, (long)Math.Floor(containerPoQty * (double)ecomPct / 100.0))
+            : int.MaxValue;
+        var ecomTaken = 0;
+        int EcomRemainingAllowance() => ecomAllowance == int.MaxValue
+            ? int.MaxValue
+            : Math.Max(0, ecomAllowance - ecomTaken);
+        static bool IsEcomStore(string? storeId) =>
+            string.Equals(storeId?.Trim(), "ONLINE", StringComparison.OrdinalIgnoreCase);
         var simSkuMaxBlocked  = await w1_simSkuMaxBlocked;
         var itemSohByStore    = await w1_itemSohByStore;
         var otsBandPct        = await w1_otsBandPct;
@@ -1184,7 +1231,11 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                             && ecomManualQty > 0)
                         {
                             ecomManualCap = ecomManualQty;
-                            ecomPreAllocTake = Math.Min(ecomManualQty, remaining);
+                            // The container budget binds the manual figure too — an
+                            // operator's manual qty is a request, not an override of
+                            // the country's PO-share ceiling.
+                            ecomPreAllocTake = Math.Min(Math.Min(ecomManualQty, remaining),
+                                                        EcomRemainingAllowance());
                         }
                     }
 
@@ -1240,6 +1291,10 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                             // we have no TgtEOM/LiveOtsPct to stamp — leave OTS/TgtEOM null.
                             ecomRow = MakeRow("ONLINE", "ECOM", "", 0, ecomPreAllocTake, ecomPreAllocTake, 0)
                                 with { Pass1Qty = ecomPreAllocTake, AvgOtsPercent = avgOtsDecimal, OTS = null };
+                            // This branch skips BumpRow, so the container budget has to
+                            // be charged here or ECOM would overrun the cap on exactly
+                            // the items missing from the OTS run.
+                            ecomTaken += ecomPreAllocTake;
                         }
                         allocs["ONLINE"] = ecomRow;
                         remaining -= ecomPreAllocTake;
@@ -1326,7 +1381,14 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                             (r.StoreID.ToUpperInvariant(), line.ItemCode.ToUpperInvariant()), 0);
                         return (tier, Math.Max(0, tier - soh), tierName);
                     }
-                    int CapFor(OtsRunLookupRow r) => SkuMaxRawAndCapFor(r).Cap;
+                    // ECOM's container budget clamps its per-item cap, so EVERY pass
+                    // that sizes a take off CapFor honours it without its own guard.
+                    // Pass 4 sizes off ratio shares instead, so it clamps separately.
+                    int CapFor(OtsRunLookupRow r)
+                    {
+                        var cap = SkuMaxRawAndCapFor(r).Cap;
+                        return IsEcomStore(r.StoreID) ? Math.Min(cap, EcomRemainingAllowance()) : cap;
+                    }
 
                     // Row factory bound to this item — records which pass emitted
                     // each piece and stamps AvgOtsPercent + LiveOtsPct + TgtEOM +
@@ -1337,6 +1399,11 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                     {
                         var (rawSku, cap, tierName) = SkuMaxRawAndCapFor(r);
                         var effectiveTierName = tierNameOverride ?? tierName;
+                        // Single place every pass funnels a take through, so the
+                        // container budget is spent here and nowhere else. Callers
+                        // have already clamped delta (CapFor, or Pass 4's own guard),
+                        // so this only records what was actually taken.
+                        if (IsEcomStore(r.StoreID) && delta > 0) ecomTaken += delta;
                         var soh = itemSohByStore.GetValueOrDefault(
                             (r.StoreID.ToUpperInvariant(), line.ItemCode.ToUpperInvariant()), 0);
                         var running = runningOtsQty.GetValueOrDefault((r.StoreID, r.DivCode), r.OtsQtyToday);
@@ -1930,6 +1997,10 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                                         var (r, minMax) = top3[i];
                                         var ratioShare  = roundShares[i];  // pure ROUND ratio (audit)
                                         var take        = takeShares[i];   // ratio + leftover on i==0
+                                        // Pass 4 sizes off the ratio, not CapFor, so the
+                                        // ECOM container budget has to be applied here too.
+                                        if (IsEcomStore(r.StoreID))
+                                            take = Math.Min(take, EcomRemainingAllowance());
                                         var current = allocs.TryGetValue(r.StoreID, out var row) ? row.AllocQty : 0;
                                         var remBefore = remaining;
                                         if (take <= 0)
