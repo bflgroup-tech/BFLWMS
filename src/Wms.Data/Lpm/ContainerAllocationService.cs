@@ -711,22 +711,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         var otsRunRowsList    = await w1_otsRunRows;
         var poMaxPctByCountry = await w1_poMaxPct;
 
-        // ECOM's ceiling for the WHOLE container: a percentage of total PO Qty,
-        // from LPM_POAllocationMaxPct. Computed once here, not per item line —
-        // the cap is a container-level budget, so early lines can consume it all
-        // and later lines then get nothing for ECOM.
-        //
-        // int.MaxValue when no row exists = uncapped, matching pre-cap behaviour.
-        // FLOOR, not round: rounding up would let ECOM exceed the configured %.
         const string EcomCountry = "ECOM";
-        var containerPoQty = lines.Sum(l => (long)l.Qty);
-        var ecomAllowance  = poMaxPctByCountry.TryGetValue(EcomCountry, out var ecomPct) && ecomPct > 0
-            ? (int)Math.Min(int.MaxValue, (long)Math.Floor(containerPoQty * (double)ecomPct / 100.0))
-            : int.MaxValue;
-        var ecomTaken = 0;
-        int EcomRemainingAllowance() => ecomAllowance == int.MaxValue
-            ? int.MaxValue
-            : Math.Max(0, ecomAllowance - ecomTaken);
         static bool IsEcomStore(string? storeId) =>
             string.Equals(storeId?.Trim(), "ONLINE", StringComparison.OrdinalIgnoreCase);
         var simSkuMaxBlocked  = await w1_simSkuMaxBlocked;
@@ -735,6 +720,42 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         var vgSortOrder       = await w1_vgOrder;
 
         var divByItem = itemMeta.ToDictionary(kv => kv.Key, kv => kv.Value.DivID ?? 0, StringComparer.OrdinalIgnoreCase);
+
+        // ECOM's ceiling, PER DIVISION: a percentage of that division's PO Qty
+        // within this container, from LPM_POAllocationMaxPct.
+        //
+        // Per division rather than per container so a division's budget can only be
+        // spent by its own items. A single container-wide budget was consumed by
+        // whichever divisions happened to be processed first, leaving later ones
+        // nothing regardless of their size.
+        //
+        // FLOOR, not round: rounding up would let ECOM exceed the configured %.
+        // No configured row = uncapped (int.MaxValue), matching pre-cap behaviour —
+        // a missing row must never silently zero a country.
+        var ecomPctConfigured  = poMaxPctByCountry.TryGetValue(EcomCountry, out var ecomPct) && ecomPct > 0;
+        var ecomAllowanceByDiv = new Dictionary<int, int>();
+        if (ecomPctConfigured)
+        {
+            foreach (var g in lines.GroupBy(l => divByItem.TryGetValue(l.ItemCode, out var d) ? d : 0))
+                ecomAllowanceByDiv[g.Key] =
+                    (int)Math.Min(int.MaxValue,
+                        (long)Math.Floor(g.Sum(l => (long)l.Qty) * (double)ecomPct / 100.0));
+        }
+        var ecomTakenByDiv = new Dictionary<int, int>();
+
+        int EcomRemainingAllowance(int divCode)
+        {
+            if (!ecomPctConfigured) return int.MaxValue;
+            var allow = ecomAllowanceByDiv.TryGetValue(divCode, out var a) ? a : 0;
+            var taken = ecomTakenByDiv.TryGetValue(divCode, out var t) ? t : 0;
+            return Math.Max(0, allow - taken);
+        }
+
+        void SpendEcom(int divCode, int qty)
+        {
+            if (!ecomPctConfigured || qty <= 0) return;
+            ecomTakenByDiv[divCode] = (ecomTakenByDiv.TryGetValue(divCode, out var t) ? t : 0) + qty;
+        }
 
         // OTS PO Allocation run validation — same behaviour as before, now after wave 1.
         var otsRunByKey  = new Dictionary<(string StoreID, int DivCode), OtsRunLookupRow>();
@@ -1235,7 +1256,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                             // operator's manual qty is a request, not an override of
                             // the country's PO-share ceiling.
                             ecomPreAllocTake = Math.Min(Math.Min(ecomManualQty, remaining),
-                                                        EcomRemainingAllowance());
+                                                        EcomRemainingAllowance(divCode));
                         }
                     }
 
@@ -1291,10 +1312,10 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                             // we have no TgtEOM/LiveOtsPct to stamp — leave OTS/TgtEOM null.
                             ecomRow = MakeRow("ONLINE", "ECOM", "", 0, ecomPreAllocTake, ecomPreAllocTake, 0)
                                 with { Pass1Qty = ecomPreAllocTake, AvgOtsPercent = avgOtsDecimal, OTS = null };
-                            // This branch skips BumpRow, so the container budget has to
+                            // This branch skips BumpRow, so the division budget has to
                             // be charged here or ECOM would overrun the cap on exactly
                             // the items missing from the OTS run.
-                            ecomTaken += ecomPreAllocTake;
+                            SpendEcom(divCode, ecomPreAllocTake);
                         }
                         allocs["ONLINE"] = ecomRow;
                         remaining -= ecomPreAllocTake;
@@ -1387,7 +1408,9 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                     int CapFor(OtsRunLookupRow r)
                     {
                         var cap = SkuMaxRawAndCapFor(r).Cap;
-                        return IsEcomStore(r.StoreID) ? Math.Min(cap, EcomRemainingAllowance()) : cap;
+                        return IsEcomStore(r.StoreID)
+                            ? Math.Min(cap, EcomRemainingAllowance(r.DivCode))
+                            : cap;
                     }
 
                     // Row factory bound to this item — records which pass emitted
@@ -1403,7 +1426,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                         // container budget is spent here and nowhere else. Callers
                         // have already clamped delta (CapFor, or Pass 4's own guard),
                         // so this only records what was actually taken.
-                        if (IsEcomStore(r.StoreID) && delta > 0) ecomTaken += delta;
+                        if (IsEcomStore(r.StoreID)) SpendEcom(r.DivCode, delta);
                         var soh = itemSohByStore.GetValueOrDefault(
                             (r.StoreID.ToUpperInvariant(), line.ItemCode.ToUpperInvariant()), 0);
                         var running = runningOtsQty.GetValueOrDefault((r.StoreID, r.DivCode), r.OtsQtyToday);
@@ -2000,7 +2023,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                                         // Pass 4 sizes off the ratio, not CapFor, so the
                                         // ECOM container budget has to be applied here too.
                                         if (IsEcomStore(r.StoreID))
-                                            take = Math.Min(take, EcomRemainingAllowance());
+                                            take = Math.Min(take, EcomRemainingAllowance(r.DivCode));
                                         var current = allocs.TryGetValue(r.StoreID, out var row) ? row.AllocQty : 0;
                                         var remBefore = remaining;
                                         if (take <= 0)
