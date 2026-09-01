@@ -2881,13 +2881,61 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
     {
         if (string.IsNullOrWhiteSpace(genCountry)) return new();
         await using var c = OpenOnPremBackup();
+        // Last two days only, newest first. The list was every container ever
+        // processed for the country and grew without bound; in practice the
+        // operator is only ever picking something they ran today or yesterday.
+        //
+        // "Two days" = today and yesterday by GST DATE, not a rolling 48 hours —
+        // a batch run at 09:00 yesterday should still be there at 16:00 today.
         var list = await c.QueryAsync<string>(new CommandDefinition(
-            @"SELECT DISTINCT ContNo
-                FROM LPMSIM.dbo.WMS_Cont_Allocation_Header WITH (NOLOCK)
-               WHERE GenCountry = @gc
-               ORDER BY ContNo",
+            @"SELECT ContNo
+                FROM (
+                    SELECT ContNo, LastRun = MAX(ProcessedTS)
+                      FROM LPMSIM.dbo.WMS_Cont_Allocation_Header WITH (NOLOCK)
+                     WHERE GenCountry = @gc
+                       AND ProcessedTS >= DATEADD(day, -1,
+                             CAST(DATEADD(hour, 4, SYSUTCDATETIME()) AS date))
+                     GROUP BY ContNo
+                ) x
+               ORDER BY LastRun DESC, ContNo",
             new { gc = genCountry }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         return list.AsList();
+    }
+
+    /// <summary>
+    /// Every WmsAllocationTrace row for a container, for the Trace Data Export button.
+    ///
+    /// Returned as (column names, rows-of-values) rather than a typed record on
+    /// purpose: the trace table gains columns fairly often (PONo/LPMDt/Country were
+    /// the last three), and a DTO would need editing in lockstep or the export
+    /// would quietly omit them. SELECT * plus the reader's own schema means a new
+    /// column appears in the spreadsheet the moment it exists in the table.
+    /// </summary>
+    public async Task<(List<string> Columns, List<object?[]> Rows)> GetAllocationTraceAsync(
+        string contno, CancellationToken ct = default)
+    {
+        var cols = new List<string>();
+        var rows = new List<object?[]>();
+        if (string.IsNullOrWhiteSpace(contno)) return (cols, rows);
+
+        await using var c = OpenOnPremBackup();
+        await using var cmd = c.CreateCommand();
+        cmd.CommandText = @"SELECT * FROM LPMSIM.dbo.WmsAllocationTrace WITH (NOLOCK)
+                             WHERE ContNo = @c
+                             ORDER BY Itemcode, Pass, SortRank";
+        cmd.Parameters.AddWithValue("@c", contno.Trim());
+        cmd.CommandTimeout = CommandTimeoutSeconds;
+
+        await using var rdr = await cmd.ExecuteReaderAsync(ct);
+        for (var i = 0; i < rdr.FieldCount; i++) cols.Add(rdr.GetName(i));
+        while (await rdr.ReadAsync(ct))
+        {
+            var vals = new object?[rdr.FieldCount];
+            for (var i = 0; i < rdr.FieldCount; i++)
+                vals[i] = await rdr.IsDBNullAsync(i, ct) ? null : rdr.GetValue(i);
+            rows.Add(vals);
+        }
+        return (cols, rows);
     }
 
     /// <summary>Latest batch (highest BatchNo) for (GenCountry, ContNo). When runOption is
