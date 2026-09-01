@@ -130,6 +130,11 @@
             <button class="aiwms-btn aiwms-btn-primary" style="background:#16a34a; border-color:#16a34a" @onclick="ApproveAsync" disabled="@_busy">Approve @_loadedBatch.ContNo#@_loadedBatch.BatchNo</button>
         }
         <button class="aiwms-btn aiwms-btn-secondary" @onclick="() => _showBlocked = !_showBlocked" disabled="@_busy">@(_showBlocked ? "Hide" : "Blocked Items") (@_blocked.Count)</button>
+        <button class="aiwms-btn aiwms-btn-secondary" @onclick="ExportTraceAsync"
+                disabled="@(_busy || string.IsNullOrWhiteSpace(_contno))"
+                title="Download every WmsAllocationTrace row for this container — one row per pass touch, showing how each store's take was decided">
+            Trace Data Export
+        </button>
         @{
             var pfCount = _status?.PlanningFlagsCount ?? 0;
             var pfQty   = _status?.PlanningFlagsTotalQty ?? 0;
@@ -1073,6 +1078,56 @@
         _blocked = new();
         _loadedBatch = null;
         _totalPoQty = 0;
+    }
+
+    /// <summary>
+    /// Dumps every WmsAllocationTrace row for the container to CSV — the audit of how
+    /// each store's take was decided, pass by pass.
+    ///
+    /// Columns come from the reader's own schema rather than a fixed list, so a column
+    /// added to the trace table shows up here without a code change. The trace grew
+    /// PONo/LPMDt/Country recently and a hard-coded list would already be stale.
+    ///
+    /// CSV rather than xlsx: a full trace for a large container runs to tens of
+    /// thousands of rows, and ClosedXML holds the whole workbook in memory to build it.
+    /// </summary>
+    private async Task ExportTraceAsync()
+    {
+        var contno = (_contno ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(contno)) return;
+
+        _busy = true; _message = "";
+        StateHasChanged();
+        try
+        {
+            var (cols, rows) = await Svc.GetAllocationTraceAsync(contno);
+            if (rows.Count == 0)
+            {
+                ShowInfo($"No WmsAllocationTrace rows for {contno}. Trace Allocation must be ticked when the container is processed.");
+                return;
+            }
+
+            var sb = new StringBuilder();
+            sb.AppendLine(string.Join(",", cols.Select(Csv)));
+            foreach (var r in rows)
+                sb.AppendLine(string.Join(",", r.Select(v => Csv(v switch
+                {
+                    null            => "",
+                    DateTime d      => d.ToString("yyyy-MM-dd HH:mm:ss"),
+                    decimal m       => m.ToString("0.####"),
+                    double  d2      => d2.ToString("0.####"),
+                    _               => v.ToString(),
+                }))));
+
+            var b64  = Convert.ToBase64String(Encoding.UTF8.GetBytes(sb.ToString()));
+            var name = $"AllocationTrace_{contno}_{DateTime.UtcNow.AddHours(4):yyyyMMdd-HHmm}.csv";
+            await JS.InvokeVoidAsync("eval",
+                $"(function(){{var a=document.createElement('a');a.href='data:text/csv;base64,{b64}';" +
+                $"a.download='{name}';document.body.appendChild(a);a.click();document.body.removeChild(a);}})();");
+            ShowInfo($"Exported {rows.Count:N0} trace row(s) for {contno}.");
+        }
+        catch (Exception ex) { ShowError($"Trace export failed: {ex.Message}"); }
+        finally { _busy = false; }
     }
 
     private async Task ExportCsvAsync()
