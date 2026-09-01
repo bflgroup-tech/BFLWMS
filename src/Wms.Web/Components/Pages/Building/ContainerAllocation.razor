@@ -945,7 +945,7 @@
             if (_validate)
             {
                 var sw = System.Diagnostics.Stopwatch.StartNew();
-                _validation = await Svc.ValidateAsync(_country, _contno, progress, ro, _allocCountries);
+                _validation = await Svc.ValidateAsync(_country, _contno, progress, ro, _allocCountries, _ecomManualPriority);
                 validateMs = sw.ElapsedMilliseconds;
                 if (!_validation.Ok) { ShowError($"Validation failed — see steps below ({FmtElapsed(totalSw.ElapsedMilliseconds)})."); return; }
             }
