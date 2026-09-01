@@ -332,6 +332,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                    ISNULL(LeadIntransit, 0) AS LeadIntransit,
                    ISNULL(LeadDCSOH,     0) AS LeadDCSOH,
                    InTransit, Ex2DcSoh,
+                   ISNULL(UaeDcSoh, 0) AS UaeDcSoh,
                    CountingWIP, OtsQtyToday, OtsPercentToday,
                    PrevEOMMonth,
                    ISNULL(PrevMonthEOM,    0) AS PrevMonthEOM,
@@ -359,7 +360,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
             TgtEOM: r.TgtEOM, SOHToday: r.SOHToday, NoOfLeadWeeks: r.NoOfLeadWeeks,
             WeekSales: r.WeekSales,
             LeadIntransit: r.LeadIntransit, LeadDCSOH: r.LeadDCSOH,
-            InTransit: r.InTransit, Ex2DcSoh: r.Ex2DcSoh,
+            InTransit: r.InTransit, Ex2DcSoh: r.Ex2DcSoh, UaeDcSoh: r.UaeDcSoh,
             CountingWIP: r.CountingWIP, OtsQtyToday: r.OtsQtyToday,
             OtsPercentToday: (double)r.OtsPercentToday,
             PrevEOMMonth: r.PrevEOMMonth,
@@ -452,6 +453,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
             dt.Columns.Add("LeadDCSOH",       typeof(int));
             dt.Columns.Add("InTransit",       typeof(int));
             dt.Columns.Add("Ex2DcSoh",        typeof(int));
+            dt.Columns.Add("UaeDcSoh",        typeof(int));
             dt.Columns.Add("CountingWIP",     typeof(int));
             dt.Columns.Add("OtsQtyToday",     typeof(int));
             dt.Columns.Add("OtsPercentToday", typeof(decimal));
@@ -477,7 +479,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                     (object?)r.TgtEOMMonth ?? DBNull.Value,
                     r.TgtEOM, r.SOHToday, r.NoOfLeadWeeks, r.WeekSales,
                     r.LeadIntransit, r.LeadDCSOH,
-                    r.InTransit, r.Ex2DcSoh, r.CountingWIP, r.OtsQtyToday,
+                    r.InTransit, r.Ex2DcSoh, r.UaeDcSoh, r.CountingWIP, r.OtsQtyToday,
                     (decimal)r.OtsPercentToday,
                     (object?)r.PrevEOMMonth ?? DBNull.Value,
                     r.PrevMonthEOM, r.DivisorWeeks, r.WeekAdjustment,
@@ -588,10 +590,10 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         var weeksByCountry = baseRows.GroupBy(b => b.Country).ToDictionary(g => g.Key, g => g.First().NoOfLeadWeeks);
 
         // PER-COUNTRY TARGET EOM MONTH
-        // Each country's "last week of sales" (currentWk + N - 1) can fall into
-        // a calendar month AFTER the picked month. E.g. Qatar N=3, currentWk=30
-        // -> weeks 30/31/32; wk 32 lies in August, so TgtEOM must be read from
-        // August's LPM_EOM_Output row, not July's. PrevMonthEOM follows TgtEOM's
+        // Each country's "last week of sales" (currentWk + N — the Target Week) can
+        // fall into a calendar month AFTER the picked month. E.g. Qatar N=3,
+        // currentWk=30 -> weeks 30..33; wk 33 lies in August, so TgtEOM must be read
+        // from August's LPM_EOM_Output row, not July's. PrevMonthEOM follows TgtEOM's
         // month - 1. Falls back to picked (month, year) when the country has no
         // WmsCountryOtsWeeks config or MFP has no calendar entry for lastWk.
         //
@@ -922,18 +924,25 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
             var maxWkPerCountry = rows.Any()
                 ? rows.GroupBy(r => r.Country).ToDictionary(
                     g => g.Key,
-                    g => minWk + (weeksByCountry.TryGetValue(g.Key, out var w) ? w : 1) - 1)
+                    // Last week INCLUDED = currentWk + N, i.e. Target Week. N+1 weeks
+                    // of demand, not N — see the per-store sum below.
+                    g => minWk + (weeksByCountry.TryGetValue(g.Key, out var w) ? w : 1))
                 : new Dictionary<string, int>();
 
-            // Per-store WeekSales — sum wk in [minWk, minWk + N) using
-            // lpm_salestgtwk_stores as the per-store shape.
+            // Per-store WeekSales — sum wk in [minWk, minWk + N], i.e. N+1 weeks,
+            // using lpm_salestgtwk_stores as the per-store shape.
+            //
+            // N+1, not N: the horizon runs from the CURRENT week through Target Week
+            // (= currentWk + N) inclusive, so both endpoints count. Summing only N
+            // weeks dropped one week of demand from every row, understating OTS by
+            // roughly a week's sales per store.
             var existing = rows
                 .GroupBy(r => (r.StoreID, r.DivCode))
                 .ToDictionary(g => g.Key, g =>
                 {
                     var cty = g.First().Country;
                     var n = weeksByCountry.TryGetValue(cty, out var w) ? w : 1;
-                    return g.Where(x => x.Wk >= minWk && x.Wk < minWk + n).Sum(x => x.Sales);
+                    return g.Where(x => x.Wk >= minWk && x.Wk <= minWk + n).Sum(x => x.Sales);
                 });
 
             if (minWk == 0 || !rows.Any()) return existing;
@@ -1161,6 +1170,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         // InTransit per prior spec.
         var perRowInTransit     = new Dictionary<(string Country, string StoreID, int DivCode), int>();
         var perRowEx2Dc         = new Dictionary<(string Country, string StoreID, int DivCode), int>();
+        var perRowUaeDc         = new Dictionary<(string Country, string StoreID, int DivCode), int>();
         var perRowLeadIntransit = new Dictionary<(string Country, string StoreID, int DivCode), int>();
         var perRowLeadDcSoh     = new Dictionary<(string Country, string StoreID, int DivCode), int>();
         foreach (var group in baseRows.GroupBy(b => ((b.Country ?? "").Trim().ToUpperInvariant(), b.DivCode)))
@@ -1214,10 +1224,10 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         // across EVERY country's stores except ECOM and ADDED to whatever Ex2 DC SOH
         // the per-(Country, DivCode) pass already gave them.
         //
-        // ADDED, not overwritten: a country with its own export warehouse holds that
-        // stock as well as its share of the UAE DC, so replacing would erase supply
-        // that genuinely exists. UAE and OMAN are unaffected by the distinction —
-        // neither is an Ex2 export location, so their base is 0 either way.
+        // Kept in its OWN column (UaeDcSoh) rather than folded into Ex2DcSoh: the two
+        // are different stock in different warehouses, and a UAE figure silently
+        // included in the Ex2 total invited double-counting when reading a row. OTS
+        // subtracts both, so the arithmetic is identical to folding them together.
         //
         // A separate pass rather than part of the loop above because that loop groups
         // by (Country, DivCode) and this pool spans ALL countries: splitting inside
@@ -1253,8 +1263,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                 for (var i = 0; i < pooledStores.Count; i++)
                 {
                     var s = pooledStores[i];
-                    var key = (s.Country, s.StoreID, s.DivCode);
-                    perRowEx2Dc[key] = (perRowEx2Dc.TryGetValue(key, out var own) ? own : 0) + pooledShares[i];
+                    perRowUaeDc[(s.Country, s.StoreID, s.DivCode)] = pooledShares[i];
                 }
             }
         }
@@ -1278,6 +1287,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
             var ws        = weekSalesByKey.TryGetValue((r.StoreID, r.DivCode), out var w) ? w : 0;
             var inTransit    = perRowInTransit.TryGetValue((r.Country, r.StoreID, r.DivCode), out var itPer)     ? itPer     : 0;
             var ex2dc        = perRowEx2Dc.TryGetValue((r.Country, r.StoreID, r.DivCode), out var e2Per)         ? e2Per     : 0;
+            var uaeDc        = perRowUaeDc.TryGetValue((r.Country, r.StoreID, r.DivCode), out var uPer)          ? uPer      : 0;
             var leadIntransit= perRowLeadIntransit.TryGetValue((r.Country, r.StoreID, r.DivCode), out var liPer) ? liPer     : 0;
             var leadDcSoh    = perRowLeadDcSoh.TryGetValue((r.Country, r.StoreID, r.DivCode), out var ldPer)     ? ldPer     : 0;
             var wip = wipByKey.TryGetValue((r.Country, r.StoreID, r.DivCode), out var v) ? v : 0;
@@ -1326,7 +1336,10 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
             // CountingWIP (stock approved but not yet completed). The Lead* columns
             // stay on the grid and in WmsOtsPoAllocationRun for reference; they are
             // simply no longer part of the arithmetic.
-            var otsQty = currentEOW + ws - soh - inTransit - ex2dc - wip;
+            // ex2dc and uaeDc are separate columns but the same kind of thing — stock
+            // sitting in a DC. Subtracting both totals exactly what the single folded
+            // Ex2DcSoh used to carry, so OTS is unchanged by the split.
+            var otsQty = currentEOW + ws - soh - inTransit - ex2dc - uaeDc - wip;
             var otsPct = currentEOW > 0 ? (double)otsQty / currentEOW * 100.0 : 0.0;
             results.Add(new OtsPoAllocationRow(
                 Country:         r.Country,
@@ -1346,6 +1359,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                 LeadDCSOH:       leadDcSoh,
                 InTransit:       inTransit,
                 Ex2DcSoh:        ex2dc,
+                UaeDcSoh:        uaeDc,
                 CountingWIP:     wip,
                 OtsQtyToday:     otsQty,
                 OtsPercentToday: otsPct,
@@ -1454,6 +1468,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         public int      LeadDCSOH       { get; set; }
         public int      InTransit       { get; set; }
         public int      Ex2DcSoh        { get; set; }
+        public int      UaeDcSoh        { get; set; }
         public int      CountingWIP     { get; set; }
         public int      OtsQtyToday     { get; set; }
         public decimal  OtsPercentToday { get; set; }

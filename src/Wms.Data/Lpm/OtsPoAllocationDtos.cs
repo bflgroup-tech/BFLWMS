@@ -18,9 +18,10 @@ public record OtsPoAllocationRow(
     int      LeadIntransit,   // vTransferDetail qty per country whose LPMDt <= (1st of month that today+leadWeeks lands in), split across (Country, DivCode) stores via largest-remainder. UAE=0.
     int      LeadDCSOH,       // {DataName}..whboxitemexport qty per country whose LPMDt <= same cutoff, split across (Country, DivCode) stores via largest-remainder.
     int      InTransit,       // (Ex2SOH + boxsoh) / storeCount(country); UAE = 0
-    int      Ex2DcSoh,        // r1whsoh / storeCount(country)
+    int      Ex2DcSoh,        // R1WHSOH for (Country, DivCode), split by Week Sales — that country's OWN export warehouse
+    int      UaeDcSoh,        // share of the UAE DC pool (racks..WHBoxItems, LPMDt window), split by Week Sales across all countries except ECOM
     int      CountingWIP,     // SUM(AllocatedQty) for approved-but-not-completed containers per (StoreID, DivCode)
-    int      OtsQtyToday,     // CurrentEOW + WeekSales - SOH - InTransit - Ex2DcSoh - CountingWIP
+    int      OtsQtyToday,     // CurrentEOW + WeekSales - SOH - InTransit - Ex2DcSoh - UaeDcSoh - CountingWIP
     double   OtsPercentToday, // OtsQtyToday / CurrentEOW * 100; 0 when CurrentEOW <= 0
     string?  PrevEOMMonth,    // "MMM-yyyy" of the month PrevMonthEOM was read from (TgtEOMMonth - 1)
     int      PrevMonthEOM,    // TargetEOM from LPM_EOM_Output for PrevEOMMonth; 0 if missing

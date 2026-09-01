@@ -264,6 +264,7 @@
                         @SortHeader("WeekSales",       "Week Sales", null, true, title: WeekSalesHeaderTitle())
                         @SortHeader("InTransit",       "InTransit", null, true, title: Logic("InTransit"))
                         @SortHeader("Ex2DcSoh",        "Ex2 DC SOH", null, true, title: Logic("Ex2DcSoh"))
+                        @SortHeader("UaeDcSoh",        "UAE DC SOH", null, true, title: Logic("UaeDcSoh"))
                         @SortHeader("CountingWIP",     "Counting WIP", null, true, title: Logic("CountingWIP"))
                         @SortHeader("OtsQtyToday",     "OTS Qty Today", null, true, title: Logic("OtsQtyToday"))
                         @SortHeader("OtsPercentToday", "OTS % Today", null, true, title: Logic("OtsPercentToday"))
@@ -299,6 +300,7 @@
                             <td style="text-align:right" title="@WeekSalesTooltip(r)">@r.WeekSales.ToString("N0")</td>
                             <td style="text-align:right">@r.InTransit.ToString("N0")</td>
                             <td style="text-align:right">@r.Ex2DcSoh.ToString("N0")</td>
+                            <td style="text-align:right">@r.UaeDcSoh.ToString("N0")</td>
                             <td style="text-align:right">@r.CountingWIP.ToString("N0")</td>
                             <td style="text-align:right"><b>@r.OtsQtyToday.ToString("N0")</b></td>
                             <td style="text-align:right">@((int)Math.Round(r.OtsPercentToday))%</td>
@@ -322,6 +324,7 @@
                         var tLeadDc     = tRows.Sum(r => r.LeadDCSOH);
                         var tInTransit  = tRows.Sum(r => r.InTransit);
                         var tEx2        = tRows.Sum(r => r.Ex2DcSoh);
+                        var tUaeDc      = tRows.Sum(r => r.UaeDcSoh);
                         var tWIP        = tRows.Sum(r => r.CountingWIP);
                         var tOtsQty     = tRows.Sum(r => r.OtsQtyToday);
                         var tOtsReq     = tRows.Sum(r => Math.Max(0, r.OtsQtyToday));
@@ -344,6 +347,7 @@
                         <td style="text-align:right; padding:6px 12px; border-top:2px solid #d1d5db">@tWeekSales.ToString("N0")</td>
                         <td style="text-align:right; padding:6px 12px; border-top:2px solid #d1d5db">@tInTransit.ToString("N0")</td>
                         <td style="text-align:right; padding:6px 12px; border-top:2px solid #d1d5db">@tEx2.ToString("N0")</td>
+                        <td style="text-align:right; padding:6px 12px; border-top:2px solid #d1d5db">@tUaeDc.ToString("N0")</td>
                         <td style="text-align:right; padding:6px 12px; border-top:2px solid #d1d5db">@tWIP.ToString("N0")</td>
                         <td style="text-align:right; padding:6px 12px; border-top:2px solid #d1d5db">@tOtsQty.ToString("N0")</td>
                         <td style="padding:6px 12px; border-top:2px solid #d1d5db"></td>
@@ -578,7 +582,7 @@
     private bool   _sortAsc = true;
 
     // Column totals — recomputed whenever _rows changes.
-    private int _totTgtEOM, _totSOH, _totWeekSales, _totLeadIn, _totLeadDc, _totInTransit, _totEx2, _totWIP, _totOtsQty, _totOtsRequired;
+    private int _totTgtEOM, _totSOH, _totWeekSales, _totLeadIn, _totLeadDc, _totInTransit, _totEx2, _totUaeDc, _totWIP, _totOtsQty, _totOtsRequired;
 
     // Current fiscal week from LPM_OTS_Output (latest OTSDate.wk) — used by the
     // Week Sales tooltip to show the exact wk range that was summed.
@@ -589,7 +593,7 @@
     /// cell. Falls back to the formula description when the wk isn't known.</summary>
     private string WeekSalesHeaderTitle()
     {
-        var baseText = "SUM(SalesTgtWk) over the next N weeks starting current wk (N = No. of Weeks column)";
+        var baseText = "SUM(SalesTgtWk) from the current wk through Target Week inclusive — that is N+1 weeks, where N = No. of Lead Weeks. Both endpoints count, so a 4-week lead sums 5 weeks of demand";
         return _currentOtsWk is int wk
             ? $"Current wk = {wk}. {baseText}. Then rescaled per (Country x Div) to match BFL_MFP_OUTBOUND_T1.planned_sls totals."
             : $"{baseText}. Then rescaled per (Country x Div) to match BFL_MFP_OUTBOUND_T1.planned_sls totals.";
@@ -601,10 +605,10 @@
     private string WeekSalesTooltip(OtsPoAllocationRow r)
     {
         if (_currentOtsWk is not int wk || r.NoOfLeadWeeks <= 0)
-            return $"{r.WeekSales:N0} = SUM(SalesTgtWk over next {Math.Max(1, r.NoOfLeadWeeks)} week(s) starting current wk)";
-        var endWk = wk + r.NoOfLeadWeeks - 1;
-        var rangeStr = r.NoOfLeadWeeks == 1 ? $"wk {wk}" : $"wk {wk}..{endWk}";
-        return $"{r.WeekSales:N0} = SUM(SalesTgtWk {rangeStr}) — Current wk {wk}, N={r.NoOfLeadWeeks}";
+            return $"{r.WeekSales:N0} = SUM(SalesTgtWk over the next {Math.Max(1, r.NoOfLeadWeeks) + 1} week(s) starting current wk)";
+        // Inclusive of Target Week (= currentWk + N), so the span is N+1 weeks.
+        var endWk = wk + r.NoOfLeadWeeks;
+        return $"{r.WeekSales:N0} = SUM(SalesTgtWk wk {wk}..{endWk}) — Current wk {wk}, N={r.NoOfLeadWeeks}, so {r.NoOfLeadWeeks + 1} weeks";
     }
 
     private void RecomputeTotals()
@@ -616,6 +620,7 @@
         _totLeadDc      = _rows.Sum(r => r.LeadDCSOH);
         _totInTransit   = _rows.Sum(r => r.InTransit);
         _totEx2         = _rows.Sum(r => r.Ex2DcSoh);
+        _totUaeDc       = _rows.Sum(r => r.UaeDcSoh);
         _totWIP         = _rows.Sum(r => r.CountingWIP);
         _totOtsQty      = _rows.Sum(r => r.OtsQtyToday);
         _totOtsRequired = _rows.Sum(r => Math.Max(0, r.OtsQtyToday));
@@ -934,7 +939,7 @@
             "EOM Month","Tgt EOM Month","Tgt EOM","Prev EOM Month","Prev Month EOM","Divisor Weeks","Week Adjustment",
             "Current Week","Target Week","Weeks Multiplier","Current EOW",
             "SOH Today","No. of Lead Weeks","Week Sales",
-            "InTransit","Ex2 DC SOH","Counting WIP","OTS Qty Today","OTS % Today","OTS Today Required",
+            "InTransit","Ex2 DC SOH","UAE DC SOH","Counting WIP","OTS Qty Today","OTS % Today","OTS Today Required",
             "Lead InTransit","Lead DC SOH"
         };
         for (int i = 0; i < headers.Length; i++) ws.Cell(1, i + 1).Value = headers[i];
@@ -964,12 +969,13 @@
             ws.Cell(row,20).Value  = r.WeekSales;
             ws.Cell(row,21).Value  = r.InTransit;
             ws.Cell(row,22).Value  = r.Ex2DcSoh;
-            ws.Cell(row,23).Value  = r.CountingWIP;
-            ws.Cell(row,24).Value  = r.OtsQtyToday;
-            ws.Cell(row,25).Value  = (int)Math.Round(r.OtsPercentToday);
-            ws.Cell(row,26).Value  = req > 0 ? req : 0;
-            ws.Cell(row,27).Value  = r.LeadIntransit;
-            ws.Cell(row,28).Value  = r.LeadDCSOH;
+            ws.Cell(row,23).Value  = r.UaeDcSoh;
+            ws.Cell(row,24).Value  = r.CountingWIP;
+            ws.Cell(row,25).Value  = r.OtsQtyToday;
+            ws.Cell(row,26).Value  = (int)Math.Round(r.OtsPercentToday);
+            ws.Cell(row,27).Value  = req > 0 ? req : 0;
+            ws.Cell(row,28).Value  = r.LeadIntransit;
+            ws.Cell(row,29).Value  = r.LeadDCSOH;
             row++;
         }
         // Totals row (column indices match the header layout above)
@@ -981,11 +987,12 @@
         ws.Cell(row,20).Value  = _totWeekSales;
         ws.Cell(row,21).Value  = _totInTransit;
         ws.Cell(row,22).Value  = _totEx2;
-        ws.Cell(row,23).Value  = _totWIP;
-        ws.Cell(row,24).Value  = _totOtsQty;
-        ws.Cell(row,26).Value  = _totOtsRequired;
-        ws.Cell(row,27).Value  = _totLeadIn;
-        ws.Cell(row,28).Value  = _totLeadDc;
+        ws.Cell(row,23).Value  = _totUaeDc;
+        ws.Cell(row,24).Value  = _totWIP;
+        ws.Cell(row,25).Value  = _totOtsQty;
+        ws.Cell(row,27).Value  = _totOtsRequired;
+        ws.Cell(row,28).Value  = _totLeadIn;
+        ws.Cell(row,29).Value  = _totLeadDc;
         ws.Row(row).Style.Font.Bold = true;
         ws.Columns().AdjustToContents();
         using var ms = new MemoryStream();
@@ -1042,7 +1049,8 @@
         ("SOHToday",        "SOH Today",          "SUM(SOH) from racks.LPM_locstock for this (Store, Div). ECOM sums the ONLINE and ONLINEKSA stores together."),
         ("NoOfLeadWeeks",   "No. of Lead Weeks",  "WmsCountryOtsWeeks.Weeks for the store's Country; defaults to 1 when missing. Drives Target Week — the Current EOW multiplier is Weeks Multiplier, not this."),
         ("InTransit",       "InTransit",          "SUM(Ex2SOH + BoxSOH) from LPM_Ex2ItemSOH for the (Country, DivCode), split across that group's stores in proportion to Week Sales (largest-remainder, so the parts sum exactly). UAE = 0 — it is the origin, nothing is in transit to it."),
-        ("Ex2DcSoh",        "Ex2 DC SOH",         "Two parts added together. (1) SUM(R1WHSOH) from LPM_Ex2ItemSOH for the (Country, DivCode) — that country's own export-warehouse stock — split across its stores in proportion to Week Sales. (2) When the UAE DC SOH toggle is on, that store's share of the UAE distribution centre: racks..WHBoxItems where PalletCategory = 'Eligible' and LPMDt falls in the near horizon (current + next month to the 14th, current + next two from the 15th), pooled per division and split by Week Sales across every country's stores EXCEPT ECOM. Both splits fall back to an equal share when a division has no weekly sales."),
+        ("Ex2DcSoh",        "Ex2 DC SOH",         "That country's OWN export-warehouse stock: SUM(R1WHSOH) from LPM_Ex2ItemSOH for the (Country, DivCode), split across its stores in proportion to Week Sales (largest-remainder). Falls back to an equal split when the division has no weekly sales. Countries absent from LPM_Ex2LocationConfig — including UAE and OMAN — get 0 here; their DC stock is in the next column."),
+        ("UaeDcSoh",        "UAE DC SOH",         "This store's share of the UAE distribution centre, and 0 unless the 'Add UAE DC SOH' toggle is on. Pool = racks..WHBoxItems where PalletCategory = 'Eligible' and LPMDt falls in the near horizon — current + next month up to the 14th, current + next TWO months from the 15th — summed per division via vupc_subclass.DivID. That one pool is split across EVERY country's stores except ECOM, in proportion to Week Sales. Separate from Ex2 DC SOH because it is different stock in a different warehouse; OTS subtracts both."),
         ("CountingWIP",     "Counting WIP",       "SUM(AllocatedQty) for containers approved but not yet completed, per (Store, Div)."),
         ("OtsQtyToday",     "OTS Qty Today",      "Current EOW + Week Sales − SOH Today − InTransit − Ex2 DC SOH − Counting WIP. Every committed supply is subtracted. Lead InTransit and Lead DC SOH are shown for reference and are NOT in this formula."),
         ("OtsPercentToday", "OTS % Today",        "OTS Qty Today ÷ Current EOW × 100; 0 when Current EOW ≤ 0."),
@@ -1150,6 +1158,7 @@
                 "LeadDCSOH"       => r => r.LeadDCSOH,
                 "InTransit"       => r => r.InTransit,
                 "Ex2DcSoh"        => r => r.Ex2DcSoh,
+                "UaeDcSoh"        => r => r.UaeDcSoh,
                 "CountingWIP"     => r => r.CountingWIP,
                 "OtsQtyToday"     => r => r.OtsQtyToday,
                 "OtsPercentToday" => r => r.OtsPercentToday,
