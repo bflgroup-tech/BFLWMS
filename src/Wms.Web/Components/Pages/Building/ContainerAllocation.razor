@@ -91,7 +91,16 @@
         {
             <label style="display:flex; align-items:center; gap:6px; font-size:12px; cursor:pointer"
                    title="When ticked, ECOM's Manual Allocation qty (StoreID='ONLINE') is allocated first per item; remaining qty distributes to other countries via the normal Pass 1-4 rules.">
-                <input type="checkbox" @bind="_ecomManualPriority" /> Follow ECOM Manual Allocation on priority
+                @* Was a checkbox, where "off" silently meant "PO allocation logic".
+                   Two named options make the second mode discoverable — it is a real
+                   choice, not the absence of one. *@
+                <span style="font-weight:700">ECOM:</span>
+                <select @bind="_ecomMode" disabled="@_busy"
+                        style="padding:4px 8px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:12px; background:white; margin-left:4px"
+                        title="Manual — ECOM takes its WmsManualAllocation qty and nothing more; ONLINE is removed from the normal passes. PO allocation logic — ECOM competes as an ordinary store on Volume Group + SKU Max tier and the manual qty is ignored. Either way ECOM is capped at its LPM_POAllocationMaxPct share of the container's PO Qty.">
+                    <option value="manual">Follow Manual Allocation</option>
+                    <option value="po">Follow PO Allocation logic</option>
+                </select>
             </label>
             <label style="display:flex; align-items:center; gap:6px; font-size:12px; cursor:pointer"
                    title="When ticked, every Pass touch (1b/2/3/4) is written to LPMSIM.dbo.WmsAllocationTrace. Prior rows for this ContNo are cleared on each run. Use only for debugging — adds ~1 row per (store, pass, item).">
@@ -654,7 +663,10 @@
     // done day to day, and having to re-tick three of them on every page load
     // was a reliable way to process a container with the wrong settings.
     private bool _validate = true;
-    private bool _ecomManualPriority = true;
+    // "manual" | "po". Default stays manual — that is what the old checkbox
+    // defaulted to, so existing behaviour is unchanged until someone switches.
+    private string _ecomMode = "manual";
+    private bool _ecomManualPriority => string.Equals(_ecomMode, "manual", StringComparison.OrdinalIgnoreCase);
     private bool _traceEnabled = true;
     private bool _bypassPass1b = true;
     private long _totalPoQty;
