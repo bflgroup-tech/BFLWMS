@@ -10,10 +10,12 @@
  * POAllocationMaxPct is a PERCENT (15 = 15%), not a fraction — the column name
  * says Pct and an operator editing this by hand will type 15.
  *
- * The cap is PER CONTAINER, not per item line: the country's total across every
- * line of the container is held at
- *     FLOOR(total container PO Qty * POAllocationMaxPct / 100)
- * so early lines can consume the whole allowance and later ones then get none.
+ * The cap is PER DIVISION within a container, not per item line and not per
+ * container. Each division gets its own budget:
+ *     FLOOR(that division's PO Qty in the container * POAllocationMaxPct / 100)
+ * so a division's allowance can only be spent by its own items. Within a
+ * division it is still first-come: early item lines can consume the whole
+ * budget and later lines of the same division then get none.
  *
  * NO ROW = NO CAP. A country absent from this table allocates unrestricted,
  * exactly as before the cap existed. That is deliberate: a missing row must not
