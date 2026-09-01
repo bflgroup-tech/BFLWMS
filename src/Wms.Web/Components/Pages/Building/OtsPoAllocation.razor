@@ -182,6 +182,7 @@
             var fSOH  = fRows.Sum(r => r.SOHToday);
             var fWS   = fRows.Sum(r => r.WeekSales);
             var fInT  = fRows.Sum(r => r.InTransit);
+            var fEOW  = fRows.Sum(r => r.CurrentEOW);
             var fEx2  = fRows.Sum(r => r.Ex2DcSoh);
             var fUae  = fRows.Sum(r => r.UaeDcSoh);
             var fOTS  = fRows.Sum(r => r.OtsQtyToday);
@@ -195,8 +196,12 @@
            both are "stock in a DC". Leaving it off made the ribbon read as though
            there were no DC supply at all whenever a country has no Ex2 warehouse —
            UAE showed Ex2 DC SOH 0 while every row carried a real UAE DC share. *@
-        <div style="display:grid; grid-template-columns: repeat(8, minmax(0,1fr)); gap:12px;">
+        @* EOW next to EOM because OTS is driven by Current EOW, not Tgt EOM — the two
+           differ by the week-adjustment interpolation, and showing only EOM made the
+           OTS total look unarrived-at. *@
+        <div style="display:grid; grid-template-columns: repeat(9, minmax(0,1fr)); gap:12px;">
             @Kpi("EOM",           fEOM.ToString("N0"),    "#dbeafe", "#1e40af")
+            @Kpi("EOW",           fEOW.ToString("N0"),    "#cffafe", "#155e75")
             @Kpi("SOH",           fSOH.ToString("N0"),    "#dcfce7", "#166534")
             @Kpi("Weekly Sales",  fWS.ToString("N0"),     "#fef3c7", "#92400e")
             @Kpi("InTransit",     fInT.ToString("N0"),    "#ffedd5", "#9a3412")
