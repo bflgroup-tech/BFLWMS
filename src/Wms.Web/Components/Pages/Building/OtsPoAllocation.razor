@@ -183,6 +183,7 @@
             var fWS   = fRows.Sum(r => r.WeekSales);
             var fInT  = fRows.Sum(r => r.InTransit);
             var fEx2  = fRows.Sum(r => r.Ex2DcSoh);
+            var fUae  = fRows.Sum(r => r.UaeDcSoh);
             var fOTS  = fRows.Sum(r => r.OtsQtyToday);
             var fReq  = fRows.Sum(r => Math.Max(0, r.OtsQtyToday));
         }
@@ -190,12 +191,17 @@
            columns that play no part in the OTS formula, so totalling them at the
            top invited the reading that they do. Both remain on the grid and in
            the Excel export. *@
-        <div style="display:grid; grid-template-columns: repeat(7, minmax(0,1fr)); gap:12px;">
+        @* UAE DC SOH sits next to Ex2 DC SOH because both are subtracted by OTS and
+           both are "stock in a DC". Leaving it off made the ribbon read as though
+           there were no DC supply at all whenever a country has no Ex2 warehouse —
+           UAE showed Ex2 DC SOH 0 while every row carried a real UAE DC share. *@
+        <div style="display:grid; grid-template-columns: repeat(8, minmax(0,1fr)); gap:12px;">
             @Kpi("EOM",           fEOM.ToString("N0"),    "#dbeafe", "#1e40af")
             @Kpi("SOH",           fSOH.ToString("N0"),    "#dcfce7", "#166534")
             @Kpi("Weekly Sales",  fWS.ToString("N0"),     "#fef3c7", "#92400e")
             @Kpi("InTransit",     fInT.ToString("N0"),    "#ffedd5", "#9a3412")
             @Kpi("Ex2 DC SOH",    fEx2.ToString("N0"),    "#fce7f3", "#9d174d")
+            @Kpi("UAE DC SOH",    fUae.ToString("N0"),    "#ede9fe", "#6d28d9")
             @Kpi("OTS",           fOTS.ToString("N0"),    fOTS < 0 ? "#fee2e2" : "#e0e7ff", fOTS < 0 ? "#991b1b" : "#3730a3")
             @Kpi("OTS Reqd",      fReq.ToString("N0"),    "#ede9fe", "#5b21b6")
         </div>
@@ -1052,7 +1058,7 @@
         ("Ex2DcSoh",        "Ex2 DC SOH",         "That country's OWN export-warehouse stock: SUM(R1WHSOH) from LPM_Ex2ItemSOH for the (Country, DivCode), split across its stores in proportion to Week Sales (largest-remainder). Falls back to an equal split when the division has no weekly sales. Countries absent from LPM_Ex2LocationConfig — including UAE and OMAN — get 0 here; their DC stock is in the next column."),
         ("UaeDcSoh",        "UAE DC SOH",         "This store's share of the UAE distribution centre, and 0 unless the 'Add UAE DC SOH' toggle is on. Pool = racks..WHBoxItems where PalletCategory = 'Eligible' and LPMDt falls in the near horizon — current + next month up to the 14th, current + next TWO months from the 15th — summed per division via vupc_subclass.DivID. That one pool is split across EVERY country's stores except ECOM, in proportion to Week Sales. Separate from Ex2 DC SOH because it is different stock in a different warehouse; OTS subtracts both."),
         ("CountingWIP",     "Counting WIP",       "SUM(AllocatedQty) for containers approved but not yet completed, per (Store, Div)."),
-        ("OtsQtyToday",     "OTS Qty Today",      "Current EOW + Week Sales − SOH Today − InTransit − Ex2 DC SOH − Counting WIP. Every committed supply is subtracted. Lead InTransit and Lead DC SOH are shown for reference and are NOT in this formula."),
+        ("OtsQtyToday",     "OTS Qty Today",      "Current EOW + Week Sales − SOH Today − InTransit − Ex2 DC SOH − UAE DC SOH − Counting WIP. Every committed supply is subtracted, including BOTH DC columns — they are different warehouses, so both count. Lead InTransit and Lead DC SOH are shown for reference and are NOT in this formula."),
         ("OtsPercentToday", "OTS % Today",        "OTS Qty Today ÷ Current EOW × 100; 0 when Current EOW ≤ 0."),
         ("OtsTodayRequired","OTS Today Required", "max(0, OTS Qty Today) — clipped at zero, since negative OTS means over-stocked and nothing needs buying."),
         ("LeadIntransit",   "Lead InTransit",     "REFERENCE ONLY — not in the OTS formula. P2EXPORT..vTransferDetail qty (via racks..InTransit_ExportShipment where intransit = 'Y') whose LPMDt is on or before the 1st of the month that (today + LeadWeeks × 7) lands in. Equal split across the (Country, DivCode) stores. UAE = 0."),
