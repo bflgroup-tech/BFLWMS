@@ -9,6 +9,7 @@
 @inject TechnoPairingService PairingSvc
 @inject TechnoBuildingService BuildingSvc
 @inject TechnoPricingService PricingSvc
+@inject TechnoTeamProductionService TeamProductionSvc
 @inject IJSRuntime JS
 
 <PageTitle>WMS - Warehouse Incentives</PageTitle>
@@ -28,7 +29,113 @@
     }
 </div>
 
-@if (_activeTab == TechnoChecking)
+@if (_activeTab == TechnoTeamProduction)
+{
+    <div class="aiwms-section">
+        <p style="color:var(--text-secondary); margin:0 0 12px 0">TECHNO whole-team pairing/production counts per day, split into AM/PM shift buckets. Pairing from BFLDATA.dbo.RFPairingCount, Production from BFLDATA.dbo.DailyCountCategoryTrf (manual) and DailyCountCategoryTrfRobo (auto). Production-Manual is reported net of Production-Auto for the same shift.</p>
+        <div style="display:grid; grid-template-columns: auto auto auto 1fr auto; gap:12px; align-items:end;">
+            <div>
+                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">FROM</label>
+                <input type="date" @bind="_tpFrom" @bind:format="yyyy-MM-dd" max="@DateTime.Today.ToString("yyyy-MM-dd")" style="padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
+            </div>
+            <div>
+                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">TO</label>
+                <input type="date" @bind="_tpTo" @bind:format="yyyy-MM-dd" max="@DateTime.Today.ToString("yyyy-MM-dd")" style="padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
+            </div>
+            <div>
+                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">MORNING SHIFT TIMING</label>
+                <select value="@_tpShiftTiming" @onchange="@(e => _tpShiftTiming = e.Value?.ToString() ?? _tpShiftTiming)" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white">
+                    @foreach (var s in TechnoTeamProductionService.ShiftTimings)
+                    {
+                        <option value="@s">@s</option>
+                    }
+                </select>
+            </div>
+            <div>
+                <label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:13px; font-weight:700; color:var(--text-secondary);">
+                    <input type="checkbox" checked="@_tpMultiplier" @onchange="@(e => _tpMultiplier = (bool)e.Value!)" />
+                    Multiplier?
+                </label>
+            </div>
+            <div style="display:flex; gap:8px">
+                <button class="aiwms-btn" style="background:var(--s-live); color:#fff; border-radius:10px;"
+                        @onclick="LoadTeamProductionAsync" disabled="@(_tpLoading || _tpFrom > _tpTo)">
+                    <span class="mi" style="font-size:16px;">play_arrow</span> @(_tpLoading ? "Loading..." : "Show")
+                </button>
+                <button class="aiwms-btn" style="background:#fff; color:var(--text-primary); border:1.5px solid var(--border-strong); border-radius:10px;"
+                        @onclick="ClearTeamProductionFilters" disabled="@_tpLoading">
+                    <span class="mi" style="font-size:16px;">refresh</span> Clear Filters
+                </button>
+                <button class="aiwms-btn" style="background:#fff; color:var(--s-active); border:1.5px solid var(--s-active); border-radius:10px;"
+                        @onclick="ExportTeamProductionExcelAsync" disabled="@(_tpExporting || _tpRows.Count == 0)">
+                    <span class="mi" style="font-size:16px;">download</span> @(_tpExporting ? "Exporting..." : "Export Excel")
+                </button>
+            </div>
+        </div>
+
+        <p style="font-size:11px; color:var(--text-secondary); margin-top:8px">
+            Date range capped at 366 days. Default range is the last 7 days.
+        </p>
+
+        @if (!string.IsNullOrEmpty(_tpMessage))
+        {
+            <div class="aiwms-alert @(_tpIsError ? "error" : "info")" style="margin-top:12px">@_tpMessage</div>
+        }
+    </div>
+
+    @if (_tpLoaded)
+    {
+        <div class="aiwms-section">
+            <div class="aiwms-card-header">Techno Team Production - @_tpRows.Count.ToString("N0") day(s)</div>
+            <div style="overflow-x:auto">
+            <table class="aiwms-table aiwms-table-dense">
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th style="text-align:right">Pairing Auto AM</th>
+                        <th style="text-align:right">Pairing Auto PM</th>
+                        <th style="text-align:right">Pairing Manual</th>
+                        <th style="text-align:right">Production Manual AM</th>
+                        <th style="text-align:right">Production Manual PM</th>
+                        <th style="text-align:right">Production Auto AM</th>
+                        <th style="text-align:right">Production Auto PM</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr style="font-weight:700; background:var(--surface-1, #f7f7f5);">
+                        <td>Total</td>
+                        <td style="text-align:right">@_tpRows.Sum(r => r.PairingAutoAMShift).ToString("N0")</td>
+                        <td style="text-align:right">@_tpRows.Sum(r => r.PairingAutoPMShift).ToString("N0")</td>
+                        <td style="text-align:right">@_tpRows.Sum(r => r.PairingManualAMShift).ToString("N0")</td>
+                        <td style="text-align:right">@_tpRows.Sum(r => r.ProductionManualAMShift).ToString("N0")</td>
+                        <td style="text-align:right">@_tpRows.Sum(r => r.ProductionManualPMShift).ToString("N0")</td>
+                        <td style="text-align:right">@_tpRows.Sum(r => r.ProductionAutoAMShift).ToString("N0")</td>
+                        <td style="text-align:right">@_tpRows.Sum(r => r.ProductionAutoPMShift).ToString("N0")</td>
+                    </tr>
+                    @foreach (var r in _tpRows)
+                    {
+                        <tr>
+                            <td style="white-space:nowrap">@r.TrnDate.ToString("dd-MMM-yyyy")</td>
+                            <td style="text-align:right">@r.PairingAutoAMShift.ToString("N0")</td>
+                            <td style="text-align:right">@r.PairingAutoPMShift.ToString("N0")</td>
+                            <td style="text-align:right">@r.PairingManualAMShift.ToString("N0")</td>
+                            <td style="text-align:right">@r.ProductionManualAMShift.ToString("N0")</td>
+                            <td style="text-align:right">@r.ProductionManualPMShift.ToString("N0")</td>
+                            <td style="text-align:right">@r.ProductionAutoAMShift.ToString("N0")</td>
+                            <td style="text-align:right">@r.ProductionAutoPMShift.ToString("N0")</td>
+                        </tr>
+                    }
+                    @if (_tpRows.Count == 0)
+                    {
+                        <tr><td colspan="8" style="color:var(--text-secondary)">No rows for the selected filters.</td></tr>
+                    }
+                </tbody>
+            </table>
+            </div>
+        </div>
+    }
+}
+else if (_activeTab == TechnoChecking)
 {
     <div class="aiwms-section">
         <p style="color:var(--text-secondary); margin:0 0 12px 0">UAE/TECHNO checking counts per employee per day, from USA.dbo.AMEChecking and BFLDATA.dbo.JAFZAChecking. A checking scan between midnight and 05:00 is credited to the previous day. Employee names aren't available (PAYROLL isn't reachable from this app) — EmpCode only.</p>
@@ -433,13 +540,14 @@ else
 }
 
 @code {
+    private const string TechnoTeamProduction = "Techno Team Production";
     private const string TechnoChecking = "Techno Checking";
     private const string TechnoPairing = "Techno Pairing";
     private const string TechnoBuilding = "Techno Building";
     private const string TechnoPricing = "Techno Pricing";
     private static readonly string[] Tabs =
-        [TechnoChecking, TechnoPairing, TechnoBuilding, TechnoPricing, "Jafza Production"];
-    private string _activeTab = TechnoChecking;
+        [TechnoTeamProduction, TechnoChecking, TechnoPairing, TechnoBuilding, TechnoPricing, "Jafza Production"];
+    private string _activeTab = TechnoTeamProduction;
 
     private static readonly string[] Areas = ["AUTO", "MANUAL"];
 
@@ -771,5 +879,83 @@ else
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
         }
         finally { _prExporting = false; }
+    }
+
+    // ---------------- Techno Team Production ----------------
+    private DateTime _tpFrom = DateTime.Today.AddDays(-6);
+    private DateTime _tpTo = DateTime.Today;
+    private string _tpShiftTiming = "6AM-8PM";
+    private bool _tpMultiplier = true;
+    private bool _tpLoading;
+    private bool _tpLoaded;
+    private string _tpMessage = "";
+    private bool _tpIsError;
+    private bool _tpExporting;
+    private List<TechnoTeamProductionRow> _tpRows = new();
+
+    private async Task LoadTeamProductionAsync()
+    {
+        _tpLoading = true; _tpMessage = ""; _tpIsError = false; await InvokeAsync(StateHasChanged);
+        try
+        {
+            _tpRows = await TeamProductionSvc.GetReportAsync(_tpFrom, _tpTo, _tpShiftTiming, _tpMultiplier);
+            _tpLoaded = true;
+            if (_tpRows.Count == 0) _tpMessage = "No rows for the selected filters.";
+        }
+        catch (Exception ex) { _tpMessage = ex.Message; _tpIsError = true; }
+        finally { _tpLoading = false; }
+    }
+
+    private void ClearTeamProductionFilters()
+    {
+        _tpFrom = DateTime.Today.AddDays(-6);
+        _tpTo = DateTime.Today;
+        _tpShiftTiming = "6AM-8PM";
+        _tpMultiplier = true;
+        _tpRows = new();
+        _tpLoaded = false;
+        _tpMessage = "";
+        _tpIsError = false;
+    }
+
+    private async Task ExportTeamProductionExcelAsync()
+    {
+        if (_tpRows.Count == 0) return;
+        _tpExporting = true;
+        try
+        {
+            using var wb = new XLWorkbook();
+            var ws = wb.AddWorksheet("Techno Team Production");
+            string[] headers =
+            {
+                "Date", "Pairing Auto AM", "Pairing Auto PM", "Pairing Manual",
+                "Production Manual AM", "Production Manual PM", "Production Auto AM", "Production Auto PM",
+            };
+            for (int i = 0; i < headers.Length; i++) ws.Cell(1, i + 1).Value = headers[i];
+            ws.Row(1).Style.Font.Bold = true;
+
+            int row = 2;
+            foreach (var r in _tpRows)
+            {
+                ws.Cell(row, 1).Value = r.TrnDate.ToString("dd-MMM-yyyy");
+                ws.Cell(row, 2).Value = r.PairingAutoAMShift;
+                ws.Cell(row, 3).Value = r.PairingAutoPMShift;
+                ws.Cell(row, 4).Value = r.PairingManualAMShift;
+                ws.Cell(row, 5).Value = r.ProductionManualAMShift;
+                ws.Cell(row, 6).Value = r.ProductionManualPMShift;
+                ws.Cell(row, 7).Value = r.ProductionAutoAMShift;
+                ws.Cell(row, 8).Value = r.ProductionAutoPMShift;
+                row++;
+            }
+            ws.Columns().AdjustToContents();
+
+            using var ms = new MemoryStream();
+            wb.SaveAs(ms);
+            var b64 = Convert.ToBase64String(ms.ToArray());
+            var name = $"techno-team-production-{_tpFrom:yyyyMMdd}-{_tpTo:yyyyMMdd}.xlsx";
+            await JS.InvokeVoidAsync("downloadFileWithPicker", name, b64,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        }
+        finally { _tpExporting = false; }
     }
 }
