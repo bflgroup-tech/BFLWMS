@@ -10,7 +10,7 @@ public class SyncDataCountService(IOnPremConnectionResolver resolver)
     private const int CommandTimeoutSeconds = 60;
 
     // UPC Barcodes (onprem/HO side only) is read from this date forward, per request.
-    private static readonly DateTime UpcBarcodesFloor = new(2026, 1, 1);
+    private static readonly DateTime UpcBarcodesFloor = new(2024, 1, 1);
 
     private static readonly Dictionary<string, string> DataNameToPrefix = new(StringComparer.OrdinalIgnoreCase)
     {
