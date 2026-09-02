@@ -34,7 +34,7 @@ public class SyncDataCountService(IOnPremConnectionResolver resolver)
         "Building Completion", "Close R1 Pallet", "Cont Receipt", "Cont Receipt Export",
         "Goods Issue", "Goods Issue Plt", "GRN", "Item Group", "Item Master",
         "PLT Delivery", "PLT Issue", "RF Pair", "Sales Price",
-        "Transfer Detail", "Transfer Header", "UPC Box", "USA Org File", "USA Purchase",
+        "Transfer Detail", "Transfer Header", "UPC Barcodes", "UPC Box", "USA Org File", "USA Purchase",
         "Verify GIN",
     };
 
@@ -52,7 +52,7 @@ public class SyncDataCountService(IOnPremConnectionResolver resolver)
     private static readonly HashSet<string> ActiveCountries = new(
         ["KSA", "Qatar", "Bahrain", "Kuwait", "Malaysia"], StringComparer.OrdinalIgnoreCase);
 
-    public async Task<List<SyncRowMulti>> GetMultiCountryAsync(DateTime date, CancellationToken ct = default)
+    public async Task<List<SyncRowMulti>> GetMultiCountryAsync(DateTime fromDate, DateTime toDate, CancellationToken ct = default)
     {
         // Run each active country in parallel; inactive ones get empty counts
         var countryTasks = AllCountries.Select(async country =>
@@ -90,8 +90,8 @@ public class SyncDataCountService(IOnPremConnectionResolver resolver)
 
             var rowTasks = Descriptions.Select(async desc =>
             {
-                var regTask = QueryOneAsync(desc, countryCs, dbName, dataName, prefix, isKsa, date.Date, date.Date, isHo: false, ct);
-                var hoTask  = QueryOneAsync(desc, onpremCs,  dbName, dataName, prefix, isKsa, date.Date, date.Date, isHo: true,  ct);
+                var regTask = QueryOneAsync(desc, countryCs, dbName, dataName, prefix, isKsa, fromDate.Date, toDate.Date, isHo: false, ct);
+                var hoTask  = QueryOneAsync(desc, onpremCs,  dbName, dataName, prefix, isKsa, fromDate.Date, toDate.Date, isHo: true,  ct);
                 await Task.WhenAll(regTask, hoTask);
                 return (desc, new CountryCount(regTask.Result.Count, regTask.Result.Error, hoTask.Result.Count, hoTask.Result.Error));
             });
@@ -230,6 +230,11 @@ public class SyncDataCountService(IOnPremConnectionResolver resolver)
                 "SELECT COUNT(DISTINCT ContNo) FROM BFLDATA..BuildingCompletion WITH(NOLOCK) WHERE ContNo LIKE @cPrefix AND CAST(TrnDate AS DATE) BETWEEN @from AND @to",
             ("Building Completion", true) =>
                 "SELECT COUNT(DISTINCT ContNo) FROM BFLDATA.dbo.BuildingCompletion WITH(NOLOCK) WHERE ContNo LIKE @cPrefix AND CAST(TrnDate AS DATE) BETWEEN @from AND @to",
+
+            ("UPC Barcodes", false) =>
+                "SELECT COUNT(itemcode) FROM usa..upcbarcodes WITH(NOLOCK)",
+            ("UPC Barcodes", true) =>
+                "SELECT COUNT(itemcode) FROM usa..upcbarcodes WITH(NOLOCK)",
 
             ("UPC Box", false) when isKsa =>
                 "SELECT COUNT(boxno) FROM usa..upcboxhead WITH(NOLOCK) WHERE CAST(TrnDate AS DATE) BETWEEN @from AND @to AND Remarks NOT LIKE '%KSA transfer AutoBox-Create %'",
