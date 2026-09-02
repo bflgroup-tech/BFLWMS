@@ -71,7 +71,7 @@ public class TechnoBuildingService(IOnPremConnectionResolver resolver)
 
         INSERT INTO #BuildCountTemp
         SELECT EmpCode, CASE WHEN Type = 'PB' THEN 'AUTO' ELSE 'MANUAL' END, DATEADD(day, -1, TrnDate),
-               0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+               0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                HR18A, HR19A, HR20A, HR21A, HR22A, HR23A
           FROM ONLINE.dbo.RFPairingCountPhotoCheckBuild
          WHERE WareHouse = 'TECHNO' AND Type IN ('PB','MB')
