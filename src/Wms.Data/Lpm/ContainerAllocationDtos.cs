@@ -158,6 +158,10 @@ public record AllocationTraceRow(
     // and LPMDt identify which combo produced the row; Country identifies the store.
     string?  PONo           = null,
     DateTime? LPMDt         = null,
+    // PO line qty for this item — what RemainingBefore starts at on the first
+    // pass, and the input that selects the SKU Max band (PoQtyFrom..PoQtyTo).
+    // Without it every other quantity on the row is relative to an unknown.
+    int?     POLineSizeQty  = null,
     string?  Country        = null);
 
 /// <summary>One row from LPMSIM.dbo.WmsPlanningFlag — items whose FMMPO Pass 4
