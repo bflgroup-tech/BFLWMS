@@ -9,6 +9,9 @@ public class SyncDataCountService(IOnPremConnectionResolver resolver)
     private const int ConnectTimeoutSeconds = 30;
     private const int CommandTimeoutSeconds = 60;
 
+    // UPC Barcodes (onprem/HO side only) is read from this date forward, per request.
+    private static readonly DateTime UpcBarcodesFloor = new(2026, 1, 1);
+
     private static readonly Dictionary<string, string> DataNameToPrefix = new(StringComparer.OrdinalIgnoreCase)
     {
         ["bflksa"]     = "SA",
@@ -195,6 +198,7 @@ public class SyncDataCountService(IOnPremConnectionResolver resolver)
         p.Add("@prefix",  prefix + "%");
         p.Add("@cPrefix", prefix + "%");
         p.Add("@dbName",  dbName);
+        p.Add("@upcBarcodesFloor", UpcBarcodesFloor);
 
         var sql = (desc, isHo) switch
         {
@@ -234,7 +238,7 @@ public class SyncDataCountService(IOnPremConnectionResolver resolver)
             ("UPC Barcodes", false) =>
                 "SELECT COUNT(itemcode) FROM usa..upcbarcodes WITH(NOLOCK)",
             ("UPC Barcodes", true) =>
-                "SELECT COUNT(itemcode) FROM usa..upcbarcodes WITH(NOLOCK)",
+                "SELECT COUNT(itemcode) FROM usa..upcbarcodes WITH(NOLOCK) WHERE TrnDate >= @upcBarcodesFloor",
 
             ("UPC Box", false) when isKsa =>
                 "SELECT COUNT(boxno) FROM usa..upcboxhead WITH(NOLOCK) WHERE CAST(TrnDate AS DATE) BETWEEN @from AND @to AND Remarks NOT LIKE '%KSA transfer AutoBox-Create %'",
