@@ -119,7 +119,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
             return new ContainerAllocationValidationResult(false, steps);
         }
         contno = contno.Trim();
-        const int TOTAL = 7;
+        const int TOTAL = 9;
 
         await using (var c = OpenOnPremBackup())
         {
@@ -261,6 +261,78 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                         ? null
                         : $"OTS for PO Allocation has not been Generated today ({todayGst:dd/MM/yyyy} GST). Go to OTS for PO Allocation → Generate first, then re-run Process."));
                 if (!otsToday_ok) return new ContainerAllocationValidationResult(false, steps);
+            }
+
+            // 10. SKU Max band coverage — every (Division, Volume Group, PO line qty)
+            //     this container will actually ask for must land inside a BFLGROUP
+            //     band range. Without a band a store is dropped mid-run as
+            //     "No SkuMax band", which only surfaces afterwards in Blocked Items;
+            //     the operator finds out once the container is already allocated.
+            //     Checking up front names the exact rows missing from the table.
+            //
+            //     Grain matches allocation exactly: one row per usaorgfile_LPM line
+            //     (NOT summed per item), because the band is chosen by that line's
+            //     own orgqty. Volume Groups come from StoreDivGrade scoped to the
+            //     Allocation Countries, so a grade nobody in this run carries cannot
+            //     raise a false alarm.
+            if (runOption == RunOption.FillSKUMaxRoundRobin || runOption == RunOption.FillMinMinPlusOthers)
+            {
+                progress?.Report(new AllocationProgress(9, TOTAL, "Validating: SKU Max band coverage"));
+                var nowGst = DateTime.UtcNow.AddHours(4);
+                var hasCountries = allocationCountries is { Count: > 0 };
+                await using var opb = OpenOnPremBackup();
+                var gaps = (await opb.QueryAsync<(int DivCode, string VolumeGroup, int PoQty, int Lines)>(
+                    new CommandDefinition(@"
+                        ;WITH poLines AS (
+                            SELECT u.ItemCode, CAST(ISNULL(u.orgqty, 0) AS INT) AS PoQty
+                              FROM usa.dbo.usaorgfile_LPM u WITH (NOLOCK)
+                             WHERE u.ContNo = @c
+                        ), lineDiv AS (
+                            SELECT DISTINCT v.DivID AS DivCode, l.PoQty
+                              FROM poLines l
+                              JOIN datareporting.dbo.vupc_subclass v WITH (NOLOCK)
+                                ON v.itemcode = l.ItemCode
+                             WHERE v.DivID IS NOT NULL AND l.PoQty > 0
+                        ), vgs AS (
+                            SELECT DISTINCT g.DivCode, g.Grade AS VolumeGroup
+                              FROM LPMSIM.dbo.StoreDivGrade g WITH (NOLOCK)
+                             WHERE g.Month1 = @m AND g.Year1 = @y
+                               AND g.Grade IS NOT NULL AND LTRIM(RTRIM(g.Grade)) <> ''
+                               AND (@noCountryFilter = 1 OR g.Country IN @countries)
+                        )
+                        SELECT d.DivCode, v.VolumeGroup, d.PoQty, COUNT(*) AS Lines
+                          FROM lineDiv d
+                          JOIN vgs v ON v.DivCode = d.DivCode
+                         WHERE NOT EXISTS (
+                                 SELECT 1
+                                   FROM LPMSIM.dbo.LPM_SkuMaxBands b WITH (NOLOCK)
+                                  WHERE b.IsActive = 1
+                                    AND UPPER(LTRIM(RTRIM(b.Country))) = 'BFLGROUP'
+                                    AND b.DivCode     = d.DivCode
+                                    AND b.VolumeGroup = v.VolumeGroup
+                                    AND d.PoQty BETWEEN b.PoQtyFrom AND b.PoQtyTo)
+                         GROUP BY d.DivCode, v.VolumeGroup, d.PoQty
+                         ORDER BY d.DivCode, v.VolumeGroup, d.PoQty",
+                        new
+                        {
+                            c = contno, m = nowGst.Month, y = nowGst.Year,
+                            noCountryFilter = hasCountries ? 0 : 1,
+                            countries = hasCountries ? allocationCountries!.ToArray() : new[] { "" },
+                        },
+                        commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).ToList();
+
+                var bandsOk = gaps.Count == 0;
+                var sample = string.Join("; ", gaps.Take(8)
+                    .Select(g => $"Div {g.DivCode} / VG {g.VolumeGroup} / PoQty {g.PoQty}"));
+                steps.Add(new ValidationStep(
+                    "SKU Max bands cover every (Division, Volume Group, PO line qty)",
+                    bandsOk,
+                    bandsOk
+                        ? null
+                        : $"{gaps.Count} combination(s) have no BFLGROUP row in LPM_SkuMaxBands whose PoQtyFrom..PoQtyTo contains the line qty: {sample}"
+                          + (gaps.Count > 8 ? " …" : "")
+                          + " Add the missing bands, then re-run Process."));
+                if (!bandsOk) return new ContainerAllocationValidationResult(false, steps);
             }
         }
 
