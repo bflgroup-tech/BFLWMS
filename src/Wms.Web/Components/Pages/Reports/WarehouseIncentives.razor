@@ -10,6 +10,7 @@
 @inject TechnoBuildingService BuildingSvc
 @inject TechnoPricingService PricingSvc
 @inject TechnoTeamProductionService TeamProductionSvc
+@inject RfidProductionService RfidSvc
 @inject IJSRuntime JS
 
 <PageTitle>WMS - Warehouse Incentives</PageTitle>
@@ -532,6 +533,85 @@ else if (_activeTab == TechnoPricing)
         </div>
     }
 }
+else if (_activeTab == RfidProduction)
+{
+    <div class="aiwms-section">
+        <p style="color:var(--text-secondary); margin:0 0 12px 0">RFID PDA production counts per user per day, from BFLDATA.dbo.TransferNoReturn (Dept LIKE '%APDA%') joined to BFLDATA.dbo.PDAUSERS for the username.</p>
+        <div style="display:grid; grid-template-columns: auto auto 1fr auto; gap:12px; align-items:end;">
+            <div>
+                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">FROM</label>
+                <input type="date" @bind="_rfFrom" @bind:format="yyyy-MM-dd" max="@DateTime.Today.ToString("yyyy-MM-dd")" style="padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
+            </div>
+            <div>
+                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">TO</label>
+                <input type="date" @bind="_rfTo" @bind:format="yyyy-MM-dd" max="@DateTime.Today.ToString("yyyy-MM-dd")" style="padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
+            </div>
+            <div>
+                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">USERNAME</label>
+                <input @bind="_rfUsername" @bind:event="oninput" placeholder="e.g. 5860 or MT05" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
+            </div>
+            <div style="display:flex; gap:8px">
+                <button class="aiwms-btn" style="background:var(--s-live); color:#fff; border-radius:10px;"
+                        @onclick="LoadRfidAsync" disabled="@(_rfLoading || _rfFrom > _rfTo)">
+                    <span class="mi" style="font-size:16px;">play_arrow</span> @(_rfLoading ? "Loading..." : "Load")
+                </button>
+                <button class="aiwms-btn" style="background:#fff; color:var(--text-primary); border:1.5px solid var(--border-strong); border-radius:10px;"
+                        @onclick="ClearRfidFilters" disabled="@_rfLoading">
+                    <span class="mi" style="font-size:16px;">refresh</span> Clear Filters
+                </button>
+                <button class="aiwms-btn" style="background:#fff; color:var(--s-active); border:1.5px solid var(--s-active); border-radius:10px;"
+                        @onclick="ExportRfidExcelAsync" disabled="@(_rfExporting || _rfRows.Count == 0)">
+                    <span class="mi" style="font-size:16px;">download</span> @(_rfExporting ? "Exporting..." : "Export Excel")
+                </button>
+            </div>
+        </div>
+
+        <p style="font-size:11px; color:var(--text-secondary); margin-top:8px">
+            Default range is the last 7 days.
+        </p>
+
+        @if (!string.IsNullOrEmpty(_rfMessage))
+        {
+            <div class="aiwms-alert @(_rfIsError ? "error" : "info")" style="margin-top:12px">@_rfMessage</div>
+        }
+    </div>
+
+    @if (_rfLoaded)
+    {
+        <div class="aiwms-section">
+            <div class="aiwms-card-header">RFID Production - @_rfRows.Count.ToString("N0") row(s)</div>
+            <div style="overflow-x:auto">
+            <table class="aiwms-table aiwms-table-dense">
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Username</th>
+                        <th style="text-align:right">Qty</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr style="font-weight:700; background:var(--surface-1, #f7f7f5);">
+                        <td colspan="2">Total</td>
+                        <td style="text-align:right">@_rfRows.Sum(r => r.Qty).ToString("N0")</td>
+                    </tr>
+                    @foreach (var r in _rfRows)
+                    {
+                        <tr>
+                            <td style="white-space:nowrap">@r.TrnDate.ToString("dd-MMM-yyyy")</td>
+                            <td style="font-family:var(--font-mono)">@r.Username</td>
+                            <td style="text-align:right">@r.Qty.ToString("N0")</td>
+                        </tr>
+                    }
+                    @if (_rfRows.Count == 0)
+                    {
+                        <tr><td colspan="3" style="color:var(--text-secondary)">No rows for the selected filters.</td></tr>
+                    }
+                </tbody>
+            </table>
+            </div>
+        </div>
+    }
+}
 else
 {
     <div class="aiwms-section">
@@ -545,8 +625,9 @@ else
     private const string TechnoPairing = "Techno Pairing";
     private const string TechnoBuilding = "Techno Building";
     private const string TechnoPricing = "Techno Pricing";
+    private const string RfidProduction = "RFID Production";
     private static readonly string[] Tabs =
-        [TechnoTeamProduction, TechnoChecking, TechnoPairing, TechnoBuilding, TechnoPricing, "Jafza Production"];
+        [TechnoTeamProduction, TechnoChecking, TechnoPairing, TechnoBuilding, TechnoPricing, RfidProduction, "Jafza Production"];
     private string _activeTab = TechnoTeamProduction;
 
     private static readonly string[] Areas = ["AUTO", "MANUAL"];
@@ -957,5 +1038,72 @@ else
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
         }
         finally { _tpExporting = false; }
+    }
+
+    // ---------------- RFID Production ----------------
+    private DateTime _rfFrom = DateTime.Today.AddDays(-6);
+    private DateTime _rfTo = DateTime.Today;
+    private string _rfUsername = "";
+    private bool _rfLoading;
+    private bool _rfLoaded;
+    private string _rfMessage = "";
+    private bool _rfIsError;
+    private bool _rfExporting;
+    private List<RfidProductionRow> _rfRows = new();
+
+    private async Task LoadRfidAsync()
+    {
+        _rfLoading = true; _rfMessage = ""; _rfIsError = false; await InvokeAsync(StateHasChanged);
+        try
+        {
+            _rfRows = await RfidSvc.GetReportAsync(_rfFrom, _rfTo, _rfUsername);
+            _rfLoaded = true;
+            if (_rfRows.Count == 0) _rfMessage = "No rows for the selected filters.";
+        }
+        catch (Exception ex) { _rfMessage = ex.Message; _rfIsError = true; }
+        finally { _rfLoading = false; }
+    }
+
+    private void ClearRfidFilters()
+    {
+        _rfFrom = DateTime.Today.AddDays(-6);
+        _rfTo = DateTime.Today;
+        _rfUsername = "";
+        _rfRows = new();
+        _rfLoaded = false;
+        _rfMessage = "";
+        _rfIsError = false;
+    }
+
+    private async Task ExportRfidExcelAsync()
+    {
+        if (_rfRows.Count == 0) return;
+        _rfExporting = true;
+        try
+        {
+            using var wb = new XLWorkbook();
+            var ws = wb.AddWorksheet("RFID Production");
+            string[] headers = { "Date", "Username", "Qty" };
+            for (int i = 0; i < headers.Length; i++) ws.Cell(1, i + 1).Value = headers[i];
+            ws.Row(1).Style.Font.Bold = true;
+
+            int row = 2;
+            foreach (var r in _rfRows)
+            {
+                ws.Cell(row, 1).Value = r.TrnDate.ToString("dd-MMM-yyyy");
+                ws.Cell(row, 2).Value = r.Username;
+                ws.Cell(row, 3).Value = r.Qty;
+                row++;
+            }
+            ws.Columns().AdjustToContents();
+
+            using var ms = new MemoryStream();
+            wb.SaveAs(ms);
+            var b64 = Convert.ToBase64String(ms.ToArray());
+            var name = $"rfid-production-{_rfFrom:yyyyMMdd}-{_rfTo:yyyyMMdd}.xlsx";
+            await JS.InvokeVoidAsync("downloadFileWithPicker", name, b64,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        }
+        finally { _rfExporting = false; }
     }
 }

@@ -94,6 +94,7 @@ public class Program
         builder.Services.AddScoped<TechnoPricingService>();
         builder.Services.AddScoped<EcomProductionReportsService>();
         builder.Services.AddScoped<TechnoTeamProductionService>();
+        builder.Services.AddScoped<RfidProductionService>();
         builder.Services.AddScoped<TransferGinGrnService>();
         builder.Services.AddScoped<ShipmentStatusService>();
         builder.Services.AddScoped<YotoVnaDashboardService>();
