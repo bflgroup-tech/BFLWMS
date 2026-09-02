@@ -1513,6 +1513,11 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                     int VolumeGroupRank(string? vg)
                     {
                         if (string.IsNullOrWhiteSpace(vg)) return 999;
+                        // Z is the first grade, ahead of A. Hard-coded rather than left to
+                        // LPM_VolumeGroupRange.SortOrder because Z has no row there and would
+                        // otherwise fall to 999 — served after every lettered store, which is
+                        // the opposite of "first".
+                        if (char.ToUpperInvariant(vg.Trim()[0]) == 'Z') return -1;
                         return vgSortOrder.TryGetValue(vg.Trim(), out var rank) ? rank : 999;
                     }
 
@@ -1839,11 +1844,27 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                         //          stores with LiveOts > 0, proportional to raw MinMax
                         //          (share = MinMax / SUM(MinMax) * remaining, no per-store cap).
                         //          else -> flag the item in dbo.WmsPlanningFlag, drop remaining, move on.
+                        // Z (ECOM) ranks as the FIRST grade, above A — so it is allocatable
+                        // wherever A..H are, and sorts ahead of them.
+                        //
+                        // Z used to fail this test and every A/B/C set below, which left ECOM
+                        // able to receive stock from Pass 3 only (negative-OTS stores) and
+                        // therefore nothing at all on any division where its OTS was positive.
+                        // Manual mode hid that, because it pre-allocates ONLINE in Pass 1a
+                        // before any of these filters run.
                         static bool IsGradeAtoH(string? vg)
                         {
                             if (string.IsNullOrWhiteSpace(vg)) return false;
                             var c = char.ToUpperInvariant(vg.Trim()[0]);
-                            return c >= 'A' && c <= 'H';
+                            return c == 'Z' || (c >= 'A' && c <= 'H');
+                        }
+
+                        // The top band for the A/B/C passes, with Z sitting above A.
+                        static bool IsTopGrade(string? vg)
+                        {
+                            if (string.IsNullOrWhiteSpace(vg)) return false;
+                            var c = char.ToUpperInvariant(vg.Trim()[0]);
+                            return c is 'Z' or 'A' or 'B' or 'C';
                         }
                         int MinMinCapFor(OtsRunLookupRow r)
                         {
@@ -1898,7 +1919,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                         if (bypassPass1b)
                         {
                             var abcSet = eligible
-                                .Where(r => (r.VolumeGroup?.Trim().ToUpperInvariant()) is "A" or "B" or "C")
+                                .Where(r => IsTopGrade(r.VolumeGroup))
                                 .Where(r => LiveOtsPct(r) >= 0)
                                 .Select(r =>
                                 {
@@ -1937,7 +1958,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                         {
                             // ----- Stage 1: top up A/B/C OTS>=0 stores to Pass-2 tier - SOH -----
                             var stage1Stores = eligible
-                                .Where(r => (r.VolumeGroup?.Trim().ToUpperInvariant()) is "A" or "B" or "C")
+                                .Where(r => IsTopGrade(r.VolumeGroup))
                                 .Where(r => LiveOtsPct(r) >= 0)
                                 .OrderBy(r => VolumeGroupRank(r.VolumeGroup))
                                 .ThenByDescending(LiveOtsPct)
@@ -2126,7 +2147,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                                 // grade). Ratio uses raw MinMax as the weight; each store's
                                 // share is take-as-is (no per-store cap).
                                 var top3 = eligible
-                                    .Where(r => (r.VolumeGroup?.Trim().ToUpperInvariant()) is "A" or "B" or "C")  // A, B, C by letter (decoupled from SortOrder config so an S=Special row between B and C can't shove C out of the top-3 rank)
+                                    .Where(r => IsTopGrade(r.VolumeGroup))   // Z, A, B, C by letter — decoupled from SortOrder config so an S=Special row cannot shove C out of the top rank
                                     .Where(r => LiveOtsPct(r) > 0)                                                // positive-OTS stores only
                                     .Select(r => (Row: r, MinMax: RawMinMaxFor(r)))
                                     .Where(x => x.MinMax > 0)
