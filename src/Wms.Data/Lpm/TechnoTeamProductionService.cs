@@ -136,10 +136,10 @@ public class TechnoTeamProductionService(IOnPremConnectionResolver resolver)
                    PairingAutoAMShift      = ISNULL(pa.AutoAM, 0),
                    PairingAutoPMShift      = ISNULL(pa.AutoPM, 0),
                    PairingManualAMShift    = ISNULL(pm.ManualAM, 0),
-                   ProductionManualAMShift = CEILING(ISNULL(prm.ManualAM,0) - ISNULL(pra.AutoAM,0)),
-                   ProductionManualPMShift = CEILING(ISNULL(prm.ManualPM,0) - ISNULL(pra.AutoPM,0)),
-                   ProductionAutoAMShift   = CEILING(ISNULL(pra.AutoAM,0)),
-                   ProductionAutoPMShift   = CEILING(ISNULL(pra.AutoPM,0))
+                   ProductionManualAMShift = CAST(CEILING(ISNULL(prm.ManualAM,0) - ISNULL(pra.AutoAM,0)) AS INT),
+                   ProductionManualPMShift = CAST(CEILING(ISNULL(prm.ManualPM,0) - ISNULL(pra.AutoPM,0)) AS INT),
+                   ProductionAutoAMShift   = CAST(CEILING(ISNULL(pra.AutoAM,0)) AS INT),
+                   ProductionAutoPMShift   = CAST(CEILING(ISNULL(pra.AutoPM,0)) AS INT)
               FROM DateSpine ds
               LEFT JOIN PairingAuto pa   ON pa.TrnDate = ds.TrnDate
               LEFT JOIN PairingManual pm ON pm.TrnDate = ds.TrnDate
