@@ -1424,6 +1424,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                             InitialOtsPct: ecomOtsRow?.OtsPercentToday,
                             PONo: line.OraPONo,
                             LPMDt: line.LPMDt,
+                            POLineSizeQty: line.Qty,
                             Country: ecomOtsRow?.Country ?? "ECOM"));
                     }
 
@@ -1613,6 +1614,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                             InitialOtsPct: r.OtsPercentToday,
                             PONo: line.OraPONo,
                             LPMDt: line.LPMDt,
+                            POLineSizeQty: line.Qty,
                             Country: r.Country));
                     }
 
@@ -2029,6 +2031,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                                         InitialOtsPct: null,
                                         PONo: line.OraPONo,
                                         LPMDt: line.LPMDt,
+                                        POLineSizeQty: line.Qty,
                                         Country: null));   // synthetic row — no store
                                 }
                                 remaining = 0;   // drop; move on to next item
@@ -2222,6 +2225,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
             tdt.Columns.Add("InitialOtsPct",      typeof(decimal));
             tdt.Columns.Add("PONo",               typeof(string));
             tdt.Columns.Add("LPMDt",              typeof(DateTime));
+            tdt.Columns.Add("POLineSizeQty",      typeof(int));
             tdt.Columns.Add("Country",            typeof(string));
 
             foreach (var t in trace)
@@ -2244,6 +2248,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                     (object?)t.InitialOtsPct  ?? DBNull.Value,
                     (object?)t.PONo           ?? DBNull.Value,
                     (object?)t.LPMDt          ?? DBNull.Value,
+                    (object?)t.POLineSizeQty  ?? DBNull.Value,
                     (object?)t.Country        ?? DBNull.Value);
             }
 
