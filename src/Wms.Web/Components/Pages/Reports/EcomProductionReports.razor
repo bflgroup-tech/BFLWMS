@@ -1,0 +1,421 @@
+@page "/reports/ecom-production-reports"
+@rendermode RenderMode.InteractiveServer
+@using Wms.Core
+@using Wms.Data.Lpm
+@using ClosedXML.Excel
+@attribute [Authorize(Policy = MenuKeys.RPT_ECOM_PRODUCTION_REPORTS)]
+@inject EcomProductionReportsService Svc
+@inject ICurrentUser Me
+@inject Microsoft.JSInterop.IJSRuntime JS
+
+<style>
+    .ecomprod-header { position: relative; background: var(--bfl-black); color: var(--bfl-yellow); font-family: var(--font-display); font-weight: 800; font-size: 13px; text-transform: uppercase; letter-spacing: .5px; padding: 10px 40px; text-align: center; }
+    .ecomprod-header .aiwms-icon-btn { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); }
+    .aiwms-icon-btn { background: none; border: none; color: inherit; cursor: pointer; padding: 2px 6px; line-height: 1; border-radius: var(--r-sm); }
+    .aiwms-icon-btn:hover:not(:disabled) { background: rgba(0,0,0,0.08); }
+    .aiwms-icon-btn:disabled { opacity: 0.4; cursor: default; }
+    .ecomprod-export-btn { background: #dcfce7; color: #14532d; border: 1px solid #14532d40; height: 36px; width: 36px; box-sizing: border-box; display: flex; align-items: center; justify-content: center; padding: 0; }
+    .ecomprod-export-btn:hover:not(:disabled) { background: #bbf7d0; }
+    .ecomprod-export-btn:disabled { opacity: 0.5; cursor: default; }
+</style>
+
+<PageTitle>WMS — Ecom Production Report</PageTitle>
+
+<div class="aiwms-page-header">
+    <h2>Ecom Production Report</h2>
+</div>
+
+@if (!string.IsNullOrEmpty(_message))
+{
+    <div class="aiwms-alert @(_isError ? "error" : "info")">@_message</div>
+}
+
+@if (Me.CanSeeSection(SectionKeys.ECOMPROD_ADD_USER))
+{
+    <div class="aiwms-section" style="padding:0; overflow:hidden">
+        <div class="ecomprod-header">
+            <span>Online WH Users Add/Remove</span>
+            @MinimizeToggle(_addFormCollapsed, () => _addFormCollapsed = !_addFormCollapsed)
+        </div>
+        @if (!_addFormCollapsed)
+        {
+        <div style="padding:20px">
+        @if (Me.HasAllCountriesAccess)
+        {
+            <p style="margin:0 0 10px 0; color:var(--text-secondary); font-size:12px">
+                Registers a person as an Online-warehouse user in <code>LPMSIM.dbo.UserWHDetail</code>
+                (Warehouse is always <b>Online</b>). Re-adding an existing Emp Code updates their
+                details and reactivates them. <i>(Admin only visibility)</i>
+            </p>
+        }
+        <div style="display:grid; grid-template-columns: 1fr 1fr 1.4fr auto; gap:12px; align-items:end; max-width:820px">
+            <div>
+                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">EMP CODE</label>
+                <input value="@_newEmpCode" @oninput="OnEmpCodeChanged" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px" disabled="@_busy" />
+            </div>
+            <div>
+                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">USERNAME</label>
+                <input value="@_newUserName" @oninput="OnUserNameChanged" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px" disabled="@_busy" />
+            </div>
+            <div>
+                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">EMPLOYEE NAME</label>
+                <input @bind="_newFullName" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px" disabled="@_busy" />
+            </div>
+            <div>
+                <button class="aiwms-btn aiwms-btn-primary" @onclick="AddUserAsync" disabled="@_busy">Add</button>
+            </div>
+        </div>
+        <p style="margin:8px 0 0 0; color:var(--text-secondary); font-size:12px">WAREHOUSE: <b>Online</b></p>
+        </div>
+        }
+    </div>
+}
+
+@if (Me.CanSeeSection(SectionKeys.ECOMPROD_USERS_TABLE))
+{
+    <div class="aiwms-section" style="padding:0; overflow:hidden">
+        <div class="ecomprod-header">
+            <span>Online WH Users</span>
+            @MinimizeToggle(_usersTableCollapsed, () => _usersTableCollapsed = !_usersTableCollapsed)
+        </div>
+        @if (!_usersTableCollapsed)
+        {
+        <div style="padding:20px">
+        @if (_users.Count == 0)
+        {
+            <p style="color:var(--text-secondary); font-size:13px">No Online WH users yet — add one above.</p>
+        }
+        else
+        {
+            <div style="display:flex; gap:12px; align-items:end; margin-bottom:10px; flex-wrap:wrap">
+                <div style="max-width:320px; flex:1">
+                    <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">FILTER (EMP CODE / USERNAME / NAME)</label>
+                    <input @bind="_userFilter" @bind:event="oninput" placeholder="Type to filter..." style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px" />
+                </div>
+                <button class="aiwms-btn ecomprod-export-btn" title="Export Excel" @onclick="ExportUsersExcelAsync" disabled="@(_exportingUsers || FilteredUsers.Count == 0)">
+                    <span class="mi sm">download</span>
+                </button>
+            </div>
+            @if (FilteredUsers.Count == 0)
+            {
+                <p style="color:var(--text-secondary); font-size:13px">No users match "@_userFilter".</p>
+            }
+            else
+            {
+                <div style="max-height:420px; overflow:auto">
+                    <table class="aiwms-table aiwms-table-dense" style="font-size:12px">
+                        <thead style="position:sticky; top:0; background:white; z-index:1">
+                            <tr>
+                                <th>Emp Code</th>
+                                <th>Username</th>
+                                <th>Employee Name</th>
+                                <th>Status</th>
+                                <th>Added By</th>
+                                <th>Added</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var u in FilteredUsers)
+                            {
+                                <tr style="@(u.Active ? "" : "opacity:0.55")">
+                                    <td>@u.Empcode</td>
+                                    <td>@u.UserName</td>
+                                    <td>@u.FullName</td>
+                                    <td>@(u.Active ? "Active" : "Deactivated")</td>
+                                    <td>@u.AddedUser</td>
+                                    <td>@u.CreateTs.ToString("dd-MMM-yyyy HH:mm")</td>
+                                    <td style="text-align:right">
+                                        @if (u.Active)
+                                        {
+                                            <button class="aiwms-btn aiwms-btn-secondary" @onclick="@(() => SetActiveAsync(u.Empcode, false))" disabled="@_busy">Deactivate</button>
+                                        }
+                                        else
+                                        {
+                                            <button class="aiwms-btn aiwms-btn-secondary" @onclick="@(() => SetActiveAsync(u.Empcode, true))" disabled="@_busy">Reactivate</button>
+                                        }
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        }
+        </div>
+        }
+    </div>
+}
+
+<div class="aiwms-section" style="padding:0; overflow:hidden">
+    <div class="ecomprod-header">
+        <span>YOTO Production — Online WH Users</span>
+        @MinimizeToggle(_productionCollapsed, () => _productionCollapsed = !_productionCollapsed)
+    </div>
+    @if (!_productionCollapsed)
+    {
+    <div style="padding:20px">
+    @if (Me.HasAllCountriesAccess)
+    {
+        <p style="margin:0 0 10px 0; color:var(--text-secondary); font-size:12px">
+            From <code>USA.dbo.VUPCBOXDET</code> where Warehouse = YOTO, for whichever employees above
+            are currently <b>Active</b> — matched on their Emp Code or Username. <i>(Admin only visibility)</i>
+        </p>
+    }
+    <div style="display:flex; gap:14px; align-items:end; flex-wrap:wrap">
+        <div>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">FROM DATE</label>
+            <input type="date" @bind="_from" @bind:format="yyyy-MM-dd" max="@DateTime.Today.ToString("yyyy-MM-dd")"
+                   style="padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" disabled="@_busy" />
+        </div>
+        <div>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">TO DATE</label>
+            <input type="date" @bind="_to" @bind:format="yyyy-MM-dd" max="@DateTime.Today.ToString("yyyy-MM-dd")"
+                   style="padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" disabled="@_busy" />
+        </div>
+        <button class="aiwms-btn aiwms-btn-primary" @onclick="LoadProductionAsync" disabled="@(_busy || !DateRangeValid)">@(_busy ? "Loading..." : "Show")</button>
+        <button class="aiwms-btn ecomprod-export-btn" title="Export Excel" @onclick="ExportProductionExcelAsync" disabled="@(_exportingProduction || _productionRows.Count == 0)">
+            <span class="mi sm">download</span>
+        </button>
+    </div>
+    <p style="margin:6px 0 0 0; font-size:12px; color:@(DateRangeValid ? "var(--text-secondary)" : "#b91c1c")">
+        @(DateRangeValid ? "Date range: maximum 31 days." : "Date range can't exceed 31 days — narrow it down.")
+    </p>
+
+    @if (_reportShown)
+    {
+        @if (_productionRows.Count == 0)
+        {
+            <p style="margin-top:12px; color:var(--text-secondary); font-size:13px">No rows for this date range.</p>
+        }
+        else
+        {
+            <div style="max-height:520px; overflow:auto; margin-top:12px">
+                <table class="aiwms-table aiwms-table-dense" style="font-size:12px">
+                    <thead style="position:sticky; top:0; background:white; z-index:1">
+                        <tr>
+                            <th>Date</th>
+                            <th>Emp Code</th>
+                            <th>Username</th>
+                            <th>Employee Name</th>
+                            <th style="text-align:right">Box Count</th>
+                            <th style="text-align:right">Qty</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var r in _productionRows)
+                        {
+                            <tr>
+                                <td>@r.TrnDate.ToString("dd-MMM-yyyy")</td>
+                                <td>@r.Empcode</td>
+                                <td>@r.UserName</td>
+                                <td>@r.FullName</td>
+                                <td style="text-align:right">@r.BoxCount.ToString("N0")</td>
+                                <td style="text-align:right">@r.Qty.ToString("N0")</td>
+                            </tr>
+                        }
+                    </tbody>
+                    <tfoot>
+                        <tr style="font-weight:700; border-top:2px solid var(--border-default)">
+                            <td colspan="4">Total</td>
+                            <td style="text-align:right">@_productionRows.Sum(r => r.BoxCount).ToString("N0")</td>
+                            <td style="text-align:right">@_productionRows.Sum(r => r.Qty).ToString("N0")</td>
+                        </tr>
+                    </tfoot>
+                </table>
+            </div>
+        }
+    }
+    </div>
+    }
+</div>
+
+@code {
+    private string _newUserName = "";
+    private string _newEmpCode = "";
+    private string _newFullName = "";
+    private bool _userNameManuallyEdited;
+
+    private bool _addFormCollapsed;
+    private bool _usersTableCollapsed;
+    private bool _productionCollapsed;
+
+    private void OnEmpCodeChanged(ChangeEventArgs e)
+    {
+        _newEmpCode = e.Value?.ToString() ?? "";
+        if (!_userNameManuallyEdited) _newUserName = _newEmpCode;
+    }
+
+    private void OnUserNameChanged(ChangeEventArgs e)
+    {
+        _newUserName = e.Value?.ToString() ?? "";
+        _userNameManuallyEdited = true;
+    }
+
+    private List<OnlineWhUserRow> _users = new();
+    private string _userFilter = "";
+
+    private List<OnlineWhUserRow> FilteredUsers =>
+        string.IsNullOrWhiteSpace(_userFilter)
+            ? _users
+            : _users.Where(u =>
+                (u.Empcode?.Contains(_userFilter, StringComparison.OrdinalIgnoreCase) ?? false) ||
+                (u.UserName?.Contains(_userFilter, StringComparison.OrdinalIgnoreCase) ?? false) ||
+                (u.FullName?.Contains(_userFilter, StringComparison.OrdinalIgnoreCase) ?? false))
+              .ToList();
+
+    private DateTime _from = DateTime.Today;
+    private DateTime _to = DateTime.Today;
+    private bool _reportShown;
+    private List<EcomYotoProductionRow> _productionRows = new();
+
+    private bool DateRangeValid => _from <= _to && (_to - _from).TotalDays <= 30;
+
+    private bool _busy;
+    private bool _exportingUsers;
+    private bool _exportingProduction;
+    private string _message = "";
+    private bool _isError;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await Me.EnsureLoadedAsync();
+        try { _users = await Svc.GetUsersAsync(); }
+        catch (Exception ex) { ShowError($"Failed to load users: {ex.Message}"); }
+    }
+
+    private RenderFragment MinimizeToggle(bool collapsed, Action toggle) => __builder =>
+    {
+        <button type="button" class="aiwms-icon-btn" title="@(collapsed ? "Expand" : "Minimize")" @onclick="toggle">
+            <span class="mi sm">@(collapsed ? "add" : "remove")</span>
+        </button>
+    };
+
+    private async Task AddUserAsync()
+    {
+        _busy = true; _message = "";
+        StateHasChanged();
+        try
+        {
+            var (ok, error) = await Svc.AddOrReactivateUserAsync(_newEmpCode, _newUserName, _newFullName, Me.Name);
+            if (ok)
+            {
+                ShowInfo($"Saved {_newFullName}.");
+                _newUserName = ""; _newEmpCode = ""; _newFullName = ""; _userNameManuallyEdited = false;
+                _users = await Svc.GetUsersAsync();
+            }
+            else ShowError(error ?? "Save failed.");
+        }
+        catch (Exception ex) { ShowError($"Save failed: {ex.Message}"); }
+        finally { _busy = false; }
+    }
+
+    private async Task SetActiveAsync(string empcode, bool active)
+    {
+        var confirm = await JS.InvokeAsync<bool>("confirm", active ? $"Reactivate {empcode}?" : $"Deactivate {empcode}? They'll drop out of the production report below.");
+        if (!confirm) return;
+        _busy = true; _message = "";
+        StateHasChanged();
+        try
+        {
+            await Svc.SetActiveAsync(empcode, active);
+            _users = await Svc.GetUsersAsync();
+            ShowInfo(active ? $"Reactivated {empcode}." : $"Deactivated {empcode}.");
+        }
+        catch (Exception ex) { ShowError($"Update failed: {ex.Message}"); }
+        finally { _busy = false; }
+    }
+
+    private async Task LoadProductionAsync()
+    {
+        if (!DateRangeValid) return;
+        _busy = true; _message = ""; _reportShown = false;
+        StateHasChanged();
+        try
+        {
+            _productionRows = await Svc.GetYotoProductionAsync(_from, _to);
+            _reportShown = true;
+        }
+        catch (Exception ex) { ShowError($"Failed to load report: {ex.Message}"); }
+        finally { _busy = false; }
+    }
+
+    private async Task ExportUsersExcelAsync()
+    {
+        if (FilteredUsers.Count == 0) return;
+        _exportingUsers = true;
+        StateHasChanged();
+        try
+        {
+            using var wb = new XLWorkbook();
+            var ws = wb.AddWorksheet("Online WH Users");
+            string[] headers = { "Emp Code", "Username", "Employee Name", "Status", "Added By", "Added" };
+            for (int i = 0; i < headers.Length; i++) ws.Cell(1, i + 1).Value = headers[i];
+            ws.Row(1).Style.Font.Bold = true;
+
+            int row = 2;
+            foreach (var u in FilteredUsers)
+            {
+                ws.Cell(row, 1).Value = u.Empcode;
+                ws.Cell(row, 2).Value = u.UserName;
+                ws.Cell(row, 3).Value = u.FullName;
+                ws.Cell(row, 4).Value = u.Active ? "Active" : "Deactivated";
+                ws.Cell(row, 5).Value = u.AddedUser;
+                ws.Cell(row, 6).Value = u.CreateTs.ToString("dd-MMM-yyyy HH:mm");
+                row++;
+            }
+            ws.Columns().AdjustToContents();
+
+            using var ms = new MemoryStream();
+            wb.SaveAs(ms);
+            var b64 = Convert.ToBase64String(ms.ToArray());
+            await JS.InvokeVoidAsync("downloadFileWithPicker", "online-wh-users.xlsx", b64,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        }
+        finally { _exportingUsers = false; }
+    }
+
+    private async Task ExportProductionExcelAsync()
+    {
+        if (_productionRows.Count == 0) return;
+        _exportingProduction = true;
+        StateHasChanged();
+        try
+        {
+            using var wb = new XLWorkbook();
+            var ws = wb.AddWorksheet("YOTO Production");
+            string[] headers = { "Date", "Emp Code", "Username", "Employee Name", "Box Count", "Qty" };
+            for (int i = 0; i < headers.Length; i++) ws.Cell(1, i + 1).Value = headers[i];
+            ws.Row(1).Style.Font.Bold = true;
+
+            int row = 2;
+            foreach (var r in _productionRows)
+            {
+                ws.Cell(row, 1).Value = r.TrnDate.ToString("dd-MMM-yyyy");
+                ws.Cell(row, 2).Value = r.Empcode;
+                ws.Cell(row, 3).Value = r.UserName;
+                ws.Cell(row, 4).Value = r.FullName;
+                ws.Cell(row, 5).Value = r.BoxCount;
+                ws.Cell(row, 6).Value = r.Qty;
+                row++;
+            }
+            ws.Cell(row, 1).Value = "Total";
+            ws.Cell(row, 1).Style.Font.Bold = true;
+            ws.Cell(row, 5).Value = _productionRows.Sum(r => r.BoxCount);
+            ws.Cell(row, 6).Value = _productionRows.Sum(r => r.Qty);
+            ws.Row(row).Style.Font.Bold = true;
+            ws.Columns().AdjustToContents();
+
+            using var ms = new MemoryStream();
+            wb.SaveAs(ms);
+            var b64 = Convert.ToBase64String(ms.ToArray());
+            var name = $"yoto-production-{_from:yyyyMMdd}-{_to:yyyyMMdd}.xlsx";
+            await JS.InvokeVoidAsync("downloadFileWithPicker", name, b64,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        }
+        finally { _exportingProduction = false; }
+    }
+
+    private void ShowError(string m) { _message = m; _isError = true; }
+    private void ShowInfo(string m)  { _message = m; _isError = false; }
+}
