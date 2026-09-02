@@ -85,6 +85,47 @@
 @if (!string.IsNullOrWhiteSpace(_country))
 {
     <div class="aiwms-section">
+        <div class="aiwms-card-header">Copy month</div>
+        <p style="margin:0 0 10px 0; color:var(--text-secondary); font-size:12px">
+            Copies @_country@(string.IsNullOrEmpty(_warehouseFilter) ? "" : $" / {_warehouseFilter}")'s rows from one month
+            to another — the target month reads the same as the source until someone uploads a fresh file for it (any
+            upload replaces these copied rows the same way it replaces a real one).
+        </p>
+        <div style="display:flex; gap:20px; flex-wrap:wrap; align-items:end">
+            <div>
+                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">FROM MONTH (@_currentYear)</label>
+                <select @bind="_copyFromMonth"
+                        style="min-width:150px; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); background:white; font-size:13px"
+                        disabled="@_busy">
+                    @for (int m = 1; m <= 12; m++)
+                    {
+                        var mCopy = m;
+                        <option value="@mCopy">@System.Globalization.CultureInfo.InvariantCulture.DateTimeFormat.GetMonthName(mCopy)</option>
+                    }
+                </select>
+            </div>
+            <div>
+                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">TO MONTH (@_currentYear)</label>
+                <select @bind="_copyToMonth"
+                        style="min-width:150px; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); background:white; font-size:13px"
+                        disabled="@_busy">
+                    @for (int m = 1; m <= 12; m++)
+                    {
+                        var mCopy = m;
+                        <option value="@mCopy">@System.Globalization.CultureInfo.InvariantCulture.DateTimeFormat.GetMonthName(mCopy)</option>
+                    }
+                </select>
+            </div>
+            <div>
+                <button class="aiwms-btn aiwms-btn-secondary" @onclick="CopyMonthAsync" disabled="@(_busy || _copyFromMonth == _copyToMonth)">Copy</button>
+            </div>
+        </div>
+    </div>
+}
+
+@if (!string.IsNullOrWhiteSpace(_country))
+{
+    <div class="aiwms-section">
         <div class="aiwms-card-header">Upload Excel template</div>
         <p style="margin:0 0 10px 0; color:var(--text-secondary); font-size:12px">
             Header row required, exactly these 4 columns:
@@ -216,7 +257,9 @@
 
     private bool _reportShown;
     private int _reportMonth;
-    private string? _reportWeekId;
+
+    private int _copyFromMonth = DateTime.UtcNow.AddHours(4).Month;
+    private int _copyToMonth = DateTime.UtcNow.AddHours(4).Month < 12 ? DateTime.UtcNow.AddHours(4).Month + 1 : 1;
 
     private List<WhMaxMinCapRow> VisibleRows
     {
@@ -225,8 +268,8 @@
             var rows = _rows.AsEnumerable();
             if (!string.IsNullOrEmpty(_warehouseFilter))
                 rows = rows.Where(r => string.Equals(r.Warehouse, _warehouseFilter, StringComparison.OrdinalIgnoreCase));
-            if (_reportShown && _reportWeekId is not null)
-                rows = rows.Where(r => string.Equals(r.WeekId, _reportWeekId, StringComparison.OrdinalIgnoreCase));
+            if (_reportShown)
+                rows = rows.Where(r => r.Month == _reportMonth && r.Year == _currentYear);
             return rows.ToList();
         }
     }
@@ -254,7 +297,7 @@
     private async Task OnCountryChangedAsync()
     {
         _rows = new(); _uploadRows = new(); _validWarehouses = new(); _warehouseFilter = ""; _message = "";
-        _reportShown = false; _reportWeekId = null;
+        _reportShown = false;
         if (string.IsNullOrWhiteSpace(_country)) return;
         try
         {
@@ -280,7 +323,6 @@
                 return;
             }
             _rows = await Svc.GetRowsAsync(_country);
-            _reportWeekId = fiscalWeek.Value.WeekId;
             _reportMonth = _selectedMonth;
             _reportShown = true;
         }
@@ -303,6 +345,33 @@
             ShowInfo($"Deleted all rows for {_country} / {_warehouseFilter}.");
         }
         catch (Exception ex) { ShowError($"Delete failed: {ex.Message}"); }
+        finally { _busy = false; }
+    }
+
+    private async Task CopyMonthAsync()
+    {
+        var fromName = System.Globalization.CultureInfo.InvariantCulture.DateTimeFormat.GetMonthName(_copyFromMonth);
+        var toName = System.Globalization.CultureInfo.InvariantCulture.DateTimeFormat.GetMonthName(_copyToMonth);
+        var scope = string.IsNullOrEmpty(_warehouseFilter) ? _country : $"{_country} / {_warehouseFilter}";
+        var confirm = await JS.InvokeAsync<bool>("confirm",
+            $"Copy {scope}'s rows from {fromName} to {toName} {_currentYear}? This replaces any existing {toName} rows for the same warehouse/division.");
+        if (!confirm) return;
+        _busy = true; _message = "";
+        StateHasChanged();
+        try
+        {
+            var result = await Svc.CopyMonthAsync(
+                _country, string.IsNullOrEmpty(_warehouseFilter) ? null : _warehouseFilter,
+                _currentYear, _copyFromMonth, _currentYear, _copyToMonth, Me.Name);
+            if (result.Ok)
+            {
+                ShowInfo($"Copied {result.RowsSaved} row(s) from {fromName} to {toName} {_currentYear}.");
+                _rows = await Svc.GetRowsAsync(_country);
+                _selectedMonth = _copyToMonth;
+            }
+            else ShowError(result.Error ?? "Copy failed.");
+        }
+        catch (Exception ex) { ShowError($"Copy failed: {ex.Message}"); }
         finally { _busy = false; }
     }
 
