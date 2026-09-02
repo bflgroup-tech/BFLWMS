@@ -208,13 +208,38 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         return row.Month is >= 1 and <= 12 ? (row.Month, row.Year) : null;
     }
 
+    /// <summary>
+    /// Which OTS run this call is for. Everything about the calculation is shared —
+    /// only the persistence table and whether UAE DC SOH counts differ, so one
+    /// service serves both pages and a fix to the maths lands on both at once.
+    ///
+    /// Defaulted to PoAllocation on every method, so callers that predate CDC are
+    /// unchanged and cannot accidentally read or write the wrong table.
+    /// </summary>
+    public sealed record OtsRunTarget(string TableName, bool IncludeUaeDcSoh)
+    {
+        /// <summary>OTS for PO Allocation — honours the UAE DC SOH toggle.</summary>
+        public static readonly OtsRunTarget PoAllocation =
+            new("dbo.WmsOtsPoAllocationRun", IncludeUaeDcSoh: true);
+
+        /// <summary>
+        /// OTS for CDC Box Allocation — UAE DC SOH is ALWAYS zero here. That stock
+        /// is what CDC Box Allocation is distributing, so counting it as supply the
+        /// stores already hold would net it out of its own OTS.
+        /// </summary>
+        public static readonly OtsRunTarget CdcAllocation =
+            new("dbo.WmsOtsCdcAllocationRun", IncludeUaeDcSoh: false);
+    }
+
     /// <summary>Latest RunTS on the persisted table for a (Month, Year). Null =
     /// never generated. Used by the razor page to show "last generated" info.</summary>
-    public async Task<DateTime?> GetLastGeneratedTsAsync(int month, int year, CancellationToken ct = default)
+    public async Task<DateTime?> GetLastGeneratedTsAsync(int month, int year, CancellationToken ct = default,
+                                                        OtsRunTarget? target = null)
     {
+        var tgt = target ?? OtsRunTarget.PoAllocation;
         await using var c = OpenOnPremBackup();
-        return await c.ExecuteScalarAsync<DateTime?>(new CommandDefinition(@"
-            SELECT MAX(RunTS) FROM dbo.WmsOtsPoAllocationRun WITH (NOLOCK)
+        return await c.ExecuteScalarAsync<DateTime?>(new CommandDefinition($@"
+            SELECT MAX(RunTS) FROM {tgt.TableName} WITH (NOLOCK)
              WHERE [Year] = @year AND [Month] = @month",
             new { month, year },
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
@@ -299,11 +324,13 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
 
     /// <summary>Distinct OTSDate values already persisted for a (Month, Year).
     /// Used by the razor page's Rundate picker so operators can load prior days.</summary>
-    public async Task<List<DateTime>> GetAvailableRunDatesAsync(int month, int year, CancellationToken ct = default)
+    public async Task<List<DateTime>> GetAvailableRunDatesAsync(int month, int year, CancellationToken ct = default,
+                                                                OtsRunTarget? target = null)
     {
+        var tgt = target ?? OtsRunTarget.PoAllocation;
         await using var c = OpenOnPremBackup();
-        var rows = await c.QueryAsync<DateTime>(new CommandDefinition(@"
-            SELECT DISTINCT OTSDate FROM dbo.WmsOtsPoAllocationRun WITH (NOLOCK)
+        var rows = await c.QueryAsync<DateTime>(new CommandDefinition($@"
+            SELECT DISTINCT OTSDate FROM {tgt.TableName} WITH (NOLOCK)
              WHERE [Year] = @year AND [Month] = @month
                AND OTSDate IS NOT NULL
              ORDER BY OTSDate DESC",
@@ -318,8 +345,9 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
     /// otsDate == null falls back to the latest available date for the (Month, Year).</summary>
     public async Task<List<OtsPoAllocationRow>> LoadPersistedAsync(
         int month, int year, DateTime? otsDate, string? country, IReadOnlyCollection<int>? divisions,
-        CancellationToken ct = default)
+        CancellationToken ct = default, OtsRunTarget? target = null)
     {
+        var tgt = target ?? OtsRunTarget.PoAllocation;
         var filter = string.IsNullOrWhiteSpace(country) || string.Equals(country, BflGroup, StringComparison.OrdinalIgnoreCase)
             ? null : country;
         var eomLabel = new DateTime(year, month, 1).ToString("MMM-yyyy");
@@ -342,7 +370,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                    ISNULL(TargetWeek,      0) AS TargetWeek,
                    ISNULL(WeeksMultiplier, 0) AS WeeksMultiplier,
                    ISNULL(CurrentEOW, TgtEOM) AS CurrentEOW
-              FROM dbo.WmsOtsPoAllocationRun WITH (NOLOCK)
+              FROM {tgt.TableName} WITH (NOLOCK)
              WHERE [Year] = @year AND [Month] = @month
                AND (@ct IS NULL OR Country = @ct)
                {dateClause}
@@ -402,8 +430,10 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
     /// <param name="actor">See GenerateStoreDivGradesAsync — scheduled callers pass
     /// an explicit value so the run is not audited as "anonymous".</param>
     public async Task<(int RowsPersisted, List<string> Warnings)> GenerateAndPersistAsync(
-        int month, int year, CancellationToken ct = default, string? actor = null)
+        int month, int year, CancellationToken ct = default, string? actor = null,
+        OtsRunTarget? target = null)
     {
+        var tgt = target ?? OtsRunTarget.PoAllocation;
         // Precondition: Volume Group must have been (re-)generated today (GST).
         // Enforces the daily refresh chain so OTS numbers don't ride on a stale
         // StoreDivGrade snapshot.
@@ -415,7 +445,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                 "LPM_StoreDivGrade_Country, which OTS does not read), then re-run " +
                 "'Generate' on OTS for PO Allocation.");
 
-        var (rows, warnings) = await GenerateAsync(month, year, country: null, ct);
+        var (rows, warnings) = await GenerateAsync(month, year, country: null, ct, tgt);
         if (rows.Count == 0) return (0, warnings);
 
         var nowGst   = DateTime.UtcNow.AddHours(4);
@@ -425,8 +455,8 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         await using var tx = (SqlTransaction)await c.BeginTransactionAsync(ct);
         try
         {
-            await c.ExecuteAsync(new CommandDefinition(@"
-                DELETE FROM dbo.WmsOtsPoAllocationRun
+            await c.ExecuteAsync(new CommandDefinition($@"
+                DELETE FROM {tgt.TableName}
                  WHERE [Year] = @year AND [Month] = @month AND OTSDate = @dt",
                 new { month, year, dt = otsDate }, transaction: tx,
                 commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
@@ -489,7 +519,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
 
             using var bulk = new SqlBulkCopy(c, SqlBulkCopyOptions.Default, tx)
             {
-                DestinationTableName = "dbo.WmsOtsPoAllocationRun",
+                DestinationTableName = tgt.TableName,
                 BatchSize = 1000,
                 BulkCopyTimeout = CommandTimeoutSeconds,
             };
@@ -510,15 +540,20 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
     /// <summary>Main report. country == null OR "BFLGroup" means no country filter.
     /// Kept for the direct/live path — persistence is done by GenerateAndPersistAsync.</summary>
     public async Task<(List<OtsPoAllocationRow> Rows, List<string> Warnings)> GenerateAsync(
-        int month, int year, string? country, CancellationToken ct = default)
+        int month, int year, string? country, CancellationToken ct = default,
+        OtsRunTarget? target = null)
     {
+        var runTarget = target ?? OtsRunTarget.PoAllocation;
         var warnings = new List<string>();
         var filter = string.IsNullOrWhiteSpace(country) || string.Equals(country, BflGroup, StringComparison.OrdinalIgnoreCase)
             ? null : country;
 
         // Read once, up front — both the Generate button and the 07:00 batch land
         // here, so the toggle applies identically to each.
-        var uaeOmanDcSohEnabled = await GetUaeOmanDcSohEnabledAsync(ct);
+        // The CDC run forces this off regardless of the config toggle: UAE DC SOH is
+        // the very stock CDC Box Allocation distributes, so counting it as supply the
+        // stores already hold would net it out of its own OTS.
+        var uaeOmanDcSohEnabled = runTarget.IncludeUaeDcSoh && await GetUaeOmanDcSohEnabledAsync(ct);
 
         // 1) Base rows (reliable — well-known columns): LPM_EOM_Output +
         //    Divisions (name) + DataSettings (store name) + WmsCountryOtsWeeks.
