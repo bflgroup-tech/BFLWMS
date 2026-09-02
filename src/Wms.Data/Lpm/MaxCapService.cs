@@ -15,14 +15,21 @@ namespace Wms.Data.Lpm;
 /// WeekId/Week come from LPMSIM.dbo.LPM_OTS_Output.Wk (the same fiscal week
 /// numbering the rest of the app uses), not derived independently. For the
 /// current (or a future) month, saving force-deletes
-/// any existing row for that exact (Country, Warehouse, Division, WeekId)
+/// any existing row for that exact (Country, Warehouse, Division, Month, Year)
 /// before inserting, so re-uploading for the same period replaces rather
-/// than duplicates. For a month before the current one, that period is
-/// frozen instead: a Warehouse/Division combo that already has a row for
-/// that WeekId is rejected outright (SaveAsync returns Ok=false), though a
-/// combo never recorded for that past period can still be added. Clearing
-/// a whole country's or warehouse's rows outright is a separate, explicit
-/// action (DeleteAllForCountryAsync / DeleteForWarehouseAsync).
+/// than duplicates -- keyed on Month/Year, not WeekId, since WeekId is only a
+/// "which fiscal week happened to be latest when this was saved" label:
+/// GetFiscalWeekAsync's answer for a given month drifts forward as the OTS
+/// feed loads more of that month's weeks, so two uploads for the same
+/// calendar month can land under two different WeekIds. For a month before
+/// the current one, that period is frozen instead: a Warehouse/Division combo
+/// that already has a row for that Month/Year is rejected outright (SaveAsync
+/// returns Ok=false), though a combo never recorded for that past period can
+/// still be added. CopyMonthAsync (used by the "copy this month's rows to
+/// another month" UI action) follows the exact same Month/Year-keyed
+/// replace-and-freeze rules. Clearing a whole country's or warehouse's rows
+/// outright is a separate, explicit action (DeleteAllForCountryAsync /
+/// DeleteForWarehouseAsync).
 ///
 /// Valid Warehouse values are restricted per country: for UAE, only
 /// 'TECHNO' or 'JAFZA'; for every other (export) country, whichever
@@ -131,8 +138,8 @@ public class MaxCapService(IOnPremConnectionResolver resolver)
         if (isPastMonth)
         {
             var existingKeys = (await c.QueryAsync<(string Warehouse, string Division)>(new CommandDefinition(
-                "SELECT WAREHOUSE, DIVISION FROM LPMSIM.dbo.WMS_WH_MAXMIN_CAP WHERE COUNTRY = @country AND WEEKID = @weekId",
-                new { country, weekId }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
+                "SELECT WAREHOUSE, DIVISION FROM LPMSIM.dbo.WMS_WH_MAXMIN_CAP WHERE COUNTRY = @country AND MONTH = @month AND YEAR = @year",
+                new { country, month, year }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
                 .Select(k => (k.Warehouse.Trim().ToUpperInvariant(), k.Division.Trim().ToUpperInvariant()))
                 .ToHashSet();
             var conflicts = rows
@@ -153,8 +160,8 @@ public class MaxCapService(IOnPremConnectionResolver resolver)
             foreach (var r in rows)
             {
                 await c.ExecuteAsync(new CommandDefinition(
-                    "DELETE FROM LPMSIM.dbo.WMS_WH_MAXMIN_CAP WHERE COUNTRY = @country AND WAREHOUSE = @warehouse AND DIVISION = @division AND WEEKID = @weekId",
-                    new { country, warehouse = r.Warehouse, division = r.Division, weekId },
+                    "DELETE FROM LPMSIM.dbo.WMS_WH_MAXMIN_CAP WHERE COUNTRY = @country AND WAREHOUSE = @warehouse AND DIVISION = @division AND MONTH = @month AND YEAR = @year",
+                    new { country, warehouse = r.Warehouse, division = r.Division, month, year },
                     transaction: tx, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
 
                 await c.ExecuteAsync(new CommandDefinition(@"
@@ -199,8 +206,8 @@ public class MaxCapService(IOnPremConnectionResolver resolver)
 
         await using var c = OpenOnPremBackup();
         await c.ExecuteAsync(new CommandDefinition(
-            "DELETE FROM LPMSIM.dbo.WMS_WH_MAXMIN_CAP WHERE COUNTRY = @country AND WAREHOUSE = @warehouse AND DIVISION = @division AND WEEKID = @weekId",
-            new { country, warehouse, division, weekId }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            "DELETE FROM LPMSIM.dbo.WMS_WH_MAXMIN_CAP WHERE COUNTRY = @country AND WAREHOUSE = @warehouse AND DIVISION = @division AND MONTH = @month AND YEAR = @year",
+            new { country, warehouse, division, month, year }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
 
         await c.ExecuteAsync(new CommandDefinition(@"
             INSERT INTO LPMSIM.dbo.WMS_WH_MAXMIN_CAP (CREATETS, WEEKID, COUNTRY, WAREHOUSE, DIVISION, MAX_CAP_WEEK, MIN_CAP_WEEK, WEEK, MONTH, YEAR, CREATEDUSER)
@@ -209,6 +216,96 @@ public class MaxCapService(IOnPremConnectionResolver resolver)
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
 
         return new(true, null, 1);
+    }
+
+    /// <summary>Copies every row for (Country[, Warehouse]) from one month to another, re-stamped
+    /// under the target month's own fiscal Week/WeekId — so, e.g., "copy August to September" makes
+    /// September read exactly like August until someone uploads a real file for September (which
+    /// replaces these copied rows the same way any upload replaces an existing month, since both key
+    /// off Month/Year, not WeekId). Same past-month-frozen guard as SaveAsync: copying into a month
+    /// already in the past can't overwrite a Warehouse/Division combo that already has data there.</summary>
+    public async Task<MaxCapSaveResult> CopyMonthAsync(
+        string country, string? warehouse, int fromYear, int fromMonth, int toYear, int toMonth, string createdUser, CancellationToken ct = default)
+    {
+        country = (country ?? "").Trim();
+        if (string.IsNullOrEmpty(country)) return new(false, "Country is required.", 0);
+        if (fromYear == toYear && fromMonth == toMonth) return new(false, "Source and target month must be different.", 0);
+
+        await using var c = OpenOnPremBackup();
+
+        var sourceRows = (await c.QueryAsync<WhMaxMinCapRow>(new CommandDefinition(@"
+            SELECT CREATETS AS CreateTs, WEEKID AS WeekId, COUNTRY AS Country, WAREHOUSE AS Warehouse,
+                   DIVISION AS Division, MAX_CAP_WEEK AS MaxCapWeek, MIN_CAP_WEEK AS MinCapWeek,
+                   WEEK AS Week, MONTH AS Month, YEAR AS Year, CREATEDUSER AS CreatedUser
+              FROM LPMSIM.dbo.WMS_WH_MAXMIN_CAP WITH (NOLOCK)
+             WHERE COUNTRY = @country AND MONTH = @fromMonth AND YEAR = @fromYear",
+            new { country, fromMonth, fromYear }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).AsList();
+
+        if (!string.IsNullOrWhiteSpace(warehouse))
+            sourceRows = sourceRows.Where(r => string.Equals(r.Warehouse, warehouse, StringComparison.OrdinalIgnoreCase)).ToList();
+
+        var fromName = System.Globalization.CultureInfo.InvariantCulture.DateTimeFormat.GetMonthName(fromMonth);
+        if (sourceRows.Count == 0)
+            return new(false, $"No rows found for {fromName} {fromYear}{(string.IsNullOrWhiteSpace(warehouse) ? "" : $" / {warehouse}")} to copy.", 0);
+
+        var fiscalWeek = await GetFiscalWeekAsync(toYear, toMonth, ct);
+        if (fiscalWeek is null)
+        {
+            var toName = System.Globalization.CultureInfo.InvariantCulture.DateTimeFormat.GetMonthName(toMonth);
+            return new(false, $"No data found for {toName} {toYear} yet — pick a different target month.", 0);
+        }
+        var (week, weekId) = fiscalWeek.Value;
+        var nowGst = DateTime.UtcNow.AddHours(4);
+        var isPastMonth = toYear < nowGst.Year || (toYear == nowGst.Year && toMonth < nowGst.Month);
+
+        if (isPastMonth)
+        {
+            var existingKeys = (await c.QueryAsync<(string Warehouse, string Division)>(new CommandDefinition(
+                "SELECT WAREHOUSE, DIVISION FROM LPMSIM.dbo.WMS_WH_MAXMIN_CAP WHERE COUNTRY = @country AND MONTH = @toMonth AND YEAR = @toYear",
+                new { country, toMonth, toYear }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
+                .Select(k => (k.Warehouse.Trim().ToUpperInvariant(), k.Division.Trim().ToUpperInvariant()))
+                .ToHashSet();
+            var conflicts = sourceRows
+                .Where(r => existingKeys.Contains((r.Warehouse.Trim().ToUpperInvariant(), r.Division.Trim().ToUpperInvariant())))
+                .Select(r => $"{r.Warehouse}/{r.Division}")
+                .ToList();
+            if (conflicts.Count > 0)
+            {
+                var toName = System.Globalization.CultureInfo.InvariantCulture.DateTimeFormat.GetMonthName(toMonth);
+                return new(false,
+                    $"Already exists for {toName} {toYear} (a previous month) — can't change now: {string.Join(", ", conflicts)}.", 0);
+            }
+        }
+
+        await using var tx = (SqlTransaction)await c.BeginTransactionAsync(ct);
+        try
+        {
+            foreach (var r in sourceRows)
+            {
+                await c.ExecuteAsync(new CommandDefinition(
+                    "DELETE FROM LPMSIM.dbo.WMS_WH_MAXMIN_CAP WHERE COUNTRY = @country AND WAREHOUSE = @warehouse AND DIVISION = @division AND MONTH = @toMonth AND YEAR = @toYear",
+                    new { country, warehouse = r.Warehouse, division = r.Division, toMonth, toYear },
+                    transaction: tx, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+
+                await c.ExecuteAsync(new CommandDefinition(@"
+                    INSERT INTO LPMSIM.dbo.WMS_WH_MAXMIN_CAP (CREATETS, WEEKID, COUNTRY, WAREHOUSE, DIVISION, MAX_CAP_WEEK, MIN_CAP_WEEK, WEEK, MONTH, YEAR, CREATEDUSER)
+                    VALUES (@nowGst, @weekId, @country, @warehouse, @division, @maxCapWeek, @minCapWeek, @week, @toMonth, @toYear, @createdUser);",
+                    new
+                    {
+                        country, warehouse = r.Warehouse, division = r.Division, weekId,
+                        minCapWeek = r.MinCapWeek, maxCapWeek = r.MaxCapWeek, nowGst, week, toMonth, toYear, createdUser
+                    },
+                    transaction: tx, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            }
+
+            await tx.CommitAsync(ct);
+            return new(true, null, sourceRows.Count);
+        }
+        catch (Exception ex)
+        {
+            try { await tx.RollbackAsync(ct); } catch { }
+            return new(false, $"Copy failed: {ex.Message}", 0);
+        }
     }
 
     public async Task DeleteRowAsync(string country, string warehouse, string division, CancellationToken ct = default)
