@@ -945,40 +945,45 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         // based on that store's OTS% vs AvgOTS +/- band. Missing (Div, VG) or
         // PoQty out of any band -> Blocked "No SkuMax band" at pick time.
         //
-        // Country = 'BFLGROUP' is REQUIRED, not incidental. LPM_SkuMaxBands holds
-        // per-country rows too, and the dictionary below is keyed only by
-        // (DivCode, VolumeGroup) — so without this filter every country's bands for
-        // the same (Div, VG) piled into one list and the "first row that contains
-        // PoQty wins" pick took whichever one SQL happened to return first.
-        // Observed on AEINT8194 item 5715356700232 (DivCode 410, PoQty 500): every
-        // A store capped at 9 — the MinMin of some other country's row — instead of
-        // 4 from BFLGROUP's 251-500 band, so the container drained twice as fast as
-        // intended. BFLGROUP is the live config; the per-country rows are stale.
+        // Keyed by (Country, DivCode, VolumeGroup), resolved per store as
+        //     that store's own country  ->  BFLGROUP  ->  no band (blocked).
+        //
+        // Country MUST be part of the key. Without it every country's bands for the
+        // same (Div, VG) piled into one list and the "first row that contains PoQty
+        // wins" pick took whichever SQL returned first — on AEINT8194 item
+        // 5715356700232 (DivCode 410, PoQty 500) every A store capped at 9, the
+        // MinMin of some other country's row, instead of 4 from the 251-500 band.
+        //
+        // But filtering to BFLGROUP alone (the first attempt at that fix) was wrong
+        // the other way: genuine per-country config was thrown away. ECOM keeps its
+        // own VolumeGroup 'Z' bands, which BFLGROUP has none of, so ONLINE hit
+        // "No SkuMax band" on every item and took nothing under PO Allocation logic.
         //
         // UPPER(LTRIM(RTRIM(...))) because this table's Country is hand-maintained
         // and mixed case ('BFLGroup', 'Oman') — the same casing that starved four
         // countries in the ADM band lookup.
         //
-        // ORDER BY PoQtyFrom makes the first-match pick deterministic even if two
-        // BFLGROUP rows ever overlap.
-        async Task<Dictionary<(int DivCode, string VG), List<(int From, int To, int? MinMin, int? MinMax, int? IdealMax, int? MaxMax)>>> LoadSkuMaxBands()
+        // ORDER BY PoQtyFrom makes the first-match pick deterministic if two rows
+        // for one (Country, Div, VG) ever overlap.
+        async Task<Dictionary<(string Country, int DivCode, string VG), List<(int From, int To, int? MinMin, int? MinMax, int? IdealMax, int? MaxMax)>>> LoadSkuMaxBands()
         {
-            var d = new Dictionary<(int, string), List<(int, int, int?, int?, int?, int?)>>();
+            var d = new Dictionary<(string, int, string), List<(int, int, int?, int?, int?, int?)>>();
             if (runOption != RunOption.FillSKUMaxRoundRobin && runOption != RunOption.FillMinMinPlusOthers || distinctDivs.Length == 0) return d;
             await using var c1 = OpenOnPremBackup();
-            var rows = await c1.QueryAsync<(int DivCode, string VolumeGroup, int PoQtyFrom, int PoQtyTo, int? MinMin, int? MinMax, int? IdealMax, int? MaxMax)>(
+            var rows = await c1.QueryAsync<(string Country, int DivCode, string VolumeGroup, int PoQtyFrom, int PoQtyTo, int? MinMin, int? MinMax, int? IdealMax, int? MaxMax)>(
                 new CommandDefinition(@"
-                    SELECT DivCode, VolumeGroup, PoQtyFrom, PoQtyTo, MinMin, MinMax, IdealMax, MaxMax
+                    SELECT UPPER(LTRIM(RTRIM(Country))) AS Country,
+                           DivCode, VolumeGroup, PoQtyFrom, PoQtyTo, MinMin, MinMax, IdealMax, MaxMax
                       FROM LPMSIM.dbo.LPM_SkuMaxBands WITH (NOLOCK)
                      WHERE DivCode IN @divs
                        AND IsActive = 1
-                       AND UPPER(LTRIM(RTRIM(Country))) = 'BFLGROUP'
+                       AND Country IS NOT NULL
                      ORDER BY DivCode, VolumeGroup, PoQtyFrom",
                     new { divs = distinctDivs },
                     commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
             foreach (var r in rows)
             {
-                var key = (r.DivCode, r.VolumeGroup ?? "");
+                var key = (r.Country, r.DivCode, r.VolumeGroup ?? "");
                 if (!d.TryGetValue(key, out var list)) { list = new(); d[key] = list; }
                 list.Add((r.PoQtyFrom, r.PoQtyTo, r.MinMin, r.MinMax, r.IdealMax, r.MaxMax));
             }
@@ -1019,6 +1024,19 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         var approvedRows     = await w2_approved;
         var storeDivGrade    = await w2_storeDivGrade;
         var skuMaxBandsByKey = await w2_skuMaxBands;
+
+        // Bands for a store: its OWN country first, then BFLGROUP as the shared
+        // default. ECOM is the case that forced this — it carries VolumeGroup 'Z'
+        // bands of its own that BFLGROUP has none of, so a BFLGROUP-only lookup
+        // blocked ONLINE on every item.
+        List<(int From, int To, int? MinMin, int? MinMax, int? IdealMax, int? MaxMax)>? BandsFor(
+            string? country, int divCode, string? volumeGroup)
+        {
+            var cty = (country ?? "").Trim().ToUpperInvariant();
+            var vg  = volumeGroup ?? "";
+            if (cty.Length > 0 && skuMaxBandsByKey.TryGetValue((cty, divCode, vg), out var own)) return own;
+            return skuMaxBandsByKey.TryGetValue(("BFLGROUP", divCode, vg), out var shared) ? shared : null;
+        }
 
         // Overlay VolumeGroup on the OTS run rows from StoreDivGrade so all
         // downstream Fill SKUMAX + RR logic (priority sort, band lookup) uses
@@ -1259,7 +1277,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                     // whose PoQtyFrom..PoQtyTo contains this item's PoQty.
                     bool HasBand(OtsRunLookupRow r)
                     {
-                        if (!skuMaxBandsByKey.TryGetValue((r.DivCode, r.VolumeGroup ?? ""), out var bands)) return false;
+                        if (BandsFor(r.Country, r.DivCode, r.VolumeGroup) is not { } bands) return false;
                         foreach (var b in bands)
                             if (line.Qty >= b.From && line.Qty <= b.To) return true;
                         return false;
@@ -1444,7 +1462,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                     // this call assumes a band exists.
                     (int Raw, int Cap, string TierName) SkuMaxRawAndCapFor(OtsRunLookupRow r)
                     {
-                        var bands = skuMaxBandsByKey[(r.DivCode, r.VolumeGroup ?? "")];
+                        var bands = BandsFor(r.Country, r.DivCode, r.VolumeGroup) ?? new();
                         (int From, int To, int? MinMin, int? MinMax, int? IdealMax, int? MaxMax) b = default;
                         foreach (var x in bands)
                             if (line.Qty >= x.From && line.Qty <= x.To) { b = x; break; }
@@ -1566,7 +1584,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                         else
                         {
                             rawTier = 0;
-                            if (skuMaxBandsByKey.TryGetValue((r.DivCode, r.VolumeGroup ?? ""), out var bandsForTrace))
+                            if (BandsFor(r.Country, r.DivCode, r.VolumeGroup) is { } bandsForTrace)
                             {
                                 foreach (var b in bandsForTrace)
                                 {
@@ -1765,7 +1783,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                         }
                         int MinMinCapFor(OtsRunLookupRow r)
                         {
-                            if (!skuMaxBandsByKey.TryGetValue((r.DivCode, r.VolumeGroup ?? ""), out var bands)) return 0;
+                            if (BandsFor(r.Country, r.DivCode, r.VolumeGroup) is not { } bands) return 0;
                             (int From, int To, int? MinMin, int? MinMax, int? IdealMax, int? MaxMax) b = default;
                             foreach (var x in bands)
                                 if (line.Qty >= x.From && line.Qty <= x.To) { b = x; break; }
@@ -1776,7 +1794,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                         }
                         int MinMaxCapFor(OtsRunLookupRow r)
                         {
-                            if (!skuMaxBandsByKey.TryGetValue((r.DivCode, r.VolumeGroup ?? ""), out var bands)) return 0;
+                            if (BandsFor(r.Country, r.DivCode, r.VolumeGroup) is not { } bands) return 0;
                             (int From, int To, int? MinMin, int? MinMax, int? IdealMax, int? MaxMax) b = default;
                             foreach (var x in bands)
                                 if (line.Qty >= x.From && line.Qty <= x.To) { b = x; break; }
@@ -1787,7 +1805,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                         }
                         int RawMinMaxFor(OtsRunLookupRow r)
                         {
-                            if (!skuMaxBandsByKey.TryGetValue((r.DivCode, r.VolumeGroup ?? ""), out var bands)) return 0;
+                            if (BandsFor(r.Country, r.DivCode, r.VolumeGroup) is not { } bands) return 0;
                             foreach (var x in bands)
                                 if (line.Qty >= x.From && line.Qty <= x.To) return x.MinMax ?? 0;
                             return 0;
