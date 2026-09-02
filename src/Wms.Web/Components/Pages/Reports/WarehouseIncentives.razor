@@ -8,6 +8,7 @@
 @inject WarehouseIncentivesService Svc
 @inject TechnoPairingService PairingSvc
 @inject TechnoBuildingService BuildingSvc
+@inject TechnoPricingService PricingSvc
 @inject IJSRuntime JS
 
 <PageTitle>WMS - Warehouse Incentives</PageTitle>
@@ -326,6 +327,104 @@ else if (_activeTab == TechnoBuilding)
         </div>
     }
 }
+else if (_activeTab == TechnoPricing)
+{
+    <div class="aiwms-section">
+        <p style="color:var(--text-secondary); margin:0 0 12px 0">TECHNO pricing counts per employee per day, from BFLDATA.dbo.PricingCount. This table has no warehouse column, so it isn't confirmed to be TECHNO-exclusive — it shows whatever is in the table for the selected range. EmpName and GroupName come directly from the source; Division is resolved per item group via bfldata.dbo.DeptStock.</p>
+        <div style="display:grid; grid-template-columns: auto auto 1fr 1fr auto; gap:12px; align-items:end;">
+            <div>
+                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">FROM</label>
+                <input type="date" @bind="_prFrom" @bind:format="yyyy-MM-dd" max="@DateTime.Today.ToString("yyyy-MM-dd")" style="padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
+            </div>
+            <div>
+                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">TO</label>
+                <input type="date" @bind="_prTo" @bind:format="yyyy-MM-dd" max="@DateTime.Today.ToString("yyyy-MM-dd")" style="padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
+            </div>
+            <div>
+                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">DIVISION (select any)</label>
+                <MudSelect T="string" Dense="true" MultiSelection="true" SelectAll="true" Placeholder="All"
+                           Variant="Variant.Outlined" Margin="Margin.Dense"
+                           SelectedValues="_prSelectedDivisions" SelectedValuesChanged="@(v => _prSelectedDivisions = v.ToHashSet())">
+                    @foreach (var d in _prDivisions) { <MudSelectItem T="string" Value="@d">@d</MudSelectItem> }
+                </MudSelect>
+            </div>
+            <div>
+                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">EMP CODE</label>
+                <input @bind="_prEmpCode" @bind:event="oninput" placeholder="e.g. RT01" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
+            </div>
+            <div style="display:flex; gap:8px">
+                <button class="aiwms-btn" style="background:var(--s-live); color:#fff; border-radius:10px;"
+                        @onclick="LoadPricingAsync" disabled="@(_prLoading || _prFrom > _prTo)">
+                    <span class="mi" style="font-size:16px;">play_arrow</span> @(_prLoading ? "Loading..." : "Load")
+                </button>
+                <button class="aiwms-btn" style="background:#fff; color:var(--text-primary); border:1.5px solid var(--border-strong); border-radius:10px;"
+                        @onclick="ClearPricingFilters" disabled="@_prLoading">
+                    <span class="mi" style="font-size:16px;">refresh</span> Clear Filters
+                </button>
+                <button class="aiwms-btn" style="background:#fff; color:var(--s-active); border:1.5px solid var(--s-active); border-radius:10px;"
+                        @onclick="ExportPricingExcelAsync" disabled="@(_prExporting || _prRows.Count == 0)">
+                    <span class="mi" style="font-size:16px;">download</span> @(_prExporting ? "Exporting..." : "Export Excel")
+                </button>
+            </div>
+        </div>
+
+        <p style="font-size:11px; color:var(--text-secondary); margin-top:8px">
+            Default range is the last 7 days. Note: the source table's most recent row is dated 2026-06-17, so a recent range may show no rows.
+        </p>
+
+        @if (!string.IsNullOrEmpty(_prMessage))
+        {
+            <div class="aiwms-alert @(_prIsError ? "error" : "info")" style="margin-top:12px">@_prMessage</div>
+        }
+    </div>
+
+    @if (_prLoaded)
+    {
+        <div class="aiwms-section">
+            <div class="aiwms-card-header">Techno Pricing - @_prRows.Count.ToString("N0") row(s)</div>
+            <div style="overflow-x:auto">
+            <table class="aiwms-table aiwms-table-dense">
+                <thead>
+                    <tr>
+                        <th>Type</th>
+                        <th>Date</th>
+                        <th>Emp Code</th>
+                        <th>Emp Name</th>
+                        <th>Group</th>
+                        <th>Division</th>
+                        <th style="text-align:right">Qty</th>
+                        <th style="text-align:right">Multiplier</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr style="font-weight:700; background:var(--surface-1, #f7f7f5);">
+                        <td colspan="6">Total</td>
+                        <td style="text-align:right">@_prRows.Sum(r => r.Qty).ToString("N0")</td>
+                        <td></td>
+                    </tr>
+                    @foreach (var r in _prRows)
+                    {
+                        <tr>
+                            <td>@r.Type</td>
+                            <td style="white-space:nowrap">@r.TrnDate.ToString("dd-MMM-yyyy")</td>
+                            <td style="font-family:var(--font-mono)">@r.EmpCode</td>
+                            <td style="word-break:break-word">@r.EmpName</td>
+                            <td style="word-break:break-word">@r.GroupName</td>
+                            <td style="word-break:break-word">@r.Division</td>
+                            <td style="text-align:right">@r.Qty.ToString("N0")</td>
+                            <td style="text-align:right">@r.Multiplier</td>
+                        </tr>
+                    }
+                    @if (_prRows.Count == 0)
+                    {
+                        <tr><td colspan="8" style="color:var(--text-secondary)">No rows for the selected filters.</td></tr>
+                    }
+                </tbody>
+            </table>
+            </div>
+        </div>
+    }
+}
 else
 {
     <div class="aiwms-section">
@@ -337,8 +436,9 @@ else
     private const string TechnoChecking = "Techno Checking";
     private const string TechnoPairing = "Techno Pairing";
     private const string TechnoBuilding = "Techno Building";
+    private const string TechnoPricing = "Techno Pricing";
     private static readonly string[] Tabs =
-        [TechnoChecking, TechnoPairing, TechnoBuilding, "Techno Production", "Jafza Production"];
+        [TechnoChecking, TechnoPairing, TechnoBuilding, TechnoPricing, "Jafza Production"];
     private string _activeTab = TechnoChecking;
 
     private static readonly string[] Areas = ["AUTO", "MANUAL"];
@@ -369,6 +469,9 @@ else
         catch { /* fall back to empty list if the lookup fails */ }
 
         try { _pDivisions = await PairingSvc.GetDivisionsAsync(); }
+        catch { /* fall back to empty list if the lookup fails */ }
+
+        try { _prDivisions = await PricingSvc.GetDivisionsAsync(); }
         catch { /* fall back to empty list if the lookup fails */ }
     }
 
@@ -590,5 +693,83 @@ else
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
         }
         finally { _bExporting = false; }
+    }
+
+    // ---------------- Techno Pricing ----------------
+    private DateTime _prFrom = DateTime.Today.AddDays(-6);
+    private DateTime _prTo = DateTime.Today;
+    private List<string> _prDivisions = new();
+    private HashSet<string> _prSelectedDivisions = new();
+    private string _prEmpCode = "";
+    private bool _prLoading;
+    private bool _prLoaded;
+    private string _prMessage = "";
+    private bool _prIsError;
+    private bool _prExporting;
+    private List<TechnoPricingRow> _prRows = new();
+
+    private IEnumerable<string>? EffectivePricingDivisionsOrNull =>
+        _prSelectedDivisions.Count > 0 ? _prSelectedDivisions : null;
+
+    private async Task LoadPricingAsync()
+    {
+        _prLoading = true; _prMessage = ""; _prIsError = false; await InvokeAsync(StateHasChanged);
+        try
+        {
+            _prRows = await PricingSvc.GetReportAsync(_prFrom, _prTo, EffectivePricingDivisionsOrNull, _prEmpCode);
+            _prLoaded = true;
+            if (_prRows.Count == 0) _prMessage = "No rows for the selected filters.";
+        }
+        catch (Exception ex) { _prMessage = ex.Message; _prIsError = true; }
+        finally { _prLoading = false; }
+    }
+
+    private void ClearPricingFilters()
+    {
+        _prFrom = DateTime.Today.AddDays(-6);
+        _prTo = DateTime.Today;
+        _prSelectedDivisions = new();
+        _prEmpCode = "";
+        _prRows = new();
+        _prLoaded = false;
+        _prMessage = "";
+        _prIsError = false;
+    }
+
+    private async Task ExportPricingExcelAsync()
+    {
+        if (_prRows.Count == 0) return;
+        _prExporting = true;
+        try
+        {
+            using var wb = new XLWorkbook();
+            var ws = wb.AddWorksheet("Techno Pricing");
+            string[] headers = { "Type", "Date", "Emp Code", "Emp Name", "Group", "Division", "Qty", "Multiplier" };
+            for (int i = 0; i < headers.Length; i++) ws.Cell(1, i + 1).Value = headers[i];
+            ws.Row(1).Style.Font.Bold = true;
+
+            int row = 2;
+            foreach (var r in _prRows)
+            {
+                ws.Cell(row, 1).Value = r.Type;
+                ws.Cell(row, 2).Value = r.TrnDate.ToString("dd-MMM-yyyy");
+                ws.Cell(row, 3).Value = r.EmpCode;
+                ws.Cell(row, 4).Value = r.EmpName;
+                ws.Cell(row, 5).Value = r.GroupName;
+                ws.Cell(row, 6).Value = r.Division;
+                ws.Cell(row, 7).Value = r.Qty;
+                ws.Cell(row, 8).Value = r.Multiplier;
+                row++;
+            }
+            ws.Columns().AdjustToContents();
+
+            using var ms = new MemoryStream();
+            wb.SaveAs(ms);
+            var b64 = Convert.ToBase64String(ms.ToArray());
+            var name = $"techno-pricing-{_prFrom:yyyyMMdd}-{_prTo:yyyyMMdd}.xlsx";
+            await JS.InvokeVoidAsync("downloadFileWithPicker", name, b64,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        }
+        finally { _prExporting = false; }
     }
 }
