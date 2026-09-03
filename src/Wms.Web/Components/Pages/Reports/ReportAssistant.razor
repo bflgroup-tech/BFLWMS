@@ -1,0 +1,111 @@
+@page "/reports/report-assistant"
+@rendermode RenderMode.InteractiveServer
+@using Wms.Core
+@using Wms.Data.Lpm
+@attribute [Authorize(Roles = "Admin")]
+
+<style>
+    .ra-log { display:flex; flex-direction:column; gap:10px; max-width:760px; margin:0 auto 16px auto; }
+    .ra-bubble { padding:10px 14px; border-radius:14px; font-size:13px; line-height:1.5; max-width:90%; }
+    .ra-bot { background:var(--surface-1, #f7f7f5); align-self:flex-start; border-bottom-left-radius:4px; }
+    .ra-user { background:#111; color:#f2b400; align-self:flex-end; border-bottom-right-radius:4px; }
+    .ra-choices { display:flex; gap:8px; flex-wrap:wrap; max-width:760px; margin:0 auto 16px auto; }
+    .ra-query { background:#0b0b0b; color:#d4d4d4; border-radius:10px; padding:12px 14px; font-family:var(--font-mono, monospace); font-size:12px; white-space:pre; overflow-x:auto; max-width:100%; }
+</style>
+
+<PageTitle>WMS — Report Assistant</PageTitle>
+
+<div class="aiwms-page-header">
+    <h2>Report Assistant</h2>
+    <p>Pick a report and a subsection to see the exact query that backs it.</p>
+</div>
+
+<div class="aiwms-section">
+    <div class="ra-log">
+        @foreach (var m in _messages)
+        {
+            @if (m.Sql is not null)
+            {
+                <div class="ra-bubble ra-bot">
+                    <div style="margin-bottom:6px">@m.Text</div>
+                    <div class="ra-query">@m.Sql</div>
+                </div>
+            }
+            else
+            {
+                <div class="ra-bubble @(m.FromBot ? "ra-bot" : "ra-user")">@m.Text</div>
+            }
+        }
+    </div>
+
+    @if (_step == Step.AskReport)
+    {
+        <div class="ra-choices">
+            @foreach (var r in Catalogue.Select(e => e.Report).Distinct())
+            {
+                <button class="aiwms-btn aiwms-btn-secondary" @onclick="@(() => PickReport(r))">@r</button>
+            }
+        </div>
+    }
+    else if (_step == Step.AskSubsection)
+    {
+        <div class="ra-choices">
+            @foreach (var s in Catalogue.Where(e => e.Report == _selectedReport).Select(e => e.Subsection))
+            {
+                <button class="aiwms-btn aiwms-btn-secondary" @onclick="@(() => PickSubsection(s))">@s</button>
+            }
+        </div>
+    }
+    else if (_step == Step.Done)
+    {
+        <div class="ra-choices">
+            <button class="aiwms-btn aiwms-btn-primary" @onclick="Reset">Ask about another</button>
+        </div>
+    }
+</div>
+
+@code {
+    private enum Step { AskReport, AskSubsection, Done }
+    private sealed record ChatMessage(bool FromBot, string Text, string? Sql = null);
+
+    // The full catalogue lives in Wms.Data.Lpm.ReportQueryCatalogue -- kept out of this page
+    // so the (large, growing) SQL text doesn't bloat the UI file. Entries are grouped by
+    // report in the same order those reports appear under the "Reports" menu group.
+    private static readonly List<ReportQueryCatalogue.QueryEntry> Catalogue = ReportQueryCatalogue.All;
+
+    private Step _step = Step.AskReport;
+    private readonly List<ChatMessage> _messages = new();
+    private string? _selectedReport;
+
+    protected override void OnInitialized()
+    {
+        Bot("Hi! Pick a report and I'll show you the exact query behind it. Which report?");
+    }
+
+    private void Bot(string text, string? sql = null) => _messages.Add(new ChatMessage(true, text, sql));
+    private void UserSaid(string text) => _messages.Add(new ChatMessage(false, text));
+
+    private void PickReport(string report)
+    {
+        _selectedReport = report;
+        UserSaid(report);
+        Bot($"Which subsection of {report}?");
+        _step = Step.AskSubsection;
+    }
+
+    private void PickSubsection(string subsection)
+    {
+        UserSaid(subsection);
+        var entry = Catalogue.First(e => e.Report == _selectedReport && e.Subsection == subsection);
+        Bot(entry.SourceNote, entry.Sql);
+        _step = Step.Done;
+    }
+
+    private void Reset()
+    {
+        _messages.Clear();
+        _selectedReport = null;
+        _step = Step.AskReport;
+        Bot("Sure — which report this time?");
+    }
+}
