@@ -64,6 +64,32 @@
     }
 </div>
 
+<div class="aiwms-section">
+    <div class="aiwms-card-header">Find reports by table</div>
+    <p style="margin:0 0 10px 0; color:var(--text-secondary); font-size:12px">
+        Type a table name (or part of one) to see which reports touch it.
+    </p>
+    <input @bind="_tableSearch" @bind:event="oninput" placeholder="e.g. WHBoxItems, ContReceipt..."
+           style="width:100%; max-width:400px; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px" />
+
+    @if (!string.IsNullOrWhiteSpace(_tableSearch))
+    {
+        @if (MatchingReports.Count == 0)
+        {
+            <p style="margin-top:10px; color:var(--text-secondary); font-size:13px">No reports reference a table matching "@_tableSearch".</p>
+        }
+        else
+        {
+            <div class="ra-choices" style="margin-top:10px">
+                @foreach (var r in MatchingReports)
+                {
+                    <button class="aiwms-btn aiwms-btn-secondary" @onclick="@(() => PickReportFromTableSearch(r))">@r</button>
+                }
+            </div>
+        }
+    }
+</div>
+
 @code {
     private enum Step { AskReport, AskSubsection, Done }
     private sealed record ChatMessage(bool FromBot, string Text, string? Sql = null);
@@ -76,6 +102,20 @@
     private Step _step = Step.AskReport;
     private readonly List<ChatMessage> _messages = new();
     private string? _selectedReport;
+
+    private string _tableSearch = "";
+
+    // Matches against both SourceNote (the declared table list) and the SQL body itself,
+    // so a table only mentioned inside a JOIN (not repeated in the note) still surfaces.
+    private List<string> MatchingReports =>
+        string.IsNullOrWhiteSpace(_tableSearch)
+            ? new()
+            : Catalogue
+                .Where(e => e.SourceNote.Contains(_tableSearch, StringComparison.OrdinalIgnoreCase)
+                         || e.Sql.Contains(_tableSearch, StringComparison.OrdinalIgnoreCase))
+                .Select(e => e.Report)
+                .Distinct()
+                .ToList();
 
     protected override void OnInitialized()
     {
@@ -99,6 +139,12 @@
         var entry = Catalogue.First(e => e.Report == _selectedReport && e.Subsection == subsection);
         Bot(entry.SourceNote, entry.Sql);
         _step = Step.Done;
+    }
+
+    private void PickReportFromTableSearch(string report)
+    {
+        Bot($"Table search: \"{_tableSearch}\"");
+        PickReport(report);
     }
 
     private void Reset()
