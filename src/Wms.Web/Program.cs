@@ -108,6 +108,7 @@ public class Program
         builder.Services.AddScoped<JafzaExportProductionService>();
         builder.Services.AddScoped<JafzaBoxGrnProductionService>();
         builder.Services.AddScoped<OtsPoAllocationService>();
+        builder.Services.AddScoped<CdcBoxAllocationService>();
         builder.Services.AddScoped<TcmImportService>();
 
         // Weekly sales pull from BigQuery (mvp-data-bi.cdm_silver.it_sales_qty) into
