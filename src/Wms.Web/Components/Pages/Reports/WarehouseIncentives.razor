@@ -12,6 +12,7 @@
 @inject TechnoTeamProductionService TeamProductionSvc
 @inject RfidProductionService RfidSvc
 @inject JafzaExportCheckingService JafzaCheckingSvc
+@inject JafzaExportPairingService JafzaPairingSvc
 @inject IJSRuntime JS
 
 <PageTitle>WMS - Warehouse Incentives</PageTitle>
@@ -695,6 +696,88 @@ else if (_activeTab == JafzaExportChecking)
         </div>
     }
 }
+else if (_activeTab == JafzaExportPairing)
+{
+    <div class="aiwms-section">
+        <p style="color:var(--text-secondary); margin:0 0 12px 0">JAFZA export pairing + R1 sorting counts per day, from the JAFZA robotics server (BFLDATA.dbo.rfPairDetail + ROBOTICS.dbo.PairDetail). When two employees are assigned as a pair for the day (BFLDATA.dbo.PairAssign), their counts are combined under a single "EmpCode1-EmpCode2" row instead of shown separately.</p>
+        <div style="display:grid; grid-template-columns: auto auto 1fr auto; gap:12px; align-items:end;">
+            <div>
+                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">FROM</label>
+                <input type="date" @bind="_jpFrom" @bind:format="yyyy-MM-dd" max="@DateTime.Today.ToString("yyyy-MM-dd")" style="padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
+            </div>
+            <div>
+                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">TO</label>
+                <input type="date" @bind="_jpTo" @bind:format="yyyy-MM-dd" max="@DateTime.Today.ToString("yyyy-MM-dd")" style="padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
+            </div>
+            <div>
+                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">USERS</label>
+                <input @bind="_jpUsers" @bind:event="oninput" placeholder="e.g. RT01 or RT01-RT02" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
+            </div>
+            <div style="display:flex; gap:8px">
+                <button class="aiwms-btn" style="background:var(--s-live); color:#fff; border-radius:10px;"
+                        @onclick="LoadJafzaPairingAsync" disabled="@(_jpLoading || _jpFrom > _jpTo)">
+                    <span class="mi" style="font-size:16px;">play_arrow</span> @(_jpLoading ? "Loading..." : "Load")
+                </button>
+                <button class="aiwms-btn" style="background:#fff; color:var(--text-primary); border:1.5px solid var(--border-strong); border-radius:10px;"
+                        @onclick="ClearJafzaPairingFilters" disabled="@_jpLoading">
+                    <span class="mi" style="font-size:16px;">refresh</span> Clear Filters
+                </button>
+                <button class="aiwms-btn" style="background:#fff; color:var(--s-active); border:1.5px solid var(--s-active); border-radius:10px;"
+                        @onclick="ExportJafzaPairingExcelAsync" disabled="@(_jpExporting || _jpRows.Count == 0)">
+                    <span class="mi" style="font-size:16px;">download</span> @(_jpExporting ? "Exporting..." : "Export Excel")
+                </button>
+            </div>
+        </div>
+
+        <p style="font-size:11px; color:var(--text-secondary); margin-top:8px">
+            Default range is the last 7 days.
+        </p>
+
+        @if (!string.IsNullOrEmpty(_jpMessage))
+        {
+            <div class="aiwms-alert @(_jpIsError ? "error" : "info")" style="margin-top:12px">@_jpMessage</div>
+        }
+    </div>
+
+    @if (_jpLoaded)
+    {
+        <div class="aiwms-section">
+            <div class="aiwms-card-header">Jafza Export Pairing & R1 Sorting - @_jpRows.Count.ToString("N0") row(s)</div>
+            <div style="overflow-x:auto">
+            <table class="aiwms-table aiwms-table-dense">
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Users</th>
+                        <th style="text-align:right">Total Pairing</th>
+                        <th style="text-align:right">R1 Sorting Cnt</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr style="font-weight:700; background:var(--surface-1, #f7f7f5);">
+                        <td colspan="2">Total</td>
+                        <td style="text-align:right">@_jpRows.Sum(r => r.TotalPairing).ToString("N0")</td>
+                        <td style="text-align:right">@_jpRows.Sum(r => r.R1SortingCnt).ToString("N0")</td>
+                    </tr>
+                    @foreach (var r in _jpRows)
+                    {
+                        <tr>
+                            <td style="white-space:nowrap">@r.EntryDate.ToString("dd-MMM-yyyy")</td>
+                            <td style="font-family:var(--font-mono)">@r.Users</td>
+                            <td style="text-align:right">@r.TotalPairing.ToString("N0")</td>
+                            <td style="text-align:right">@r.R1SortingCnt.ToString("N0")</td>
+                        </tr>
+                    }
+                    @if (_jpRows.Count == 0)
+                    {
+                        <tr><td colspan="4" style="color:var(--text-secondary)">No rows for the selected filters.</td></tr>
+                    }
+                </tbody>
+            </table>
+            </div>
+        </div>
+    }
+}
 else
 {
     <div class="aiwms-section">
@@ -710,8 +793,9 @@ else
     private const string TechnoPricing = "Techno Pricing";
     private const string RfidProduction = "RFID Production";
     private const string JafzaExportChecking = "Jafza Export Checking";
+    private const string JafzaExportPairing = "Jafza Export Pairing & R1 Sorting";
     private static readonly string[] Tabs =
-        [TechnoTeamProduction, TechnoChecking, TechnoPairing, TechnoBuilding, TechnoPricing, RfidProduction, JafzaExportChecking, "Jafza Production"];
+        [TechnoTeamProduction, TechnoChecking, TechnoPairing, TechnoBuilding, TechnoPricing, RfidProduction, JafzaExportChecking, JafzaExportPairing, "Jafza Production"];
     private string _activeTab = TechnoTeamProduction;
 
     private static readonly string[] Areas = ["AUTO", "MANUAL"];
@@ -1257,5 +1341,73 @@ else
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
         }
         finally { _jcExporting = false; }
+    }
+
+    // ---------------- Jafza Export Pairing & R1 Sorting ----------------
+    private DateTime _jpFrom = DateTime.Today.AddDays(-6);
+    private DateTime _jpTo = DateTime.Today;
+    private string _jpUsers = "";
+    private bool _jpLoading;
+    private bool _jpLoaded;
+    private string _jpMessage = "";
+    private bool _jpIsError;
+    private bool _jpExporting;
+    private List<JafzaExportPairingRow> _jpRows = new();
+
+    private async Task LoadJafzaPairingAsync()
+    {
+        _jpLoading = true; _jpMessage = ""; _jpIsError = false; await InvokeAsync(StateHasChanged);
+        try
+        {
+            _jpRows = await JafzaPairingSvc.GetReportAsync(_jpFrom, _jpTo, _jpUsers);
+            _jpLoaded = true;
+            if (_jpRows.Count == 0) _jpMessage = "No rows for the selected filters.";
+        }
+        catch (Exception ex) { _jpMessage = ex.Message; _jpIsError = true; }
+        finally { _jpLoading = false; }
+    }
+
+    private void ClearJafzaPairingFilters()
+    {
+        _jpFrom = DateTime.Today.AddDays(-6);
+        _jpTo = DateTime.Today;
+        _jpUsers = "";
+        _jpRows = new();
+        _jpLoaded = false;
+        _jpMessage = "";
+        _jpIsError = false;
+    }
+
+    private async Task ExportJafzaPairingExcelAsync()
+    {
+        if (_jpRows.Count == 0) return;
+        _jpExporting = true;
+        try
+        {
+            using var wb = new XLWorkbook();
+            var ws = wb.AddWorksheet("Jafza Export Pairing");
+            string[] headers = { "Date", "Users", "Total Pairing", "R1 Sorting Cnt" };
+            for (int i = 0; i < headers.Length; i++) ws.Cell(1, i + 1).Value = headers[i];
+            ws.Row(1).Style.Font.Bold = true;
+
+            int row = 2;
+            foreach (var r in _jpRows)
+            {
+                ws.Cell(row, 1).Value = r.EntryDate.ToString("dd-MMM-yyyy");
+                ws.Cell(row, 2).Value = r.Users;
+                ws.Cell(row, 3).Value = r.TotalPairing;
+                ws.Cell(row, 4).Value = r.R1SortingCnt;
+                row++;
+            }
+            ws.Columns().AdjustToContents();
+
+            using var ms = new MemoryStream();
+            wb.SaveAs(ms);
+            var b64 = Convert.ToBase64String(ms.ToArray());
+            var name = $"jafza-export-pairing-{_jpFrom:yyyyMMdd}-{_jpTo:yyyyMMdd}.xlsx";
+            await JS.InvokeVoidAsync("downloadFileWithPicker", name, b64,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        }
+        finally { _jpExporting = false; }
     }
 }

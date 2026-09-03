@@ -96,6 +96,7 @@ public class Program
         builder.Services.AddScoped<TechnoTeamProductionService>();
         builder.Services.AddScoped<RfidProductionService>();
         builder.Services.AddScoped<JafzaExportCheckingService>();
+        builder.Services.AddScoped<JafzaExportPairingService>();
         builder.Services.AddScoped<TransferGinGrnService>();
         builder.Services.AddScoped<ShipmentStatusService>();
         builder.Services.AddScoped<YotoVnaDashboardService>();
