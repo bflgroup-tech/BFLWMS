@@ -491,4 +491,138 @@ public class ShipmentStatusService(IOnPremConnectionResolver resolver)
         for (var i = 0; i < source.Count; i += size)
             yield return source.GetRange(i, Math.Min(size, source.Count - i));
     }
+
+    // ===================== Division x Month drill-down =====================
+    // Popup shown when an Intransit number or a GIN No. is clicked — same vTransferDetail
+    // source as the Division/Department/Brand rollup above, but grouped by
+    // (DivisionY, LpmDt month) instead of top-5-collapsed. Intransit-only (not
+    // Delivered) because Delivered can also come from the separate ContReceipt/
+    // usaorgfile flow for LOCAL/International, which has no LpmDt to group by.
+
+    private record TrfShopKey(string TrfNo, string CostCodeTo, string LocCodeTo, string? DataName);
+    private record TrfShopKeyWithShip(string TrfNo, string CostCodeTo, string LocCodeTo, string? DataName, string ShipNo);
+    private record DivisionMonthChunkRow(string? Division, int? Year, int? Month, decimal Qty);
+
+    private const string NoDateKey = "(no date)";
+
+    public async Task<DivisionMonthSummaryResult> GetDivisionMonthSummaryByGinAsync(
+        string ginNo, CancellationToken ct = default)
+    {
+        await using var conn = OpenOnPremBackup();
+        var entries = (await conn.QueryAsync<TrfShopKey>(new CommandDefinition(@"
+            SELECT gi.TrfNo AS TrfNo, ds.CostCodeTo AS CostCodeTo, ds.LocCodeTo AS LocCodeTo, ds.DataName AS DataName
+            FROM USA.dbo.ExportPass ep WITH (NOLOCK)
+            JOIN bfldata..vGoodsIssueplt gi WITH (NOLOCK) ON gi.SrNo = ep.GINNo
+            JOIN bfldata.dbo.DataSettings ds WITH (NOLOCK) ON ds.ShopName = gi.ShopIssue
+            WHERE ep.GINNo = @ginNo",
+            new { ginNo }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).AsList();
+
+        return await BuildDivisionMonthSummaryAsync(entries, ct);
+    }
+
+    // type: "JAFZA" | "LOCAL" | "International" | null (Total — every type combined).
+    public async Task<DivisionMonthSummaryResult> GetIntransitDivisionMonthSummaryAsync(
+        string? country, string? type, DateTime to, CancellationToken ct = default)
+    {
+        await using var conn = OpenOnPremBackup();
+        var raw = (await conn.QueryAsync<TrfShopKeyWithShip>(new CommandDefinition(@"
+            SELECT gi.TrfNo AS TrfNo, ds.CostCodeTo AS CostCodeTo, ds.LocCodeTo AS LocCodeTo, ds.DataName AS DataName, ep.Shipno AS ShipNo
+            FROM USA.dbo.ExportPass ep WITH (NOLOCK)
+            JOIN bfldata..vGoodsIssueplt gi WITH (NOLOCK) ON gi.SrNo = ep.GINNo
+            JOIN bfldata.dbo.DataSettings ds WITH (NOLOCK) ON ds.ShopName = gi.ShopIssue
+            LEFT JOIN bfldata..contreceiptExport cre WITH (NOLOCK) ON cre.GINNO = ep.GINNo
+            WHERE (@country IS NULL OR ds.Country = @country)
+              AND cre.ReceiptDt IS NULL
+              AND ep.Trndate <= @to AND ep.Trndate >= @inTransitFloor",
+            new { country, to, inTransitFloor = InTransitFloor },
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).AsList();
+
+        var filtered = string.IsNullOrEmpty(type)
+            ? raw
+            : raw.Where(r => DetermineType(r.ShipNo) == type).ToList();
+
+        var entries = filtered
+            .Select(r => new TrfShopKey(r.TrfNo, r.CostCodeTo, r.LocCodeTo, r.DataName))
+            .ToList();
+
+        return await BuildDivisionMonthSummaryAsync(entries, ct);
+    }
+
+    private async Task<DivisionMonthSummaryResult> BuildDivisionMonthSummaryAsync(
+        List<TrfShopKey> entries, CancellationToken ct)
+    {
+        var shopGroups = entries
+            .GroupBy(e => (e.DataName, e.CostCodeTo, e.LocCodeTo))
+            .Where(g => !string.IsNullOrWhiteSpace(g.Key.DataName))
+            .ToList();
+
+        using var throttle = new SemaphoreSlim(MaxConcurrentChunkQueries);
+        var chunkTasks = new List<Task<List<DivisionMonthChunkRow>>>();
+        foreach (var shop in shopGroups)
+        {
+            var trfNos = shop.Select(e => e.TrfNo).Distinct().ToList();
+            foreach (var chunk in Chunk(trfNos, ChunkSize))
+                chunkTasks.Add(RunDivisionMonthChunkAsync(shop.Key.DataName!, shop.Key.CostCodeTo, shop.Key.LocCodeTo, chunk, throttle, ct));
+        }
+        var chunkResults = (await Task.WhenAll(chunkTasks)).SelectMany(r => r).ToList();
+
+        return BuildPivot(chunkResults);
+    }
+
+    private async Task<List<DivisionMonthChunkRow>> RunDivisionMonthChunkAsync(
+        string dataName, string costCodeTo, string locCodeTo, List<string> trfNos,
+        SemaphoreSlim throttle, CancellationToken ct)
+    {
+        await throttle.WaitAsync(ct);
+        try
+        {
+            await using var conn = OpenOnPremBackup();
+            var sql = $@"
+                SELECT up.DivisionY AS Division, YEAR(vtd.LpmDt) AS Year, MONTH(vtd.LpmDt) AS Month, SUM(vtd.Quantity) AS Qty
+                FROM [{dataName}].dbo.vTransferDetail vtd WITH (NOLOCK)
+                LEFT JOIN usa.dbo.USAPriority up WITH (NOLOCK) ON up.groupCode = vtd.groupcode
+                WHERE vtd.CostCodeTo = @costCodeTo AND vtd.LocCodeTo = @locCodeTo AND vtd.TrfNo IN ({BuildInClause(trfNos)})
+                GROUP BY up.DivisionY, YEAR(vtd.LpmDt), MONTH(vtd.LpmDt)";
+            var rows = await conn.QueryAsync<DivisionMonthChunkRow>(new CommandDefinition(
+                sql, new { costCodeTo, locCodeTo }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            return rows.AsList();
+        }
+        finally { throttle.Release(); }
+    }
+
+    private static DivisionMonthSummaryResult BuildPivot(List<DivisionMonthChunkRow> rows)
+    {
+        static string KeyOf(int? y, int? m) => y.HasValue && m.HasValue ? $"{y:D4}-{m:D2}" : NoDateKey;
+        static string LabelOf(string key) =>
+            key == NoDateKey ? NoDateKey : new DateTime(int.Parse(key[..4]), int.Parse(key[5..]), 1).ToString("MMM-yy");
+
+        var cellQty = new Dictionary<(string Division, string MonthKey), decimal>();
+        foreach (var r in rows)
+        {
+            var division = string.IsNullOrWhiteSpace(r.Division) ? "(blank)" : r.Division!;
+            var key = (division, KeyOf(r.Year, r.Month));
+            cellQty[key] = cellQty.GetValueOrDefault(key) + r.Qty;
+        }
+
+        var datedKeys = cellQty.Keys.Select(k => k.MonthKey).Where(k => k != NoDateKey).Distinct()
+            .OrderBy(k => k, StringComparer.Ordinal).ToList();
+        var hasNoDate = cellQty.Keys.Any(k => k.MonthKey == NoDateKey);
+        var monthKeys = hasNoDate ? new List<string> { NoDateKey }.Concat(datedKeys).ToList() : datedKeys;
+        var monthLabels = monthKeys.Select(LabelOf).ToList();
+
+        var divisions = cellQty.Keys.Select(k => k.Division).Distinct()
+            .OrderBy(d => d, StringComparer.OrdinalIgnoreCase).ToList();
+
+        var divisionRows = divisions.Select(division =>
+        {
+            var monthQty = monthKeys.Select(mk => cellQty.GetValueOrDefault((division, mk))).ToList();
+            return new DivisionMonthRow(division, monthQty, monthQty.Sum());
+        }).ToList();
+
+        var monthTotals = Enumerable.Range(0, monthKeys.Count)
+            .Select(i => divisionRows.Sum(r => r.MonthQty[i]))
+            .ToList();
+
+        return new DivisionMonthSummaryResult(monthLabels, divisionRows, monthTotals, monthTotals.Sum());
+    }
 }

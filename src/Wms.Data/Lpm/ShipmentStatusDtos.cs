@@ -32,3 +32,19 @@ public record ShipmentStatusResult(
     List<ShipmentStatusRow> Rows,
     List<string>            Warnings   // one entry per country that failed during a "BFL Group" fan-out
 );
+
+// Division x Month (by vTransferDetail.LpmDt) drill-down pivot, shown as a popup when
+// an Intransit number or a GIN No. is clicked. MonthQty on each row is index-aligned
+// with MonthLabels; MonthTotals is the Grand Total row.
+public record DivisionMonthSummaryResult(
+    List<string>          MonthLabels,
+    List<DivisionMonthRow> Rows,
+    List<decimal>         MonthTotals,
+    decimal               GrandTotal
+);
+
+public record DivisionMonthRow(
+    string        Division,
+    List<decimal> MonthQty,
+    decimal       RowTotal
+);

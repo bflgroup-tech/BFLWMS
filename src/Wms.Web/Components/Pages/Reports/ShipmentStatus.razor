@@ -15,6 +15,71 @@
     <p>Containers received between the selected dates, plus any shipment still in transit as of Receipt Date To — released from UAE or local/international, received directly at destination. Sorted by Receipt Date (then Released Date while in transit).</p>
 </div>
 
+@if (_pivotOpen)
+{
+    <div style="position:fixed; inset:0; background:rgba(0,0,0,0.45); z-index:100; display:flex; align-items:center; justify-content:center;" @onclick="ClosePivot">
+        <div style="background:white; border-radius:8px; max-width:90vw; max-height:85vh; overflow:auto; padding:20px; box-shadow:0 8px 32px rgba(0,0,0,0.3);" @onclick:stopPropagation="true">
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:20px; margin-bottom:14px;">
+                <h3 style="margin:0; font-size:15px;">@_pivotTitle</h3>
+                <button class="aiwms-btn aiwms-btn-secondary" @onclick="ClosePivot">Close</button>
+            </div>
+
+            @if (_pivotLoading)
+            {
+                <div style="padding:20px; text-align:center; color:var(--text-secondary);">Loading…</div>
+            }
+            else if (_pivotError is not null)
+            {
+                <div class="aiwms-alert error">@_pivotError</div>
+            }
+            else if (_pivotResult is { Rows.Count: 0 })
+            {
+                <div style="padding:20px; text-align:center; color:var(--text-secondary);">No data.</div>
+            }
+            else if (_pivotResult is not null)
+            {
+                <div style="overflow:auto; max-width:90vw;">
+                <table class="aiwms-table aiwms-table-dense" style="border-collapse:separate; border-spacing:0;">
+                    <thead style="position:sticky; top:0; z-index:5; background:var(--bfl-black);">
+                        <tr>
+                            <th>Row Labels</th>
+                            @foreach (var m in _pivotResult.MonthLabels)
+                            {
+                                <th style="text-align:right;">@m</th>
+                            }
+                            <th style="text-align:right;">Grand Total</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var row in _pivotResult.Rows)
+                        {
+                            <tr>
+                                <td>@row.Division</td>
+                                @foreach (var q in row.MonthQty)
+                                {
+                                    <td style="text-align:right;">@(q == 0 ? "" : q.ToString("N0"))</td>
+                                }
+                                <td style="text-align:right; font-weight:600;">@row.RowTotal.ToString("N0")</td>
+                            </tr>
+                        }
+                    </tbody>
+                    <tfoot>
+                        <tr style="font-weight:600; border-top:2px solid var(--border-default);">
+                            <td>Grand Total</td>
+                            @foreach (var t in _pivotResult.MonthTotals)
+                            {
+                                <td style="text-align:right;">@t.ToString("N0")</td>
+                            }
+                            <td style="text-align:right;">@_pivotResult.GrandTotal.ToString("N0")</td>
+                        </tr>
+                    </tfoot>
+                </table>
+                </div>
+            }
+        </div>
+    </div>
+}
+
 <div class="aiwms-section" style="padding:10px 16px;">
     <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:flex-end;">
         @if (_canSelectMultiple)
@@ -158,14 +223,28 @@
                                         <div style="flex:1; text-align:center; min-width:0; border-left:1px solid rgba(0,0,0,0.18); margin-left:6px; padding-left:6px;">
                                             <div style="font-size:12px; color:var(--text-secondary);">Intransit</div>
                                             <div style="display:flex; justify-content:center; gap:8px; margin-top:5px;">
-                                                <div>
-                                                    <div style="font-size:11px; color:var(--text-secondary); white-space:nowrap;">Ship Count</div>
-                                                    <div style="font-size:16px; font-weight:700; color:#222222; margin-top:2px; white-space:nowrap;">@t.IntransitCount.ToString("N0")</div>
-                                                </div>
-                                                <div>
-                                                    <div style="font-size:11px; color:var(--text-secondary); white-space:nowrap;">Quantity</div>
-                                                    <div style="font-size:16px; font-weight:700; color:#222222; margin-top:2px; white-space:nowrap;">@t.IntransitQty.ToString("N0")</div>
-                                                </div>
+                                                @if (t.Type == "JAFZA")
+                                                {
+                                                    <div style="cursor:pointer;" @onclick="() => OpenIntransitPivotAsync(cts.Country, t.Title, t.Type)" title="Click for Division / Month breakdown">
+                                                        <div style="font-size:11px; color:var(--text-secondary); white-space:nowrap;">Ship Count</div>
+                                                        <div style="font-size:16px; font-weight:700; color:var(--link-color,#1a56db); margin-top:2px; white-space:nowrap; text-decoration:underline;">@t.IntransitCount.ToString("N0")</div>
+                                                    </div>
+                                                    <div style="cursor:pointer;" @onclick="() => OpenIntransitPivotAsync(cts.Country, t.Title, t.Type)" title="Click for Division / Month breakdown">
+                                                        <div style="font-size:11px; color:var(--text-secondary); white-space:nowrap;">Quantity</div>
+                                                        <div style="font-size:16px; font-weight:700; color:var(--link-color,#1a56db); margin-top:2px; white-space:nowrap; text-decoration:underline;">@t.IntransitQty.ToString("N0")</div>
+                                                    </div>
+                                                }
+                                                else
+                                                {
+                                                    <div>
+                                                        <div style="font-size:11px; color:var(--text-secondary); white-space:nowrap;">Ship Count</div>
+                                                        <div style="font-size:16px; font-weight:700; color:#222222; margin-top:2px; white-space:nowrap;">@t.IntransitCount.ToString("N0")</div>
+                                                    </div>
+                                                    <div>
+                                                        <div style="font-size:11px; color:var(--text-secondary); white-space:nowrap;">Quantity</div>
+                                                        <div style="font-size:16px; font-weight:700; color:#222222; margin-top:2px; white-space:nowrap;">@t.IntransitQty.ToString("N0")</div>
+                                                    </div>
+                                                }
                                             </div>
                                         </div>
                                     </div>
@@ -328,7 +407,12 @@ else if (_rows.Count > 0 && !_isBflGroupView)
                         <td>@r.Country</td>
                         <td style="text-align:right;">@r.ShipNo</td>
                         <td>@r.Status</td>
-                        <td>@r.GinNo</td>
+                        <td>
+                            @if (!string.IsNullOrWhiteSpace(r.GinNo))
+                            {
+                                <a href="javascript:void(0)" @onclick="() => OpenGinPivotAsync(r.GinNo)" style="color:var(--link-color,#1a56db); text-decoration:underline; cursor:pointer;">@r.GinNo</a>
+                            }
+                        </td>
                         <td>@(r.GinDate?.ToString("dd/MM/yyyy") ?? "")</td>
                         <td>@(r.ReleasedOn?.ToString("dd/MM/yyyy") ?? "")</td>
                         <td style="text-align:right;">@r.SlaShippingDays</td>
@@ -427,6 +511,38 @@ else if (_rows.Count > 0 && !_isBflGroupView)
     // per-shipment detail table only makes sense scoped to one or a few countries, so
     // a BFL Group load shows a Country x Type x Status rollup instead.
     private bool _isBflGroupView;
+
+    // ===================== Division x Month drill-down popup =====================
+    private DateTime _lastEffectiveTo = DateTime.Today; // InTransit-as-of cutoff from the last Load
+    private bool     _pivotOpen;
+    private bool     _pivotLoading;
+    private string   _pivotTitle = "";
+    private string?  _pivotError;
+    private DivisionMonthSummaryResult? _pivotResult;
+
+    private async Task OpenGinPivotAsync(string ginNo)
+    {
+        if (string.IsNullOrWhiteSpace(ginNo)) return;
+        _pivotTitle = $"GIN {ginNo} — Quantity by Division / Month (LPM Date)";
+        await LoadPivotAsync(() => Svc.GetDivisionMonthSummaryByGinAsync(ginNo));
+    }
+
+    private async Task OpenIntransitPivotAsync(string country, string typeTitle, string? type)
+    {
+        _pivotTitle = $"{country.ToUpperInvariant()} — {typeTitle} Intransit — Quantity by Division / Month (LPM Date)";
+        await LoadPivotAsync(() => Svc.GetIntransitDivisionMonthSummaryAsync(country, type, _lastEffectiveTo));
+    }
+
+    private async Task LoadPivotAsync(Func<Task<DivisionMonthSummaryResult>> fetch)
+    {
+        _pivotOpen = true; _pivotLoading = true; _pivotError = null; _pivotResult = null;
+        StateHasChanged();
+        try { _pivotResult = await fetch(); }
+        catch (Exception ex) { _pivotError = ex.Message; }
+        finally { _pivotLoading = false; StateHasChanged(); }
+    }
+
+    private void ClosePivot() => _pivotOpen = false;
 
     private record SummaryRow(
         string Country, string Type, string Status, int ShipmentCount,
@@ -804,6 +920,7 @@ else if (_rows.Count > 0 && !_isBflGroupView)
                 Countries: countries,
                 DateFrom:  effectiveFrom,
                 DateTo:    effectiveTo);
+            _lastEffectiveTo = effectiveTo; // for the Intransit drill-down's InTransit-as-of cutoff
 
             var result = await Svc.GetShipmentStatusAsync(filter);
             _rows = result.Rows;
