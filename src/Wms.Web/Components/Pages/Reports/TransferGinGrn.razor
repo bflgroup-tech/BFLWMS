@@ -15,6 +15,69 @@
     <p>Transfer records with Pallet (GI), GIN and GRN linkage per store and date range.</p>
 </div>
 
+@if (_breakdownOpen)
+{
+    <div style="position:fixed; inset:0; background:rgba(0,0,0,0.45); z-index:100; display:flex; align-items:center; justify-content:center;" @onclick="CloseBreakdown">
+        <div style="background:white; border-radius:8px; max-width:90vw; max-height:85vh; overflow:auto; padding:20px; box-shadow:0 8px 32px rgba(0,0,0,0.3);" @onclick:stopPropagation="true">
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:20px; margin-bottom:14px;">
+                <h3 style="margin:0; font-size:15px;">@_breakdownTitle</h3>
+                <button class="aiwms-btn aiwms-btn-secondary" @onclick="CloseBreakdown">Close</button>
+            </div>
+
+            @if (_breakdownLoading)
+            {
+                <div style="padding:20px; text-align:center; color:var(--text-secondary);">Loading…</div>
+            }
+            else if (_breakdownError is not null)
+            {
+                <div class="aiwms-alert error">@_breakdownError</div>
+            }
+            else if (_breakdownResult is { Rows.Count: 0 })
+            {
+                <div style="padding:20px; text-align:center; color:var(--text-secondary);">No data.</div>
+            }
+            else if (_breakdownResult is not null)
+            {
+                @if (_breakdownResult.Warnings.Count > 0)
+                {
+                    <div class="aiwms-alert error" style="margin-bottom:10px;">Some countries failed: @string.Join("; ", _breakdownResult.Warnings)</div>
+                }
+                <div style="overflow:auto; max-width:90vw;">
+                <table class="aiwms-table aiwms-table-dense" style="border-collapse:separate; border-spacing:0;">
+                    <thead style="position:sticky; top:0; z-index:5; background:var(--bfl-black);">
+                        <tr>
+                            <th>Division</th>
+                            <th>Department</th>
+                            <th>Group Code</th>
+                            <th>Brand</th>
+                            <th style="text-align:right;">Qty</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var row in _breakdownResult.Rows)
+                        {
+                            <tr>
+                                <td>@row.Division</td>
+                                <td>@row.Department</td>
+                                <td>@row.GroupCode</td>
+                                <td>@row.Brand</td>
+                                <td style="text-align:right;">@row.Qty.ToString("N0")</td>
+                            </tr>
+                        }
+                    </tbody>
+                    <tfoot>
+                        <tr style="font-weight:600; border-top:2px solid var(--border-default);">
+                            <td colspan="4">Grand Total</td>
+                            <td style="text-align:right;">@_breakdownResult.GrandQty.ToString("N0")</td>
+                        </tr>
+                    </tfoot>
+                </table>
+                </div>
+            }
+        </div>
+    </div>
+}
+
 <div class="aiwms-section" style="padding:10px 16px;">
     <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:flex-end;">
         <div style="flex:0 0 150px;">
@@ -109,10 +172,10 @@
 @if (total is not null)
 {
     <div style="display:flex; gap:14px; flex-wrap:wrap; margin-bottom:16px;">
-        @StatCard("TRANSFER COUNT", total.TransferCount, "#fbe4ec", "#b3195c")
-        @StatCard("TRANSFER QTY",   total.TransferQty,   "#d9f7ea", "#0f9d67")
-        @StatCard("GIN COUNT",      total.GinCount,      "#e8f0fe", "#1a56db")
-        @StatCard("GIN QTY",        total.GinQty,        "#fdecd9", "#c2650a")
+        @StatCard("TRANSFER COUNT", total.TransferCount, "#fbe4ec", "#b3195c", OpenTransferBreakdownAsync)
+        @StatCard("TRANSFER QTY",   total.TransferQty,   "#d9f7ea", "#0f9d67", OpenTransferBreakdownAsync)
+        @StatCard("GIN COUNT",      total.GinCount,      "#e8f0fe", "#1a56db", OpenGinBreakdownAsync)
+        @StatCard("GIN QTY",        total.GinQty,        "#fdecd9", "#c2650a", OpenGinBreakdownAsync)
     </div>
 }
 
@@ -162,10 +225,15 @@
 }
 
 @code {
-    private RenderFragment StatCard(string label, int value, string bg, string color) => @<div style="background:@bg; border-radius:8px; padding:12px 20px; flex:1; min-width:150px; text-align:center;">
-        <div style="font-size:11px; font-weight:700; color:@color; text-transform:uppercase; letter-spacing:0.03em;">@label</div>
-        <div style="font-size:20px; font-weight:700; color:#222222; margin-top:6px;">@value.ToString("N0")</div>
-    </div>;
+    private RenderFragment StatCard(string label, int value, string bg, string color, Func<Task>? onClick = null)
+    {
+        var handler = onClick ?? (() => Task.CompletedTask);
+        return @<div style="background:@bg; border-radius:8px; padding:12px 20px; flex:1; min-width:150px; text-align:center; @(onClick is not null ? "cursor:pointer;" : "")"
+                      @onclick="handler" title="@(onClick is not null ? "Click for Division / Department / Group Code / Brand breakdown" : null)">
+            <div style="font-size:11px; font-weight:700; color:@color; text-transform:uppercase; letter-spacing:0.03em;">@label</div>
+            <div style="font-size:20px; font-weight:700; color:#222222; margin-top:6px;">@value.ToString("N0")</div>
+        </div>;
+    }
 }
 
 @if (_viewMode == "Detailed" && _rows.Count > 0)
@@ -244,6 +312,45 @@
     private bool   _loading;
     private string _message = "";
     private bool   _isError;
+
+    // ===================== Division/Department/GroupCode/Brand drill-down popup =====================
+    // The scope (countries/store/dates) that produced the on-screen totals — set
+    // in LoadAsync alongside _total, so a card click re-scopes the breakdown to
+    // exactly what's on screen rather than the raw filter inputs (which may have
+    // changed since the last Load).
+    private List<string>? _lastCountries;
+    private string?        _lastStore;
+    private DateTime       _lastDateFrom;
+    private DateTime       _lastDateTo;
+
+    private bool    _breakdownOpen;
+    private bool    _breakdownLoading;
+    private string  _breakdownTitle = "";
+    private string? _breakdownError;
+    private TransferGinBreakdownResult? _breakdownResult;
+
+    private Task OpenTransferBreakdownAsync()
+    {
+        _breakdownTitle = "Transfer — Division / Department / Group Code / Brand";
+        return LoadBreakdownAsync(() => Svc.GetTransferBreakdownAsync(_lastCountries, _lastStore, _lastDateFrom, _lastDateTo));
+    }
+
+    private Task OpenGinBreakdownAsync()
+    {
+        _breakdownTitle = "GIN — Division / Department / Group Code / Brand";
+        return LoadBreakdownAsync(() => Svc.GetGinBreakdownAsync(_lastCountries, _lastStore, _lastDateFrom, _lastDateTo));
+    }
+
+    private async Task LoadBreakdownAsync(Func<Task<TransferGinBreakdownResult>> fetch)
+    {
+        _breakdownOpen = true; _breakdownLoading = true; _breakdownError = null; _breakdownResult = null;
+        StateHasChanged();
+        try { _breakdownResult = await fetch(); }
+        catch (Exception ex) { _breakdownError = ex.Message; }
+        finally { _breakdownLoading = false; StateHasChanged(); }
+    }
+
+    private void CloseBreakdown() => _breakdownOpen = false;
 
     protected override async Task OnInitializedAsync()
     {
@@ -340,6 +447,11 @@
 
             var singleCountry = countries?.Count == 1 ? countries[0] : null;
             var storeFilter   = singleCountry is not null && !string.IsNullOrWhiteSpace(_store) ? _store : null;
+
+            _lastCountries = countries;
+            _lastStore     = storeFilter;
+            _lastDateFrom  = _dateFrom;
+            _lastDateTo    = _dateTo;
 
             var filter = new TransferHistoryFilter(
                 Countries:     countries,

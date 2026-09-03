@@ -662,6 +662,300 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
         }
     }
 
+    // ── Division/Department/GroupCode/Brand drill-down ─────────────────────────
+    //
+    // Shown as a popup when a summary stat card is clicked: Transfer Count/Qty
+    // open the "based on transfers" breakdown, GIN Count/Qty open the "based on
+    // GIN" breakdown. Both are grouped by vTransferDetail.groupcode — the only
+    // place item-line GroupCode lives for this report — with Division/Department/
+    // Brand resolved afterward via one extra usa.dbo.USAPriority lookup.
+    //
+    // usa.dbo.USAPriority only exists on OnPremBackup (every existing join to it
+    // in this codebase runs there, never against a country's own regional
+    // server), so today's regional-only slice can't join to it directly. Instead
+    // every source — OnPrem historical AND regional today — returns plain
+    // (GroupCode, Count, Qty) rows; GroupCode -> Division/Department/Brand is
+    // resolved in ONE extra OnPremBackup round trip for the merged, deduplicated
+    // set of codes actually seen, then joined in C#.
+
+    private class GroupCodeChunkRow
+    {
+        public string? GroupCode { get; set; }
+        public int Qty { get; set; }
+    }
+
+    private class PriorityRow
+    {
+        public string? GroupCode  { get; set; }
+        public string? Division   { get; set; }
+        public string? Department { get; set; }
+        public string? Brand      { get; set; }
+    }
+
+    public Task<TransferGinBreakdownResult> GetTransferBreakdownAsync(
+        IReadOnlyCollection<string>? countries, string? store, DateTime dateFrom, DateTime dateTo, CancellationToken ct = default)
+        => GetBreakdownAsync(countries, store, dateFrom, dateTo, byGin: false, ct);
+
+    public Task<TransferGinBreakdownResult> GetGinBreakdownAsync(
+        IReadOnlyCollection<string>? countries, string? store, DateTime dateFrom, DateTime dateTo, CancellationToken ct = default)
+        => GetBreakdownAsync(countries, store, dateFrom, dateTo, byGin: true, ct);
+
+    private async Task<TransferGinBreakdownResult> GetBreakdownAsync(
+        IReadOnlyCollection<string>? countries, string? store, DateTime dateFrom, DateTime dateTo, bool byGin, CancellationToken ct)
+    {
+        var list = countries is { Count: > 0 } ? countries.ToList() : await GetCountriesAsync(ct);
+        var warnings = new List<string>();
+
+        var tasks = list.Select(async country =>
+        {
+            try { return await GetBreakdownChunksForCountryAsync(country, store, dateFrom.Date, dateTo.Date, byGin, ct); }
+            catch (Exception ex)
+            {
+                lock (warnings) warnings.Add($"{country}: {ex.Message}");
+                return new List<GroupCodeChunkRow>();
+            }
+        });
+        var perCountry = await Task.WhenAll(tasks);
+        return await FinalizeBreakdownAsync(perCountry.SelectMany(r => r).ToList(), warnings, ct);
+    }
+
+    // Mirrors GetStoreSummaryAsync (a specific store) / GetSummaryForCountryAsync
+    // (whole country, warehouse-excluded) — same historical/today split, just
+    // returning per-GroupCode chunks instead of one aggregate.
+    private async Task<List<GroupCodeChunkRow>> GetBreakdownChunksForCountryAsync(
+        string country, string? store, DateTime from, DateTime to, bool byGin, CancellationToken ct)
+    {
+        if (!string.IsNullOrWhiteSpace(store))
+        {
+            StoreRow? s;
+            await using (var onprem = OpenOnPrem())
+            {
+                s = (await GetStoresOnPremAsync(onprem, country, store, ct)).SingleOrDefault();
+            }
+            if (s is null) return [];
+
+            if (country == UaeCountry)
+                return await GetOneStoreBreakdownChunksOnPremAsync(country, s, from, to, byGin, ct);
+
+            var (histFrom, histTo, includesToday) = SplitDateRange(from, to);
+            var histTask = histFrom is not null
+                ? GetOneStoreBreakdownChunksOnPremAsync(country, s, histFrom.Value, histTo!.Value, byGin, ct)
+                : Task.FromResult(new List<GroupCodeChunkRow>());
+            var todayTask = includesToday
+                ? GetOneStoreBreakdownChunksRegionalAsync(country, s, byGin, ct)
+                : Task.FromResult(new List<GroupCodeChunkRow>());
+
+            await Task.WhenAll(histTask, todayTask);
+            return histTask.Result.Concat(todayTask.Result).ToList();
+        }
+
+        if (country == UaeCountry)
+            return await GetCountryBreakdownChunksOnPremAsync(country, from, to, byGin, ct);
+
+        var (chHistFrom, chHistTo, chIncludesToday) = SplitDateRange(from, to);
+        var chHistTask = chHistFrom is not null
+            ? GetCountryBreakdownChunksOnPremAsync(country, chHistFrom.Value, chHistTo!.Value, byGin, ct)
+            : Task.FromResult(new List<GroupCodeChunkRow>());
+        var chTodayTask = chIncludesToday
+            ? GetCountryBreakdownChunksRegionalAsync(country, DateTime.Today, DateTime.Today, byGin, ct)
+            : Task.FromResult(new List<GroupCodeChunkRow>());
+
+        await Task.WhenAll(chHistTask, chTodayTask);
+        return chHistTask.Result.Concat(chTodayTask.Result).ToList();
+    }
+
+    private Task<List<GroupCodeChunkRow>> GetOneStoreBreakdownChunksOnPremAsync(
+        string country, StoreRow s, DateTime from, DateTime to, bool byGin, CancellationToken ct)
+    {
+        var ginTable = country == UaeCountry ? "BFLDATA.dbo.vGoodsIssueplt" : $"[{s.DataName}]..vGoodsIssueplt";
+        var toEnd = to.AddDays(1).AddSeconds(-1);
+        var sql = byGin
+            ? StoreGinGroupCodeSql($"[{s.DataName}]..vTransferDetail", $"[{s.DataName}]..transferheader", ginTable)
+            : StoreTransferGroupCodeSql($"[{s.DataName}]..vTransferDetail");
+        return WithOnPremAsync(async conn =>
+        {
+            var rows = await conn.QueryAsync<GroupCodeChunkRow>(new CommandDefinition(
+                sql, new { from, to = toEnd, costCodeTo = s.CostCodeTo, locCodeTo = s.LocCodeTo },
+                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            return rows.AsList();
+        }, ct);
+    }
+
+    private async Task<List<GroupCodeChunkRow>> GetOneStoreBreakdownChunksRegionalAsync(
+        string country, StoreRow s, bool byGin, CancellationToken ct)
+    {
+        await using var onprem = OpenOnPrem();
+        var dataName = await WhBoxItemsSource.ResolveDataNameAsync(onprem, country, ct);
+        if (string.IsNullOrWhiteSpace(dataName))
+            throw new InvalidOperationException(
+                $"No DataName found in BFLDATA.dbo.DataSettings for country '{country}'.");
+
+        var today = DateTime.Today;
+        var toEnd = today.AddDays(1).AddSeconds(-1);
+        await using var conn = OpenCountryWithDataName(country, dataName);
+        var sql = byGin
+            ? StoreGinGroupCodeSql("vTransferDetail", "transferheader", "vgoodsissueplt")
+            : StoreTransferGroupCodeSql("vTransferDetail");
+        var rows = await conn.QueryAsync<GroupCodeChunkRow>(new CommandDefinition(
+            sql, new { from = today, to = toEnd, costCodeTo = s.CostCodeTo, locCodeTo = s.LocCodeTo },
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        return rows.AsList();
+    }
+
+    // Loops DISTINCT DataName the same way GetCountrySummaryOnPremAsync does —
+    // warehouse-excluded, not scoped to any one shop.
+    private async Task<List<GroupCodeChunkRow>> GetCountryBreakdownChunksOnPremAsync(
+        string country, DateTime from, DateTime to, bool byGin, CancellationToken ct)
+    {
+        List<string> dataNames;
+        await using (var onprem = OpenOnPrem())
+        {
+            dataNames = (await onprem.QueryAsync<string>(new CommandDefinition(@"
+                SELECT DISTINCT DataName
+                  FROM BFLDATA.dbo.DataSettings
+                 WHERE SIMCountry = @country
+                   AND DataName IS NOT NULL AND LTRIM(RTRIM(DataName)) <> ''",
+                new { country }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).AsList();
+        }
+
+        var toEnd = to.AddDays(1).AddSeconds(-1);
+        var wh = await WithOnPremAsync(conn =>
+            ResolveWarehouseCodeAsync(conn, "BFLDATA.dbo.DataSettings", country, ct), ct);
+
+        var perDataNameTask = Task.WhenAll(dataNames.Select(dn =>
+        {
+            var ginTable = country == UaeCountry ? "BFLDATA.dbo.vGoodsIssueplt" : $"[{dn}]..vGoodsIssueplt";
+            var sql = byGin
+                ? GinGroupCodeSql($"[{dn}]..vTransferDetail", $"[{dn}]..transferheader", ginTable)
+                : TransferGroupCodeSql($"[{dn}]..vTransferDetail");
+            return WithOnPremAsync(async conn =>
+            {
+                var rows = await conn.QueryAsync<GroupCodeChunkRow>(new CommandDefinition(
+                    sql, new { from, to = toEnd, whCostCodeTo = wh.CostCodeTo, whLocCodeTo = wh.LocCodeTo },
+                    commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+                return rows.AsList();
+            }, ct);
+        }));
+
+        var perDataName = await perDataNameTask;
+        return perDataName.SelectMany(r => r).ToList();
+    }
+
+    private async Task<List<GroupCodeChunkRow>> GetCountryBreakdownChunksRegionalAsync(
+        string country, DateTime from, DateTime to, bool byGin, CancellationToken ct)
+    {
+        await using var onprem = OpenOnPrem();
+        var dataName = await WhBoxItemsSource.ResolveDataNameAsync(onprem, country, ct);
+        if (string.IsNullOrWhiteSpace(dataName))
+            throw new InvalidOperationException(
+                $"No DataName found in BFLDATA.dbo.DataSettings for country '{country}'.");
+
+        await using var conn = OpenCountryWithDataName(country, dataName);
+        var wh = await ResolveWarehouseCodeAsync(conn, "BFLDATA..DataSettings", country: null, ct);
+        var toEnd = to.AddDays(1).AddSeconds(-1);
+
+        var sql = byGin
+            ? GinGroupCodeSql("vTransferDetail", "transferheader", "vgoodsissueplt")
+            : TransferGroupCodeSql("vTransferDetail");
+        var rows = await conn.QueryAsync<GroupCodeChunkRow>(new CommandDefinition(
+            sql, new { from, to = toEnd, whCostCodeTo = wh.CostCodeTo, whLocCodeTo = wh.LocCodeTo },
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        return rows.AsList();
+    }
+
+    private static string TransferGroupCodeSql(string transferDetailTable) => $@"
+        SELECT vtd.groupcode AS GroupCode, ISNULL(SUM(vtd.Quantity),0) AS Qty
+          FROM {transferDetailTable} vtd WITH (NOLOCK)
+         WHERE vtd.TrfDate >= @from AND vtd.TrfDate <= @to
+           AND (@whCostCodeTo IS NULL OR vtd.CostCodeTo <> @whCostCodeTo)
+           AND (@whLocCodeTo  IS NULL OR vtd.LocCodeTo  <> @whLocCodeTo)
+         GROUP BY vtd.groupcode";
+
+    private static string StoreTransferGroupCodeSql(string transferDetailTable) => $@"
+        SELECT vtd.groupcode AS GroupCode, ISNULL(SUM(vtd.Quantity),0) AS Qty
+          FROM {transferDetailTable} vtd WITH (NOLOCK)
+         WHERE vtd.TrfDate >= @from AND vtd.TrfDate <= @to
+           AND vtd.CostCodeTo = @costCodeTo AND vtd.LocCodeTo = @locCodeTo
+         GROUP BY vtd.groupcode";
+
+    // GIN has no line-item GroupCode of its own — scoped to the TrfNo set that
+    // has at least one linked GIN (same TrfNo-set approach the GIN Count/Qty
+    // cards themselves use), then rolled up via that transfer's own vTransferDetail
+    // lines. Same approximation ShipmentStatusService's GIN-flow Division rollup
+    // already uses.
+    private static string GinGroupCodeSql(string transferDetailTable, string transferHeaderTable, string ginTable) => $@"
+        SELECT vtd.groupcode AS GroupCode, ISNULL(SUM(vtd.Quantity),0) AS Qty
+          FROM {transferDetailTable} vtd WITH (NOLOCK)
+         WHERE vtd.TrfNo IN (
+             SELECT th.TrfNo FROM {transferHeaderTable} th WITH (NOLOCK)
+              WHERE th.TrfDate >= @from AND th.TrfDate <= @to
+                AND (@whCostCodeTo IS NULL OR th.CostCodeTo <> @whCostCodeTo)
+                AND (@whLocCodeTo  IS NULL OR th.LocCodeTo  <> @whLocCodeTo)
+                AND EXISTS (SELECT 1 FROM {ginTable} g WHERE g.TrfNo = th.TrfNo)
+         )
+         GROUP BY vtd.groupcode";
+
+    private static string StoreGinGroupCodeSql(string transferDetailTable, string transferHeaderTable, string ginTable) => $@"
+        SELECT vtd.groupcode AS GroupCode, ISNULL(SUM(vtd.Quantity),0) AS Qty
+          FROM {transferDetailTable} vtd WITH (NOLOCK)
+         WHERE vtd.TrfNo IN (
+             SELECT th.TrfNo FROM {transferHeaderTable} th WITH (NOLOCK)
+              WHERE th.TrfDate >= @from AND th.TrfDate <= @to
+                AND th.CostCodeTo = @costCodeTo AND th.LocCodeTo = @locCodeTo
+                AND EXISTS (SELECT 1 FROM {ginTable} g WHERE g.TrfNo = th.TrfNo)
+         )
+         GROUP BY vtd.groupcode";
+
+    private async Task<TransferGinBreakdownResult> FinalizeBreakdownAsync(
+        List<GroupCodeChunkRow> chunks, List<string> warnings, CancellationToken ct)
+    {
+        var byGroupCode = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (var c in chunks)
+        {
+            var key = string.IsNullOrWhiteSpace(c.GroupCode) ? "" : c.GroupCode!.Trim();
+            byGroupCode[key] = byGroupCode.GetValueOrDefault(key) + c.Qty;
+        }
+
+        var groupCodes = byGroupCode.Keys.Where(k => k != "").ToList();
+        var priorityByCode = new Dictionary<string, PriorityRow>(StringComparer.OrdinalIgnoreCase);
+        if (groupCodes.Count > 0)
+        {
+            var rows = await WithOnPremAsync(async conn =>
+            {
+                var sql = @"
+                    SELECT groupCode AS GroupCode, DivisionY AS Division, Department, Brand
+                      FROM usa.dbo.USAPriority WITH (NOLOCK)
+                     WHERE groupCode IN @codes";
+                var r = await conn.QueryAsync<PriorityRow>(new CommandDefinition(
+                    sql, new { codes = groupCodes }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+                return r.AsList();
+            }, ct);
+            foreach (var r in rows)
+                if (!string.IsNullOrWhiteSpace(r.GroupCode))
+                    priorityByCode[r.GroupCode!.Trim()] = r;
+        }
+
+        var merged = new Dictionary<(string Division, string Department, string GroupCode, string Brand), int>();
+        foreach (var (code, qty) in byGroupCode)
+        {
+            var p = code != "" && priorityByCode.TryGetValue(code, out var pr) ? pr : null;
+            var key = (Blank(p?.Division), Blank(p?.Department), code == "" ? "(blank)" : code, Blank(p?.Brand));
+            merged[key] = merged.GetValueOrDefault(key) + qty;
+        }
+
+        var outRows = merged
+            .Select(kv => new TransferGinBreakdownRow(kv.Key.Division, kv.Key.Department, kv.Key.GroupCode, kv.Key.Brand, kv.Value))
+            .OrderBy(r => r.Division, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(r => r.Department, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(r => r.GroupCode, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(r => r.Brand, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        return new TransferGinBreakdownResult(outRows, outRows.Sum(r => r.Qty), warnings);
+    }
+
+    private static string Blank(string? s) => string.IsNullOrWhiteSpace(s) ? "(blank)" : s!.Trim();
+
     // ── SQL builders ─────────────────────────────────────────────────────────
 
     // Shop's own CostCodeTo/LocCodeTo (resolved via GetStoresOnPremAsync) scope

@@ -33,3 +33,15 @@ public record TransferHistoryResult(List<TransferHistoryRow> Rows, List<string> 
 public record TransferSummary(string Country, int TransferCount, int TransferQty, int GinCount, int GinQty);
 
 public record TransferSummaryResult(List<TransferSummary> Summaries, List<string> Warnings);
+
+/// <summary>
+/// Division/Department/GroupCode/Brand breakdown, shown as a popup when a summary
+/// stat card is clicked. Always sourced from vTransferDetail (the only table with
+/// item-line GroupCode) — the GIN flow has no line-item GroupCode of its own, so
+/// its breakdown ("based on GIN") is scoped to the transfers that have at least one
+/// linked GIN, same approximation ShipmentStatusService already uses for its own
+/// Division/Department/Brand rollup on the GIN/BFL flow.
+/// </summary>
+public record TransferGinBreakdownRow(string Division, string Department, string GroupCode, string Brand, int Qty);
+
+public record TransferGinBreakdownResult(List<TransferGinBreakdownRow> Rows, int GrandQty, List<string> Warnings);
