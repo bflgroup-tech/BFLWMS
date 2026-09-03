@@ -10,6 +10,8 @@ public record PendingForCountingRow(
     string    ContNo,
     DateTime? ReceiptDt,
     int?      AgeingDays,
+    string?   Warehouse,
+    string?   AllocationCountry,
     string?   PONo,
     string?   Division,
     int       Qty,
@@ -71,7 +73,12 @@ public class PendingForCountingService(IOnPremConnectionResolver resolver)
         var rows = await c.QueryAsync<PendingForCountingRow>(new CommandDefinition(@"
             WITH pending AS (
                 SELECT cr.RefNo,
-                       ReceiptDt = MAX(cr.ReceiptDt)
+                       ReceiptDt = MAX(cr.ReceiptDt),
+                       -- Warehouse off the very Contreceipt rows that put this
+                       -- container on the list. MAX() because the CTE collapses to
+                       -- one row per RefNo; a container's receipt lines share a
+                       -- warehouse, so this is the value, not an arbitrary pick.
+                       Warehouse = MAX(cr.Warehouse)
                   FROM bfldata.dbo.Contreceipt cr WITH (NOLOCK)
                  WHERE cr.ReceiptDt >= @receiptDtFrom
                    AND ISNULL(cr.ContType, '') <> 'Non-Trade'
@@ -84,19 +91,32 @@ public class PendingForCountingService(IOnPremConnectionResolver resolver)
                  GROUP BY cr.RefNo
             )
             SELECT
-                ContNo     = p.RefNo,
-                ReceiptDt  = p.ReceiptDt,
-                AgeingDays = DATEDIFF(day, p.ReceiptDt, CAST(DATEADD(hour, 4, SYSUTCDATETIME()) AS date)),
-                PONo       = u.OraPONo,
-                Division   = sub.Division,
-                Qty        = CAST(ISNULL(SUM(u.orgqty), 0) AS INT),
-                LPM        = u.LPM
+                ContNo            = p.RefNo,
+                ReceiptDt         = p.ReceiptDt,
+                AgeingDays        = DATEDIFF(day, p.ReceiptDt, CAST(DATEADD(hour, 4, SYSUTCDATETIME()) AS date)),
+                Warehouse         = p.Warehouse,
+                AllocationCountry = ac.AllocationCountry,
+                PONo              = u.OraPONo,
+                Division          = sub.Division,
+                Qty               = CAST(ISNULL(SUM(u.orgqty), 0) AS INT),
+                LPM               = u.LPM
             FROM pending p
             LEFT JOIN usa.dbo.usaorgfile_LPM u WITH (NOLOCK)
                    ON u.ContNo = p.RefNo
             LEFT JOIN datareporting.dbo.vupc_subclass sub WITH (NOLOCK)
                    ON sub.itemcode = u.ItemCode
-            GROUP BY p.RefNo, p.ReceiptDt, u.OraPONo, sub.Division, u.LPM
+            -- vUSAOrder is keyed by refno (NOT its own Contno column) and carries
+            -- several order rows per container, so the distinct AllocationCountry
+            -- values are folded into one cell. DISTINCT sits in a derived table
+            -- because STRING_AGG(DISTINCT ...) is not valid T-SQL.
+            OUTER APPLY (
+                SELECT AllocationCountry = STRING_AGG(x.AllocationCountry, ', ')
+                  FROM (SELECT DISTINCT o.AllocationCountry
+                          FROM hodata.dbo.vUSAOrder o WITH (NOLOCK)
+                         WHERE o.refno = p.RefNo
+                           AND NULLIF(LTRIM(RTRIM(o.AllocationCountry)), '') IS NOT NULL) x
+            ) ac
+            GROUP BY p.RefNo, p.ReceiptDt, p.Warehouse, ac.AllocationCountry, u.OraPONo, sub.Division, u.LPM
             ORDER BY p.ReceiptDt, p.RefNo, u.OraPONo, u.LPM",
             new { receiptDtFrom },
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));

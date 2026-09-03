@@ -61,6 +61,8 @@
                     <th style="cursor:pointer" @onclick='() => Sort("ContNo")'>Contno @Arrow("ContNo")</th>
                     <th style="cursor:pointer" @onclick='() => Sort("ReceiptDt")'>ReceiptDt @Arrow("ReceiptDt")</th>
                     <th style="cursor:pointer; text-align:right;" @onclick='() => Sort("AgeingDays")'>Ageing Days @Arrow("AgeingDays")</th>
+                    <th style="cursor:pointer" @onclick='() => Sort("Warehouse")' title="bfldata..Contreceipt.Warehouse for this container's receipt.">Warehouse @Arrow("Warehouse")</th>
+                    <th style="cursor:pointer" @onclick='() => Sort("AllocationCountry")' title="Distinct hodata..vUSAOrder.AllocationCountry values for this container (refno = Contno).">Allocation Country @Arrow("AllocationCountry")</th>
                     <th style="cursor:pointer" @onclick='() => Sort("PONo")'>PONO @Arrow("PONo")</th>
                     <th style="cursor:pointer" @onclick='() => Sort("Division")'>Division @Arrow("Division")</th>
                     <th style="cursor:pointer; text-align:right;" @onclick='() => Sort("Qty")'>Qty @Arrow("Qty")</th>
@@ -74,6 +76,8 @@
                         <td>@r.ContNo</td>
                         <td>@(r.ReceiptDt?.ToString("dd/MM/yyyy") ?? "")</td>
                         <td style="text-align:right;">@(r.AgeingDays?.ToString("N0") ?? "")</td>
+                        <td>@r.Warehouse</td>
+                        <td>@r.AllocationCountry</td>
                         <td>@r.PONo</td>
                         <td style="word-break:break-word; white-space:normal;">@r.Division</td>
                         <td style="text-align:right;">@r.Qty.ToString("N0")</td>
@@ -84,6 +88,8 @@
             <tfoot>
                 <tr style="font-weight:600; border-top:2px solid var(--border-default);">
                     <td>Total</td>
+                    <td></td>
+                    <td></td>
                     <td></td>
                     <td></td>
                     <td></td>
@@ -147,6 +153,8 @@
                 "ContNo"     => r => r.ContNo,
                 "ReceiptDt"  => r => r.ReceiptDt ?? DateTime.MaxValue,
                 "AgeingDays" => r => r.AgeingDays ?? int.MinValue,
+                "Warehouse"  => r => r.Warehouse ?? "",
+                "AllocationCountry" => r => r.AllocationCountry ?? "",
                 "PONo"       => r => r.PONo ?? "",
                 "Division"   => r => r.Division ?? "",
                 "Qty"        => r => r.Qty,
@@ -196,12 +204,13 @@
     {
         var rows = FilteredRows;
         var sb = new StringBuilder();
-        sb.AppendLine("Contno,ReceiptDt,Ageing Days,PONO,Division,Qty,LPM");
+        sb.AppendLine("Contno,ReceiptDt,Ageing Days,Warehouse,Allocation Country,PONO,Division,Qty,LPM");
         foreach (var r in rows)
             sb.AppendLine($"{Csv(r.ContNo)}," +
                           $"{(r.ReceiptDt.HasValue ? r.ReceiptDt.Value.ToString("yyyy-MM-dd") : "")}," +
-                          $"{r.AgeingDays},{Csv(r.PONo)},{Csv(r.Division)},{r.Qty},{Csv(r.LPM)}");
-        sb.AppendLine($"Total,,,,,{rows.Sum(r => r.Qty)},");
+                          $"{r.AgeingDays},{Csv(r.Warehouse)},{Csv(r.AllocationCountry)}," +
+                          $"{Csv(r.PONo)},{Csv(r.Division)},{r.Qty},{Csv(r.LPM)}");
+        sb.AppendLine($"Total,,,,,,,{rows.Sum(r => r.Qty)},");
 
         var b64      = Convert.ToBase64String(Encoding.UTF8.GetBytes(sb.ToString()));
         var filename = $"PendingForCounting_{_receiptDtFrom:yyyyMMdd}.csv";

@@ -68,7 +68,17 @@
             @if (_allocCountriesRestricted)
             {
                 <div style="font-size:11px; color:var(--text-secondary); margin-top:4px">
-                    Restricted to @string.Join(", ", _allowedAllocCountries) by AllocationCountry on this order.
+                    Restricted to <b>@string.Join(", ", _allowedAllocCountries)</b> by
+                    <code>AllocationCountry = '@_allocCountryRaw'</code> on this order. Process is blocked for any other country.
+                </div>
+            }
+            else if (!string.IsNullOrEmpty(_allocCountryRaw))
+            {
+                <div style="font-size:11px; color:#92400e; margin-top:4px">
+                    <code>AllocationCountry = '@_allocCountryRaw'</code> on this order
+                    @(_unmatchedAllocCountries.Count > 0
+                        ? $"names nothing in the country list ({string.Join(", ", _unmatchedAllocCountries)}) — showing all countries."
+                        : "does not restrict the country list.")
                 </div>
             }
         </div>
@@ -687,6 +697,8 @@
     // says ALL / is blank / has no row.
     private List<string> _allowedAllocCountries = new();
     private bool _allocCountriesRestricted;
+    private string? _allocCountryRaw;
+    private List<string> _unmatchedAllocCountries = new();
     private HashSet<string> _allocCountries = new();
     private List<string> _processedContnos = new();
     private string _selectedProcessedContno = "";
@@ -850,14 +862,18 @@
         var previous = _allocCountries;
         try
         {
-            var (allowed, restricted) = await Svc.GetAllocationCountriesForContainerAsync(_contno, _simCountries);
-            _allowedAllocCountries   = allowed;
-            _allocCountriesRestricted = restricted;
+            var r = await Svc.GetAllocationCountriesForContainerAsync(_contno, _simCountries);
+            _allowedAllocCountries    = r.Allowed;
+            _allocCountriesRestricted = r.Restricted;
+            _allocCountryRaw          = r.RawValue;
+            _unmatchedAllocCountries  = r.Unmatched;
         }
         catch (Exception ex)
         {
-            _allowedAllocCountries   = _simCountries.ToList();
+            _allowedAllocCountries    = _simCountries.ToList();
             _allocCountriesRestricted = false;
+            _allocCountryRaw          = null;
+            _unmatchedAllocCountries  = new();
             ShowInfo($"Could not read AllocationCountry for {_contno} ({ex.Message}) — showing all countries.");
         }
 
@@ -874,6 +890,42 @@
         if (_allocCountries.Count == 0)
         {
             ShowError("Pick at least one Allocation Country before Process.");
+            return;
+        }
+
+        // Enforce the order's AllocationCountry here, not just by narrowing the
+        // dropdown. Re-read rather than trusting _allowedAllocCountries: the page
+        // state is only as fresh as the last contno change, and this is the gate
+        // that must not be passable — allocating a container to a country its order
+        // does not permit is not recoverable by editing the grid afterwards.
+        try
+        {
+            var permitted = await Svc.GetAllocationCountriesForContainerAsync(_contno, _simCountries);
+            _allowedAllocCountries    = permitted.Allowed;
+            _allocCountriesRestricted = permitted.Restricted;
+            _allocCountryRaw          = permitted.RawValue;
+            _unmatchedAllocCountries  = permitted.Unmatched;
+
+            if (permitted.Restricted)
+            {
+                var offending = _allocCountries
+                    .Where(c => !permitted.Allowed.Contains(c, StringComparer.OrdinalIgnoreCase))
+                    .OrderBy(c => c).ToList();
+                if (offending.Count > 0)
+                {
+                    _allocCountries = new HashSet<string>(
+                        _allocCountries.Where(c => permitted.Allowed.Contains(c, StringComparer.OrdinalIgnoreCase)),
+                        StringComparer.OrdinalIgnoreCase);
+                    ShowError(
+                        $"{_contno} is restricted to {string.Join(", ", permitted.Allowed)} by AllocationCountry " +
+                        $"'{permitted.RawValue}' on the order. Remove {string.Join(", ", offending)} and run Process again.");
+                    return;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            ShowError($"Could not verify AllocationCountry for {_contno}: {ex.Message}. Process stopped.");
             return;
         }
         // Confirm allocation inputs before kicking off — Process can take minutes

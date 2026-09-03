@@ -194,3 +194,17 @@ public record BatchInfo(
     string?   ProcessedBy,
     DateTime? ApprovedDt,
     string?   ApprovedBy);
+
+/// <summary>
+/// What hodata.vUSAOrder.AllocationCountry permits for one container.
+///
+/// RawValue and Unmatched exist so the UI can show WHY the list looks the way it
+/// does. Without them, an AllocationCountry the parser doesn't understand is
+/// indistinguishable from an order with no restriction at all — which is exactly
+/// how 'UAE:ONLINE' shipped unrestricted for as long as it did.
+/// </summary>
+public sealed record ContainerAllocationCountries(
+    List<string> Allowed,
+    bool         Restricted,
+    string?      RawValue,     // AllocationCountry as written on the order, e.g. "UAE:ONLINE"
+    List<string> Unmatched);   // tokens naming nothing in the SIM country list

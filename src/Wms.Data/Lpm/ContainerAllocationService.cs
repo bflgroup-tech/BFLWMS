@@ -3092,19 +3092,31 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
     /// 'ALL', blank, or no matching order row all mean "no restriction" and return
     /// the full <paramref name="simCountries"/> list unchanged. Anything else is
     /// treated as a delimited list of country names and intersected with the SIM
-    /// list, so a value naming a country that isn't a real allocation destination
-    /// simply drops out rather than producing an unusable option.
+    /// list.
+    ///
+    /// COLON IS A DELIMITER. Real orders write 'UAE:ONLINE' (AELOC8263, and it is
+    /// the common shape for anything shipping to a country plus e-commerce). Colon
+    /// was missing from the delimiter set, so the whole string stayed one token,
+    /// matched no SIM country, and fell through the "nothing matched" branch below
+    /// into "unrestricted" — the restriction silently did nothing on exactly the
+    /// containers it was written for.
+    ///
+    /// Tokens are also alias-mapped: ONLINE is the ECOM store ID, not a country, so
+    /// an order naming it means ECOM.
     /// </summary>
     /// <returns>
-    /// (Allowed countries, Restricted) — Restricted is false when the order imposes
-    /// no filter, so callers can tell "everything, by default" from "everything,
-    /// because the order happens to list them all".
+    /// Allowed / Restricted, plus the raw order value and any token that named
+    /// nothing. Restricted is false when the order imposes no filter, so callers
+    /// can tell "everything, by default" from "everything, because the order
+    /// happens to list them all"; Unmatched lets the caller SAY that a value was
+    /// not understood instead of quietly widening the list.
     /// </returns>
-    public async Task<(List<string> Allowed, bool Restricted)> GetAllocationCountriesForContainerAsync(
+    public async Task<ContainerAllocationCountries> GetAllocationCountriesForContainerAsync(
         string contno, IEnumerable<string> simCountries, CancellationToken ct = default)
     {
         var all = simCountries.ToList();
-        if (string.IsNullOrWhiteSpace(contno)) return (all, false);
+        var unrestricted = new ContainerAllocationCountries(all, false, null, new List<string>());
+        if (string.IsNullOrWhiteSpace(contno)) return unrestricted;
 
         await using var c = OpenOnPremBackup();
         var raw = await c.QueryAsync<string?>(new CommandDefinition(
@@ -3113,28 +3125,49 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                WHERE refno = @c",
             new { c = contno.Trim() }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
 
-        var values = raw.Where(v => !string.IsNullOrWhiteSpace(v)).ToList();
-        if (values.Count == 0) return (all, false);
+        var values = raw.Where(v => !string.IsNullOrWhiteSpace(v)).Select(v => v!.Trim()).ToList();
+        if (values.Count == 0) return unrestricted;
+
+        var rawValue = string.Join(", ", values.Distinct(StringComparer.OrdinalIgnoreCase));
 
         // Any row saying ALL lifts the restriction for the whole container.
-        if (values.Any(v => string.Equals(v!.Trim(), "ALL", StringComparison.OrdinalIgnoreCase)))
-            return (all, false);
+        if (values.Any(v => string.Equals(v, "ALL", StringComparison.OrdinalIgnoreCase)))
+            return unrestricted with { RawValue = rawValue };
 
         var named = values
-            .SelectMany(v => v!.Split(new[] { ',', ';', '|', '/' }, StringSplitOptions.RemoveEmptyEntries))
+            .SelectMany(v => v.Split(AllocationCountryDelimiters, StringSplitOptions.RemoveEmptyEntries))
             .Select(s => s.Trim())
             .Where(s => s.Length > 0)
+            .Select(s => AllocationCountryAliases.TryGetValue(s, out var mapped) ? mapped : s)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        if (named.Count == 0) return (all, false);
+        if (named.Count == 0) return unrestricted with { RawValue = rawValue };
 
-        var allowed = all.Where(sc => named.Contains(sc)).ToList();
+        var allowed   = all.Where(sc => named.Contains(sc)).ToList();
+        var unmatched = named.Where(n => !all.Contains(n, StringComparer.OrdinalIgnoreCase))
+                             .OrderBy(n => n).ToList();
 
-        // Every named country fell outside the SIM list — treat as unrestricted
-        // rather than handing back an empty dropdown nobody can proceed from.
-        if (allowed.Count == 0) return (all, false);
+        // Nothing matched. Keep the full list rather than handing back a dropdown
+        // nobody can proceed from — but report RawValue/Unmatched so the caller
+        // shows it. The silent version of this branch is what let 'UAE:ONLINE'
+        // look unrestricted.
+        if (allowed.Count == 0)
+            return new ContainerAllocationCountries(all, false, rawValue, unmatched);
 
-        return (allowed, true);
+        return new ContainerAllocationCountries(allowed, true, rawValue, unmatched);
     }
+
+    /// <summary>
+    /// Delimiters seen in hodata.vUSAOrder.AllocationCountry. Colon is real —
+    /// 'UAE:ONLINE'.
+    /// </summary>
+    private static readonly char[] AllocationCountryDelimiters = { ',', ';', '|', '/', ':' };
+
+    /// <summary>
+    /// Tokens that name a destination but not a SIM country. ONLINE is the ECOM
+    /// store ID (StoreID = 'ONLINE'), so an order routing to it means country ECOM.
+    /// </summary>
+    private static readonly Dictionary<string, string> AllocationCountryAliases =
+        new(StringComparer.OrdinalIgnoreCase) { ["ONLINE"] = "ECOM" };
 
     // ===================== P2: Processed Contnos dropdown =====================
     public async Task<List<string>> GetProcessedContnosAsync(string genCountry, CancellationToken ct = default)
