@@ -11,6 +11,7 @@
 @inject TechnoPricingService PricingSvc
 @inject TechnoTeamProductionService TeamProductionSvc
 @inject RfidProductionService RfidSvc
+@inject JafzaExportCheckingService JafzaCheckingSvc
 @inject IJSRuntime JS
 
 <PageTitle>WMS - Warehouse Incentives</PageTitle>
@@ -612,6 +613,88 @@ else if (_activeTab == RfidProduction)
         </div>
     }
 }
+else if (_activeTab == JafzaExportChecking)
+{
+    <div class="aiwms-section">
+        <p style="color:var(--text-secondary); margin:0 0 12px 0">JAFZA export-checking counts per employee per day, from ONLINE.dbo.RFPairingCountPhotoCheckBuild (Type='JCM'), with a per-day incentive amount from BFLDATA.dbo.CheckingAmountJafza. That amounts table hasn't been updated since 2025-05-07, so Incentive Amount will read 0 for recent dates.</p>
+        <div style="display:grid; grid-template-columns: auto auto 1fr auto; gap:12px; align-items:end;">
+            <div>
+                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">FROM</label>
+                <input type="date" @bind="_jcFrom" @bind:format="yyyy-MM-dd" max="@DateTime.Today.ToString("yyyy-MM-dd")" style="padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
+            </div>
+            <div>
+                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">TO</label>
+                <input type="date" @bind="_jcTo" @bind:format="yyyy-MM-dd" max="@DateTime.Today.ToString("yyyy-MM-dd")" style="padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
+            </div>
+            <div>
+                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">EMP CODE</label>
+                <input @bind="_jcEmpCode" @bind:event="oninput" placeholder="e.g. RT01" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
+            </div>
+            <div style="display:flex; gap:8px">
+                <button class="aiwms-btn" style="background:var(--s-live); color:#fff; border-radius:10px;"
+                        @onclick="LoadJafzaCheckingAsync" disabled="@(_jcLoading || _jcFrom > _jcTo)">
+                    <span class="mi" style="font-size:16px;">play_arrow</span> @(_jcLoading ? "Loading..." : "Load")
+                </button>
+                <button class="aiwms-btn" style="background:#fff; color:var(--text-primary); border:1.5px solid var(--border-strong); border-radius:10px;"
+                        @onclick="ClearJafzaCheckingFilters" disabled="@_jcLoading">
+                    <span class="mi" style="font-size:16px;">refresh</span> Clear Filters
+                </button>
+                <button class="aiwms-btn" style="background:#fff; color:var(--s-active); border:1.5px solid var(--s-active); border-radius:10px;"
+                        @onclick="ExportJafzaCheckingExcelAsync" disabled="@(_jcExporting || _jcRows.Count == 0)">
+                    <span class="mi" style="font-size:16px;">download</span> @(_jcExporting ? "Exporting..." : "Export Excel")
+                </button>
+            </div>
+        </div>
+
+        <p style="font-size:11px; color:var(--text-secondary); margin-top:8px">
+            Default range is the last 7 days.
+        </p>
+
+        @if (!string.IsNullOrEmpty(_jcMessage))
+        {
+            <div class="aiwms-alert @(_jcIsError ? "error" : "info")" style="margin-top:12px">@_jcMessage</div>
+        }
+    </div>
+
+    @if (_jcLoaded)
+    {
+        <div class="aiwms-section">
+            <div class="aiwms-card-header">Jafza Export Checking - @_jcRows.Count.ToString("N0") row(s)</div>
+            <div style="overflow-x:auto">
+            <table class="aiwms-table aiwms-table-dense">
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Emp Code</th>
+                        <th style="text-align:right">Cnt</th>
+                        <th style="text-align:right">Incentive Amount</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr style="font-weight:700; background:var(--surface-1, #f7f7f5);">
+                        <td colspan="2">Total</td>
+                        <td style="text-align:right">@_jcRows.Sum(r => r.Cnt).ToString("N0")</td>
+                        <td style="text-align:right">@_jcRows.Sum(r => r.IncentiveAmount).ToString("N2")</td>
+                    </tr>
+                    @foreach (var r in _jcRows)
+                    {
+                        <tr>
+                            <td style="white-space:nowrap">@r.TrnDate.ToString("dd-MMM-yyyy")</td>
+                            <td style="font-family:var(--font-mono)">@r.EmpCode</td>
+                            <td style="text-align:right">@r.Cnt.ToString("N0")</td>
+                            <td style="text-align:right">@r.IncentiveAmount.ToString("N2")</td>
+                        </tr>
+                    }
+                    @if (_jcRows.Count == 0)
+                    {
+                        <tr><td colspan="4" style="color:var(--text-secondary)">No rows for the selected filters.</td></tr>
+                    }
+                </tbody>
+            </table>
+            </div>
+        </div>
+    }
+}
 else
 {
     <div class="aiwms-section">
@@ -626,8 +709,9 @@ else
     private const string TechnoBuilding = "Techno Building";
     private const string TechnoPricing = "Techno Pricing";
     private const string RfidProduction = "RFID Production";
+    private const string JafzaExportChecking = "Jafza Export Checking";
     private static readonly string[] Tabs =
-        [TechnoTeamProduction, TechnoChecking, TechnoPairing, TechnoBuilding, TechnoPricing, RfidProduction, "Jafza Production"];
+        [TechnoTeamProduction, TechnoChecking, TechnoPairing, TechnoBuilding, TechnoPricing, RfidProduction, JafzaExportChecking, "Jafza Production"];
     private string _activeTab = TechnoTeamProduction;
 
     private static readonly string[] Areas = ["AUTO", "MANUAL"];
@@ -1105,5 +1189,73 @@ else
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
         }
         finally { _rfExporting = false; }
+    }
+
+    // ---------------- Jafza Export Checking ----------------
+    private DateTime _jcFrom = DateTime.Today.AddDays(-6);
+    private DateTime _jcTo = DateTime.Today;
+    private string _jcEmpCode = "";
+    private bool _jcLoading;
+    private bool _jcLoaded;
+    private string _jcMessage = "";
+    private bool _jcIsError;
+    private bool _jcExporting;
+    private List<JafzaExportCheckingRow> _jcRows = new();
+
+    private async Task LoadJafzaCheckingAsync()
+    {
+        _jcLoading = true; _jcMessage = ""; _jcIsError = false; await InvokeAsync(StateHasChanged);
+        try
+        {
+            _jcRows = await JafzaCheckingSvc.GetReportAsync(_jcFrom, _jcTo, _jcEmpCode);
+            _jcLoaded = true;
+            if (_jcRows.Count == 0) _jcMessage = "No rows for the selected filters.";
+        }
+        catch (Exception ex) { _jcMessage = ex.Message; _jcIsError = true; }
+        finally { _jcLoading = false; }
+    }
+
+    private void ClearJafzaCheckingFilters()
+    {
+        _jcFrom = DateTime.Today.AddDays(-6);
+        _jcTo = DateTime.Today;
+        _jcEmpCode = "";
+        _jcRows = new();
+        _jcLoaded = false;
+        _jcMessage = "";
+        _jcIsError = false;
+    }
+
+    private async Task ExportJafzaCheckingExcelAsync()
+    {
+        if (_jcRows.Count == 0) return;
+        _jcExporting = true;
+        try
+        {
+            using var wb = new XLWorkbook();
+            var ws = wb.AddWorksheet("Jafza Export Checking");
+            string[] headers = { "Date", "Emp Code", "Cnt", "Incentive Amount" };
+            for (int i = 0; i < headers.Length; i++) ws.Cell(1, i + 1).Value = headers[i];
+            ws.Row(1).Style.Font.Bold = true;
+
+            int row = 2;
+            foreach (var r in _jcRows)
+            {
+                ws.Cell(row, 1).Value = r.TrnDate.ToString("dd-MMM-yyyy");
+                ws.Cell(row, 2).Value = r.EmpCode;
+                ws.Cell(row, 3).Value = r.Cnt;
+                ws.Cell(row, 4).Value = r.IncentiveAmount;
+                row++;
+            }
+            ws.Columns().AdjustToContents();
+
+            using var ms = new MemoryStream();
+            wb.SaveAs(ms);
+            var b64 = Convert.ToBase64String(ms.ToArray());
+            var name = $"jafza-export-checking-{_jcFrom:yyyyMMdd}-{_jcTo:yyyyMMdd}.xlsx";
+            await JS.InvokeVoidAsync("downloadFileWithPicker", name, b64,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        }
+        finally { _jcExporting = false; }
     }
 }
