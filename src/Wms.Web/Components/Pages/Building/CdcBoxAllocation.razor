@@ -1,0 +1,398 @@
+@page "/counting/cdc-box-allocation"
+@rendermode RenderMode.InteractiveServer
+@using System.Text
+@using Wms.Core
+@using Wms.Data.Lpm
+@attribute [Authorize(Policy = MenuKeys.CDC_BOX_ALLOCATION)]
+@inject CdcBoxAllocationService Svc
+@inject ICurrentUser CurrentUser
+@inject Microsoft.JSInterop.IJSRuntime JS
+
+<PageTitle>WMS — CDC Box Allocation</PageTitle>
+
+<div class="aiwms-page-header">
+    <h2>CDC Box Allocation</h2>
+    <p>
+        Allocate the UAE DC eligible stock of the selected LPMs to stores across the selected countries,
+        then process it into whole boxes. Step 1 — <b>Allocate DC SOH to Stores</b> — is below; the
+        <b>Process</b> step reads the result of it.
+    </p>
+</div>
+
+<div class="aiwms-section">
+    <div class="aiwms-card-header">Inputs</div>
+    <div style="display:grid; grid-template-columns: 1.4fr 1.4fr auto; gap:12px; align-items:end">
+        <div>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">LPM *</label>
+            <MudSelect T="DateTime" Dense="true" MultiSelection="true" SelectAll="true"
+                       SelectedValues="_selectedLpms"
+                       SelectedValuesChanged="@(v => _selectedLpms = v.ToHashSet())"
+                       Placeholder="Pick one or more LPMs"
+                       Variant="Variant.Outlined" Margin="Margin.Dense"
+                       ToStringFunc="@(d => CdcBoxAllocationService.LpmLabel(d))"
+                       Disabled="@_busy">
+                @foreach (var l in _lpms)
+                {
+                    <MudSelectItem T="DateTime" Value="@l.LpmDt">
+                        @l.Label &nbsp;— @l.Boxes.ToString("N0") boxes, @l.Items.ToString("N0") SKUs, @l.Qty.ToString("N0") pcs
+                    </MudSelectItem>
+                }
+            </MudSelect>
+            <div style="font-size:11px; color:var(--text-secondary); margin-top:4px">
+                Eligible DC stock only — <code>PalletCategory = 'Eligible'</code> and <code>ShopEligible &lt;&gt; 'E'</code>.
+            </div>
+        </div>
+        <div>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">ALLOCATION COUNTRIES *</label>
+            <MudSelect T="string" Dense="true" MultiSelection="true" SelectAll="true"
+                       SelectedValues="_selectedCountries"
+                       SelectedValuesChanged="@(v => _selectedCountries = v.ToHashSet())"
+                       Placeholder="Pick one or more countries"
+                       Variant="Variant.Outlined" Margin="Margin.Dense"
+                       Disabled="@_busy">
+                @foreach (var c in _countries) { <MudSelectItem T="string" Value="@c">@c</MudSelectItem> }
+            </MudSelect>
+        </div>
+        <button class="aiwms-btn aiwms-btn-primary" @onclick="AllocateAsync" disabled="@(_busy || !CanAllocate)">
+            Allocate DC SOH to Stores
+        </button>
+    </div>
+
+    @if (_busy && !string.IsNullOrEmpty(_progress))
+    {
+        <div class="aiwms-alert info" style="margin-top:12px">@_progress</div>
+    }
+    @if (!string.IsNullOrEmpty(_message))
+    {
+        <div class="aiwms-alert @(_isError ? "error" : "info")" style="margin-top:12px">@_message</div>
+    }
+    @if (_warnings.Count > 0)
+    {
+        <div class="aiwms-alert" style="margin-top:8px; background:#fef3c7; border:1px solid #f59e0b; color:#92400e">
+            <b>Not everything could be placed:</b>
+            <ul style="margin:6px 0 0 20px; padding:0">
+                @foreach (var w in _warnings) { <li>@w</li> }
+            </ul>
+        </div>
+    }
+</div>
+
+@if (_header is not null)
+{
+    <div class="aiwms-section">
+        <div class="aiwms-card-header">Current DC SOH Allocation</div>
+        <div style="display:flex; gap:24px; flex-wrap:wrap; font-size:12px; margin-bottom:12px">
+            <div><b>Run</b><br />@_header.RunTS.ToString("dd-MMM-yyyy HH:mm") (GST)</div>
+            <div><b>By</b><br />@(_header.RunBy ?? "—")</div>
+            <div><b>LPMs</b><br />@(_header.LpmScope ?? "—")</div>
+            <div><b>Countries</b><br />@(_header.CountryScope ?? "—")</div>
+            <div><b>Store rows</b><br />@_header.RowCount.ToString("N0")</div>
+            <div><b>Allocated qty</b><br />@_header.TotalAllocated.ToString("N0")</div>
+        </div>
+
+        @if (_summary.Count > 0)
+        {
+            <table class="aiwms-table" style="max-width:640px">
+                <thead>
+                    <tr>
+                        <th>Country</th>
+                        <th style="text-align:right">Stores</th>
+                        <th style="text-align:right">SKUs</th>
+                        <th style="text-align:right">Allocated</th>
+                        <th style="text-align:right">Share</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @{ var grand = _summary.Sum(s => s.Allocated); }
+                    @foreach (var s in _summary)
+                    {
+                        <tr>
+                            <td>@s.Country</td>
+                            <td style="text-align:right">@s.Stores.ToString("N0")</td>
+                            <td style="text-align:right">@s.Skus.ToString("N0")</td>
+                            <td style="text-align:right">@s.Allocated.ToString("N0")</td>
+                            <td style="text-align:right">@(grand > 0 ? (s.Allocated * 100.0 / grand).ToString("N1") + "%" : "—")</td>
+                        </tr>
+                    }
+                </tbody>
+                <tfoot>
+                    <tr style="font-weight:700; border-top:2px solid var(--border-default)">
+                        <td>Total</td>
+                        <td></td>
+                        <td></td>
+                        <td style="text-align:right">@grand.ToString("N0")</td>
+                        <td></td>
+                    </tr>
+                </tfoot>
+            </table>
+        }
+    </div>
+
+    <div class="aiwms-section">
+        <div class="aiwms-card-header">Allocation Detail</div>
+        <div style="display:grid; grid-template-columns: 220px 220px auto auto; gap:12px; align-items:end; margin-bottom:12px">
+            <div>
+                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">ITEM CODE</label>
+                <input @bind="_itemFilter" placeholder="contains…"
+                       style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-family:var(--font-mono); font-size:13px; background:white;" />
+            </div>
+            <div>
+                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">STORE</label>
+                <input @bind="_storeFilter" placeholder="contains…"
+                       style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-family:var(--font-mono); font-size:13px; background:white;" />
+            </div>
+            <button class="aiwms-btn aiwms-btn-secondary" @onclick="LoadDetailAsync" disabled="@_busy">Apply</button>
+            <button class="aiwms-btn aiwms-btn-secondary" @onclick="ExportCsvAsync" disabled="@(_busy || _rows.Count == 0)">Export to Excel</button>
+        </div>
+
+        @if (_rows.Count == 0)
+        {
+            <div style="font-size:12px; color:var(--text-secondary)">No rows.</div>
+        }
+        else
+        {
+            @if (_rows.Count >= DetailTop)
+            {
+                <div style="font-size:11px; color:var(--text-secondary); margin-bottom:6px">
+                    Showing the first @DetailTop.ToString("N0") rows — narrow the filters, or export for the full set.
+                </div>
+            }
+            <div style="overflow:auto; max-height:640px">
+                <table class="aiwms-table">
+                    <thead>
+                        <tr>
+                            @SortHeader("Itemcode",      "Item Code")
+                            @SortHeader("DivCode",       "Div", numeric: true)
+                            @SortHeader("Country",       "Country")
+                            @SortHeader("StoreID",       "Store")
+                            @SortHeader("VolumeGroup",   "VG")
+                            @SortHeader("DcQty",         "DC Qty",   numeric: true, title: "Total eligible DC qty for this SKU across the selected LPMs. This is the quantity the SKU Max band is picked on.")
+                            @SortHeader("OtsPercent",    "OTS %",    numeric: true, title: "OtsPercentToday for this (Store, Division) from WmsOtsCdcAllocationRun.")
+                            @SortHeader("AvgOtsPercent", "Avg OTS %", numeric: true, title: "Average of positive OTS % across the candidate stores of this division for this SKU. The tier band is AvgOTS ± OTSBandPct.")
+                            @SortHeader("TierName",      "Tier",     title: "OTS % < 0 → MinMin; below the band → MinMax; inside the band → IdealMax; above → MaxMax.")
+                            @SortHeader("SkuMaxTier",    "Tier Qty", numeric: true)
+                            @SortHeader("StoreSoh",      "Store SOH", numeric: true, title: "Existing racks..LPM_locstock SOH for this (Store, Item). Cap = Tier Qty − Store SOH.")
+                            @SortHeader("AllocatedSoh",  "Allocated", numeric: true)
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var r in SortedRows)
+                        {
+                            <tr>
+                                <td style="font-family:var(--font-mono)">@r.Itemcode</td>
+                                <td style="text-align:right">@r.DivCode</td>
+                                <td>@r.Country</td>
+                                <td style="font-family:var(--font-mono)">@r.StoreID</td>
+                                <td>@r.VolumeGroup</td>
+                                <td style="text-align:right">@r.DcQty.ToString("N0")</td>
+                                <td style="text-align:right">@r.OtsPercent.ToString("N2")</td>
+                                <td style="text-align:right">@r.AvgOtsPercent.ToString("N2")</td>
+                                <td>@r.TierName</td>
+                                <td style="text-align:right">@r.SkuMaxTier.ToString("N0")</td>
+                                <td style="text-align:right">@r.StoreSoh.ToString("N0")</td>
+                                <td style="text-align:right; font-weight:700">@r.AllocatedSoh.ToString("N0")</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </div>
+}
+
+@code {
+    private const int DetailTop = 5000;
+
+    private List<CdcLpmOption> _lpms = new();
+    private List<string> _countries = new();
+    private HashSet<DateTime> _selectedLpms = new();
+    private HashSet<string> _selectedCountries = new();
+
+    private CdcDcSohAllocationHeader? _header;
+    private List<CdcDcSohCountrySummaryRow> _summary = new();
+    private List<CdcDcSohAllocationRow> _rows = new();
+
+    private string? _itemFilter;
+    private string? _storeFilter;
+
+    private bool _busy;
+    private string? _progress;
+    private string? _message;
+    private bool _isError;
+    private List<string> _warnings = new();
+
+    private string _sortKey = "Itemcode";
+    private bool _sortAsc = true;
+
+    private bool CanAllocate => _selectedLpms.Count > 0 && _selectedCountries.Count > 0;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            var lpms = Svc.GetEligibleLpmsAsync();
+            var countries = Svc.GetCountriesAsync();
+            await Task.WhenAll(lpms, countries);
+            _lpms = await lpms;
+            _countries = await countries;
+
+            // A user with a single country shouldn't have to pick it every time.
+            if (!CurrentUser.HasAllCountriesAccess && !string.IsNullOrWhiteSpace(CurrentUser.Country)
+                && _countries.Contains(CurrentUser.Country!, StringComparer.OrdinalIgnoreCase))
+            {
+                _selectedCountries = new HashSet<string> { CurrentUser.Country! };
+            }
+
+            await RefreshCurrentAsync();
+        }
+        catch (Exception ex)
+        {
+            ShowError($"Could not load the page inputs: {ex.Message}");
+        }
+    }
+
+    private async Task AllocateAsync()
+    {
+        if (!CanAllocate || _busy) return;
+
+        _busy = true;
+        _message = null;
+        _isError = false;
+        _warnings.Clear();
+        _progress = "Starting…";
+        StateHasChanged();
+
+        try
+        {
+            var progress = new Progress<string>(s => { _progress = s; InvokeAsync(StateHasChanged); });
+            var result = await Svc.AllocateDcSohToStoresAsync(
+                _selectedLpms.OrderBy(d => d).ToList(),
+                _selectedCountries.OrderBy(c => c).ToList(),
+                progress);
+
+            if (!result.Success)
+            {
+                ShowError(result.Message ?? "Allocation failed.");
+                return;
+            }
+
+            _warnings = result.Warnings;
+            _message =
+                $"Allocated {result.TotalAllocated:N0} of {result.TotalDcQty:N0} DC pcs across " +
+                $"{result.StoreRowCount:N0} store rows ({result.SkuCount:N0} SKUs) for {result.LpmScope}.";
+            _isError = false;
+
+            await RefreshCurrentAsync();
+        }
+        catch (Exception ex)
+        {
+            ShowError($"Allocation failed: {ex.Message}");
+        }
+        finally
+        {
+            _busy = false;
+            _progress = null;
+            StateHasChanged();
+        }
+    }
+
+    private async Task RefreshCurrentAsync()
+    {
+        _header = await Svc.GetLastRunAsync();
+        if (_header is null) { _summary = new(); _rows = new(); return; }
+        _summary = await Svc.LoadCountrySummaryAsync();
+        await LoadDetailAsync();
+    }
+
+    private async Task LoadDetailAsync()
+    {
+        try
+        {
+            _rows = await Svc.LoadAllocationAsync(_itemFilter, _storeFilter, DetailTop);
+        }
+        catch (Exception ex)
+        {
+            ShowError($"Could not load the detail grid: {ex.Message}");
+        }
+    }
+
+    private void ShowError(string msg)
+    {
+        _message = msg;
+        _isError = true;
+        StateHasChanged();
+    }
+
+    // ===== sorting =====
+
+    private IEnumerable<CdcDcSohAllocationRow> SortedRows
+    {
+        get
+        {
+            Func<CdcDcSohAllocationRow, object?> key = _sortKey switch
+            {
+                "DivCode"       => r => r.DivCode,
+                "Country"       => r => r.Country,
+                "StoreID"       => r => r.StoreID,
+                "VolumeGroup"   => r => r.VolumeGroup ?? "",
+                "DcQty"         => r => r.DcQty,
+                "OtsPercent"    => r => r.OtsPercent,
+                "AvgOtsPercent" => r => r.AvgOtsPercent,
+                "TierName"      => r => r.TierName,
+                "SkuMaxTier"    => r => r.SkuMaxTier,
+                "StoreSoh"      => r => r.StoreSoh,
+                "AllocatedSoh"  => r => r.AllocatedSoh,
+                _               => r => r.Itemcode,
+            };
+            return _sortAsc ? _rows.OrderBy(key) : _rows.OrderByDescending(key);
+        }
+    }
+
+    private void ToggleSort(string key)
+    {
+        if (_sortKey == key) _sortAsc = !_sortAsc;
+        else { _sortKey = key; _sortAsc = true; }
+    }
+
+    private RenderFragment SortHeader(string key, string label, bool numeric = false, string? title = null) => builder =>
+    {
+        var style = "cursor:pointer" + (numeric ? "; text-align:right" : "");
+        var arrow = _sortKey == key ? (_sortAsc ? " ▲" : " ▼") : "";
+        builder.OpenElement(0, "th");
+        builder.AddAttribute(1, "style", style);
+        if (!string.IsNullOrEmpty(title)) builder.AddAttribute(2, "title", title);
+        builder.AddAttribute(3, "onclick", EventCallback.Factory.Create(this, () => ToggleSort(key)));
+        builder.AddContent(4, label + arrow);
+        builder.CloseElement();
+    };
+
+    // ===== export =====
+
+    private async Task ExportCsvAsync()
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("ItemCode,DivCode,Country,StoreID,VolumeGroup,DcQty,OtsPercent,AvgOtsPercent,Tier,TierQty,StoreSoh,Allocated");
+        foreach (var r in SortedRows)
+        {
+            sb.Append(Csv(r.Itemcode)).Append(',')
+              .Append(r.DivCode).Append(',')
+              .Append(Csv(r.Country)).Append(',')
+              .Append(Csv(r.StoreID)).Append(',')
+              .Append(Csv(r.VolumeGroup ?? "")).Append(',')
+              .Append(r.DcQty).Append(',')
+              .Append(r.OtsPercent.ToString("F2")).Append(',')
+              .Append(r.AvgOtsPercent.ToString("F2")).Append(',')
+              .Append(Csv(r.TierName)).Append(',')
+              .Append(r.SkuMaxTier).Append(',')
+              .Append(r.StoreSoh).Append(',')
+              .Append(r.AllocatedSoh).AppendLine();
+        }
+
+        var b64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(sb.ToString()));
+        var filename = $"DcStoreSohAllocation_{DateTime.UtcNow.AddHours(4):yyyyMMdd_HHmm}.csv";
+        await JS.InvokeVoidAsync("eval", $"(function(){{var a=document.createElement('a');a.href='data:text/csv;base64,{b64}';a.download='{filename}';document.body.appendChild(a);a.click();document.body.removeChild(a);}})();");
+    }
+
+    private static string Csv(string s) =>
+        s.Contains(',') || s.Contains('"') ? "\"" + s.Replace("\"", "\"\"") + "\"" : s;
+}
