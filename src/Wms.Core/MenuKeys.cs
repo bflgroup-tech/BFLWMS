@@ -44,6 +44,7 @@ public static class MenuKeys
     public const string RPT_YOTO_VNA_DASHBOARD    = "RPT_YOTO_VNA_DASHBOARD";
     public const string RPT_WAREHOUSE_INCENTIVES  = "RPT_WAREHOUSE_INCENTIVES";
     public const string RPT_ECOM_PRODUCTION_REPORTS = "RPT_ECOM_PRODUCTION_REPORTS";
+    public const string RPT_REPORT_ASSISTANT = "RPT_REPORT_ASSISTANT";
 
     public const string ADMIN_USERS               = "ADMIN_USERS";
     public const string ADMIN_WH_MASTER           = "ADMIN_WH_MASTER";
@@ -120,6 +121,7 @@ public static class MenuKeys
         new MenuEntry(RPT_SYNC_DATA_COUNT,   "IT",                 "Sync Data Count",           "reports/sync-data-count",   new[] { Roles.Admin, Roles.Reports }),
 
         new MenuEntry(ADMIN_USERS,           "Admin",               "Users & Roles",             "admin/users",               new[] { Roles.Admin }),
+        new MenuEntry(RPT_REPORT_ASSISTANT,  "Admin",               "Report Assistant (Chat)",   "reports/report-assistant",  new[] { Roles.Admin }),
         new MenuEntry(ADMIN_WH_MASTER,       "Admin",               "WH Master",                 "admin/wh-master",           new[] { Roles.Admin }),
         new MenuEntry(ADMIN_AUDIT_LOG,       "Admin",               "Audit Log",                 "admin/audit",               new[] { Roles.Admin }),
         new MenuEntry(ADMIN_NIGHTLY_BATCHES, "Admin",               "Nightly Batches Status",    "admin/nightly-batches",     new[] { Roles.Admin }),
