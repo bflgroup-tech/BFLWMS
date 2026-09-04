@@ -64,6 +64,7 @@ public class Program
         builder.Services.AddScoped<IActionLogger, ActionLogger>();
         builder.Services.AddScoped<BuildingService>();
         builder.Services.AddScoped<ContainerAllocationService>();
+        builder.Services.AddScoped<BulkPoAllocationService>();
         builder.Services.AddScoped<ContainerAllocationDataSyncService>();
         builder.Services.AddScoped<OpenContainerService>();
         builder.Services.AddScoped<PendingForCountingService>();

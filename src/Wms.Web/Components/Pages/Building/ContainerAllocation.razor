@@ -5,6 +5,7 @@
 @using Wms.Data.Lpm
 @attribute [Authorize(Policy = MenuKeys.CONTAINER_ALLOCATION)]
 @inject ContainerAllocationService Svc
+@inject BulkPoAllocationService BulkSvc
 @inject ICurrentUser CurrentUser
 @inject Microsoft.JSInterop.IJSRuntime JS
 
@@ -197,6 +198,98 @@
             {
                 <span style="margin-left:10px; padding:2px 8px; background:#dcfce7; color:#166534; border-radius:var(--r-pill); font-weight:700">APPROVED</span>
             }
+        </div>
+    }
+</div>
+
+<div class="aiwms-section">
+    <div class="aiwms-card-header" style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px">
+        <span>Bulk PO Allocation — @_bulkQueue.Count container(s) queued</span>
+        <div style="display:flex; gap:8px; align-items:center">
+            <button class="aiwms-btn aiwms-btn-secondary" style="font-size:11px; padding:4px 10px"
+                    @onclick="ReloadBulkQueueAsync" disabled="@(_busy || _bulkBusy)">Refresh list</button>
+            <button class="aiwms-btn aiwms-btn-secondary" style="font-size:11px; padding:4px 10px"
+                    @onclick="ResetBulkQueueAsync" disabled="@(_busy || _bulkBusy || _bulkQueue.Count == 0)"
+                    title="Clear Status/Message on everything except rows that already succeeded, so the list can be run again.">
+                Reset results
+            </button>
+            <button class="aiwms-btn aiwms-btn-primary"
+                    @onclick="RunBulkAsync" disabled="@(_busy || _bulkBusy || BulkPendingCount == 0)"
+                    title="Run the allocation for every active, not-yet-successful container in the queue, using this page's Run Option and checkboxes. Allocation Countries come from each container's own order.">
+                Run PO Allocation for All (@BulkPendingCount)
+            </button>
+        </div>
+    </div>
+
+    <p style="font-size:12px; color:var(--text-secondary); margin:0 0 10px">
+        Load the list yourself — <code>INSERT INTO LPMSIM.dbo.WMS_BulkAllocationQueue (ContNo) VALUES ('AELOC6671')</code>.
+        Each container uses this page's <b>Run Option</b>, <b>ECOM mode</b> and checkboxes, but its
+        <b>Allocation Countries come from its own order</b> (<code>vUSAOrder.AllocationCountry</code>), not from the
+        selection above — one list of containers has no single country choice that could be right for all of them.
+        Containers already processed are skipped, and one failure does not stop the rest.
+        Per-row <code>Country</code> / <code>Warehouse</code> / <code>RunOption</code> override the page when not NULL.
+    </p>
+
+    @if (_bulkBusy)
+    {
+        <div style="margin-bottom:12px; padding:12px 14px; background:var(--bfl-yellow-lite); border:1px solid var(--bfl-yellow); border-radius:var(--r-sm)">
+            <div style="display:flex; justify-content:space-between; font-family:var(--font-display); font-size:13px; font-weight:800; color:var(--bfl-black); margin-bottom:6px">
+                <span>@_bulkPhase</span>
+                <span>@_bulkDone / @_bulkTotal</span>
+            </div>
+            <div style="width:100%; height:10px; background:white; border-radius:var(--r-pill); overflow:hidden; border:1px solid var(--bfl-yellow-hov)">
+                <div style="height:100%; background:var(--bfl-yellow); width:@(_bulkTotal == 0 ? 0 : (int)(100.0 * _bulkDone / _bulkTotal))%; transition:width .15s ease"></div>
+            </div>
+        </div>
+    }
+
+    @if (!string.IsNullOrEmpty(_bulkMessage))
+    {
+        <div class="aiwms-alert @(_bulkIsError ? "error" : "info")" style="margin-bottom:12px">@_bulkMessage</div>
+    }
+
+    @if (_bulkQueue.Count == 0)
+    {
+        <div style="padding:12px; font-style:italic; color:var(--text-secondary)">
+            Queue is empty. Insert container numbers into <code>LPMSIM.dbo.WMS_BulkAllocationQueue</code>, then Refresh list.
+        </div>
+    }
+    else
+    {
+        <div style="overflow:auto; max-height:420px">
+            <table class="aiwms-table aiwms-table-dense">
+                <thead>
+                    <tr>
+                        <th>ContNo</th>
+                        <th>Country</th>
+                        <th>Warehouse</th>
+                        <th>Run Option</th>
+                        <th>Status</th>
+                        <th style="text-align:right">Rows</th>
+                        <th style="text-align:right">Qty</th>
+                        <th style="text-align:right">Blocked</th>
+                        <th>Message</th>
+                        <th>Completed</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var q in _bulkQueue)
+                    {
+                        <tr style="@(q.IsActive ? "" : "opacity:.5")">
+                            <td style="font-family:var(--font-mono)">@q.ContNo</td>
+                            <td>@(q.Country   ?? _country)</td>
+                            <td>@(q.Warehouse ?? _warehouse)</td>
+                            <td>@(q.RunOption ?? _runOption)</td>
+                            <td><span class="aiwms-pill @BulkPillClass(q.Status)">@(q.Status ?? "Pending")</span></td>
+                            <td style="text-align:right">@(q.RowsWritten?.ToString("N0")  ?? "")</td>
+                            <td style="text-align:right">@(q.AllocatedQty?.ToString("N0") ?? "")</td>
+                            <td style="text-align:right">@(q.BlockedCount?.ToString("N0") ?? "")</td>
+                            <td style="max-width:360px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap" title="@q.Message">@q.Message</td>
+                            <td>@(q.CompletedTS?.ToString("yyyy-MM-dd HH:mm") ?? "")</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
         </div>
     }
 </div>
@@ -759,6 +852,7 @@
         _allocCountries = new HashSet<string>(_simCountries, StringComparer.OrdinalIgnoreCase);
 
         await RefreshProcessedContnosAsync();
+        await ReloadBulkQueueAsync();
     }
 
     private async Task OnCountryChangedAsync()
@@ -1040,6 +1134,119 @@
 
     private static string FmtElapsed(long ms) =>
         ms < 1000 ? $"{ms} ms" : $"{ms / 1000.0:F1}s";
+
+    // ===================== Bulk PO Allocation =====================
+
+    private List<BulkAllocationQueueRow> _bulkQueue = new();
+    private bool   _bulkBusy;
+    private int    _bulkDone, _bulkTotal;
+    private string _bulkPhase = "";
+    private string _bulkMessage = "";
+    private bool   _bulkIsError;
+
+    /// <summary>What a run would actually attempt — active, not already succeeded.</summary>
+    private int BulkPendingCount => _bulkQueue.Count(q =>
+        q.IsActive && !string.Equals(q.Status, "Success", StringComparison.OrdinalIgnoreCase));
+
+    private static string BulkPillClass(string? status) => status switch
+    {
+        "Success" => "tier1",
+        "Failed"  => "tier4",
+        "Skipped" => "tier3",
+        _         => "tier2",
+    };
+
+    private async Task ReloadBulkQueueAsync()
+    {
+        try { _bulkQueue = await BulkSvc.GetQueueAsync(); }
+        catch (Exception ex)
+        {
+            _bulkQueue = new();
+            _bulkMessage = $"Could not read the bulk queue: {ex.Message}";
+            _bulkIsError = true;
+        }
+    }
+
+    private async Task ResetBulkQueueAsync()
+    {
+        try
+        {
+            var n = await BulkSvc.ResetQueueAsync();
+            _bulkMessage = $"Reset {n} row(s) to Pending. Rows that already succeeded were left alone.";
+            _bulkIsError = false;
+            await ReloadBulkQueueAsync();
+        }
+        catch (Exception ex) { _bulkMessage = $"Reset failed: {ex.Message}"; _bulkIsError = true; }
+    }
+
+    private async Task RunBulkAsync()
+    {
+        if (BulkPendingCount == 0 || _bulkBusy) return;
+
+        // Same reasoning as the single-container confirm: this can run for many
+        // minutes and writes real allocations, so the inputs get one last look.
+        var ok = await JS.InvokeAsync<bool>("confirm",
+            $"Run PO Allocation for {BulkPendingCount} container(s)?\n\n" +
+            $"Run Option: {_runOption}\n" +
+            $"ECOM: {(_ecomManualPriority ? "Follow Manual Allocation" : "Follow PO Allocation logic")}\n" +
+            $"Validate first: {(_validate ? "yes" : "no")}\n\n" +
+            "Allocation Countries come from each container's own order.\n" +
+            "Already-processed containers are skipped.\n\nContinue?");
+        if (!ok) return;
+
+        _bulkBusy = true; _bulkMessage = ""; _bulkIsError = false;
+        _bulkDone = 0; _bulkTotal = BulkPendingCount; _bulkPhase = "Starting…";
+        await InvokeAsync(StateHasChanged);
+
+        try
+        {
+            var ro = _runOption switch
+            {
+                "RoundRobin"           => RunOption.RoundRobin,
+                "FillSKUMaxRoundRobin" => RunOption.FillSKUMaxRoundRobin,
+                "FillMinMinPlusOthers" => RunOption.FillMinMinPlusOthers,
+                _                      => RunOption.FillSKUMax,
+            };
+
+            var defaults = new BulkAllocationDefaults(
+                Country: _country, Warehouse: _warehouse, RunOption: ro,
+                // Only used for orders that impose no restriction of their own.
+                FallbackCountries: _allocCountries.ToList(),
+                Validate: _validate, EcomManualPriority: _ecomManualPriority,
+                TraceEnabled: _traceEnabled, BypassPass1b: _bypassPass1b);
+
+            var progress = new Progress<BulkAllocationProgress>(async p =>
+            {
+                _bulkDone = p.Done; _bulkTotal = p.Total;
+                _bulkPhase = $"{p.ContNo} — {p.Phase}";
+                await InvokeAsync(StateHasChanged);
+            });
+
+            var res = await BulkSvc.RunAllAsync(defaults, progress);
+
+            _bulkMessage =
+                $"Ran {res.Total} container(s) in {FmtElapsed(res.ElapsedMs)} — " +
+                $"{res.Succeeded} succeeded ({res.TotalRows:N0} rows, {res.TotalQty:N0} pcs), " +
+                $"{res.Skipped} skipped, {res.Failed} failed." +
+                (res.Failed > 0 ? " See the Message column for each failure." : "");
+            _bulkIsError = res.Failed > 0;
+
+            await ReloadBulkQueueAsync();
+            await RefreshStatusAsync();
+            await RefreshProcessedContnosAsync();
+        }
+        catch (Exception ex)
+        {
+            _bulkMessage = $"Bulk run stopped: {ex.Message}";
+            _bulkIsError = true;
+            await ReloadBulkQueueAsync();
+        }
+        finally
+        {
+            _bulkBusy = false; _bulkPhase = ""; _bulkTotal = 0; _bulkDone = 0;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
 
     private async Task DeleteAsync()
     {
