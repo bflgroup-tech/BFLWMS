@@ -91,6 +91,8 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
         if (rows.Count == 0) return new();
 
         HashSet<string> synced;
+        var review = new Dictionary<string, (string? Status, string? Remarks, string? By, DateTime? TS)>(
+            StringComparer.OrdinalIgnoreCase);
         await using (var w = OpenWms())
         {
             var contnos = rows.Select(r => r.ContNo).Distinct().ToArray();
@@ -101,11 +103,69 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
                    AND Destination IN ('AzureWmsDb','WmsProductionDb')",
                 new { cs = contnos }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            // Review state is optional decoration on the grid — a missing table
+            // (migration not yet run) must not take the whole page down with it.
+            try
+            {
+                var st = await w.QueryAsync<(string ContNo, string? Status, string? Remarks, string? UpdatedBy, DateTime? UpdatedTS)>(
+                    new CommandDefinition(@"
+                        SELECT ContNo, Status, Remarks, UpdatedBy, UpdatedTS
+                          FROM dbo.WmsContAllocationReviewStatus WITH (NOLOCK)
+                         WHERE ContNo IN @cs",
+                        new { cs = contnos }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+                foreach (var r in st)
+                    review[r.ContNo] = (r.Status, r.Remarks, r.UpdatedBy, r.UpdatedTS);
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[DataSync] WARN: review-status lookup failed: {ex.Message}");
+            }
         }
 
-        return rows.Select(r => new ApprovedContnoRow(
-            r.ContNo, r.BatchCount, r.TotalAllocatedQty, r.LatestApprovedDt,
-            synced.Contains(r.ContNo))).ToList();
+        return rows.Select(r =>
+        {
+            review.TryGetValue(r.ContNo, out var rv);
+            return new ApprovedContnoRow(
+                r.ContNo, r.BatchCount, r.TotalAllocatedQty, r.LatestApprovedDt,
+                synced.Contains(r.ContNo), rv.Status, rv.Remarks, rv.By, rv.TS);
+        }).ToList();
+    }
+
+    /// <summary>
+    /// Upsert the buyer-review Status/Remarks for one approved container.
+    /// Blank status and blank remarks together delete the row rather than storing
+    /// an empty one, so "not reviewed" stays a single state instead of two that
+    /// look identical on screen.
+    /// </summary>
+    public async Task SaveReviewStatusAsync(
+        string contno, string? status, string? remarks, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(contno)) return;
+        contno  = contno.Trim();
+        status  = string.IsNullOrWhiteSpace(status)  ? null : status.Trim();
+        remarks = string.IsNullOrWhiteSpace(remarks) ? null : remarks.Trim();
+
+        await using var c = OpenWms();
+
+        if (status is null && remarks is null)
+        {
+            await c.ExecuteAsync(new CommandDefinition(
+                "DELETE FROM dbo.WmsContAllocationReviewStatus WHERE ContNo = @c",
+                new { c = contno }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            return;
+        }
+
+        await c.ExecuteAsync(new CommandDefinition(@"
+            MERGE dbo.WmsContAllocationReviewStatus AS t
+            USING (SELECT @c AS ContNo) AS s ON t.ContNo = s.ContNo
+            WHEN MATCHED THEN UPDATE SET
+                 Status = @st, Remarks = @rm, UpdatedBy = @u, UpdatedTS = SYSUTCDATETIME()
+            WHEN NOT MATCHED THEN
+                 INSERT (ContNo, Status, Remarks, UpdatedBy, UpdatedTS)
+                 VALUES (@c, @st, @rm, @u, SYSUTCDATETIME());",
+            new { c = contno, st = status, rm = remarks, u = user.Name },
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
     }
 
     /// <summary>Last N rows from the sync log. Optional ContNo substring filter,
