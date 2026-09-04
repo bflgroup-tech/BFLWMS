@@ -3176,7 +3176,24 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                WHERE refno = @c",
             new { c = contno.Trim() }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
 
-        var values = raw.Where(v => !string.IsNullOrWhiteSpace(v)).Select(v => v!.Trim()).ToList();
+        return ResolveAllocationCountries(raw, all);
+    }
+
+    /// <summary>
+    /// The pure resolution: raw AllocationCountry values in, allowed countries out.
+    ///
+    /// Deliberately separated from the query so the Bulk panel's PREVIEW and the
+    /// actual run resolve identically. A preview computed by any other code path
+    /// could disagree with what the run does, which would make it worse than no
+    /// preview at all.
+    /// </summary>
+    public static ContainerAllocationCountries ResolveAllocationCountries(
+        IEnumerable<string?> rawValues, IReadOnlyList<string> simCountries)
+    {
+        var all = simCountries.ToList();
+        var unrestricted = new ContainerAllocationCountries(all, false, null, new List<string>());
+
+        var values = rawValues.Where(v => !string.IsNullOrWhiteSpace(v)).Select(v => v!.Trim()).ToList();
         if (values.Count == 0) return unrestricted;
 
         var rawValue = string.Join(", ", values.Distinct(StringComparer.OrdinalIgnoreCase));
@@ -3205,6 +3222,42 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
             return new ContainerAllocationCountries(all, false, rawValue, unmatched);
 
         return new ContainerAllocationCountries(allowed, true, rawValue, unmatched);
+    }
+
+    /// <summary>
+    /// Same resolution for many containers in one round trip — the Bulk panel needs
+    /// every queued container's countries at once, and one query per row would be
+    /// dozens of trips just to draw a grid.
+    /// </summary>
+    public async Task<Dictionary<string, ContainerAllocationCountries>> GetAllocationCountriesForContainersAsync(
+        IEnumerable<string> contnos, IEnumerable<string> simCountries, CancellationToken ct = default)
+    {
+        var all  = simCountries.ToList();
+        var list = contnos.Where(s => !string.IsNullOrWhiteSpace(s)).Select(s => s.Trim())
+                          .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        var result = new Dictionary<string, ContainerAllocationCountries>(StringComparer.OrdinalIgnoreCase);
+        if (list.Count == 0) return result;
+
+        await using var c = OpenOnPremBackup();
+        var rows = await c.QueryAsync<(string RefNo, string? AllocationCountry)>(new CommandDefinition(@"
+            SELECT DISTINCT CAST(value AS VARCHAR(50)) AS ContNo INTO #acScope FROM STRING_SPLIT(@csv, ',');
+            CREATE CLUSTERED INDEX IX_acScope ON #acScope(ContNo);
+
+            SELECT DISTINCT o.refno AS RefNo, o.AllocationCountry
+              FROM hodata.dbo.vUSAOrder o WITH (NOLOCK)
+              INNER JOIN #acScope s ON s.ContNo = o.refno;",
+            new { csv = string.Join(",", list) },
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+
+        var byContno = rows.GroupBy(r => r.RefNo.Trim(), StringComparer.OrdinalIgnoreCase)
+                           .ToDictionary(g => g.Key, g => g.Select(x => x.AllocationCountry).ToList(),
+                                         StringComparer.OrdinalIgnoreCase);
+
+        foreach (var cn in list)
+            result[cn] = ResolveAllocationCountries(
+                byContno.GetValueOrDefault(cn) ?? new List<string?>(), all);
+
+        return result;
     }
 
     /// <summary>

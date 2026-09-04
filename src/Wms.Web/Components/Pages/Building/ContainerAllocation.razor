@@ -281,7 +281,9 @@
                         <th>ContNo</th>
                         <th>Country</th>
                         <th>Warehouse</th>
-                        <th>Run Option</th>
+                        @* Resolved from each container's own order, by the same code the
+                           run uses — so what is shown here is what will happen. *@
+                        <th title="Countries this container will be allocated to, resolved from hodata..vUSAOrder.AllocationCountry. 'All' is expanded to every SIM country; 'ONLINE' is shown as ECOM.">Allocation Countries</th>
                         <th>Status</th>
                         <th style="text-align:right">Rows</th>
                         <th style="text-align:right">Qty</th>
@@ -298,7 +300,28 @@
                             <td style="font-family:var(--font-mono)">@q.ContNo</td>
                             <td>@(q.Country   ?? _country)</td>
                             <td>@(q.Warehouse ?? _warehouse)</td>
-                            <td>@(q.RunOption ?? _runOption)</td>
+                            @{
+                                var resolved = _bulkCountries.GetValueOrDefault(q.ContNo);
+                                var countryText = resolved is null
+                                    ? "…"
+                                    : string.Join(", ", resolved.Allowed);
+                                var countryTitle = resolved is null
+                                    ? "Not resolved yet — press Refresh list."
+                                    : (resolved.Restricted
+                                        ? $"Restricted by AllocationCountry = '{resolved.RawValue}'."
+                                        : $"Order does not restrict{(resolved.RawValue is null ? " (no order row)" : $" (AllocationCountry = '{resolved.RawValue}')")} — all {resolved.Allowed.Count} SIM countries.")
+                                      + (resolved.Unmatched.Count > 0
+                                         ? $" Unrecognised: {string.Join(", ", resolved.Unmatched)}."
+                                         : "");
+                            }
+                            <td style="max-width:260px; white-space:normal; @(resolved?.Restricted == false ? "color:var(--text-secondary)" : "")"
+                                title="@countryTitle">
+                                @countryText
+                                @if (resolved is not null && resolved.Unmatched.Count > 0)
+                                {
+                                    <span style="color:#92400e; font-weight:700" title="@countryTitle"> ⚠</span>
+                                }
+                            </td>
                             <td><span class="aiwms-pill @BulkPillClass(q.Status)">@(q.Status ?? "Pending")</span></td>
                             <td style="text-align:right">@(q.RowsWritten?.ToString("N0")  ?? "")</td>
                             <td style="text-align:right">@(q.AllocatedQty?.ToString("N0") ?? "")</td>
@@ -1161,6 +1184,8 @@
 
     private List<BulkAllocationQueueRow> _bulkQueue = new();
     private List<BulkAllocationBatchRow> _bulkBatches = new();
+    // ContNo -> the countries the run will use, previewed via the shared resolver.
+    private Dictionary<string, ContainerAllocationCountries> _bulkCountries = new(StringComparer.OrdinalIgnoreCase);
     // "" = every batch. Bound to a <select>, hence string rather than int?.
     private string _bulkBatch = "";
     private int?   BulkBatchNo => int.TryParse(_bulkBatch, out var n) ? n : null;
@@ -1195,10 +1220,18 @@
             // pointing at nothing and the list mysteriously empty.
             if (BulkBatchNo is not null && !_bulkBatches.Any(b => b.BatchNo == BulkBatchNo)) _bulkBatch = "";
             _bulkQueue = await BulkSvc.GetQueueAsync(BulkBatchNo);
+
+            // Preview each container's countries through the SAME resolver the run
+            // uses, in one round trip. If this and the run could ever disagree the
+            // preview would be worse than none.
+            _bulkCountries = _bulkQueue.Count == 0
+                ? new()
+                : await Svc.GetAllocationCountriesForContainersAsync(
+                    _bulkQueue.Select(q => q.ContNo), _simCountries);
         }
         catch (Exception ex)
         {
-            _bulkQueue = new(); _bulkBatches = new();
+            _bulkQueue = new(); _bulkBatches = new(); _bulkCountries = new(StringComparer.OrdinalIgnoreCase);
             _bulkMessage = $"Could not read the bulk queue: {ex.Message}";
             _bulkIsError = true;
         }
