@@ -697,6 +697,32 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
             var d = new Dictionary<(string, int), decimal>();
             if (runOption != RunOption.FillSKUMaxRoundRobin && runOption != RunOption.FillMinMinPlusOthers)
                 return d;
+            // StopAtCeiling makes the ceiling OPT-IN per (Country, DivCode): a row
+            // with the flag off is configuration the report can show but the engine
+            // does not enforce. Only active rows enter this dictionary, so every
+            // downstream lookup means "this is enforced", with no second flag to
+            // remember to check.
+            try
+            {
+                await using var c1 = OpenOnPremBackup();
+                var rows = await c1.QueryAsync<(string Country, int DivCode, decimal Pct)>(new CommandDefinition(
+                    @"SELECT Country, ISNULL(DivCode, 0) AS DivCode, POAllocationMaxPct
+                        FROM LPMSIM.dbo.LPM_POAllocationMaxPct WITH (NOLOCK)
+                       WHERE Country IS NOT NULL AND POAllocationMaxPct > 0
+                         AND ISNULL(StopAtCeiling, 0) = 1",
+                    commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+                foreach (var r in rows)
+                    d[(r.Country.Trim().ToUpperInvariant(), r.DivCode)] = r.Pct;
+                return d;
+            }
+            catch
+            {
+                // StopAtCeiling not deployed yet. Fall through to the pre-flag query
+                // rather than returning empty: an empty dictionary would silently
+                // UNCAP everything, which is the opposite of what a missing opt-in
+                // flag should mean.
+            }
+
             try
             {
                 await using var c1 = OpenOnPremBackup();
@@ -833,9 +859,11 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         var otsRunRowsList    = await w1_otsRunRows;
         var poMaxPctByCountry = await w1_poMaxPct;
 
+        // Still needed for the ECOM manual pre-allocation, which is keyed on the
+        // country rather than on a store. The old IsEcomStore(StoreID=='ONLINE')
+        // helper is gone: the ceiling is no longer ECOM-specific, so every cap site
+        // now goes through the row's own Country.
         const string EcomCountry = "ECOM";
-        static bool IsEcomStore(string? storeId) =>
-            string.Equals(storeId?.Trim(), "ONLINE", StringComparison.OrdinalIgnoreCase);
         var simSkuMaxBlocked  = await w1_simSkuMaxBlocked;
         var itemSohByStore    = await w1_itemSohByStore;
         var otsBandPct        = await w1_otsBandPct;
@@ -843,48 +871,72 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
 
         var divByItem = itemMeta.ToDictionary(kv => kv.Key, kv => kv.Value.DivID ?? 0, StringComparer.OrdinalIgnoreCase);
 
-        // ECOM's ceiling, PER DIVISION: a percentage of that division's PO Qty
-        // within this container, from LPM_POAllocationMaxPct.
+        // A country's ceiling, PER DIVISION: a percentage of that division's PO Qty
+        // within this container, from LPM_POAllocationMaxPct where StopAtCeiling = 1.
+        //
+        // The cap used to be ECOM-only and unconditional. It is now per (Country,
+        // DivCode) and OPT-IN: poMaxPctByCountry holds only rows whose StopAtCeiling
+        // is set, so any country configured that way is capped and every other
+        // country behaves exactly as before. ECOM is no longer special — it is just
+        // the country that happens to have had a ceiling.
         //
         // Per division rather than per container so a division's budget can only be
         // spent by its own items. A single container-wide budget was consumed by
         // whichever divisions happened to be processed first, leaving later ones
         // nothing regardless of their size.
         //
-        // FLOOR, not round: rounding up would let ECOM exceed the configured %.
-        // A division with no percentage configured is uncapped, matching pre-cap
-        // behaviour — an unseeded division must never silently zero a country.
+        // FLOOR, not round: rounding up would let a country exceed the configured %.
+        // A (country, division) with no active percentage is uncapped — an unseeded
+        // division must never silently zero a country.
         //
-        // Percentage resolution per division: exact (ECOM, div), then the (ECOM, 0)
-        // country-wide default, then nothing.
-        decimal? EcomPctFor(int divCode) =>
-            poMaxPctByCountry.TryGetValue((EcomCountry, divCode), out var exact) ? exact
-            : poMaxPctByCountry.TryGetValue((EcomCountry, 0), out var dflt)      ? dflt
-            : null;
-
-        var ecomAllowanceByDiv = new Dictionary<int, int>();
-        foreach (var g in lines.GroupBy(l => divByItem.TryGetValue(l.ItemCode, out var d) ? d : 0))
+        // Resolution: exact (country, div), then the (country, 0) country-wide
+        // default, then nothing.
+        decimal? CeilingPctFor(string country, int divCode)
         {
-            var pct = EcomPctFor(g.Key);
-            if (pct is not > 0) continue;           // absent from the dictionary = uncapped
-            ecomAllowanceByDiv[g.Key] =
-                (int)Math.Min(int.MaxValue,
-                    (long)Math.Floor(g.Sum(l => (long)l.Qty) * (double)pct.Value / 100.0));
+            var key = country.Trim().ToUpperInvariant();
+            return poMaxPctByCountry.TryGetValue((key, divCode), out var exact) ? exact
+                 : poMaxPctByCountry.TryGetValue((key, 0), out var dflt)        ? dflt
+                 : null;
         }
-        var ecomTakenByDiv = new Dictionary<int, int>();
 
-        int EcomRemainingAllowance(int divCode)
+        // Only countries that actually appear in this run need a budget.
+        var cappedCountries = otsRunRowsList.Select(r => r.Country)
+            .Concat(new[] { EcomCountry })
+            .Where(c => !string.IsNullOrWhiteSpace(c))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var poQtyByDiv = lines
+            .GroupBy(l => divByItem.TryGetValue(l.ItemCode, out var d) ? d : 0)
+            .ToDictionary(g => g.Key, g => g.Sum(l => (long)l.Qty));
+
+        var allowanceByKey = new Dictionary<(string Country, int DivCode), int>();
+        foreach (var country in cappedCountries)
+        foreach (var (divCode, poQty) in poQtyByDiv)
         {
-            // No entry = this division has no configured percentage = uncapped.
-            if (!ecomAllowanceByDiv.TryGetValue(divCode, out var allow)) return int.MaxValue;
-            var taken = ecomTakenByDiv.TryGetValue(divCode, out var t) ? t : 0;
+            var pct = CeilingPctFor(country, divCode);
+            if (pct is not > 0) continue;           // absent from the dictionary = uncapped
+            allowanceByKey[(country.Trim().ToUpperInvariant(), divCode)] =
+                (int)Math.Min(int.MaxValue, (long)Math.Floor(poQty * (double)pct.Value / 100.0));
+        }
+        var takenByKey = new Dictionary<(string Country, int DivCode), int>();
+
+        int RemainingAllowance(string? country, int divCode)
+        {
+            if (string.IsNullOrWhiteSpace(country)) return int.MaxValue;
+            // No entry = no ACTIVE ceiling for this (country, division) = uncapped.
+            if (!allowanceByKey.TryGetValue((country.Trim().ToUpperInvariant(), divCode), out var allow))
+                return int.MaxValue;
+            var taken = takenByKey.TryGetValue((country.Trim().ToUpperInvariant(), divCode), out var t) ? t : 0;
             return Math.Max(0, allow - taken);
         }
 
-        void SpendEcom(int divCode, int qty)
+        void SpendAllowance(string? country, int divCode, int qty)
         {
-            if (qty <= 0 || !ecomAllowanceByDiv.ContainsKey(divCode)) return;
-            ecomTakenByDiv[divCode] = (ecomTakenByDiv.TryGetValue(divCode, out var t) ? t : 0) + qty;
+            if (qty <= 0 || string.IsNullOrWhiteSpace(country)) return;
+            var key = (country.Trim().ToUpperInvariant(), divCode);
+            if (!allowanceByKey.ContainsKey(key)) return;
+            takenByKey[key] = (takenByKey.TryGetValue(key, out var t) ? t : 0) + qty;
         }
 
         // OTS PO Allocation run validation — same behaviour as before, now after wave 1.
@@ -1396,7 +1448,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                             // operator's manual qty is a request, not an override of
                             // the country's PO-share ceiling.
                             ecomPreAllocTake = Math.Min(Math.Min(ecomManualQty, remaining),
-                                                        EcomRemainingAllowance(divCode));
+                                                        RemainingAllowance(EcomCountry, divCode));
                         }
                     }
 
@@ -1455,7 +1507,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                             // This branch skips BumpRow, so the division budget has to
                             // be charged here or ECOM would overrun the cap on exactly
                             // the items missing from the OTS run.
-                            SpendEcom(divCode, ecomPreAllocTake);
+                            SpendAllowance(EcomCountry, divCode, ecomPreAllocTake);
                         }
                         allocs["ONLINE"] = ecomRow;
                         remaining -= ecomPreAllocTake;
@@ -1554,9 +1606,9 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                     int CapFor(OtsRunLookupRow r)
                     {
                         var cap = SkuMaxRawAndCapFor(r).Cap;
-                        return IsEcomStore(r.StoreID)
-                            ? Math.Min(cap, EcomRemainingAllowance(r.DivCode))
-                            : cap;
+                        // Any country with an active ceiling is clamped here, not
+                        // just ECOM.
+                        return Math.Min(cap, RemainingAllowance(r.Country, r.DivCode));
                     }
 
                     // Row factory bound to this item — records which pass emitted
@@ -1572,7 +1624,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                         // container budget is spent here and nowhere else. Callers
                         // have already clamped delta (CapFor, or Pass 4's own guard),
                         // so this only records what was actually taken.
-                        if (IsEcomStore(r.StoreID)) SpendEcom(r.DivCode, delta);
+                        SpendAllowance(r.Country, r.DivCode, delta);
                         var soh = itemSohByStore.GetValueOrDefault(
                             (r.StoreID.ToUpperInvariant(), line.ItemCode.ToUpperInvariant()), 0);
                         var running = runningOtsQty.GetValueOrDefault((r.StoreID, r.DivCode), r.OtsQtyToday);
@@ -2186,8 +2238,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                                         var take        = takeShares[i];   // ratio + leftover on i==0
                                         // Pass 4 sizes off the ratio, not CapFor, so the
                                         // ECOM container budget has to be applied here too.
-                                        if (IsEcomStore(r.StoreID))
-                                            take = Math.Min(take, EcomRemainingAllowance(r.DivCode));
+                                        take = Math.Min(take, RemainingAllowance(r.Country, r.DivCode));
                                         var current = allocs.TryGetValue(r.StoreID, out var row) ? row.AllocQty : 0;
                                         var remBefore = remaining;
                                         if (take <= 0)
