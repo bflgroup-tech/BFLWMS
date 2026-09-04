@@ -242,6 +242,7 @@
         Each container uses this page's <b>Run Option</b>, <b>ECOM mode</b> and checkboxes, but its
         <b>Allocation Countries come from its own order</b> (<code>vUSAOrder.AllocationCountry</code>), not from the
         selection above — one list of containers has no single country choice that could be right for all of them.
+        An order reading <code>All</code> means <b>every SIM country</b> you have access to, not the selection above.
         Containers already processed are skipped, and one failure does not stop the rest.
         Per-row <code>Country</code> / <code>Warehouse</code> / <code>RunOption</code> override the page when not NULL.
     </p>
@@ -1254,7 +1255,13 @@
             var defaults = new BulkAllocationDefaults(
                 Country: _country, Warehouse: _warehouse, RunOption: ro,
                 // Only used for orders that impose no restriction of their own.
-                FallbackCountries: _allocCountries.ToList(),
+                // Every SIM country the user may see — NOT _allocCountries. That
+                // selection is narrowed automatically to whatever container is typed
+                // in the box above, so using it meant an order saying "All" inherited
+                // some other container's restriction: containers whose AllocationCountry
+                // was 'All' were allocated to UAE alone because AELOC8330 happened to
+                // be in the Container No field. "All" has to mean all.
+                FallbackCountries: _simCountries.ToList(),
                 Validate: _validate, EcomManualPriority: _ecomManualPriority,
                 TraceEnabled: _traceEnabled, BypassPass1b: _bypassPass1b);
 

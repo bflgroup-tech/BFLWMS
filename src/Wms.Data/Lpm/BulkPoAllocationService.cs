@@ -70,7 +70,11 @@ public sealed record BulkAllocationDefaults(
     string                  Country,
     string                  Warehouse,
     RunOption               RunOption,
-    IReadOnlyCollection<string> FallbackCountries,  // used when the order does not restrict
+    // Used ONLY when the order imposes no restriction (AllocationCountry = 'All',
+    // blank, or no order row). Must be the full SIM country list: 'All' means all,
+    // so anything narrower here silently turns an unrestricted order into a
+    // restricted one.
+    IReadOnlyCollection<string> FallbackCountries,
     bool                    Validate,
     bool                    EcomManualPriority,
     bool                    TraceEnabled,
@@ -455,6 +459,14 @@ public class BulkPoAllocationService(
                     ? permitted.Allowed
                     : defaults.FallbackCountries.ToList();
 
+                // Recorded on the result row: "restricted to X by the order" and
+                // "unrestricted, so all countries" produce identical country lists
+                // when the order happens to name one country, and telling them apart
+                // afterwards is exactly what was needed to spot the fallback bug.
+                var countrySource = permitted.Restricted
+                    ? $"AllocationCountry = '{permitted.RawValue}'"
+                    : $"order does not restrict{(permitted.RawValue is null ? "" : $" (AllocationCountry = '{permitted.RawValue}')")}";
+
                 if (allocCountries.Count == 0)
                 {
                     failed++;
@@ -508,7 +520,7 @@ public class BulkPoAllocationService(
                 totalRows += res.Allocations.Count;
                 totalQty  += qty;
                 await MarkDoneAsync(q.Id, "Success",
-                    $"{allocCountries.Count} country(ies): {string.Join(", ", allocCountries)}.",
+                    $"{allocCountries.Count} country(ies): {string.Join(", ", allocCountries)} — {countrySource}.",
                     res.Allocations.Count, qty, res.Blocked.Count, ct);
             }
             catch (Exception ex)
