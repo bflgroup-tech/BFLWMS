@@ -5,6 +5,7 @@
 @using Wms.Data.Lpm
 @attribute [Authorize(Policy = MenuKeys.PENDING_FOR_COUNTING)]
 @inject PendingForCountingService Svc
+@inject BulkPoAllocationService BulkSvc
 @inject Microsoft.JSInterop.IJSRuntime JS
 
 <PageTitle>WMS — Pending for Counting</PageTitle>
@@ -33,6 +34,15 @@
             <button class="aiwms-btn aiwms-btn-secondary" @onclick="ExportCsvAsync" disabled="@(_loading || _rows.Count == 0)">
                 Export to Excel
             </button>
+            @* Admin-only: this writes a work queue other people will run. *@
+            @if (_isAdmin)
+            {
+                <button class="aiwms-btn aiwms-btn-primary" @onclick="PushToBulkQueueAsync"
+                        disabled="@(_loading || _pushing || FilteredContnos.Count == 0)"
+                        title="Push the container numbers currently shown (after filters) into LPMSIM.dbo.WMS_BulkAllocationQueue as a new batch, then run it from Container Allocation.">
+                    @(_pushing ? "Pushing…" : $"Push {FilteredContnos.Count} contno(s) to Bulk Queue")
+                </button>
+            }
         </div>
         @if (AnyColumnFilterActive)
         {
@@ -133,6 +143,46 @@
 }
 
 @code {
+    [CascadingParameter] private Task<AuthenticationState>? AuthState { get; set; }
+
+    private bool _isAdmin;
+    private bool _pushing;
+
+    /// <summary>
+    /// Distinct containers behind the rows currently displayed. The grid is one row
+    /// per (container, PO, division, LPM), so a straight row list would queue the
+    /// same container many times.
+    /// </summary>
+    private List<string> FilteredContnos =>
+        FilteredRows.Select(r => r.ContNo)
+                    .Where(c => !string.IsNullOrWhiteSpace(c))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+    private async Task PushToBulkQueueAsync()
+    {
+        if (!_isAdmin || _pushing) return;
+        var contnos = FilteredContnos;
+        if (contnos.Count == 0) return;
+
+        var ok = await JS.InvokeAsync<bool>("confirm",
+            $"Push {contnos.Count} container(s) to the Bulk Allocation queue as a new batch?\n\n" +
+            string.Join(", ", contnos.Take(15)) + (contnos.Count > 15 ? $", … (+{contnos.Count - 15})" : "") +
+            "\n\nRun it from Container Allocation → Bulk PO Allocation.");
+        if (!ok) return;
+
+        _pushing = true;
+        await InvokeAsync(StateHasChanged);
+        try
+        {
+            var (batchNo, inserted) = await BulkSvc.PushBatchAsync(contnos);
+            ShowInfo($"Pushed {inserted:N0} container(s) as batch #{batchNo}. " +
+                     "Open Container Allocation → Bulk PO Allocation, pick the batch and run it.");
+        }
+        catch (Exception ex) { ShowError($"Push failed: {ex.Message}"); }
+        finally { _pushing = false; }
+    }
+
     private List<PendingForCountingRow> _rows = new();
     private DateTime _receiptDtFrom = PendingForCountingService.DefaultReceiptDtFrom;
     private string _search = "";
@@ -312,7 +362,15 @@
 
     // A pending worklist is worth showing straight away rather than making the
     // operator click Load on arrival; the button stays for refresh / date changes.
-    protected override Task OnInitializedAsync() => LoadAsync();
+    protected override async Task OnInitializedAsync()
+    {
+        if (AuthState is not null)
+        {
+            var auth = await AuthState;
+            _isAdmin = auth.User.IsInRole(Roles.Admin);
+        }
+        await LoadAsync();
+    }
 
     // <input type="date"> fires change events mid-typing; Blazor parses those
     // partial values as DateTime.MinValue and would overwrite the field before

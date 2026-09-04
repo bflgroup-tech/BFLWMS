@@ -8,6 +8,7 @@ namespace Wms.Data.Lpm;
 /// <summary>One row of dbo.WMS_BulkAllocationQueue.</summary>
 public sealed record BulkAllocationQueueRow(
     int       Id,
+    int       BatchNo,
     string    ContNo,
     string?   Country,
     string?   Warehouse,
@@ -21,6 +22,15 @@ public sealed record BulkAllocationQueueRow(
     DateTime? StartedTS,
     DateTime? CompletedTS,
     string?   RunBy);
+
+/// <summary>One batch in the queue, for the batch picker.</summary>
+public sealed record BulkAllocationBatchRow(
+    int       BatchNo,
+    int       Containers,
+    int       Pending,
+    int       Succeeded,
+    int       Failed,
+    DateTime? CreatedTS);
 
 /// <summary>Page inputs used for any queue row that does not override them.</summary>
 public sealed record BulkAllocationDefaults(
@@ -91,17 +101,75 @@ public class BulkPoAllocationService(
 
     // ===================== Queue reads/writes =====================
 
-    public async Task<List<BulkAllocationQueueRow>> GetQueueAsync(CancellationToken ct = default)
+    /// <summary>Queue rows, optionally narrowed to one batch.</summary>
+    public async Task<List<BulkAllocationQueueRow>> GetQueueAsync(
+        int? batchNo = null, CancellationToken ct = default)
     {
         await using var c = OpenOnPremBackup();
         var rows = await c.QueryAsync<BulkAllocationQueueRow>(new CommandDefinition(@"
-            SELECT Id, ContNo, Country, Warehouse, RunOption, IsActive,
+            SELECT Id, BatchNo, ContNo, Country, Warehouse, RunOption, IsActive,
                    Status, Message, RowsWritten, AllocatedQty, BlockedCount,
                    StartedTS, CompletedTS, RunBy
               FROM dbo.WMS_BulkAllocationQueue WITH (NOLOCK)
-             ORDER BY IsActive DESC, Id",
+             WHERE (@batch IS NULL OR BatchNo = @batch)
+             ORDER BY BatchNo DESC, IsActive DESC, Id",
+            new { batch = batchNo },
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         return rows.AsList();
+    }
+
+    /// <summary>One entry per batch for the picker, newest first.</summary>
+    public async Task<List<BulkAllocationBatchRow>> GetBatchesAsync(CancellationToken ct = default)
+    {
+        await using var c = OpenOnPremBackup();
+        var rows = await c.QueryAsync<BulkAllocationBatchRow>(new CommandDefinition(@"
+            SELECT BatchNo,
+                   Containers = COUNT(*),
+                   Pending    = SUM(CASE WHEN IsActive = 1 AND ISNULL(Status,'') <> 'Success' THEN 1 ELSE 0 END),
+                   Succeeded  = SUM(CASE WHEN Status = 'Success' THEN 1 ELSE 0 END),
+                   Failed     = SUM(CASE WHEN Status = 'Failed'  THEN 1 ELSE 0 END),
+                   CreatedTS  = MIN(CreatedTS)
+              FROM dbo.WMS_BulkAllocationQueue WITH (NOLOCK)
+             GROUP BY BatchNo
+             ORDER BY BatchNo DESC",
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        return rows.AsList();
+    }
+
+    /// <summary>
+    /// Push a set of container numbers in as a NEW batch, and return its number.
+    ///
+    /// Containers already sitting in that same batch are not re-inserted (the
+    /// unique index would reject them), but a container queued in an EARLIER batch
+    /// is allowed through: batches are units of work, and a container that failed
+    /// in one has to be re-runnable in the next.
+    /// </summary>
+    public async Task<(int BatchNo, int Inserted)> PushBatchAsync(
+        IEnumerable<string> contnos, CancellationToken ct = default)
+    {
+        var list = contnos.Where(s => !string.IsNullOrWhiteSpace(s))
+                          .Select(s => s.Trim())
+                          .Distinct(StringComparer.OrdinalIgnoreCase)
+                          .ToList();
+        if (list.Count == 0) return (0, 0);
+
+        await using var c = OpenOnPremBackup();
+        // The batch number and the insert share one statement so two people
+        // pushing at the same moment cannot land on the same number.
+        var batchNo = await c.ExecuteScalarAsync<int>(new CommandDefinition(@"
+            DECLARE @batch INT;
+            SELECT @batch = ISNULL(MAX(BatchNo), 0) + 1 FROM dbo.WMS_BulkAllocationQueue WITH (TABLOCKX);
+
+            INSERT INTO dbo.WMS_BulkAllocationQueue (BatchNo, ContNo)
+            SELECT @batch, LTRIM(RTRIM(value))
+              FROM STRING_SPLIT(@csv, ',')
+             WHERE LTRIM(RTRIM(value)) <> '';
+
+            SELECT @batch;",
+            new { csv = string.Join(",", list) },
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+
+        return (batchNo, list.Count);
     }
 
     /// <summary>
@@ -109,14 +177,17 @@ public class BulkPoAllocationService(
     /// default — re-running them would only skip, and wiping their result would
     /// lose the record of what the batch actually achieved.
     /// </summary>
-    public async Task<int> ResetQueueAsync(bool includeSucceeded = false, CancellationToken ct = default)
+    public async Task<int> ResetQueueAsync(
+        int? batchNo = null, bool includeSucceeded = false, CancellationToken ct = default)
     {
         await using var c = OpenOnPremBackup();
         return await c.ExecuteAsync(new CommandDefinition($@"
             UPDATE dbo.WMS_BulkAllocationQueue
                SET Status = NULL, Message = NULL, RowsWritten = NULL, AllocatedQty = NULL,
                    BlockedCount = NULL, StartedTS = NULL, CompletedTS = NULL, RunBy = NULL
-             WHERE 1 = 1 {(includeSucceeded ? "" : "AND ISNULL(Status,'') <> 'Success'")}",
+             WHERE (@batch IS NULL OR BatchNo = @batch)
+               {(includeSucceeded ? "" : "AND ISNULL(Status,'') <> 'Success'")}",
+            new { batch = batchNo },
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
     }
 
@@ -152,14 +223,16 @@ public class BulkPoAllocationService(
 
     // ===================== The run =====================
 
+    /// <summary>Run the queue, or just one batch of it when batchNo is given.</summary>
     public async Task<BulkAllocationRunResult> RunAllAsync(
         BulkAllocationDefaults defaults,
+        int? batchNo = null,
         IProgress<BulkAllocationProgress>? progress = null,
         CancellationToken ct = default)
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
 
-        var queue = (await GetQueueAsync(ct))
+        var queue = (await GetQueueAsync(batchNo, ct))
             .Where(q => q.IsActive && !string.Equals(q.Status, "Success", StringComparison.OrdinalIgnoreCase))
             .ToList();
 
