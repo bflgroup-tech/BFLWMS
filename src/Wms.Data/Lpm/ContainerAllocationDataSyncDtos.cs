@@ -10,7 +10,21 @@ public record ApprovedContnoRow(
     int       BatchCount,
     int       TotalAllocatedQty,
     DateTime  LatestApprovedDt,
-    bool      AlreadySynced);
+    bool      AlreadySynced,
+    string?   Status,      // WmsContAllocationReviewStatus.Status; null = not reviewed yet
+    string?   Remarks,
+    string?   StatusBy,
+    DateTime? StatusTS);
+
+/// <summary>The review states the Approved Containers grid offers.</summary>
+public static class ContAllocationReviewStatus
+{
+    public const string GoodToGo    = "Good to GO";
+    public const string BuyerReview = "Buyer Review";
+
+    /// <summary>Options in the order the dropdown shows them. Empty = clear the status.</summary>
+    public static readonly string[] All = { GoodToGo, BuyerReview };
+}
 
 /// <summary>One row in the "Recent Sync Activity" table — last N rows from
 /// WMS_ContAllocationDataSync_Log, newest first.</summary>
