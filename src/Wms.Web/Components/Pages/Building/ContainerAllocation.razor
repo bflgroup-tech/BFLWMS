@@ -206,6 +206,16 @@
     <div class="aiwms-card-header" style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px">
         <span>Bulk PO Allocation — @_bulkQueue.Count container(s) queued</span>
         <div style="display:flex; gap:8px; align-items:center">
+            <label style="font-size:11px; font-weight:700; color:var(--text-secondary)">BATCH</label>
+            <select @bind="_bulkBatch" @bind:after="ReloadBulkQueueAsync" disabled="@(_busy || _bulkBusy)"
+                    style="padding:4px 8px; font-size:12px; border:1px solid var(--border-default); border-radius:var(--r-sm); background:white"
+                    title="Run just one batch, or every queued container. Batches are pushed from Pending for Counting.">
+                <option value="">All batches</option>
+                @foreach (var b in _bulkBatches)
+                {
+                    <option value="@b.BatchNo">#@b.BatchNo — @b.Containers cont, @b.Pending pending</option>
+                }
+            </select>
             <button class="aiwms-btn aiwms-btn-secondary" style="font-size:11px; padding:4px 10px"
                     @onclick="ReloadBulkQueueAsync" disabled="@(_busy || _bulkBusy)">Refresh list</button>
             <button class="aiwms-btn aiwms-btn-secondary" style="font-size:11px; padding:4px 10px"
@@ -215,8 +225,8 @@
             </button>
             <button class="aiwms-btn aiwms-btn-primary"
                     @onclick="RunBulkAsync" disabled="@(_busy || _bulkBusy || BulkPendingCount == 0)"
-                    title="Run the allocation for every active, not-yet-successful container in the queue, using this page's Run Option and checkboxes. Allocation Countries come from each container's own order.">
-                Run PO Allocation for All (@BulkPendingCount)
+                    title="Run the allocation for every active, not-yet-successful container in the selected batch (or the whole queue), using this page's Run Option and checkboxes. Allocation Countries come from each container's own order.">
+                Run PO Allocation for @(_bulkBatch.Length == 0 ? "All" : $"Batch #{_bulkBatch}") (@BulkPendingCount)
             </button>
         </div>
     </div>
@@ -260,6 +270,7 @@
             <table class="aiwms-table aiwms-table-dense">
                 <thead>
                     <tr>
+                        <th>Batch</th>
                         <th>ContNo</th>
                         <th>Country</th>
                         <th>Warehouse</th>
@@ -276,6 +287,7 @@
                     @foreach (var q in _bulkQueue)
                     {
                         <tr style="@(q.IsActive ? "" : "opacity:.5")">
+                            <td>#@q.BatchNo</td>
                             <td style="font-family:var(--font-mono)">@q.ContNo</td>
                             <td>@(q.Country   ?? _country)</td>
                             <td>@(q.Warehouse ?? _warehouse)</td>
@@ -1138,6 +1150,10 @@
     // ===================== Bulk PO Allocation =====================
 
     private List<BulkAllocationQueueRow> _bulkQueue = new();
+    private List<BulkAllocationBatchRow> _bulkBatches = new();
+    // "" = every batch. Bound to a <select>, hence string rather than int?.
+    private string _bulkBatch = "";
+    private int?   BulkBatchNo => int.TryParse(_bulkBatch, out var n) ? n : null;
     private bool   _bulkBusy;
     private int    _bulkDone, _bulkTotal;
     private string _bulkPhase = "";
@@ -1158,10 +1174,17 @@
 
     private async Task ReloadBulkQueueAsync()
     {
-        try { _bulkQueue = await BulkSvc.GetQueueAsync(); }
+        try
+        {
+            _bulkBatches = await BulkSvc.GetBatchesAsync();
+            // A batch that has since been cleared would otherwise leave the picker
+            // pointing at nothing and the list mysteriously empty.
+            if (BulkBatchNo is not null && !_bulkBatches.Any(b => b.BatchNo == BulkBatchNo)) _bulkBatch = "";
+            _bulkQueue = await BulkSvc.GetQueueAsync(BulkBatchNo);
+        }
         catch (Exception ex)
         {
-            _bulkQueue = new();
+            _bulkQueue = new(); _bulkBatches = new();
             _bulkMessage = $"Could not read the bulk queue: {ex.Message}";
             _bulkIsError = true;
         }
@@ -1171,8 +1194,9 @@
     {
         try
         {
-            var n = await BulkSvc.ResetQueueAsync();
-            _bulkMessage = $"Reset {n} row(s) to Pending. Rows that already succeeded were left alone.";
+            var n = await BulkSvc.ResetQueueAsync(BulkBatchNo);
+            _bulkMessage = $"Reset {n} row(s) to Pending{(BulkBatchNo is null ? "" : $" in batch #{BulkBatchNo}")}. " +
+                           "Rows that already succeeded were left alone.";
             _bulkIsError = false;
             await ReloadBulkQueueAsync();
         }
@@ -1186,7 +1210,8 @@
         // Same reasoning as the single-container confirm: this can run for many
         // minutes and writes real allocations, so the inputs get one last look.
         var ok = await JS.InvokeAsync<bool>("confirm",
-            $"Run PO Allocation for {BulkPendingCount} container(s)?\n\n" +
+            $"Run PO Allocation for {BulkPendingCount} container(s)" +
+            $"{(BulkBatchNo is null ? " across all batches" : $" in batch #{BulkBatchNo}")}?\n\n" +
             $"Run Option: {_runOption}\n" +
             $"ECOM: {(_ecomManualPriority ? "Follow Manual Allocation" : "Follow PO Allocation logic")}\n" +
             $"Validate first: {(_validate ? "yes" : "no")}\n\n" +
@@ -1222,7 +1247,7 @@
                 await InvokeAsync(StateHasChanged);
             });
 
-            var res = await BulkSvc.RunAllAsync(defaults, progress);
+            var res = await BulkSvc.RunAllAsync(defaults, BulkBatchNo, progress);
 
             _bulkMessage =
                 $"Ran {res.Total} container(s) in {FmtElapsed(res.ElapsedMs)} — " +
