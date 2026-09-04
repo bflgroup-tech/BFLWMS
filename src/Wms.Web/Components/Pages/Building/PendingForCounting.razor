@@ -34,6 +34,15 @@
                 Export to Excel
             </button>
         </div>
+        @if (AnyColumnFilterActive)
+        {
+            <div style="display:flex; align-items:center; gap:10px;">
+                <span style="font-size:12px; color:var(--text-secondary)">
+                    @FilteredRows.Count.ToString("N0") of @_rows.Count.ToString("N0") rows
+                </span>
+                <button class="aiwms-btn aiwms-btn-secondary" @onclick="ClearColumnFilters">Clear all filters</button>
+            </div>
+        }
     </div>
 
     @if (!string.IsNullOrEmpty(_message))
@@ -47,14 +56,18 @@
     <div class="aiwms-section">
         <div style="overflow:auto; max-height:calc(100vh - 300px);">
         <table class="aiwms-table aiwms-table-dense" style="table-layout:fixed; width:100%; border-collapse:separate; border-spacing:0;">
+            @* One col per column — Warehouse and Allocation Country were added to the
+               header without widths, leaving the last two to share whatever was left. *@
             <colgroup>
-                <col style="width:140px;" />
-                <col style="width:110px;" />
-                <col style="width:110px;" />
-                <col style="width:130px;" />
-                <col style="width:180px;" />
-                <col style="width:100px;" />
-                <col style="width:120px;" />
+                <col style="width:130px;" />  @* Contno            *@
+                <col style="width:105px;" />  @* ReceiptDt         *@
+                <col style="width:95px;"  />  @* Ageing Days       *@
+                <col style="width:120px;" />  @* Warehouse         *@
+                <col style="width:150px;" />  @* Allocation Country*@
+                <col style="width:100px;" />  @* PONO              *@
+                <col style="width:175px;" />  @* Division          *@
+                <col style="width:90px;"  />  @* Qty               *@
+                <col style="width:100px;" />  @* LPM               *@
             </colgroup>
             <thead style="position:sticky; top:0; z-index:5; background:var(--bfl-black);">
                 <tr>
@@ -67,6 +80,22 @@
                     <th style="cursor:pointer" @onclick='() => Sort("Division")'>Division @Arrow("Division")</th>
                     <th style="cursor:pointer; text-align:right;" @onclick='() => Sort("Qty")'>Qty @Arrow("Qty")</th>
                     <th style="cursor:pointer" @onclick='() => Sort("LPM")'>LPM @Arrow("LPM")</th>
+                </tr>
+                @* Excel-style filter row. Each dropdown lists the values still present
+                   under the OTHER columns' filters, so narrowing one column narrows the
+                   choices in the rest — picking a combination that yields nothing is
+                   not offered. Nothing selected = column unfiltered, matching Excel's
+                   "all ticked". Qty has no filter: it is a measure, not a category. *@
+                <tr style="background:white;">
+                    <th style="padding:4px 6px;">@FilterCell("ContNo")</th>
+                    <th style="padding:4px 6px;">@FilterCell("ReceiptDt")</th>
+                    <th style="padding:4px 6px;">@FilterCell("AgeingDays")</th>
+                    <th style="padding:4px 6px;">@FilterCell("Warehouse")</th>
+                    <th style="padding:4px 6px;">@FilterCell("AllocationCountry")</th>
+                    <th style="padding:4px 6px;">@FilterCell("PONo")</th>
+                    <th style="padding:4px 6px;">@FilterCell("Division")</th>
+                    <th style="padding:4px 6px;"></th>
+                    <th style="padding:4px 6px;">@FilterCell("LPM")</th>
                 </tr>
             </thead>
             <tbody>
@@ -137,16 +166,125 @@
             System.Globalization.DateTimeStyles.None, out var d)
             ? d : DateTime.MaxValue;
 
+    // ===================== Excel-style column filters =====================
+
+    /// <summary>Shown for an empty cell, so "no value" is pickable like it is in Excel.</summary>
+    private const string BlankOption = "(blank)";
+
+    // Column key -> the values ticked in that column's dropdown. An absent or empty
+    // entry means the column is unfiltered.
+    private readonly Dictionary<string, HashSet<string>> _colFilters = new();
+
+    private bool AnyColumnFilterActive => _colFilters.Values.Any(v => v.Count > 0);
+
+    private void ClearColumnFilters() => _colFilters.Clear();
+
+    /// <summary>
+    /// The cell text a column filters on. Must match what the body renders, or the
+    /// dropdown would offer values the user cannot see — hence ReceiptDt formats the
+    /// same dd/MM/yyyy the row does.
+    /// </summary>
+    private static string CellValue(PendingForCountingRow r, string col)
+    {
+        var v = col switch
+        {
+            "ContNo"            => r.ContNo,
+            "ReceiptDt"         => r.ReceiptDt?.ToString("dd/MM/yyyy"),
+            "AgeingDays"        => r.AgeingDays?.ToString(),
+            "Warehouse"         => r.Warehouse,
+            "AllocationCountry" => r.AllocationCountry,
+            "PONo"              => r.PONo,
+            "Division"          => r.Division,
+            "LPM"               => r.LPM,
+            _                   => null,
+        };
+        return string.IsNullOrWhiteSpace(v) ? BlankOption : v.Trim();
+    }
+
+    private bool PassesColumnFilters(PendingForCountingRow r, string? exceptCol)
+    {
+        foreach (var (col, picked) in _colFilters)
+        {
+            if (picked.Count == 0 || col == exceptCol) continue;
+            if (!picked.Contains(CellValue(r, col))) return false;
+        }
+        return true;
+    }
+
+    private bool PassesSearch(PendingForCountingRow r) =>
+        string.IsNullOrWhiteSpace(_search)
+        || (r.ContNo?.Contains(_search, StringComparison.OrdinalIgnoreCase) ?? false)
+        || (r.PONo?.Contains(_search, StringComparison.OrdinalIgnoreCase)   ?? false);
+
+    /// <summary>
+    /// Options for one column: the distinct values surviving every OTHER filter, so
+    /// the lists stay consistent with each other as the user narrows things down.
+    /// Ordered by what the column actually means — dates and LPM chronologically,
+    /// ageing numerically — rather than as text, which would put 10 before 7 and
+    /// JAN-27 before SEP-26.
+    /// </summary>
+    private List<string> OptionsFor(string col)
+    {
+        var values = _rows.Where(r => PassesSearch(r) && PassesColumnFilters(r, col))
+                          .Select(r => CellValue(r, col))
+                          .Distinct()
+                          .ToList();
+
+        return col switch
+        {
+            "ReceiptDt"  => values.OrderBy(v => DateTime.TryParseExact(v, "dd/MM/yyyy",
+                                System.Globalization.CultureInfo.InvariantCulture,
+                                System.Globalization.DateTimeStyles.None, out var d) ? d : DateTime.MaxValue).ToList(),
+            "AgeingDays" => values.OrderBy(v => int.TryParse(v, out var n) ? n : int.MaxValue).ToList(),
+            "LPM"        => values.OrderBy(v => LpmOrder(v)).ToList(),
+            _            => values.OrderBy(v => v, StringComparer.OrdinalIgnoreCase).ToList(),
+        };
+    }
+
+    private RenderFragment FilterCell(string col) => builder =>
+    {
+        var options = OptionsFor(col);
+        var picked  = _colFilters.TryGetValue(col, out var p) ? p : new HashSet<string>();
+
+        builder.OpenComponent<MudSelect<string>>(0);
+        builder.AddAttribute(1, "T", "string");
+        builder.AddAttribute(2, "Dense", true);
+        builder.AddAttribute(3, "MultiSelection", true);
+        builder.AddAttribute(4, "SelectAll", true);
+        builder.AddAttribute(5, "Variant", Variant.Outlined);
+        builder.AddAttribute(6, "Margin", Margin.Dense);
+        builder.AddAttribute(7, "Placeholder", "All");
+        builder.AddAttribute(8, "Style", "font-size:11px");
+        builder.AddAttribute(9, "SelectedValues", (IEnumerable<string>)picked);
+        builder.AddAttribute(10, "SelectedValuesChanged",
+            EventCallback.Factory.Create<IEnumerable<string>>(this, v => SetColumnFilter(col, v)));
+        builder.AddAttribute(11, "ChildContent", (RenderFragment)(b2 =>
+        {
+            var seq = 0;
+            foreach (var o in options)
+            {
+                b2.OpenComponent<MudSelectItem<string>>(seq++);
+                b2.AddAttribute(seq++, "T", "string");
+                b2.AddAttribute(seq++, "Value", o);
+                b2.CloseComponent();
+            }
+        }));
+        builder.CloseComponent();
+    };
+
+    private void SetColumnFilter(string col, IEnumerable<string>? values)
+    {
+        var set = values is null ? new HashSet<string>() : values.ToHashSet();
+        if (set.Count == 0) _colFilters.Remove(col);
+        else _colFilters[col] = set;
+    }
+
     private List<PendingForCountingRow> FilteredRows
     {
         get
         {
-            IEnumerable<PendingForCountingRow> rows = _rows;
-
-            if (!string.IsNullOrWhiteSpace(_search))
-                rows = rows.Where(r =>
-                       (r.ContNo?.Contains(_search, StringComparison.OrdinalIgnoreCase) ?? false)
-                    || (r.PONo?.Contains(_search, StringComparison.OrdinalIgnoreCase)   ?? false));
+            IEnumerable<PendingForCountingRow> rows =
+                _rows.Where(r => PassesSearch(r) && PassesColumnFilters(r, null));
 
             Func<PendingForCountingRow, object?> key = _sortKey switch
             {
@@ -186,7 +324,10 @@
 
     private async Task LoadAsync()
     {
-        _loading = true; _message = ""; _rows.Clear();
+        // Drop the column filters: they hold values from the previous result set, and
+        // a filter pinned to a container that is no longer pending would show an empty
+        // grid with no obvious cause.
+        _loading = true; _message = ""; _rows.Clear(); _colFilters.Clear();
         await InvokeAsync(StateHasChanged);
         try
         {
