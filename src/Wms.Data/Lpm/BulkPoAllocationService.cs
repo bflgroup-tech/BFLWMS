@@ -83,6 +83,14 @@ public sealed record BulkAllocationDefaults(
 /// <summary>Progress ping for the bulk run — one per container, plus phase text.</summary>
 public sealed record BulkAllocationProgress(int Done, int Total, string ContNo, string Phase);
 
+/// <summary>Outcome of a delete-and-re-queue pass.</summary>
+public sealed record BulkRequeueResult(
+    int          Total,
+    int          Deleted,        // had an allocation, now removed and re-queued
+    int          NothingToDelete,// had none; re-queued anyway
+    int          Blocked,        // synced / open box / scanned — left alone
+    List<string> BlockedContnos);
+
 /// <summary>Outcome of one whole bulk run.</summary>
 public sealed record BulkAllocationRunResult(
     int Total, int Succeeded, int Skipped, int Failed,
@@ -225,6 +233,72 @@ public class BulkPoAllocationService(
              WHERE (@batch IS NULL OR BatchNo = @batch)
                {(includeSucceeded ? "" : "AND ISNULL(Status,'') <> 'Success'")}",
             new { batch = batchNo },
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+    }
+
+    /// <summary>
+    /// Delete each container's existing allocation and put its queue row back to
+    /// Pending, so a whole batch can be re-run from scratch.
+    ///
+    /// Deleting goes through ContainerAllocationService.ResetFinalAsync, which
+    /// already refuses when the container is synced to Azure, has an open box, or
+    /// has scan data. Those refusals are recorded against the row and the container
+    /// is LEFT AS IT WAS — a container whose allocation is already downstream must
+    /// not be quietly re-queued, because re-running it would not undo what shipped.
+    /// </summary>
+    public async Task<BulkRequeueResult> DeleteAndRequeueAsync(
+        BulkAllocationDefaults defaults,
+        int? batchNo = null,
+        IProgress<BulkAllocationProgress>? progress = null,
+        CancellationToken ct = default)
+    {
+        var queue = (await GetQueueAsync(batchNo, ct)).Where(q => q.IsActive).ToList();
+        int deleted = 0, blocked = 0, nothing = 0, done = 0;
+        var blockedContnos = new List<string>();
+
+        foreach (var q in queue)
+        {
+            ct.ThrowIfCancellationRequested();
+            done++;
+            var contno    = q.ContNo.Trim();
+            var country   = string.IsNullOrWhiteSpace(q.Country) ? defaults.Country : q.Country.Trim();
+            var runOption = ParseRunOption(q.RunOption) ?? defaults.RunOption;
+            progress?.Report(new BulkAllocationProgress(done, queue.Count, contno, "deleting"));
+
+            try
+            {
+                var rows = await alloc.ResetFinalAsync(country, contno, runOption, ct);
+                if (rows > 0) deleted++; else nothing++;
+                await SetStatusAsync(q.Id, null,
+                    rows > 0 ? $"Previous allocation deleted ({rows:N0} rows) — re-queued." : null, ct);
+            }
+            catch (Exception ex)
+            {
+                // Left at its existing Status on purpose: it is still allocated.
+                blocked++;
+                blockedContnos.Add(contno);
+                await SetStatusAsync(q.Id, q.Status, $"Not re-queued — {ex.Message}", ct);
+            }
+        }
+
+        return new BulkRequeueResult(queue.Count, deleted, nothing, blocked, blockedContnos);
+    }
+
+    /// <summary>Write Status/Message directly. A null status means Pending.</summary>
+    private async Task SetStatusAsync(int id, string? status, string? message, CancellationToken ct)
+    {
+        await using var c = OpenOnPremBackup();
+        await c.ExecuteAsync(new CommandDefinition(@"
+            UPDATE dbo.WMS_BulkAllocationQueue
+               SET Status = @st, Message = @msg,
+                   RowsWritten = NULL, AllocatedQty = NULL, BlockedCount = NULL,
+                   StartedTS = NULL, CompletedTS = NULL
+             WHERE Id = @id",
+            new
+            {
+                id, st = status,
+                msg = message is { Length: > 1000 } ? message[..1000] : message,
+            },
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
     }
 
