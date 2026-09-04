@@ -383,17 +383,27 @@ public class BulkPoAllocationService(
 
     // ===================== The run =====================
 
-    /// <summary>Run the queue, or just one batch of it when batchNo is given.</summary>
+    /// <summary>
+    /// Run the queue, or just one batch of it when batchNo is given.
+    ///
+    /// <paramref name="onlyNotAllocated"/> narrows the walk to containers that came
+    /// away with nothing — Failed, or never attempted. It deliberately leaves
+    /// Skipped rows alone: a container is skipped because it ALREADY has an
+    /// allocation (under this Run Option or another one), so re-running it would
+    /// only skip again. "Not allocated" means no allocation exists, not "the last
+    /// run did not write one".
+    /// </summary>
     public async Task<BulkAllocationRunResult> RunAllAsync(
         BulkAllocationDefaults defaults,
         int? batchNo = null,
+        bool onlyNotAllocated = false,
         IProgress<BulkAllocationProgress>? progress = null,
         CancellationToken ct = default)
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
 
         var queue = (await GetQueueAsync(batchNo, ct))
-            .Where(q => q.IsActive && !string.Equals(q.Status, "Success", StringComparison.OrdinalIgnoreCase))
+            .Where(q => q.IsActive && IsRunnable(q.Status, onlyNotAllocated))
             .ToList();
 
         int ok = 0, skipped = 0, failed = 0, totalRows = 0, totalQty = 0, done = 0;
@@ -515,6 +525,18 @@ public class BulkPoAllocationService(
     }
 
     // ===================== helpers =====================
+
+    /// <summary>
+    /// Which queue rows a run picks up. Shared by the service and the page so the
+    /// button's count and the walk can never disagree about what will be attempted.
+    /// </summary>
+    public static bool IsRunnable(string? status, bool onlyNotAllocated)
+    {
+        if (string.Equals(status, "Success", StringComparison.OrdinalIgnoreCase)) return false;
+        if (!onlyNotAllocated) return true;
+        // Skipped == an allocation already exists, so it is not "not allocated".
+        return !string.Equals(status, "Skipped", StringComparison.OrdinalIgnoreCase);
+    }
 
     private static RunOption? ParseRunOption(string? s) =>
         string.IsNullOrWhiteSpace(s) ? null

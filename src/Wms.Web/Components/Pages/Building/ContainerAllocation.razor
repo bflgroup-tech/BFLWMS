@@ -223,6 +223,12 @@
                     title="Clear Status/Message on everything except rows that already succeeded, so the list can be run again.">
                 Reset results
             </button>
+            <button class="aiwms-btn aiwms-btn-secondary" style="font-size:11px; padding:4px 10px"
+                    @onclick="RunBulkNotAllocatedAsync"
+                    disabled="@(_busy || _bulkBusy || BulkNotAllocatedCount == 0)"
+                    title="Re-run only the containers that came away with nothing — Failed, or never attempted. Skipped rows are left alone: they were skipped because an allocation already exists, so re-running would only skip again.">
+                Re-run not allocated (@BulkNotAllocatedCount)
+            </button>
             <button class="aiwms-btn aiwms-btn-primary"
                     @onclick="RunBulkAsync" disabled="@(_busy || _bulkBusy || BulkPendingCount == 0)"
                     title="Run the allocation for every active, not-yet-successful container in the selected batch (or the whole queue), using this page's Run Option and checkboxes. Allocation Countries come from each container's own order.">
@@ -780,7 +786,10 @@
     private bool _validate = true;
     // "manual" | "po". Default stays manual — that is what the old checkbox
     // defaulted to, so existing behaviour is unchanged until someone switches.
-    private string _ecomMode = "manual";
+    // "po" — ECOM competes as an ordinary store on Volume Group + SKU Max tier.
+    // This is the default because it is what the business runs day to day; Manual
+    // is the exception, used only when a buyer has loaded a specific ECOM sheet.
+    private string _ecomMode = "po";
     private bool _ecomManualPriority => string.Equals(_ecomMode, "manual", StringComparison.OrdinalIgnoreCase);
     private bool _traceEnabled = true;
     private bool _bypassPass1b = true;
@@ -1160,9 +1169,13 @@
     private string _bulkMessage = "";
     private bool   _bulkIsError;
 
-    /// <summary>What a run would actually attempt — active, not already succeeded.</summary>
+    /// <summary>What a full run would attempt — active, not already succeeded.</summary>
     private int BulkPendingCount => _bulkQueue.Count(q =>
-        q.IsActive && !string.Equals(q.Status, "Success", StringComparison.OrdinalIgnoreCase));
+        q.IsActive && BulkPoAllocationService.IsRunnable(q.Status, onlyNotAllocated: false));
+
+    /// <summary>What a "not allocated" re-run would attempt — Failed or never tried.</summary>
+    private int BulkNotAllocatedCount => _bulkQueue.Count(q =>
+        q.IsActive && BulkPoAllocationService.IsRunnable(q.Status, onlyNotAllocated: true));
 
     private static string BulkPillClass(string? status) => status switch
     {
@@ -1203,14 +1216,19 @@
         catch (Exception ex) { _bulkMessage = $"Reset failed: {ex.Message}"; _bulkIsError = true; }
     }
 
-    private async Task RunBulkAsync()
+    private Task RunBulkAsync()               => RunBulkCoreAsync(onlyNotAllocated: false);
+    private Task RunBulkNotAllocatedAsync()   => RunBulkCoreAsync(onlyNotAllocated: true);
+
+    private async Task RunBulkCoreAsync(bool onlyNotAllocated)
     {
-        if (BulkPendingCount == 0 || _bulkBusy) return;
+        var count = onlyNotAllocated ? BulkNotAllocatedCount : BulkPendingCount;
+        if (count == 0 || _bulkBusy) return;
 
         // Same reasoning as the single-container confirm: this can run for many
         // minutes and writes real allocations, so the inputs get one last look.
         var ok = await JS.InvokeAsync<bool>("confirm",
-            $"Run PO Allocation for {BulkPendingCount} container(s)" +
+            $"{(onlyNotAllocated ? "Re-run the not-allocated" : "Run PO Allocation for")} " +
+            $"{count} container(s)" +
             $"{(BulkBatchNo is null ? " across all batches" : $" in batch #{BulkBatchNo}")}?\n\n" +
             $"Run Option: {_runOption}\n" +
             $"ECOM: {(_ecomManualPriority ? "Follow Manual Allocation" : "Follow PO Allocation logic")}\n" +
@@ -1220,7 +1238,7 @@
         if (!ok) return;
 
         _bulkBusy = true; _bulkMessage = ""; _bulkIsError = false;
-        _bulkDone = 0; _bulkTotal = BulkPendingCount; _bulkPhase = "Starting…";
+        _bulkDone = 0; _bulkTotal = count; _bulkPhase = "Starting…";
         await InvokeAsync(StateHasChanged);
 
         try
@@ -1247,7 +1265,7 @@
                 await InvokeAsync(StateHasChanged);
             });
 
-            var res = await BulkSvc.RunAllAsync(defaults, BulkBatchNo, progress);
+            var res = await BulkSvc.RunAllAsync(defaults, BulkBatchNo, onlyNotAllocated, progress);
 
             _bulkMessage =
                 $"Ran {res.Total} container(s) in {FmtElapsed(res.ElapsedMs)} — " +
