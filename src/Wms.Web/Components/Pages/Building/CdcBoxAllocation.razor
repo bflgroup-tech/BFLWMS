@@ -53,9 +53,15 @@
                 @foreach (var c in _countries) { <MudSelectItem T="string" Value="@c">@c</MudSelectItem> }
             </MudSelect>
         </div>
-        <button class="aiwms-btn aiwms-btn-primary" @onclick="AllocateAsync" disabled="@(_busy || !CanAllocate)">
-            Allocate DC SOH to Stores
-        </button>
+        <div style="display:flex; gap:10px">
+            <button class="aiwms-btn aiwms-btn-secondary" @onclick="AllocateAsync" disabled="@(_busy || !CanAllocate)">
+                Allocate DC SOH to Stores
+            </button>
+            <button class="aiwms-btn aiwms-btn-primary" @onclick="ProcessAsync" disabled="@(_busy || !CanAllocate)"
+                    title="Turn the store allocation into a whole-box shipment plan. Each box goes to a single country; units may split across stores within it.">
+                Process
+            </button>
+        </div>
     </div>
 
     @if (_busy && !string.IsNullOrEmpty(_progress))
@@ -200,6 +206,146 @@
     </div>
 }
 
+@if (_boxHeader is not null)
+{
+    <div class="aiwms-section">
+        <div class="aiwms-card-header">Box Shipment Plan</div>
+        <div style="display:flex; gap:24px; flex-wrap:wrap; font-size:12px; margin-bottom:12px">
+            <div><b>Run</b><br />@_boxHeader.RunTS.ToString("dd-MMM-yyyy HH:mm") (GST)</div>
+            <div><b>By</b><br />@(_boxHeader.RunBy ?? "—")</div>
+            <div><b>LPMs</b><br />@(_boxHeader.LpmScope ?? "—")</div>
+            <div><b>Countries</b><br />@(_boxHeader.CountryScope ?? "—")</div>
+            <div><b>Boxes</b><br />@_boxHeader.Boxes.ToString("N0")</div>
+            <div><b>Pieces</b><br />@_boxHeader.Qty.ToString("N0")</div>
+        </div>
+
+        @if (_splitBoxes.Count > 0)
+        {
+            <div class="aiwms-alert error" style="margin-bottom:12px">
+                <b>Box integrity broken:</b> @_splitBoxes.Count box(es) reached more than one country —
+                @string.Join(", ", _splitBoxes.Take(10).Select(b => $"{b.BoxNo} ({b.Countries})")).
+                This should never happen; do not ship this plan.
+            </div>
+        }
+        else
+        {
+            <div style="font-size:11px; color:#166534; margin-bottom:12px">
+                ✓ Box integrity verified — every box in the plan goes to exactly one country.
+            </div>
+        }
+
+        @if (_boxSummary.Count > 0)
+        {
+            <table class="aiwms-table" style="max-width:760px">
+                <thead>
+                    <tr>
+                        <th>Country</th>
+                        <th style="text-align:right">Boxes</th>
+                        <th style="text-align:right">Stores</th>
+                        <th style="text-align:right">SKUs</th>
+                        <th style="text-align:right">Pieces</th>
+                        <th style="text-align:right" title="Units placed beyond the store's DC target because a box ships whole.">Over Target</th>
+                        <th style="text-align:right">Share</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @{ var boxGrand = _boxSummary.Sum(s => s.Qty); }
+                    @foreach (var s in _boxSummary)
+                    {
+                        <tr>
+                            <td>@s.Country</td>
+                            <td style="text-align:right">@s.Boxes.ToString("N0")</td>
+                            <td style="text-align:right">@s.Stores.ToString("N0")</td>
+                            <td style="text-align:right">@s.Skus.ToString("N0")</td>
+                            <td style="text-align:right">@s.Qty.ToString("N0")</td>
+                            <td style="text-align:right">@s.OverTarget.ToString("N0")</td>
+                            <td style="text-align:right">@(boxGrand > 0 ? (s.Qty * 100.0 / boxGrand).ToString("N1") + "%" : "—")</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        }
+
+        @if (_unplaced.Count > 0)
+        {
+            <div style="margin-top:16px">
+                <div style="font-size:12px; font-weight:700; color:#92400e; margin-bottom:6px">
+                    Unplaced — @_unplaced.Count line(s), @_unplaced.Sum(u => u.Qty).ToString("N0") pcs
+                </div>
+                <table class="aiwms-table aiwms-table-dense" style="max-width:900px">
+                    <thead><tr><th>Box</th><th>LPM</th><th style="text-align:right">Qty</th><th>Reason</th></tr></thead>
+                    <tbody>
+                        @foreach (var u in _unplaced.Take(200))
+                        {
+                            <tr>
+                                <td style="font-family:var(--font-mono)">@u.BoxNo</td>
+                                <td>@(u.LPMDt?.ToString("MMM-yyyy") ?? "")</td>
+                                <td style="text-align:right">@u.Qty.ToString("N0")</td>
+                                <td>@u.Reason</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </div>
+
+    <div class="aiwms-section">
+        <div class="aiwms-card-header">Box Plan Detail</div>
+        <div style="display:grid; grid-template-columns: 220px 220px auto auto; gap:12px; align-items:end; margin-bottom:12px">
+            <div>
+                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">BOX NO</label>
+                <input @bind="_boxFilter" placeholder="contains…"
+                       style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-family:var(--font-mono); font-size:13px; background:white;" />
+            </div>
+            <div>
+                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">STORE</label>
+                <input @bind="_boxStoreFilter" placeholder="contains…"
+                       style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-family:var(--font-mono); font-size:13px; background:white;" />
+            </div>
+            <button class="aiwms-btn aiwms-btn-secondary" @onclick="LoadBoxPlanAsync" disabled="@_busy">Apply</button>
+            <button class="aiwms-btn aiwms-btn-secondary" @onclick="ExportBoxPlanCsvAsync" disabled="@(_busy || _boxRows.Count == 0)">Export to Excel</button>
+        </div>
+
+        @if (_boxRows.Count == 0)
+        {
+            <div style="font-size:12px; color:var(--text-secondary)">No rows.</div>
+        }
+        else
+        {
+            <div style="overflow:auto; max-height:560px">
+                <table class="aiwms-table aiwms-table-dense">
+                    <thead>
+                        <tr>
+                            <th>Box</th><th>LPM</th><th>Item Code</th><th style="text-align:right">Div</th>
+                            <th>Country</th><th>Store</th>
+                            <th style="text-align:right">Qty</th>
+                            <th style="text-align:right" title="Units that fitted the store's DC target.">Within</th>
+                            <th style="text-align:right" title="Units beyond the target, placed because the box ships whole.">Over</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var r in _boxRows)
+                        {
+                            <tr>
+                                <td style="font-family:var(--font-mono)">@r.BoxNo</td>
+                                <td>@(r.LPMDt?.ToString("MMM-yyyy") ?? "")</td>
+                                <td style="font-family:var(--font-mono)">@r.Itemcode</td>
+                                <td style="text-align:right">@r.DivCode</td>
+                                <td>@r.Country</td>
+                                <td style="font-family:var(--font-mono)">@r.StoreID</td>
+                                <td style="text-align:right; font-weight:700">@r.Qty.ToString("N0")</td>
+                                <td style="text-align:right">@r.WithinTarget.ToString("N0")</td>
+                                <td style="text-align:right; @(r.OverTarget > 0 ? "color:#92400e; font-weight:700" : "")">@r.OverTarget.ToString("N0")</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </div>
+}
+
 @code {
     private const int DetailTop = 5000;
 
@@ -244,6 +390,7 @@
             }
 
             await RefreshCurrentAsync();
+            await RefreshBoxPlanAsync();
         }
         catch (Exception ex)
         {
@@ -294,6 +441,88 @@
             _progress = null;
             StateHasChanged();
         }
+    }
+
+    // ===================== Process (step 2) =====================
+
+    private CdcBoxAllocationHeader? _boxHeader;
+    private List<CdcBoxCountrySummaryRow> _boxSummary = new();
+    private List<CdcBoxAllocationRow> _boxRows = new();
+    private List<CdcUnplacedBoxRow> _unplaced = new();
+    private List<(string BoxNo, int Countries)> _splitBoxes = new();
+    private string? _boxFilter;
+    private string? _boxStoreFilter;
+
+    private async Task ProcessAsync()
+    {
+        if (!CanAllocate || _busy) return;
+
+        _busy = true; _message = null; _isError = false; _warnings.Clear();
+        _progress = "Starting…";
+        StateHasChanged();
+
+        try
+        {
+            var progress = new Progress<string>(s => { _progress = s; InvokeAsync(StateHasChanged); });
+            var result = await Svc.ProcessBoxAllocationAsync(
+                _selectedLpms.OrderBy(d => d).ToList(),
+                _selectedCountries.OrderBy(c => c).ToList(),
+                progress);
+
+            if (!result.Success) { ShowError(result.Message ?? "Process failed."); return; }
+
+            _warnings = result.Warnings;
+            _message =
+                $"Placed {result.BoxesPlaced:N0} box(es) — {result.QtyPlaced:N0} pcs across {result.CountryScope}." +
+                (result.BoxesUnplaced > 0 ? $" {result.BoxesUnplaced:N0} box(es) unplaced ({result.QtyUnplaced:N0} pcs)." : "");
+            _isError = false;
+
+            await RefreshBoxPlanAsync();
+        }
+        catch (Exception ex) { ShowError($"Process failed: {ex.Message}"); }
+        finally { _busy = false; _progress = null; StateHasChanged(); }
+    }
+
+    private async Task RefreshBoxPlanAsync()
+    {
+        _boxHeader = await Svc.GetLastBoxRunAsync();
+        if (_boxHeader is null)
+        {
+            _boxSummary = new(); _boxRows = new(); _unplaced = new(); _splitBoxes = new();
+            return;
+        }
+        _boxSummary = await Svc.LoadBoxCountrySummaryAsync();
+        _unplaced   = await Svc.LoadUnplacedBoxesAsync();
+        // Cheap assertion that the one hard constraint actually held.
+        _splitBoxes = await Svc.CheckBoxIntegrityAsync();
+        await LoadBoxPlanAsync();
+    }
+
+    private async Task LoadBoxPlanAsync()
+    {
+        try { _boxRows = await Svc.LoadBoxPlanAsync(_boxFilter, _boxStoreFilter, DetailTop); }
+        catch (Exception ex) { ShowError($"Could not load the box plan: {ex.Message}"); }
+    }
+
+    private async Task ExportBoxPlanCsvAsync()
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("BoxNo,LPM,ItemCode,DivCode,Country,StoreID,Qty,WithinTarget,OverTarget");
+        foreach (var r in _boxRows)
+        {
+            sb.Append(Csv(r.BoxNo)).Append(',')
+              .Append(r.LPMDt?.ToString("MMM-yyyy") ?? "").Append(',')
+              .Append(Csv(r.Itemcode)).Append(',')
+              .Append(r.DivCode).Append(',')
+              .Append(Csv(r.Country)).Append(',')
+              .Append(Csv(r.StoreID)).Append(',')
+              .Append(r.Qty).Append(',')
+              .Append(r.WithinTarget).Append(',')
+              .Append(r.OverTarget).AppendLine();
+        }
+        var b64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(sb.ToString()));
+        var filename = $"DcBoxAllocation_{DateTime.UtcNow.AddHours(4):yyyyMMdd_HHmm}.csv";
+        await JS.InvokeVoidAsync("eval", $"(function(){{var a=document.createElement('a');a.href='data:text/csv;base64,{b64}';a.download='{filename}';document.body.appendChild(a);a.click();document.body.removeChild(a);}})();");
     }
 
     private async Task RefreshCurrentAsync()
