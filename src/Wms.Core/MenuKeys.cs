@@ -35,6 +35,7 @@ public static class MenuKeys
     public const string RPT_TRANSFER_GIN_GRN      = "RPT_TRANSFER_GIN_GRN";
     public const string RPT_COUNTING_COMPLETION   = "RPT_COUNTING_COMPLETION";
     public const string RPT_PO_COUNTING           = "RPT_PO_COUNTING";
+    public const string RPT_BULK_PO_ALLOCATION  = "RPT_BULK_PO_ALLOCATION";
     public const string RPT_JAFZA_DIVISION_PROD   = "RPT_JAFZA_DIVISION_PROD";
     public const string RPT_SYNC_DATA_COUNT       = "RPT_SYNC_DATA_COUNT";
     public const string RPT_SHIPMENT_STATUS       = "RPT_SHIPMENT_STATUS";
@@ -110,6 +111,7 @@ public static class MenuKeys
         new MenuEntry(RPT_TRANSFER_GIN_GRN,  "Reports",             "Transfer/GIN/GRN History",  "reports/transfer-gin-grn",  new[] { Roles.Admin, Roles.Reports }, "Outbound"),
         new MenuEntry(RPT_COUNTING_COMPLETION,"Reports",            "Counting Completion Report","reports/counting-completion",new[] { Roles.Admin, Roles.Reports }),
         new MenuEntry(RPT_PO_COUNTING,       "Reports",             "PO Counting Report",       "reports/po-counting",       new[] { Roles.Admin, Roles.Reports }),
+        new MenuEntry(RPT_BULK_PO_ALLOCATION, "Reports",            "Bulk PO Allocation Report", "reports/bulk-po-allocation", new[] { Roles.Admin, Roles.Reports, Roles.WHManager }),
         new MenuEntry(RPT_JAFZA_DIVISION_PROD,"Reports",            "JAFZA Production Report",  "reports/jafza-division-production",new[] { Roles.Admin, Roles.Reports }),
         new MenuEntry(RPT_SHIPMENT_STATUS,   "Reports",             "Shipment Status",           "reports/shipment-status",  new[] { Roles.Admin, Roles.Reports }, "Inbound"),
         new MenuEntry(RPT_WAREHOUSE_SOH_SUMMARY, "Reports",         "Warehouse SOH Summary",     "reports/warehouse-soh-summary", new[] { Roles.Admin, Roles.Reports }),

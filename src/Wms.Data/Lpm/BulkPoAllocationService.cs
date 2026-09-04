@@ -32,6 +32,39 @@ public sealed record BulkAllocationBatchRow(
     int       Failed,
     DateTime? CreatedTS);
 
+/// <summary>
+/// One line of the Bulk PO Allocation Report: a (Container, PO, Division) with a
+/// Qty / Alloc % / Ceiling % triple per country.
+///
+/// Countries is a dictionary rather than fixed columns because the country set is
+/// whatever the scoped allocations actually reached — hard-coding it would leave
+/// the report silently wrong the day a country is added or dropped.
+/// </summary>
+public sealed record BulkPoAllocationReportRow(
+    string  Container,
+    string  PONo,
+    string? Division,
+    int     DivCode,
+    int     PoQty,
+    Dictionary<string, BulkPoAllocationReportCell> ByCountry)
+{
+    public int TotalAllocated => ByCountry.Values.Sum(v => v.Qty);
+}
+
+/// <summary>
+/// One country's cell. CeilingPct is null when no LPM_POAllocationMaxPct row
+/// applies — meaning "no cap configured", which is different from a cap of 0 and
+/// is rendered as blank rather than as a number.
+/// </summary>
+public sealed record BulkPoAllocationReportCell(
+    int      Qty,
+    decimal  AllocPct,
+    decimal? CeilingPct)
+{
+    /// <summary>True when this country took more than its configured share of the PO.</summary>
+    public bool OverCeiling => CeilingPct is > 0 && AllocPct > CeilingPct.Value;
+}
+
 /// <summary>Page inputs used for any queue row that does not override them.</summary>
 public sealed record BulkAllocationDefaults(
     string                  Country,
@@ -221,19 +254,156 @@ public class BulkPoAllocationService(
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
     }
 
+    // ===================== Report =====================
+
+    /// <summary>
+    /// Bulk PO Allocation Report — allocated qty, share of the PO, and the
+    /// configured ceiling, per country, for each (Container, PO, Division).
+    ///
+    /// The share denominator is the PO qty from usa.usaorgfile_LPM, NOT the sum of
+    /// what was allocated. Blocked and undistributed units are part of the PO, so
+    /// dividing by the allocated total would quietly rebase every percentage and
+    /// make a container look fully within its ceiling when it was not.
+    ///
+    /// Ceiling % resolves (Country, DivCode) then (Country, 0), the same order the
+    /// allocation engine uses — if the report resolved it differently it would
+    /// contradict the thing it is reporting on.
+    /// </summary>
+    public async Task<List<BulkPoAllocationReportRow>> GetReportAsync(
+        int? batchNo = null, string? contnoFilter = null, CancellationToken ct = default)
+    {
+        await using var c = OpenOnPremBackup();
+
+        // Scope: a batch's containers, or every container that has allocations.
+        string[]? scopeContnos = null;
+        if (batchNo is not null)
+        {
+            scopeContnos = (await c.QueryAsync<string>(new CommandDefinition(
+                "SELECT ContNo FROM dbo.WMS_BulkAllocationQueue WITH (NOLOCK) WHERE BatchNo = @b",
+                new { b = batchNo }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
+                .Select(s => s.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+            if (scopeContnos.Length == 0) return new();
+        }
+
+        var like = string.IsNullOrWhiteSpace(contnoFilter) ? null : "%" + contnoFilter.Trim() + "%";
+        var contnoCsv = scopeContnos is null ? null : string.Join(",", scopeContnos);
+
+        // Allocated per (ContNo, PO, DivCode, Country).
+        var allocSql = $@"
+            {(contnoCsv is null ? "" : @"
+            SELECT DISTINCT CAST(value AS VARCHAR(50)) AS ContNo INTO #rptScope FROM STRING_SPLIT(@contnoCsv, ',');
+            CREATE CLUSTERED INDEX IX_rptScope ON #rptScope(ContNo);")}
+
+            SELECT ContNo   = d.TcmContno,
+                   PONo     = ISNULL(d.ORAPONo, ''),
+                   DivCode  = ISNULL(d.DivCode, 0),
+                   Division = MAX(ISNULL(d.Division, '')),
+                   Country  = d.Country,
+                   Qty      = SUM(CAST(ISNULL(d.AllocatedQty, 0) AS int))
+              FROM LPMSIM.dbo.WMS_ContAllocationData d WITH (NOLOCK)
+              {(contnoCsv is null ? "" : "INNER JOIN #rptScope s ON s.ContNo = d.TcmContno")}
+             WHERE (@like IS NULL OR d.TcmContno LIKE @like)
+             GROUP BY d.TcmContno, ISNULL(d.ORAPONo, ''), ISNULL(d.DivCode, 0), d.Country
+            HAVING SUM(CAST(ISNULL(d.AllocatedQty, 0) AS int)) <> 0;";
+
+        var allocRows = (await c.QueryAsync<(string ContNo, string PONo, int DivCode, string Division, string Country, int Qty)>(
+            new CommandDefinition(allocSql, new { contnoCsv, like },
+                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).AsList();
+        if (allocRows.Count == 0) return new();
+
+        // PO qty per (ContNo, PO, DivCode) — the share denominator.
+        var poCsv = string.Join(",", allocRows.Select(r => r.ContNo)
+            .Distinct(StringComparer.OrdinalIgnoreCase));
+        var poRows = (await c.QueryAsync<(string ContNo, string PONo, int DivCode, int PoQty)>(
+            new CommandDefinition(@"
+                SELECT DISTINCT CAST(value AS VARCHAR(50)) AS ContNo INTO #rptPoScope FROM STRING_SPLIT(@poCsv, ',');
+                CREATE CLUSTERED INDEX IX_rptPoScope ON #rptPoScope(ContNo);
+
+                SELECT ContNo  = u.ContNo,
+                       PONo    = ISNULL(u.OraPONo, ''),
+                       DivCode = ISNULL(v.DivID, 0),
+                       PoQty   = SUM(CAST(ISNULL(u.orgqty, 0) AS int))
+                  FROM usa.dbo.usaorgfile_LPM u WITH (NOLOCK)
+                  INNER JOIN #rptPoScope s ON s.ContNo = u.ContNo
+                  LEFT  JOIN datareporting.dbo.vupc_subclass v WITH (NOLOCK) ON v.itemcode = u.ItemCode
+                 GROUP BY u.ContNo, ISNULL(u.OraPONo, ''), ISNULL(v.DivID, 0);",
+                new { poCsv }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).AsList();
+
+        var poQtyByKey = new Dictionary<(string, string, int), int>();
+        foreach (var p in poRows)
+            poQtyByKey[(p.ContNo.Trim().ToUpperInvariant(), p.PONo, p.DivCode)] = p.PoQty;
+
+        // Ceilings, resolved the same way the allocation engine resolves them.
+        var ceilings = new Dictionary<(string Country, int DivCode), decimal>();
+        try
+        {
+            var rows = await c.QueryAsync<(string Country, int DivCode, decimal Pct)>(new CommandDefinition(
+                @"SELECT Country, ISNULL(DivCode, 0) AS DivCode, POAllocationMaxPct
+                    FROM LPMSIM.dbo.LPM_POAllocationMaxPct WITH (NOLOCK)
+                   WHERE Country IS NOT NULL AND POAllocationMaxPct > 0",
+                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            foreach (var r in rows)
+                ceilings[(r.Country.Trim().ToUpperInvariant(), r.DivCode)] = r.Pct;
+        }
+        catch { /* table not deployed -> every Ceiling % is blank, not zero */ }
+
+        decimal? CeilingFor(string country, int divCode)
+        {
+            var key = country.Trim().ToUpperInvariant();
+            if (ceilings.TryGetValue((key, divCode), out var exact)) return exact;
+            if (ceilings.TryGetValue((key, 0), out var wide)) return wide;
+            return null;
+        }
+
+        // Pivot.
+        return allocRows
+            .GroupBy(r => (r.ContNo, r.PONo, r.DivCode))
+            .Select(g =>
+            {
+                var poQty = poQtyByKey.GetValueOrDefault(
+                    (g.Key.ContNo.Trim().ToUpperInvariant(), g.Key.PONo, g.Key.DivCode), 0);
+
+                var cells = new Dictionary<string, BulkPoAllocationReportCell>(StringComparer.OrdinalIgnoreCase);
+                foreach (var r in g)
+                {
+                    var pct = poQty > 0 ? Math.Round(r.Qty * 100m / poQty, 2) : 0m;
+                    cells[r.Country] = new BulkPoAllocationReportCell(r.Qty, pct, CeilingFor(r.Country, g.Key.DivCode));
+                }
+
+                return new BulkPoAllocationReportRow(
+                    g.Key.ContNo, g.Key.PONo,
+                    g.Select(x => x.Division).FirstOrDefault(d => !string.IsNullOrWhiteSpace(d)),
+                    g.Key.DivCode, poQty, cells);
+            })
+            .OrderBy(r => r.Container, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(r => r.PONo, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(r => r.Division, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
     // ===================== The run =====================
 
-    /// <summary>Run the queue, or just one batch of it when batchNo is given.</summary>
+    /// <summary>
+    /// Run the queue, or just one batch of it when batchNo is given.
+    ///
+    /// <paramref name="onlyNotAllocated"/> narrows the walk to containers that came
+    /// away with nothing — Failed, or never attempted. It deliberately leaves
+    /// Skipped rows alone: a container is skipped because it ALREADY has an
+    /// allocation (under this Run Option or another one), so re-running it would
+    /// only skip again. "Not allocated" means no allocation exists, not "the last
+    /// run did not write one".
+    /// </summary>
     public async Task<BulkAllocationRunResult> RunAllAsync(
         BulkAllocationDefaults defaults,
         int? batchNo = null,
+        bool onlyNotAllocated = false,
         IProgress<BulkAllocationProgress>? progress = null,
         CancellationToken ct = default)
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
 
         var queue = (await GetQueueAsync(batchNo, ct))
-            .Where(q => q.IsActive && !string.Equals(q.Status, "Success", StringComparison.OrdinalIgnoreCase))
+            .Where(q => q.IsActive && IsRunnable(q.Status, onlyNotAllocated))
             .ToList();
 
         int ok = 0, skipped = 0, failed = 0, totalRows = 0, totalQty = 0, done = 0;
@@ -355,6 +525,18 @@ public class BulkPoAllocationService(
     }
 
     // ===================== helpers =====================
+
+    /// <summary>
+    /// Which queue rows a run picks up. Shared by the service and the page so the
+    /// button's count and the walk can never disagree about what will be attempted.
+    /// </summary>
+    public static bool IsRunnable(string? status, bool onlyNotAllocated)
+    {
+        if (string.Equals(status, "Success", StringComparison.OrdinalIgnoreCase)) return false;
+        if (!onlyNotAllocated) return true;
+        // Skipped == an allocation already exists, so it is not "not allocated".
+        return !string.Equals(status, "Skipped", StringComparison.OrdinalIgnoreCase);
+    }
 
     private static RunOption? ParseRunOption(string? s) =>
         string.IsNullOrWhiteSpace(s) ? null
