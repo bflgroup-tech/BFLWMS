@@ -80,3 +80,61 @@ public sealed record CdcDcSohAllocationResult(
     public static CdcDcSohAllocationResult Fail(string message) =>
         new(false, message, default, null, null, null, 0, 0, 0, 0, 0, new List<string>());
 }
+
+// ===================== Step 2: box allocation =====================
+
+/// <summary>One row of the box shipment plan: part of one box, one SKU, one store.</summary>
+public sealed record CdcBoxAllocationRow(
+    string    BoxNo,
+    DateTime? LPMDt,
+    string    Itemcode,
+    int?      DivCode,
+    string    Country,
+    string    StoreID,
+    int       Qty,
+    int       WithinTarget,   // units that fitted the store's DC target
+    int       OverTarget);    // units placed beyond it because the box ships whole
+
+/// <summary>A box the run could not place, and why.</summary>
+public sealed record CdcUnplacedBoxRow(
+    string    BoxNo,
+    DateTime? LPMDt,
+    int       Qty,
+    int       Items,
+    string?   Reason);
+
+/// <summary>Per-country roll-up of the box plan.</summary>
+public sealed record CdcBoxCountrySummaryRow(
+    string Country,
+    int    Boxes,
+    int    Stores,
+    int    Skus,
+    long   Qty,
+    long   OverTarget);
+
+/// <summary>Header of the box plan currently held in DC_BOX_ALLOCATION.</summary>
+public sealed record CdcBoxAllocationHeader(
+    DateTime RunTS,
+    string?  RunBy,
+    string?  LpmScope,
+    string?  CountryScope,
+    int      Boxes,
+    long     Qty);
+
+/// <summary>Outcome of one Process run.</summary>
+public sealed record CdcBoxAllocationResult(
+    bool         Success,
+    string?      Message,
+    DateTime     RunTS,
+    string?      LpmScope,
+    string?      CountryScope,
+    int          BoxesPlaced,
+    int          BoxesUnplaced,
+    long         QtyPlaced,
+    long         QtyUnplaced,
+    long         OverTargetQty,
+    List<string> Warnings)
+{
+    public static CdcBoxAllocationResult Fail(string message) =>
+        new(false, message, default, null, null, 0, 0, 0, 0, 0, new List<string>());
+}
