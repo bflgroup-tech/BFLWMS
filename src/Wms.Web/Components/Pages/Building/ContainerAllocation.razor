@@ -223,6 +223,11 @@
                     title="Clear Status/Message on everything except rows that already succeeded, so the list can be run again.">
                 Reset results
             </button>
+            <button class="aiwms-btn aiwms-btn-secondary" style="font-size:11px; padding:4px 10px; border-color:#D1435B; color:#D1435B"
+                    @onclick="DeleteAndRequeueAsync" disabled="@(_busy || _bulkBusy || _bulkQueue.Count == 0)"
+                    title="Delete the existing allocation for every container in this batch and set it back to Pending, so the whole batch can be re-run. Containers already synced to Azure, with an open box, or with scan data are refused and left as they are.">
+                Delete &amp; re-queue all
+            </button>
             <button class="aiwms-btn aiwms-btn-secondary" style="font-size:11px; padding:4px 10px"
                     @onclick="RunBulkNotAllocatedAsync"
                     disabled="@(_busy || _bulkBusy || BulkNotAllocatedCount == 0)"
@@ -1250,6 +1255,74 @@
         catch (Exception ex) { _bulkMessage = $"Reset failed: {ex.Message}"; _bulkIsError = true; }
     }
 
+    private async Task DeleteAndRequeueAsync()
+    {
+        if (_bulkQueue.Count == 0 || _bulkBusy) return;
+
+        var scope = BulkBatchNo is null ? "all batches" : $"batch #{BulkBatchNo}";
+        var ok = await JS.InvokeAsync<bool>("confirm",
+            $"Delete the existing allocation for {_bulkQueue.Count} container(s) in {scope} and set them back to Pending?\n\n" +
+            "This removes the SIM allocation rows. It cannot be undone.\n" +
+            "Containers already synced to Azure, with an open box, or with scan data are refused and left untouched.\n\n" +
+            "Continue?");
+        if (!ok) return;
+
+        _bulkBusy = true; _bulkMessage = ""; _bulkIsError = false;
+        _bulkDone = 0; _bulkTotal = _bulkQueue.Count; _bulkPhase = "Starting…";
+        await InvokeAsync(StateHasChanged);
+
+        try
+        {
+            var progress = new Progress<BulkAllocationProgress>(async p =>
+            {
+                _bulkDone = p.Done; _bulkTotal = p.Total;
+                _bulkPhase = $"{p.ContNo} — {p.Phase}";
+                await InvokeAsync(StateHasChanged);
+            });
+
+            var res = await BulkSvc.DeleteAndRequeueAsync(BulkDefaults(), BulkBatchNo, progress);
+
+            _bulkMessage =
+                $"Re-queued {res.Deleted + res.NothingToDelete} of {res.Total} container(s) " +
+                $"({res.Deleted} had allocations deleted, {res.NothingToDelete} had none). " +
+                (res.Blocked > 0
+                    ? $"{res.Blocked} refused and left as they are: {string.Join(", ", res.BlockedContnos.Take(10))}" +
+                      (res.BlockedContnos.Count > 10 ? ", …" : "") + ". See each row's Message."
+                    : "Nothing was blocked.");
+            _bulkIsError = res.Blocked > 0;
+
+            await ReloadBulkQueueAsync();
+            await RefreshStatusAsync();
+        }
+        catch (Exception ex) { _bulkMessage = $"Delete & re-queue stopped: {ex.Message}"; _bulkIsError = true; }
+        finally
+        {
+            _bulkBusy = false; _bulkPhase = ""; _bulkTotal = 0; _bulkDone = 0;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    /// <summary>The page inputs both bulk actions run against.</summary>
+    private BulkAllocationDefaults BulkDefaults()
+    {
+        var ro = _runOption switch
+        {
+            "RoundRobin"           => RunOption.RoundRobin,
+            "FillSKUMaxRoundRobin" => RunOption.FillSKUMaxRoundRobin,
+            "FillMinMinPlusOthers" => RunOption.FillMinMinPlusOthers,
+            _                      => RunOption.FillSKUMax,
+        };
+        return new BulkAllocationDefaults(
+            Country: _country, Warehouse: _warehouse, RunOption: ro,
+            // Used ONLY for orders that impose no restriction. Every SIM country the
+            // user may see — NOT _allocCountries, which is narrowed automatically to
+            // whatever container is typed in the box above. Using that meant an order
+            // saying "All" inherited some other container's restriction.
+            FallbackCountries: _simCountries.ToList(),
+            Validate: _validate, EcomManualPriority: _ecomManualPriority,
+            TraceEnabled: _traceEnabled, BypassPass1b: _bypassPass1b);
+    }
+
     private Task RunBulkAsync()               => RunBulkCoreAsync(onlyNotAllocated: false);
     private Task RunBulkNotAllocatedAsync()   => RunBulkCoreAsync(onlyNotAllocated: true);
 
@@ -1277,26 +1350,7 @@
 
         try
         {
-            var ro = _runOption switch
-            {
-                "RoundRobin"           => RunOption.RoundRobin,
-                "FillSKUMaxRoundRobin" => RunOption.FillSKUMaxRoundRobin,
-                "FillMinMinPlusOthers" => RunOption.FillMinMinPlusOthers,
-                _                      => RunOption.FillSKUMax,
-            };
-
-            var defaults = new BulkAllocationDefaults(
-                Country: _country, Warehouse: _warehouse, RunOption: ro,
-                // Only used for orders that impose no restriction of their own.
-                // Every SIM country the user may see — NOT _allocCountries. That
-                // selection is narrowed automatically to whatever container is typed
-                // in the box above, so using it meant an order saying "All" inherited
-                // some other container's restriction: containers whose AllocationCountry
-                // was 'All' were allocated to UAE alone because AELOC8330 happened to
-                // be in the Container No field. "All" has to mean all.
-                FallbackCountries: _simCountries.ToList(),
-                Validate: _validate, EcomManualPriority: _ecomManualPriority,
-                TraceEnabled: _traceEnabled, BypassPass1b: _bypassPass1b);
+            var defaults = BulkDefaults();
 
             var progress = new Progress<BulkAllocationProgress>(async p =>
             {
