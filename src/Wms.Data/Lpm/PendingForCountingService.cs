@@ -12,6 +12,7 @@ public record PendingForCountingRow(
     int?      AgeingDays,
     string?   Warehouse,
     string?   AllocationCountry,
+    DateTime? ProcessedDt,
     string?   PONo,
     string?   Division,
     int       Qty,
@@ -88,6 +89,12 @@ public class PendingForCountingService(IOnPremConnectionResolver resolver)
                    AND NOT EXISTS (
                            SELECT 1 FROM usa.dbo.OpenUSACont o WITH (NOLOCK)
                             WHERE o.ContNo = cr.ContNo)
+                   -- Counting finished: BuildingCompletion is the completion record,
+                   -- distinct from OpenUSACont above (opened) — a container can be
+                   -- opened and completed, and only the latter takes it off this list.
+                   AND NOT EXISTS (
+                           SELECT 1 FROM bfldata.dbo.BuildingCompletion bc WITH (NOLOCK)
+                            WHERE bc.ContNo = cr.RefNo)
                  GROUP BY cr.RefNo
             )
             SELECT
@@ -96,6 +103,7 @@ public class PendingForCountingService(IOnPremConnectionResolver resolver)
                 AgeingDays        = DATEDIFF(day, p.ReceiptDt, CAST(DATEADD(hour, 4, SYSUTCDATETIME()) AS date)),
                 Warehouse         = p.Warehouse,
                 AllocationCountry = ac.AllocationCountry,
+                ProcessedDt       = pr.ProcessedDt,
                 PONo              = u.OraPONo,
                 Division          = sub.Division,
                 Qty               = CAST(ISNULL(SUM(u.orgqty), 0) AS INT),
@@ -116,7 +124,16 @@ public class PendingForCountingService(IOnPremConnectionResolver resolver)
                          WHERE o.refno = p.RefNo
                            AND NULLIF(LTRIM(RTRIM(o.AllocationCountry)), '') IS NOT NULL) x
             ) ac
-            GROUP BY p.RefNo, p.ReceiptDt, p.Warehouse, ac.AllocationCountry, u.OraPONo, sub.Division, u.LPM
+            -- When this container's allocation was pushed to WMS-Prod-DB. A container
+            -- can be processed and still be pending for counting — that is the gap
+            -- this column makes visible. MAX because the push writes one row per piece.
+            OUTER APPLY (
+                SELECT ProcessedDt = MAX(CAST(pcr.Trndate AS date))
+                  FROM Online.dbo.PhotoCheckingResult pcr WITH (NOLOCK)
+                 WHERE pcr.ContNo = p.RefNo
+            ) pr
+            GROUP BY p.RefNo, p.ReceiptDt, p.Warehouse, ac.AllocationCountry, pr.ProcessedDt,
+                     u.OraPONo, sub.Division, u.LPM
             ORDER BY p.ReceiptDt, p.RefNo, u.OraPONo, u.LPM",
             new { receiptDtFrom },
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));

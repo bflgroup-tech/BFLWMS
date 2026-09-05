@@ -46,14 +46,35 @@
         </div>
         @if (AnyColumnFilterActive)
         {
-            <div style="display:flex; align-items:center; gap:10px;">
-                <span style="font-size:12px; color:var(--text-secondary)">
-                    @FilteredRows.Count.ToString("N0") of @_rows.Count.ToString("N0") rows
-                </span>
-                <button class="aiwms-btn aiwms-btn-secondary" @onclick="ClearColumnFilters">Clear all filters</button>
-            </div>
+            <button class="aiwms-btn aiwms-btn-secondary" @onclick="ClearColumnFilters">Clear all filters</button>
         }
     </div>
+
+    @* The banner follows the filters. It used to show the load-time totals only, so a
+       filtered grid sat under a headline counting rows that were no longer on screen —
+       and the Push button, which acts on the filtered set, disagreed with it. *@
+    @if (_rows.Count > 0)
+    {
+        var shownRows = FilteredRows;
+        var shownConts = shownRows.Select(r => r.ContNo)
+                                  .Where(c => !string.IsNullOrWhiteSpace(c))
+                                  .Distinct(StringComparer.OrdinalIgnoreCase).Count();
+        var allConts = _rows.Select(r => r.ContNo)
+                            .Where(c => !string.IsNullOrWhiteSpace(c))
+                            .Distinct(StringComparer.OrdinalIgnoreCase).Count();
+        <div class="aiwms-alert info" style="margin-top:12px">
+            <b>@shownConts.ToString("N0") container(s)</b> ·
+            @shownRows.Count.ToString("N0") row(s) ·
+            <b>@shownRows.Sum(r => r.Qty).ToString("N0") pcs</b>
+            @if (AnyColumnFilterActive || !string.IsNullOrWhiteSpace(_search))
+            {
+                <span style="color:var(--text-secondary)">
+                    &nbsp;— filtered from @allConts.ToString("N0") container(s),
+                    @_rows.Count.ToString("N0") row(s), @_rows.Sum(r => r.Qty).ToString("N0") pcs
+                </span>
+            }
+        </div>
+    }
 
     @if (!string.IsNullOrEmpty(_message))
     {
@@ -74,6 +95,7 @@
                 <col style="width:95px;"  />  @* Ageing Days       *@
                 <col style="width:120px;" />  @* Warehouse         *@
                 <col style="width:150px;" />  @* Allocation Country*@
+                <col style="width:100px;" />  @* Processed         *@
                 <col style="width:100px;" />  @* PONO              *@
                 <col style="width:175px;" />  @* Division          *@
                 <col style="width:90px;"  />  @* Qty               *@
@@ -86,6 +108,7 @@
                     <th style="cursor:pointer; text-align:right;" @onclick='() => Sort("AgeingDays")'>Ageing Days @Arrow("AgeingDays")</th>
                     <th style="cursor:pointer" @onclick='() => Sort("Warehouse")' title="bfldata..Contreceipt.Warehouse for this container's receipt.">Warehouse @Arrow("Warehouse")</th>
                     <th style="cursor:pointer" @onclick='() => Sort("AllocationCountry")' title="Distinct hodata..vUSAOrder.AllocationCountry values for this container (refno = Contno).">Allocation Country @Arrow("AllocationCountry")</th>
+                    <th style="cursor:pointer" @onclick='() => Sort("ProcessedDt")' title="When this container's allocation was pushed to WMS-Prod-DB (Online..PhotoCheckingResult.Trndate). Blank = not processed yet.">Processed @Arrow("ProcessedDt")</th>
                     <th style="cursor:pointer" @onclick='() => Sort("PONo")'>PONO @Arrow("PONo")</th>
                     <th style="cursor:pointer" @onclick='() => Sort("Division")'>Division @Arrow("Division")</th>
                     <th style="cursor:pointer; text-align:right;" @onclick='() => Sort("Qty")'>Qty @Arrow("Qty")</th>
@@ -102,6 +125,7 @@
                     <th style="padding:4px 6px;">@FilterCell("AgeingDays")</th>
                     <th style="padding:4px 6px;">@FilterCell("Warehouse")</th>
                     <th style="padding:4px 6px;">@FilterCell("AllocationCountry")</th>
+                    <th style="padding:4px 6px;">@FilterCell("ProcessedDt")</th>
                     <th style="padding:4px 6px;">@FilterCell("PONo")</th>
                     <th style="padding:4px 6px;">@FilterCell("Division")</th>
                     <th style="padding:4px 6px;"></th>
@@ -117,6 +141,7 @@
                         <td style="text-align:right;">@(r.AgeingDays?.ToString("N0") ?? "")</td>
                         <td>@r.Warehouse</td>
                         <td>@r.AllocationCountry</td>
+                        <td>@(r.ProcessedDt?.ToString("dd/MM/yyyy") ?? "")</td>
                         <td>@r.PONo</td>
                         <td style="word-break:break-word; white-space:normal;">@r.Division</td>
                         <td style="text-align:right;">@r.Qty.ToString("N0")</td>
@@ -127,6 +152,7 @@
             <tfoot>
                 <tr style="font-weight:600; border-top:2px solid var(--border-default);">
                     <td>Total</td>
+                    <td></td>
                     <td></td>
                     <td></td>
                     <td></td>
@@ -243,6 +269,7 @@
             "AgeingDays"        => r.AgeingDays?.ToString(),
             "Warehouse"         => r.Warehouse,
             "AllocationCountry" => r.AllocationCountry,
+            "ProcessedDt"       => r.ProcessedDt?.ToString("dd/MM/yyyy"),
             "PONo"              => r.PONo,
             "Division"          => r.Division,
             "LPM"               => r.LPM,
@@ -282,7 +309,8 @@
 
         return col switch
         {
-            "ReceiptDt"  => values.OrderBy(v => DateTime.TryParseExact(v, "dd/MM/yyyy",
+            "ReceiptDt" or "ProcessedDt"
+                         => values.OrderBy(v => DateTime.TryParseExact(v, "dd/MM/yyyy",
                                 System.Globalization.CultureInfo.InvariantCulture,
                                 System.Globalization.DateTimeStyles.None, out var d) ? d : DateTime.MaxValue).ToList(),
             "AgeingDays" => values.OrderBy(v => int.TryParse(v, out var n) ? n : int.MaxValue).ToList(),
@@ -343,6 +371,7 @@
                 "AgeingDays" => r => r.AgeingDays ?? int.MinValue,
                 "Warehouse"  => r => r.Warehouse ?? "",
                 "AllocationCountry" => r => r.AllocationCountry ?? "",
+                "ProcessedDt" => r => r.ProcessedDt ?? DateTime.MaxValue,
                 "PONo"       => r => r.PONo ?? "",
                 "Division"   => r => r.Division ?? "",
                 "Qty"        => r => r.Qty,
@@ -362,6 +391,9 @@
 
     // A pending worklist is worth showing straight away rather than making the
     // operator click Load on arrival; the button stays for refresh / date changes.
+    // No auto-load on arrival. The query walks Contreceipt for the whole period and
+    // anti-joins USAPurchase + OpenUSACont, so every visit to the page was paying for
+    // a scan nobody had asked for yet. Load is now an explicit click.
     protected override async Task OnInitializedAsync()
     {
         if (AuthState is not null)
@@ -369,7 +401,7 @@
             var auth = await AuthState;
             _isAdmin = auth.User.IsInRole(Roles.Admin);
         }
-        await LoadAsync();
+        ShowInfo("Set the receipt date and press Load.");
     }
 
     // <input type="date"> fires change events mid-typing; Blazor parses those
@@ -390,10 +422,10 @@
         try
         {
             _rows = await Svc.GetPendingAsync(_receiptDtFrom);
-            var containers = _rows.Select(r => r.ContNo).Distinct().Count();
-            ShowInfo(_rows.Count == 0
-                ? "No containers pending for counting."
-                : $"{containers:N0} container(s) pending — {_rows.Count:N0} row(s), {_rows.Sum(r => r.Qty):N0} pcs.");
+            // The counts live in the banner above, which follows the filters. Saying
+            // them here too would just be a second figure to keep in step.
+            _message = _rows.Count == 0 ? "No containers pending for counting." : "";
+            _isError = false;
         }
         catch (Exception ex) { ShowError($"Load failed: {ex.Message}"); }
         finally { _loading = false; }
@@ -403,13 +435,14 @@
     {
         var rows = FilteredRows;
         var sb = new StringBuilder();
-        sb.AppendLine("Contno,ReceiptDt,Ageing Days,Warehouse,Allocation Country,PONO,Division,Qty,LPM");
+        sb.AppendLine("Contno,ReceiptDt,Ageing Days,Warehouse,Allocation Country,Processed,PONO,Division,Qty,LPM");
         foreach (var r in rows)
             sb.AppendLine($"{Csv(r.ContNo)}," +
                           $"{(r.ReceiptDt.HasValue ? r.ReceiptDt.Value.ToString("yyyy-MM-dd") : "")}," +
                           $"{r.AgeingDays},{Csv(r.Warehouse)},{Csv(r.AllocationCountry)}," +
+                          $"{(r.ProcessedDt.HasValue ? r.ProcessedDt.Value.ToString("yyyy-MM-dd") : "")}," +
                           $"{Csv(r.PONo)},{Csv(r.Division)},{r.Qty},{Csv(r.LPM)}");
-        sb.AppendLine($"Total,,,,,,,{rows.Sum(r => r.Qty)},");
+        sb.AppendLine($"Total,,,,,,,,{rows.Sum(r => r.Qty)},");
 
         var b64      = Convert.ToBase64String(Encoding.UTF8.GetBytes(sb.ToString()));
         var filename = $"PendingForCounting_{_receiptDtFrom:yyyyMMdd}.csv";

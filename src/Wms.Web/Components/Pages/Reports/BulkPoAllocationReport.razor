@@ -27,9 +27,11 @@
     <div style="display:flex; flex-wrap:wrap; gap:12px; align-items:flex-end;">
         <div style="flex:0 0 230px;">
             <label class="aiwms-filter-label">BATCH</label>
-            <select @bind="_batch" @bind:after="LoadAsync" disabled="@_loading"
+            @* No @bind:after — changing the batch arms the Load button, it does not
+               run the report. Picking through batches should not fire a query each time. *@
+            <select @bind="_batch" disabled="@_loading"
                     style="width:100%; padding:5px 7px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:12px; background:white">
-                <option value="">All containers</option>
+                <option value="">-- Select a batch --</option>
                 @foreach (var b in _batches)
                 {
                     <option value="@b.BatchNo">#@b.BatchNo — @b.Containers cont (@b.Succeeded ok)</option>
@@ -42,7 +44,8 @@
                    style="width:100%; padding:5px 7px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:12px; background:white" />
         </div>
         <div style="display:flex; gap:10px;">
-            <button class="aiwms-btn aiwms-btn-primary" @onclick="LoadAsync" disabled="@_loading">
+            <button class="aiwms-btn aiwms-btn-primary" @onclick="LoadAsync" disabled="@(_loading || BatchNo is null)"
+                    title="@(BatchNo is null ? "Pick a batch first" : $"Load the allocation report for batch #{BatchNo}")">
                 @(_loading ? "Loading…" : "Load")
             </button>
             <button class="aiwms-btn aiwms-btn-secondary" @onclick="ExportAsync" disabled="@(_loading || _rows.Count == 0)">
@@ -138,15 +141,24 @@
 
     private int? BatchNo => int.TryParse(_batch, out var n) ? n : null;
 
+    // Batches only on arrival — the report itself joins the allocation table to
+    // usaorgfile_LPM across every container in scope, which is not something to run
+    // just because somebody opened the page.
     protected override async Task OnInitializedAsync()
     {
         try { _batches = await Svc.GetBatchesAsync(); }
         catch { _batches = new(); }
-        await LoadAsync();
+        _message = "Pick a batch and press Load.";
+        _isError = false;
     }
 
     private async Task LoadAsync()
     {
+        if (BatchNo is null)
+        {
+            _message = "Pick a batch first."; _isError = true;
+            return;
+        }
         _loading = true; _message = ""; _isError = false;
         await InvokeAsync(StateHasChanged);
         try
