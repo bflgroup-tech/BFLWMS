@@ -203,8 +203,22 @@
 </div>
 
 <div class="aiwms-section">
+    @* Collapsed by default: bulk is an occasional operation, and 35 queue rows
+       between the Inputs panel and the allocation grid buries the thing most
+       visits to this page are actually for. *@
     <div class="aiwms-card-header" style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px">
-        <span>Bulk PO Allocation — @_bulkQueue.Count container(s) queued</span>
+        <span style="cursor:pointer; display:flex; align-items:center; gap:8px"
+              @onclick="@(() => _bulkExpanded = !_bulkExpanded)"
+              title="@(_bulkExpanded ? "Collapse" : "Expand") the Bulk PO Allocation panel">
+            <span style="font-size:14px; width:12px; display:inline-block">@(_bulkExpanded ? "−" : "+")</span>
+            <span>Bulk PO Allocation — @_bulkQueue.Count container(s) queued</span>
+            @if (!_bulkExpanded && _bulkBusy)
+            {
+                <span class="aiwms-pill tier2">RUNNING</span>
+            }
+        </span>
+        @if (_bulkExpanded)
+        {
         <div style="display:flex; gap:8px; align-items:center">
             <label style="font-size:11px; font-weight:700; color:var(--text-secondary)">BATCH</label>
             <select @bind="_bulkBatch" @bind:after="ReloadBulkQueueAsync" disabled="@(_busy || _bulkBusy)"
@@ -228,19 +242,17 @@
                     title="Delete the existing allocation for every container in this batch and set it back to Pending, so the whole batch can be re-run. Containers already synced to Azure, with an open box, or with scan data are refused and left as they are.">
                 Delete &amp; re-queue all
             </button>
-            <button class="aiwms-btn aiwms-btn-secondary" style="font-size:11px; padding:4px 10px"
-                    @onclick="RunBulkNotAllocatedAsync"
-                    disabled="@(_busy || _bulkBusy || BulkNotAllocatedCount == 0)"
-                    title="Re-run only the containers that came away with nothing — Failed, or never attempted. Skipped rows are left alone: they were skipped because an allocation already exists, so re-running would only skip again.">
-                Re-run not allocated (@BulkNotAllocatedCount)
-            </button>
             <button class="aiwms-btn aiwms-btn-primary"
                     @onclick="RunBulkAsync" disabled="@(_busy || _bulkBusy || BulkPendingCount == 0)"
                     title="Run the allocation for every active, not-yet-successful container in the selected batch (or the whole queue), using this page's Run Option and checkboxes. Allocation Countries come from each container's own order.">
                 Run PO Allocation for @(_bulkBatch.Length == 0 ? "All" : $"Batch #{_bulkBatch}") (@BulkPendingCount)
             </button>
         </div>
+        }
     </div>
+
+@if (_bulkExpanded)
+{
 
     <p style="font-size:12px; color:var(--text-secondary); margin:0 0 10px">
         Load the list yourself — <code>INSERT INTO LPMSIM.dbo.WMS_BulkAllocationQueue (ContNo) VALUES ('AELOC6671')</code>.
@@ -339,6 +351,7 @@
             </table>
         </div>
     }
+}
 </div>
 
 @if (_poData.Count > 0)
@@ -495,7 +508,21 @@
             @{
                 var rendered = Filtered.ToList();
             }
-            <span>Allocation @(_status?.HasFinal == true ? "(SAVED)" : "Preview") — @rendered.Count of @_filteredCount filtered (of @_allocation.Count total), total @rendered.Sum(r => r.AllocQty) pcs shown</span>
+            @* The container has to be on this header. The grid is reached from three
+               different paths (Process, Load Processed Data, the batch link) and
+               without it there is nothing on screen tying these rows to a container. *@
+            <span>
+                Allocation @(_status?.HasFinal == true ? "(SAVED)" : "Preview")
+                @if (!string.IsNullOrWhiteSpace(AllocationContno))
+                {
+                    <b style="font-family:var(--font-mono)">— @AllocationContno</b>
+                    @if (_loadedBatch is not null)
+                    {
+                        <span style="color:var(--text-secondary)">#@_loadedBatch.BatchNo</span>
+                    }
+                }
+                — @rendered.Count of @_filteredCount filtered (of @_allocation.Count total), total @rendered.Sum(r => r.AllocQty) pcs shown
+            </span>
             <span style="display:flex; gap:8px">
                 <button class="aiwms-btn aiwms-btn-secondary" @onclick="ExportCsvAsync">Export to Excel</button>
             </span>
@@ -1189,6 +1216,9 @@
 
     private List<BulkAllocationQueueRow> _bulkQueue = new();
     private List<BulkAllocationBatchRow> _bulkBatches = new();
+    // Collapsed on arrival: bulk is an occasional operation, and an expanded queue
+    // pushes the allocation grid — what most visits are actually for — off screen.
+    private bool _bulkExpanded;
     // ContNo -> the countries the run will use, previewed via the shared resolver.
     private Dictionary<string, ContainerAllocationCountries> _bulkCountries = new(StringComparer.OrdinalIgnoreCase);
     // "" = every batch. Bound to a <select>, hence string rather than int?.
@@ -1202,11 +1232,7 @@
 
     /// <summary>What a full run would attempt — active, not already succeeded.</summary>
     private int BulkPendingCount => _bulkQueue.Count(q =>
-        q.IsActive && BulkPoAllocationService.IsRunnable(q.Status, onlyNotAllocated: false));
-
-    /// <summary>What a "not allocated" re-run would attempt — Failed or never tried.</summary>
-    private int BulkNotAllocatedCount => _bulkQueue.Count(q =>
-        q.IsActive && BulkPoAllocationService.IsRunnable(q.Status, onlyNotAllocated: true));
+        q.IsActive && BulkPoAllocationService.IsRunnable(q.Status));
 
     private static string BulkPillClass(string? status) => status switch
     {
@@ -1302,6 +1328,13 @@
         }
     }
 
+    /// <summary>
+    /// Which container the allocation grid is showing. The loaded batch wins over
+    /// the input box: after "Load Processed Data" the box can hold something the
+    /// operator has since typed, and the grid belongs to the batch.
+    /// </summary>
+    private string? AllocationContno => _loadedBatch?.ContNo ?? (_allocation.Count > 0 ? _contno : null);
+
     /// <summary>The page inputs both bulk actions run against.</summary>
     private BulkAllocationDefaults BulkDefaults()
     {
@@ -1323,19 +1356,15 @@
             TraceEnabled: _traceEnabled, BypassPass1b: _bypassPass1b);
     }
 
-    private Task RunBulkAsync()               => RunBulkCoreAsync(onlyNotAllocated: false);
-    private Task RunBulkNotAllocatedAsync()   => RunBulkCoreAsync(onlyNotAllocated: true);
-
-    private async Task RunBulkCoreAsync(bool onlyNotAllocated)
+    private async Task RunBulkAsync()
     {
-        var count = onlyNotAllocated ? BulkNotAllocatedCount : BulkPendingCount;
+        var count = BulkPendingCount;
         if (count == 0 || _bulkBusy) return;
 
         // Same reasoning as the single-container confirm: this can run for many
         // minutes and writes real allocations, so the inputs get one last look.
         var ok = await JS.InvokeAsync<bool>("confirm",
-            $"{(onlyNotAllocated ? "Re-run the not-allocated" : "Run PO Allocation for")} " +
-            $"{count} container(s)" +
+            "Run PO Allocation for " + $"{count} container(s)" +
             $"{(BulkBatchNo is null ? " across all batches" : $" in batch #{BulkBatchNo}")}?\n\n" +
             $"Run Option: {_runOption}\n" +
             $"ECOM: {(_ecomManualPriority ? "Follow Manual Allocation" : "Follow PO Allocation logic")}\n" +
@@ -1359,7 +1388,7 @@
                 await InvokeAsync(StateHasChanged);
             });
 
-            var res = await BulkSvc.RunAllAsync(defaults, BulkBatchNo, onlyNotAllocated, progress);
+            var res = await BulkSvc.RunAllAsync(defaults, BulkBatchNo, progress);
 
             _bulkMessage =
                 $"Ran {res.Total} container(s) in {FmtElapsed(res.ElapsedMs)} — " +
