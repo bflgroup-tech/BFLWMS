@@ -93,6 +93,8 @@
                     <th>Itemcode</th>
                     <th style="text-align:right">MFCS_SOH</th>
                     <th style="text-align:right">INCREFF_SOH</th>
+                    <th style="text-align:right">GK Rejected Summer</th>
+                    <th style="text-align:right">GK Rejected Winter</th>
                     <th style="text-align:right">Variance</th>
                     <th>Division</th>
                     <th>Department</th>
@@ -106,6 +108,8 @@
                     <td colspan="2">Total (all @_totals!.RowCount.ToString("N0") rows, not just this page)</td>
                     <td style="text-align:right">@_totals!.MFCS_SOH.ToString("N0")</td>
                     <td style="text-align:right">@_totals!.IncreffSOH.ToString("N0")</td>
+                    <td style="text-align:right">@_totals!.GateKeeperRejectedSummer.ToString("N0")</td>
+                    <td style="text-align:right">@_totals!.GateKeeperRejectedWinter.ToString("N0")</td>
                     <td style="text-align:right">@_totals!.Variance.ToString("N0")</td>
                     <td colspan="5"></td>
                 </tr>
@@ -116,6 +120,8 @@
                         <td style="font-family:var(--font-mono)">@r.Itemcode</td>
                         <td style="text-align:right">@r.MFCS_SOH.ToString("N0")</td>
                         <td style="text-align:right">@r.IncreffSOH.ToString("N0")</td>
+                        <td style="text-align:right">@r.GateKeeperRejectedSummer.ToString("N0")</td>
+                        <td style="text-align:right">@r.GateKeeperRejectedWinter.ToString("N0")</td>
                         <td style="text-align:right; font-weight:@(r.Variance == 0 ? "400" : "700")">@r.Variance.ToString("N0")</td>
                         <td style="word-break:break-word">@r.Division</td>
                         <td style="word-break:break-word">@r.Department</td>
@@ -126,7 +132,7 @@
                 }
                 @if (_rows.Count == 0)
                 {
-                    <tr><td colspan="10" style="color:var(--text-secondary)">No rows for the selected filters.</td></tr>
+                    <tr><td colspan="12" style="color:var(--text-secondary)">No rows for the selected filters.</td></tr>
                 }
             </tbody>
         </table>
@@ -230,7 +236,7 @@
             var ws = wb.AddWorksheet("ECOM Stock Variance");
             string[] headers =
             {
-                "Country", "Itemcode", "MFCS_SOH", "INCREFF_SOH", "Variance",
+                "Country", "Itemcode", "MFCS_SOH", "INCREFF_SOH", "GK Rejected Summer", "GK Rejected Winter", "Variance",
                 "Division", "Department", "Class", "Subclass", "Family", "Last Refreshed"
             };
             for (int i = 0; i < headers.Length; i++) ws.Cell(1, i + 1).Value = headers[i];
@@ -243,13 +249,15 @@
                 ws.Cell(row, 2).Value  = r.Itemcode;
                 ws.Cell(row, 3).Value  = r.MFCS_SOH;
                 ws.Cell(row, 4).Value  = r.IncreffSOH;
-                ws.Cell(row, 5).Value  = r.Variance;
-                ws.Cell(row, 6).Value  = r.Division;
-                ws.Cell(row, 7).Value  = r.Department;
-                ws.Cell(row, 8).Value  = r.Class;
-                ws.Cell(row, 9).Value  = r.Subclass;
-                ws.Cell(row, 10).Value = r.Family;
-                ws.Cell(row, 11).Value = r.CreateTS.ToString("dd-MMM-yyyy HH:mm");
+                ws.Cell(row, 5).Value  = r.GateKeeperRejectedSummer;
+                ws.Cell(row, 6).Value  = r.GateKeeperRejectedWinter;
+                ws.Cell(row, 7).Value  = r.Variance;
+                ws.Cell(row, 8).Value  = r.Division;
+                ws.Cell(row, 9).Value  = r.Department;
+                ws.Cell(row, 10).Value = r.Class;
+                ws.Cell(row, 11).Value = r.Subclass;
+                ws.Cell(row, 12).Value = r.Family;
+                ws.Cell(row, 13).Value = r.CreateTS.ToString("dd-MMM-yyyy HH:mm");
                 row++;
             }
             ws.Columns().AdjustToContents();
