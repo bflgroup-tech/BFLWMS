@@ -870,9 +870,11 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
         //   * Result / flags / Company / ShopCode from the store's DataSettings row
         //   * OrPrice from the store's own DB, SalesPrice = FCCode + ' ' + OrPrice
         //   * RefNo from BFLDATA..RFIDTransfer, created for today if absent
+        //   * AddInfo from the store's own [Dataname].dbo.ItemMH, suffixed with -MMyy
         var settings = await LoadProdStoreSettingsAsync(rows.Select(r => r.StoreID), ct);
         var prices   = await LoadRfSalesPricesAsync(rows.Select(r => r.Itemcode), settings, ct);
         var (refNos, refNoFailures) = await ResolveRefNosAsync(settings, ct);
+        var addInfos = await LoadAddInfoAsync(rows.Select(r => r.Itemcode), settings, ct);
 
         var unmatchedStores = rows
             .Select(r => r.StoreID?.Trim() ?? "")
@@ -881,7 +883,7 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
             .Where(s => !settings.ContainsKey(s))
             .ToList();
 
-        var dt = BuildPhotoCheckingResultDataTable(rows, settings, prices, refNos);
+        var dt = BuildPhotoCheckingResultDataTable(rows, settings, prices, refNos, addInfos);
 
         await using var conn = OpenWmsProductionDb();
         using var bulk = new SqlBulkCopy(conn)
@@ -1140,6 +1142,62 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
                 // A country DB without RFSalesPrice must not fail the whole sync —
                 // those stores simply get no OrPrice. Surfaced in the log, not silent.
                 Console.Error.WriteLine($"[DataSync] WARN: RFSalesPrice lookup failed for '{dn}': {ex.Message}");
+            }
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// AddInfo per (Dataname, Itemcode) — ISNULL(AddInfo,'') + '-' + the current
+    /// month/year (MMyy) read from the store's own [Dataname].dbo.ItemMH. Same
+    /// one-round-trip-per-Dataname batching as LoadRfSalesPricesAsync, and not
+    /// gated by print flag — this is item-master metadata, not a sticker field.
+    /// </summary>
+    private async Task<Dictionary<(string Dataname, string Itemcode), string>> LoadAddInfoAsync(
+        IEnumerable<string?> itemcodeSource, Dictionary<string, ProdStoreSettings> settings, CancellationToken ct)
+    {
+        var result = new Dictionary<(string, string), string>();
+
+        var dataNames = settings.Values
+            .Where(s => !string.IsNullOrWhiteSpace(s.Dataname))
+            .Select(s => s.Dataname!.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Where(d => Regex.IsMatch(d, @"^[A-Za-z0-9_]+$"))   // 3-part name is interpolated
+            .ToArray();
+        if (dataNames.Length == 0) return result;
+
+        var itemcodes = itemcodeSource.Where(i => !string.IsNullOrWhiteSpace(i))
+                            .Select(i => i!.Trim())
+                            .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        if (itemcodes.Length == 0) return result;
+        var itemsCsv = string.Join(",", itemcodes);
+
+        await using var c = OpenOnPremBackup();
+        foreach (var dn in dataNames)
+        {
+            try
+            {
+                // CSV + STRING_SPLIT rather than IN @items — same 2100-parameter-limit
+                // reason as LoadRfSalesPricesAsync.
+                var sql = $@"
+                    SELECT DISTINCT CAST(value AS VARCHAR(50)) AS ItemCode INTO #addInfoItems FROM STRING_SPLIT(@itemsCsv, ',');
+                    CREATE CLUSTERED INDEX IX_addInfoItems ON #addInfoItems(ItemCode);
+
+                    SELECT m.Itemcode, AddInfo = ISNULL(m.AddInfo, '') + '-' + FORMAT(GETDATE(), 'MMyy')
+                      FROM [{dn}].dbo.ItemMH m WITH (NOLOCK)
+                      INNER JOIN #addInfoItems i ON i.ItemCode = m.Itemcode;";
+                var infos = await c.QueryAsync<(string Itemcode, string AddInfo)>(new CommandDefinition(
+                    sql, new { itemsCsv },
+                    commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+                foreach (var x in infos)
+                    if (!string.IsNullOrWhiteSpace(x.Itemcode))
+                        result[((string)dn, x.Itemcode.Trim())] = x.AddInfo;
+            }
+            catch (Exception ex)
+            {
+                // A country DB without ItemMH (or without AddInfo) must not fail the
+                // whole sync — those rows simply get no AddInfo suffix.
+                Console.Error.WriteLine($"[DataSync] WARN: ItemMH AddInfo lookup failed for '{dn}': {ex.Message}");
             }
         }
         return result;
@@ -1439,7 +1497,8 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
         List<SourceRow> rows,
         Dictionary<string, ProdStoreSettings> settings,
         Dictionary<(string Dataname, string Itemcode), decimal> prices,
-        Dictionary<string, string> refNos)
+        Dictionary<string, string> refNos,
+        Dictionary<(string Dataname, string Itemcode), string> addInfos)
     {
         // One row PER PIECE: an allocation of 8 becomes 8 rows with Qty = 1, because
         // the legacy checking flow scans individual pieces. Rows with no allocated
@@ -1465,11 +1524,13 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
         dt.Columns.Add("OrPrice",          typeof(double));   // float on PhotoCheckingResult
         dt.Columns.Add("PrintFlag",        typeof(string));
         dt.Columns.Add("RfidFlag",         typeof(string));
+        dt.Columns.Add("ArabicPrintFlag",  typeof(string));
         dt.Columns.Add("Company",          typeof(string));
         dt.Columns.Add("ShopCode",         typeof(string));
         dt.Columns.Add("Itemname",         typeof(string));
         dt.Columns.Add("Barcode",          typeof(string));
         dt.Columns.Add("SalesPrice",       typeof(string));   // varchar(30) on PhotoCheckingResult
+        dt.Columns.Add("ArabicSalesPrice", typeof(string));
         dt.Columns.Add("RefNo",            typeof(string));
         dt.Columns.Add("Mark",             typeof(string));
         dt.Columns.Add("Uid",              typeof(string));   // varchar(5), not numeric
@@ -1484,6 +1545,7 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
         dt.Columns.Add("Style",            typeof(string));
         dt.Columns.Add("Remarks",          typeof(string));
         dt.Columns.Add("StoreId",          typeof(string));
+        dt.Columns.Add("AddInfo",          typeof(string));
 
         foreach (var r in rows)
         {
@@ -1499,6 +1561,7 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
             // defaults to 0 (not NULL) when the store doesn't print or has no price.
             double orPrice    = 0.0;
             object salesPrice = "";
+            object arabicSalesPrice = "";
             if (printY && st is not null)
             {
                 var dn = st.Dataname?.Trim();
@@ -1507,10 +1570,16 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
                     && prices.TryGetValue((dn, ic), out var p))
                 {
                     orPrice = (double)p;
-                    // FCCode + space + price at the store's configured decimals.
-                    salesPrice = ((st.FCCode ?? "").Trim() + " " +
-                                  p.ToString("F" + st.DecimalPlaces,
-                                             System.Globalization.CultureInfo.InvariantCulture)).Trim();
+                    // FCCode + space + price at the store's configured decimals — but a
+                    // whole-number price (e.g. 139.00) prints as "139", not "139.00".
+                    var priceText = p == Math.Truncate(p)
+                        ? p.ToString("0", System.Globalization.CultureInfo.InvariantCulture)
+                        : p.ToString("F" + st.DecimalPlaces, System.Globalization.CultureInfo.InvariantCulture);
+                    salesPrice = ((st.FCCode ?? "").Trim() + " " + priceText).Trim();
+
+                    // ArabicSalesPrice is Qatar-only — Arabic-Indic digits + " ق.ر".
+                    if (string.Equals(dn, "BFLQATAR", StringComparison.OrdinalIgnoreCase))
+                        arabicSalesPrice = ToArabicNumbers(priceText) + " ق.ر";
                 }
             }
 
@@ -1527,6 +1596,22 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
             var barcode = printY
                 ? $"{r.Barcode}/{orPrice.ToString(System.Globalization.CultureInfo.InvariantCulture)}/{refNoText}"
                 : (r.Itemcode ?? "");
+
+            // Arabic stickers are a Qatar-only thing — every other Dataname gets "N".
+            var arabicPrintFlag = string.Equals(st?.Dataname?.Trim(), "BFLQATAR", StringComparison.OrdinalIgnoreCase) ? "Y" : "N";
+
+            // AddInfo — the store's own [Dataname].dbo.ItemMH.AddInfo plus a "-MMyy"
+            // suffix for the current month, regardless of print flag (this isn't a
+            // sticker field, it's item-master metadata).
+            var addInfo = "";
+            if (st is not null)
+            {
+                var dn = st.Dataname?.Trim();
+                var ic = r.Itemcode?.Trim();
+                if (!string.IsNullOrEmpty(dn) && !string.IsNullOrEmpty(ic)
+                    && addInfos.TryGetValue((dn, ic), out var ai))
+                    addInfo = ai;
+            }
 
             for (var i = 0; i < pieces; i++)
             {
@@ -1551,11 +1636,13 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
                     orPrice,
                     printY ? "Y" : "N",
                     st?.RfidFlagYes == true ? "Y" : "N",
+                    arabicPrintFlag,
                     st?.Company ?? "",
                     (object?)st?.ShopCode       ?? DBNull.Value,
                     (object?)r.Itemname         ?? DBNull.Value,
                     barcode,
                     salesPrice,
+                    arabicSalesPrice,
                     refNo,
                     printY ? "PA" : "",                 // Mark
                     "0",                                 // Uid (varchar)
@@ -1569,10 +1656,22 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
                     (object?)r.ORAPONo          ?? DBNull.Value,
                     (object?)r.Style            ?? DBNull.Value,
                     (object?)r.Remarks          ?? DBNull.Value,
-                    (object?)r.StoreID          ?? DBNull.Value);
+                    (object?)r.StoreID          ?? DBNull.Value,
+                    addInfo);
             }
         }
         return dt;
+    }
+
+    // Ported from the legacy VB6 ToArabicNumbers — swaps each Western digit 0-9 for
+    // its Arabic-Indic equivalent (٠١٢٣٤٥٦٧٨٩), used to build ArabicSalesPrice.
+    private static string ToArabicNumbers(string value)
+    {
+        const string englishNums = "0123456789";
+        const string arabicNums  = "٠١٢٣٤٥٦٧٨٩";
+        for (var i = 0; i < englishNums.Length; i++)
+            value = value.Replace(englishNums[i], arabicNums[i]);
+        return value;
     }
 
     private static object ParseDecimalOrDbNull(string? s) =>
