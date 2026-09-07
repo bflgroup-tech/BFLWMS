@@ -6,12 +6,14 @@ namespace Wms.Data.Lpm;
 
 public record EcomStockVarianceRow(
     string Country, string Itemcode, int IncreffSOH, int MFCS_SOH,
-    int GateKeeperRejectedSummer, int GateKeeperRejectedWinter, int Variance, DateTime CreateTS,
+    int GateKeeperRejectedSummer, int GateKeeperRejectedWinter, int Variance,
+    int InTransitUAE, int InTransitKSA, DateTime CreateTS,
     string? Division, string? Department, string? Class, string? Subclass, string? Family);
 
 public record EcomStockVarianceTotals(
     int RowCount, long IncreffSOH, long MFCS_SOH,
-    long GateKeeperRejectedSummer, long GateKeeperRejectedWinter, long Variance);
+    long GateKeeperRejectedSummer, long GateKeeperRejectedWinter, long Variance,
+    long InTransitUAE, long InTransitKSA);
 
 /// <summary>
 /// Backing service for the ECOM Stock Variance Report — reads
@@ -137,7 +139,9 @@ public class EcomStockVarianceReportService(IOnPremConnectionResolver resolver)
                    ISNULL(SUM(CAST(MFCS_SOH AS BIGINT)), 0)   AS MFCS_SOH,
                    ISNULL(SUM(CAST(GateKeeperRejectedSummer AS BIGINT)), 0) AS GateKeeperRejectedSummer,
                    ISNULL(SUM(CAST(GateKeeperRejectedWinter AS BIGINT)), 0) AS GateKeeperRejectedWinter,
-                   ISNULL(SUM(CAST(Variance AS BIGINT)), 0)   AS Variance
+                   ISNULL(SUM(CAST(Variance AS BIGINT)), 0)   AS Variance,
+                   ISNULL(SUM(CAST(InTransitUAE AS BIGINT)), 0) AS InTransitUAE,
+                   ISNULL(SUM(CAST(InTransitKSA AS BIGINT)), 0) AS InTransitKSA
               FROM dbo.LPM_ECOM_SOH_COMPARISON
             {FilterWhereSql};",
             BuildFilterParams(countries, divisions, varianceOnly),
@@ -154,7 +158,8 @@ public class EcomStockVarianceReportService(IOnPremConnectionResolver resolver)
         await using var c = OpenOnPremBackup();
         var rows = await c.QueryAsync<EcomStockVarianceRow>(new CommandDefinition($@"
             SELECT Country, Itemcode, IncreffSOH, MFCS_SOH,
-                   GateKeeperRejectedSummer, GateKeeperRejectedWinter, Variance, CreateTS,
+                   GateKeeperRejectedSummer, GateKeeperRejectedWinter, Variance,
+                   InTransitUAE, InTransitKSA, CreateTS,
                    {ClassificationSelectSql}
               FROM dbo.LPM_ECOM_SOH_COMPARISON
             {FilterWhereSql}
@@ -183,7 +188,8 @@ public class EcomStockVarianceReportService(IOnPremConnectionResolver resolver)
         await using var c = OpenOnPremBackup();
         var rows = await c.QueryAsync<EcomStockVarianceRow>(new CommandDefinition($@"
             SELECT Country, Itemcode, IncreffSOH, MFCS_SOH,
-                   GateKeeperRejectedSummer, GateKeeperRejectedWinter, Variance, CreateTS,
+                   GateKeeperRejectedSummer, GateKeeperRejectedWinter, Variance,
+                   InTransitUAE, InTransitKSA, CreateTS,
                    {ClassificationSelectSql}
               FROM dbo.LPM_ECOM_SOH_COMPARISON
             {FilterWhereSql}
