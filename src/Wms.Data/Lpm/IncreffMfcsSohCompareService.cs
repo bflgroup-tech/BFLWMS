@@ -25,12 +25,14 @@ namespace Wms.Data.Lpm;
 /// happens to overlap with the other two sources.
 ///
 /// InTransitUAE/KSA -> RACKS.dbo.MFCS_LOCSTOCK_INT (MFCS_TOLOCID 10007/20002
-/// respectively), summed by Itemcode. Unlike GS/GW this source carries NO
-/// country dimension of its own — the same Itemcode's UAE row and KSA row
-/// (when both exist) show the SAME InTransitUAE/InTransitKSA values, so these
-/// two are joined by Itemcode alone (no Country condition), and both spine-
-/// widen for EITHER country (an Itemcode with only in-transit quantity gets
-/// both a UAE and a KSA row, not just one). Not part of the Variance formula —
+/// respectively), summed by Itemcode. The source carries no country column of
+/// its own, but the join is still scoped to its own country (InTransitUAE only
+/// on Country='UAE' rows, InTransitKSA only on Country='KSA' rows) — same
+/// pattern as GS/GW. An earlier version joined both by Itemcode alone with no
+/// country condition, which meant a country-unfiltered total counted every
+/// item's in-transit quantity TWICE (once from its UAE row, once from its KSA
+/// row) — caught in production (report totals were exactly double the raw
+/// SUM(INTRANSIT_QTY)) and fixed here. Not part of the Variance formula —
 /// informational columns only.
 ///
 /// Variance (= MFCS_SOH - (IncreffSOH + GateKeeperRejectedSummer +
@@ -127,10 +129,6 @@ public class IncreffMfcsSohCompareService(IOnPremConnectionResolver resolver)
             UNION
             SELECT 'UAE', Itemcode FROM InTransitUae
             UNION
-            SELECT 'KSA', Itemcode FROM InTransitUae
-            UNION
-            SELECT 'UAE', Itemcode FROM InTransitKsa
-            UNION
             SELECT 'KSA', Itemcode FROM InTransitKsa
         ),
         Subclass AS (
@@ -157,8 +155,8 @@ public class IncreffMfcsSohCompareService(IOnPremConnectionResolver resolver)
           LEFT JOIN Mfcs m       ON m.Country = sp.Country AND m.Itemcode = sp.Itemcode
           LEFT JOIN GsRejected gs ON gs.Country = sp.Country AND gs.Itemcode = sp.Itemcode
           LEFT JOIN GwRejected gw ON gw.Country = sp.Country AND gw.Itemcode = sp.Itemcode
-          LEFT JOIN InTransitUae iu ON iu.Itemcode = sp.Itemcode
-          LEFT JOIN InTransitKsa ik ON ik.Itemcode = sp.Itemcode
+          LEFT JOIN InTransitUae iu ON iu.Itemcode = sp.Itemcode AND sp.Country = 'UAE'
+          LEFT JOIN InTransitKsa ik ON ik.Itemcode = sp.Itemcode AND sp.Country = 'KSA'
           LEFT JOIN Subclass s   ON s.Itemcode = sp.Itemcode AND s.rn = 1;";
 
     /// <summary>On-demand "Refresh Now" — rebuilds dbo.LPM_ECOM_SOH_COMPARISON from
