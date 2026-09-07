@@ -160,12 +160,13 @@ public class CdcBoxAllocationService(IOnPremConnectionResolver resolver, ICurren
 
         var tDiv       = LoadDivByItemAsync(itemCodesCsv, ct);
         var tOts       = LoadOtsRunRowsAsync(ctry, nowGst, ct);
+        var tDivBlocks = LoadDivBlocksAsync(ct);
         var tGrade     = LoadStoreDivGradeAsync(nowGst, ct);
         var tSoh       = LoadItemSohByStoreAsync(itemCodesCsv, ct);
         var tVgOrder   = LoadVolumeGroupOrderAsync(ct);
         var tBandPct   = LoadOtsBandPctAsync(ct);
 
-        await Task.WhenAll(tDiv, tOts, tGrade, tSoh, tVgOrder, tBandPct);
+        await Task.WhenAll(tDiv, tOts, tGrade, tSoh, tVgOrder, tBandPct, tDivBlocks);
 
         var divByItem      = await tDiv;
         var otsRows        = await tOts;
@@ -173,6 +174,15 @@ public class CdcBoxAllocationService(IOnPremConnectionResolver resolver, ICurren
         var itemSohByStore = await tSoh;
         var vgSortOrder    = await tVgOrder;
         var otsBandPct     = await tBandPct;
+        var divBlocks      = await tDivBlocks;
+
+        // A store barred from a division must not be given DC stock for it. Applied
+        // here, on the store universe, so every SKU of that division skips the store —
+        // the same rule PO allocation applies to its own eligible set.
+        var blockedRows = otsRows.RemoveAll(r =>
+            divBlocks.Contains((r.StoreID.Trim().ToUpperInvariant(), r.DivCode)));
+        if (blockedRows > 0)
+            warnings.Add($"{blockedRows:N0} store/division row(s) excluded — blocked in LPM_StoreDivAccess.");
 
         if (otsRows.Count == 0)
             return CdcDcSohAllocationResult.Fail(
@@ -870,6 +880,19 @@ public class CdcBoxAllocationService(IOnPremConnectionResolver resolver, ICurren
         var d = new Dictionary<(string, string), int>();
         foreach (var r in rows) d[(r.storeid.ToUpperInvariant(), r.itemcode.ToUpperInvariant())] = r.SOH;
         return d;
+    }
+
+    /// <summary>
+    /// (StoreID, DivCode) pairs barred from allocation. IsActive = 0 means BLOCKED —
+    /// the inverted convention every LpmSim block table uses.
+    /// </summary>
+    private async Task<HashSet<(string Sid, int DivCode)>> LoadDivBlocksAsync(CancellationToken ct)
+    {
+        await using var c = OpenOnPremBackup();
+        var rows = await c.QueryAsync<(string StoreID, int DivCode)>(new CommandDefinition(
+            "SELECT StoreID, DivCode FROM dbo.LPM_StoreDivAccess WITH (NOLOCK) WHERE IsActive = 0",
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        return rows.Select(r => ((r.StoreID ?? "").Trim().ToUpperInvariant(), r.DivCode)).ToHashSet();
     }
 
     private async Task<Dictionary<string, int>> LoadVolumeGroupOrderAsync(CancellationToken ct)
