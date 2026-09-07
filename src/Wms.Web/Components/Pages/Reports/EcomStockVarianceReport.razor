@@ -103,6 +103,7 @@
                     <th>Class</th>
                     <th>Subclass</th>
                     <th>Family</th>
+                    <th>Brand</th>
                 </tr>
             </thead>
             <tbody>
@@ -115,7 +116,7 @@
                     <td style="text-align:right">@_totals!.Variance.ToString("N0")</td>
                     <td style="text-align:right">@_totals!.InTransitUAE.ToString("N0")</td>
                     <td style="text-align:right">@_totals!.InTransitKSA.ToString("N0")</td>
-                    <td colspan="5"></td>
+                    <td colspan="6"></td>
                 </tr>
                 @foreach (var r in _rows)
                 {
@@ -134,11 +135,12 @@
                         <td style="word-break:break-word">@r.Class</td>
                         <td style="word-break:break-word">@r.Subclass</td>
                         <td style="word-break:break-word">@r.Family</td>
+                        <td style="word-break:break-word">@r.Brand</td>
                     </tr>
                 }
                 @if (_rows.Count == 0)
                 {
-                    <tr><td colspan="14" style="color:var(--text-secondary)">No rows for the selected filters.</td></tr>
+                    <tr><td colspan="15" style="color:var(--text-secondary)">No rows for the selected filters.</td></tr>
                 }
             </tbody>
         </table>
@@ -244,7 +246,7 @@
             {
                 "Country", "Itemcode", "MFCS_SOH", "INCREFF_SOH", "GS Summer Pallet", "GW Winter Pallet",
                 "Variance (MFCS_SOH - (INCREFF_SOH + GS + GW))",
-                "InTransit UAE", "InTransit KSA", "Division", "Department", "Class", "Subclass", "Family", "Last Refreshed"
+                "InTransit UAE", "InTransit KSA", "Division", "Department", "Class", "Subclass", "Family", "Brand", "Last Refreshed"
             };
             for (int i = 0; i < headers.Length; i++) ws.Cell(1, i + 1).Value = headers[i];
             ws.Row(1).Style.Font.Bold = true;
@@ -266,7 +268,8 @@
                 ws.Cell(row, 12).Value = r.Class;
                 ws.Cell(row, 13).Value = r.Subclass;
                 ws.Cell(row, 14).Value = r.Family;
-                ws.Cell(row, 15).Value = r.CreateTS.ToString("dd-MMM-yyyy HH:mm");
+                ws.Cell(row, 15).Value = r.Brand;
+                ws.Cell(row, 16).Value = r.CreateTS.ToString("dd-MMM-yyyy HH:mm");
                 row++;
             }
             ws.Columns().AdjustToContents();

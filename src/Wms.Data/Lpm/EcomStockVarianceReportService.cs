@@ -8,7 +8,7 @@ public record EcomStockVarianceRow(
     string Country, string Itemcode, int IncreffSOH, int MFCS_SOH,
     int GateKeeperRejectedSummer, int GateKeeperRejectedWinter, int Variance,
     int InTransitUAE, int InTransitKSA, DateTime CreateTS,
-    string? Division, string? Department, string? Class, string? Subclass, string? Family);
+    string? Division, string? Department, string? Class, string? Subclass, string? Family, string? Brand);
 
 public record EcomStockVarianceTotals(
     int RowCount, long IncreffSOH, long MFCS_SOH,
@@ -160,7 +160,7 @@ public class EcomStockVarianceReportService(IOnPremConnectionResolver resolver)
             SELECT Country, Itemcode, IncreffSOH, MFCS_SOH,
                    GateKeeperRejectedSummer, GateKeeperRejectedWinter, Variance,
                    InTransitUAE, InTransitKSA, CreateTS,
-                   {ClassificationSelectSql}
+                   {ClassificationSelectSql}, Brand
               FROM dbo.LPM_ECOM_SOH_COMPARISON
             {FilterWhereSql}
              ORDER BY Country, Itemcode
@@ -190,7 +190,7 @@ public class EcomStockVarianceReportService(IOnPremConnectionResolver resolver)
             SELECT Country, Itemcode, IncreffSOH, MFCS_SOH,
                    GateKeeperRejectedSummer, GateKeeperRejectedWinter, Variance,
                    InTransitUAE, InTransitKSA, CreateTS,
-                   {ClassificationSelectSql}
+                   {ClassificationSelectSql}, Brand
               FROM dbo.LPM_ECOM_SOH_COMPARISON
             {FilterWhereSql}
              ORDER BY Country, Itemcode;",

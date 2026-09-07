@@ -46,6 +46,11 @@ namespace Wms.Data.Lpm;
 /// Itemcode rows) — so the ECOM Stock Variance Report reads them straight off
 /// this table instead of joining the 20M-row view itself at read time.
 ///
+/// Brand -> USA.dbo.UPCBarCodes.Vendor, same LEFT JOIN + ROW_NUMBER dedup
+/// pattern (that table has ~7,400 Itemcodes with more than one distinct Vendor
+/// out of ~18M rows — an arbitrary-but-deterministic pick, same tradeoff
+/// already accepted for vUPC_SUBCLASS's own duplicates).
+///
 /// All sources live on the same on-prem SQL instance as LPMSIM — LPM_ECOM_INCREFF_SOH
 /// is local to that DB, RACKS.dbo.lpm_locstock/WHBoxItems are reached via 3-part naming
 /// (same pattern as the LPMSIM.dbo.* cross-references elsewhere in this codebase) — so
@@ -135,10 +140,15 @@ public class IncreffMfcsSohCompareService(IOnPremConnectionResolver resolver)
             SELECT Itemcode, Division, Department, class AS Class, subclass AS Subclass, Family,
                    ROW_NUMBER() OVER (PARTITION BY Itemcode ORDER BY (SELECT NULL)) AS rn
               FROM DATAREPORTING.dbo.vUPC_SUBCLASS
+        ),
+        Vendor AS (
+            SELECT Itemcode, Vendor,
+                   ROW_NUMBER() OVER (PARTITION BY Itemcode ORDER BY (SELECT NULL)) AS rn
+              FROM USA.dbo.UPCBarCodes
         )
         INSERT INTO dbo.LPM_ECOM_SOH_COMPARISON
             (Country, Itemcode, IncreffSOH, MFCS_SOH, GateKeeperRejectedSummer, GateKeeperRejectedWinter,
-             InTransitUAE, InTransitKSA, CreateTS, Division, Department, Class, Subclass, Family)
+             InTransitUAE, InTransitKSA, CreateTS, Division, Department, Class, Subclass, Family, Brand)
         SELECT
             sp.Country,
             sp.Itemcode,
@@ -149,7 +159,8 @@ public class IncreffMfcsSohCompareService(IOnPremConnectionResolver resolver)
             ISNULL(iu.Qty, 0)                AS InTransitUAE,
             ISNULL(ik.Qty, 0)                AS InTransitKSA,
             DATEADD(hour, 4, SYSUTCDATETIME()) AS CreateTS,
-            s.Division, s.Department, s.Class, s.Subclass, s.Family
+            s.Division, s.Department, s.Class, s.Subclass, s.Family,
+            v.Vendor AS Brand
           FROM Spine sp
           LEFT JOIN Increff i    ON i.Country = sp.Country AND i.Itemcode = sp.Itemcode
           LEFT JOIN Mfcs m       ON m.Country = sp.Country AND m.Itemcode = sp.Itemcode
@@ -157,7 +168,8 @@ public class IncreffMfcsSohCompareService(IOnPremConnectionResolver resolver)
           LEFT JOIN GwRejected gw ON gw.Country = sp.Country AND gw.Itemcode = sp.Itemcode
           LEFT JOIN InTransitUae iu ON iu.Itemcode = sp.Itemcode AND sp.Country = 'UAE'
           LEFT JOIN InTransitKsa ik ON ik.Itemcode = sp.Itemcode AND sp.Country = 'KSA'
-          LEFT JOIN Subclass s   ON s.Itemcode = sp.Itemcode AND s.rn = 1;";
+          LEFT JOIN Subclass s   ON s.Itemcode = sp.Itemcode AND s.rn = 1
+          LEFT JOIN Vendor v     ON v.Itemcode = sp.Itemcode AND v.rn = 1;";
 
     /// <summary>On-demand "Refresh Now" — rebuilds dbo.LPM_ECOM_SOH_COMPARISON from
     /// scratch. Run IncreffSohFromGcpService.RefreshAsync first for a fresh compare.</summary>
