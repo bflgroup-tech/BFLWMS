@@ -1803,7 +1803,7 @@ SELECT
             ContainerLevel AS (
                 SELECT
                     a.Contno,
-                    MIN(a.trndate)              AS TrnDate,
+                    MIN(cr.ReceiptDt)           AS TrnDate,
                     COUNT(DISTINCT a.PalletNo)  AS Pallets,
                     COUNT(DISTINCT b.Boxno)     AS Boxes,
                     MAX(oa.Qty)                 AS Pcs
@@ -1812,8 +1812,8 @@ SELECT
                     ON a.PalletNo = b.palletno AND a.Contno = b.Contno
                 JOIN bfldata.dbo.ContReceipt cr WITH (NOLOCK) ON cr.RefNo = a.Contno
                 JOIN OrderAgg oa ON oa.refno = a.Contno
-                WHERE a.whouse = @wh
-                  AND a.trndate >= @yearStart AND a.trndate < @yearEnd
+                WHERE a.whouse IN (@wh, 'JAFZA')
+                  AND cr.ReceiptDt >= @yearStart AND cr.ReceiptDt < @yearEnd
                 GROUP BY a.Contno
             )
             SELECT
@@ -1844,8 +1844,8 @@ SELECT
                     ON a.PalletNo = b.palletno AND a.Contno = b.Contno
                 JOIN bfldata.dbo.ContReceipt cr WITH (NOLOCK) ON cr.RefNo = a.Contno
                 JOIN OrderAgg oa ON oa.refno = a.Contno
-                WHERE a.whouse = @wh
-                  AND a.trndate >= @from AND a.trndate < @to
+                WHERE a.whouse IN (@wh, 'JAFZA')
+                  AND cr.ReceiptDt >= @from AND cr.ReceiptDt < @to
                 GROUP BY a.Contno
             )
             SELECT
