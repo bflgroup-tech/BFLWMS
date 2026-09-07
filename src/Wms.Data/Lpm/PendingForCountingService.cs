@@ -72,15 +72,22 @@ public class PendingForCountingService(IOnPremConnectionResolver resolver)
         // (MAX(ReceiptDt)) so a container with several receipt lines doesn't get
         // duplicated once the PO detail is joined on.
         var rows = await c.QueryAsync<PendingForCountingRow>(new CommandDefinition(@"
-            WITH pending AS (
-                SELECT cr.RefNo,
-                       ReceiptDt = MAX(cr.ReceiptDt),
-                       -- Warehouse off the very Contreceipt rows that put this
-                       -- container on the list. MAX() because the CTE collapses to
-                       -- one row per RefNo; a container's receipt lines share a
-                       -- warehouse, so this is the value, not an arbitrary pick.
-                       Warehouse = MAX(cr.Warehouse)
-                  FROM bfldata.dbo.Contreceipt cr WITH (NOLOCK)
+            -- Materialised, not a CTE feeding correlated APPLYs. The two enrichments
+            -- below (AllocationCountry, ProcessedDt) were OUTER APPLYs correlated on
+            -- the container, so each ran once per pending container.
+            -- Online..PhotoCheckingResult holds ONE ROW PER PIECE — a 13k-piece
+            -- container is 13k rows — so that was ~50 scans of a very large table to
+            -- produce 50 dates. Aggregating each once against this small set and
+            -- joining turns N scans into one.
+            SELECT cr.RefNo,
+                   ReceiptDt = MAX(cr.ReceiptDt),
+                   -- Warehouse off the very Contreceipt rows that put this container
+                   -- on the list. MAX() because this collapses to one row per RefNo;
+                   -- a container's receipt lines share a warehouse, so this is the
+                   -- value, not an arbitrary pick.
+                   Warehouse = MAX(cr.Warehouse)
+              INTO #pend
+              FROM bfldata.dbo.Contreceipt cr WITH (NOLOCK)
                  WHERE cr.ReceiptDt >= @receiptDtFrom
                    AND ISNULL(cr.ContType, '') <> 'Non-Trade'
                    AND NOT EXISTS (
@@ -95,8 +102,35 @@ public class PendingForCountingService(IOnPremConnectionResolver resolver)
                    AND NOT EXISTS (
                            SELECT 1 FROM bfldata.dbo.BuildingCompletion bc WITH (NOLOCK)
                             WHERE bc.ContNo = cr.RefNo)
-                 GROUP BY cr.RefNo
-            )
+                 GROUP BY cr.RefNo;
+
+            CREATE CLUSTERED INDEX IX_pend ON #pend(RefNo);
+
+            -- vUSAOrder is keyed by refno (NOT its own Contno column) and carries
+            -- several order rows per container, so the distinct AllocationCountry
+            -- values are folded into one cell. DISTINCT sits in a derived table
+            -- because STRING_AGG(DISTINCT ...) is not valid T-SQL.
+            SELECT x.RefNo, AllocationCountry = STRING_AGG(x.AllocationCountry, ', ')
+              INTO #ac
+              FROM (SELECT DISTINCT p.RefNo, o.AllocationCountry
+                      FROM #pend p
+                      JOIN hodata.dbo.vUSAOrder o WITH (NOLOCK) ON o.refno = p.RefNo
+                     WHERE NULLIF(LTRIM(RTRIM(o.AllocationCountry)), '') IS NOT NULL) x
+             GROUP BY x.RefNo;
+
+            CREATE CLUSTERED INDEX IX_ac ON #ac(RefNo);
+
+            -- When this container's allocation was pushed to WMS-Prod-DB. A container
+            -- can be processed and still be pending for counting — that is the gap
+            -- this column makes visible. MAX because the push writes one row per piece.
+            SELECT p.RefNo, ProcessedDt = MAX(CAST(pcr.Trndate AS date))
+              INTO #pr
+              FROM #pend p
+              JOIN Online.dbo.PhotoCheckingResult pcr WITH (NOLOCK) ON pcr.ContNo = p.RefNo
+             GROUP BY p.RefNo;
+
+            CREATE CLUSTERED INDEX IX_pr ON #pr(RefNo);
+
             SELECT
                 ContNo            = p.RefNo,
                 ReceiptDt         = p.ReceiptDt,
@@ -108,30 +142,13 @@ public class PendingForCountingService(IOnPremConnectionResolver resolver)
                 Division          = sub.Division,
                 Qty               = CAST(ISNULL(SUM(u.orgqty), 0) AS INT),
                 LPM               = u.LPM
-            FROM pending p
+            FROM #pend p
             LEFT JOIN usa.dbo.usaorgfile_LPM u WITH (NOLOCK)
                    ON u.ContNo = p.RefNo
             LEFT JOIN datareporting.dbo.vupc_subclass sub WITH (NOLOCK)
                    ON sub.itemcode = u.ItemCode
-            -- vUSAOrder is keyed by refno (NOT its own Contno column) and carries
-            -- several order rows per container, so the distinct AllocationCountry
-            -- values are folded into one cell. DISTINCT sits in a derived table
-            -- because STRING_AGG(DISTINCT ...) is not valid T-SQL.
-            OUTER APPLY (
-                SELECT AllocationCountry = STRING_AGG(x.AllocationCountry, ', ')
-                  FROM (SELECT DISTINCT o.AllocationCountry
-                          FROM hodata.dbo.vUSAOrder o WITH (NOLOCK)
-                         WHERE o.refno = p.RefNo
-                           AND NULLIF(LTRIM(RTRIM(o.AllocationCountry)), '') IS NOT NULL) x
-            ) ac
-            -- When this container's allocation was pushed to WMS-Prod-DB. A container
-            -- can be processed and still be pending for counting — that is the gap
-            -- this column makes visible. MAX because the push writes one row per piece.
-            OUTER APPLY (
-                SELECT ProcessedDt = MAX(CAST(pcr.Trndate AS date))
-                  FROM Online.dbo.PhotoCheckingResult pcr WITH (NOLOCK)
-                 WHERE pcr.ContNo = p.RefNo
-            ) pr
+            LEFT JOIN #ac ac ON ac.RefNo = p.RefNo
+            LEFT JOIN #pr pr ON pr.RefNo = p.RefNo
             GROUP BY p.RefNo, p.ReceiptDt, p.Warehouse, ac.AllocationCountry, pr.ProcessedDt,
                      u.OraPONo, sub.Division, u.LPM
             ORDER BY p.ReceiptDt, p.RefNo, u.OraPONo, u.LPM",
