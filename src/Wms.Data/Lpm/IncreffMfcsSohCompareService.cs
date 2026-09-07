@@ -24,6 +24,15 @@ namespace Wms.Data.Lpm;
 /// always matches a plain SUM(Qty) over WHBoxItems, not just the subset that
 /// happens to overlap with the other two sources.
 ///
+/// InTransitUAE/KSA -> RACKS.dbo.MFCS_LOCSTOCK_INT (MFCS_TOLOCID 10007/20002
+/// respectively), summed by Itemcode. Unlike GS/GW this source carries NO
+/// country dimension of its own — the same Itemcode's UAE row and KSA row
+/// (when both exist) show the SAME InTransitUAE/InTransitKSA values, so these
+/// two are joined by Itemcode alone (no Country condition), and both spine-
+/// widen for EITHER country (an Itemcode with only in-transit quantity gets
+/// both a UAE and a KSA row, not just one). Not part of the Variance formula —
+/// informational columns only.
+///
 /// Variance (= MFCS_SOH - (IncreffSOH + GateKeeperRejectedSummer +
 /// GateKeeperRejectedWinter), signed — negative when the right side is bigger)
 /// is a PERSISTED computed column on the table itself, not written here — it
@@ -95,6 +104,18 @@ public class IncreffMfcsSohCompareService(IOnPremConnectionResolver resolver)
              WHERE PalletType = 'GW'
              GROUP BY ItemCode
         ),
+        InTransitUae AS (
+            SELECT ITEMCODE AS Itemcode, SUM(INTRANSIT_QTY) AS Qty
+              FROM RACKS.dbo.MFCS_LOCSTOCK_INT
+             WHERE MFCS_TOLOCID = 10007
+             GROUP BY ITEMCODE
+        ),
+        InTransitKsa AS (
+            SELECT ITEMCODE AS Itemcode, SUM(INTRANSIT_QTY) AS Qty
+              FROM RACKS.dbo.MFCS_LOCSTOCK_INT
+             WHERE MFCS_TOLOCID = 20002
+             GROUP BY ITEMCODE
+        ),
         Spine AS (
             SELECT Country, Itemcode FROM Increff
             UNION
@@ -103,6 +124,14 @@ public class IncreffMfcsSohCompareService(IOnPremConnectionResolver resolver)
             SELECT Country, Itemcode FROM GsRejected
             UNION
             SELECT Country, Itemcode FROM GwRejected
+            UNION
+            SELECT 'UAE', Itemcode FROM InTransitUae
+            UNION
+            SELECT 'KSA', Itemcode FROM InTransitUae
+            UNION
+            SELECT 'UAE', Itemcode FROM InTransitKsa
+            UNION
+            SELECT 'KSA', Itemcode FROM InTransitKsa
         ),
         Subclass AS (
             SELECT Itemcode, Division, Department, class AS Class, subclass AS Subclass, Family,
@@ -111,7 +140,7 @@ public class IncreffMfcsSohCompareService(IOnPremConnectionResolver resolver)
         )
         INSERT INTO dbo.LPM_ECOM_SOH_COMPARISON
             (Country, Itemcode, IncreffSOH, MFCS_SOH, GateKeeperRejectedSummer, GateKeeperRejectedWinter,
-             CreateTS, Division, Department, Class, Subclass, Family)
+             InTransitUAE, InTransitKSA, CreateTS, Division, Department, Class, Subclass, Family)
         SELECT
             sp.Country,
             sp.Itemcode,
@@ -119,6 +148,8 @@ public class IncreffMfcsSohCompareService(IOnPremConnectionResolver resolver)
             ISNULL(m.SOH, 0)                 AS MFCS_SOH,
             ISNULL(gs.Qty, 0)                AS GateKeeperRejectedSummer,
             ISNULL(gw.Qty, 0)                AS GateKeeperRejectedWinter,
+            ISNULL(iu.Qty, 0)                AS InTransitUAE,
+            ISNULL(ik.Qty, 0)                AS InTransitKSA,
             DATEADD(hour, 4, SYSUTCDATETIME()) AS CreateTS,
             s.Division, s.Department, s.Class, s.Subclass, s.Family
           FROM Spine sp
@@ -126,6 +157,8 @@ public class IncreffMfcsSohCompareService(IOnPremConnectionResolver resolver)
           LEFT JOIN Mfcs m       ON m.Country = sp.Country AND m.Itemcode = sp.Itemcode
           LEFT JOIN GsRejected gs ON gs.Country = sp.Country AND gs.Itemcode = sp.Itemcode
           LEFT JOIN GwRejected gw ON gw.Country = sp.Country AND gw.Itemcode = sp.Itemcode
+          LEFT JOIN InTransitUae iu ON iu.Itemcode = sp.Itemcode
+          LEFT JOIN InTransitKsa ik ON ik.Itemcode = sp.Itemcode
           LEFT JOIN Subclass s   ON s.Itemcode = sp.Itemcode AND s.rn = 1;";
 
     /// <summary>On-demand "Refresh Now" — rebuilds dbo.LPM_ECOM_SOH_COMPARISON from
