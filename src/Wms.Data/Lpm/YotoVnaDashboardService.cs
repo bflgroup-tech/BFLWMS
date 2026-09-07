@@ -111,7 +111,10 @@ public class YotoVnaDashboardService(IOnPremConnectionResolver resolver)
         return rows.AsList();
     }
 
-    /// <summary>Cumulative offload totals per calendar month of the given year (every container, not just AEINT/AELOC).</summary>
+    /// <summary>Cumulative offload totals per calendar month of the given year (every container, not just
+    /// AEINT/AELOC). Includes Warehouse = JAFZA alongside YOTO -- offloading for these containers physically
+    /// happens at YOTO even when the container's own Warehouse is recorded as JAFZA. Bucketed and filtered by
+    /// cr.ReceiptDt (the container receipt date) rather than a.trndate (the pallet/offload transaction date).</summary>
     public async Task<List<YotoInboundPeriodRow>> GetMonthlyInboundSummaryAsync(int year, CancellationToken ct = default)
     {
         var yearStart = new DateTime(year, 1, 1);
@@ -123,7 +126,7 @@ public class YotoVnaDashboardService(IOnPremConnectionResolver resolver)
             ContainerLevel AS (
                 SELECT
                     a.Contno,
-                    MIN(a.trndate)              AS TrnDate,
+                    MIN(cr.ReceiptDt)           AS TrnDate,
                     COUNT(DISTINCT a.PalletNo)  AS Pallets,
                     COUNT(DISTINCT b.Boxno)     AS Boxes,
                     MAX(oa.Qty)                 AS Pcs
@@ -132,8 +135,8 @@ public class YotoVnaDashboardService(IOnPremConnectionResolver resolver)
                     ON a.PalletNo = b.palletno AND a.Contno = b.Contno
                 JOIN bfldata.dbo.ContReceipt cr WITH (NOLOCK) ON cr.RefNo = a.Contno
                 JOIN OrderAgg oa ON oa.refno = a.Contno
-                WHERE a.whouse = @wh
-                  AND a.trndate >= @yearStart AND a.trndate < @yearEnd
+                WHERE a.whouse IN (@wh, 'JAFZA')
+                  AND cr.ReceiptDt >= @yearStart AND cr.ReceiptDt < @yearEnd
                 GROUP BY a.Contno
             )
             SELECT
@@ -155,7 +158,9 @@ public class YotoVnaDashboardService(IOnPremConnectionResolver resolver)
     /// <summary>Cumulative offload totals per calendar week within the given month (every container, not just AEINT/AELOC).</summary>
     /// <summary>Container-level offload totals for one explicit date range -- used for the single
     /// selected week (matching Production Summary Report's Sun-Sat week picker) instead of
-    /// spanning multiple weeks the way the Monthly view spans multiple months.</summary>
+    /// spanning multiple weeks the way the Monthly view spans multiple months. Includes
+    /// Warehouse = JAFZA alongside YOTO -- see GetMonthlyInboundSummaryAsync. Filtered by
+    /// cr.ReceiptDt (the container receipt date) rather than a.trndate.</summary>
     public async Task<YotoInboundPeriodRow> GetInboundSummaryForRangeAsync(
         DateTime from, DateTime toExclusive, string periodLabel, int periodIndex, CancellationToken ct = default)
     {
@@ -173,8 +178,8 @@ public class YotoVnaDashboardService(IOnPremConnectionResolver resolver)
                     ON a.PalletNo = b.palletno AND a.Contno = b.Contno
                 JOIN bfldata.dbo.ContReceipt cr WITH (NOLOCK) ON cr.RefNo = a.Contno
                 JOIN OrderAgg oa ON oa.refno = a.Contno
-                WHERE a.whouse = @wh
-                  AND a.trndate >= @from AND a.trndate < @to
+                WHERE a.whouse IN (@wh, 'JAFZA')
+                  AND cr.ReceiptDt >= @from AND cr.ReceiptDt < @to
                 GROUP BY a.Contno
             )
             SELECT
