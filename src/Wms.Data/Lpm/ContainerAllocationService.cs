@@ -1264,16 +1264,30 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
 
                 // Apply block filter (DeptAccess / DivAccess). Surviving stores then sorted
                 // by current OTS DESC (nulls last).
+                // Shared by both branches. The OTS-based branch builds its own store
+                // universe from the OTS run, so it has to apply the same predicate —
+                // this keeps the two from drifting apart again.
+                var deptUpper = dept.ToUpperInvariant();
+                (bool Hit, string? Reason) AccessBlock(string storeId)
+                {
+                    var sidU = storeId.Trim().ToUpperInvariant();
+                    var deptHit = !string.IsNullOrEmpty(dept) && deptBlocks.Contains((sidU, divCode, deptUpper));
+                    var divHit  = divBlocks.Contains((sidU, divCode));
+                    if (!deptHit && !divHit) return (false, null);
+                    return (true, deptHit && divHit ? "DeptAccess+DivAccess" : (deptHit ? "DeptAccess" : "DivAccess"));
+                }
+
+                // Stores this line already has a Blocked row for, so the OTS branch
+                // does not add a second one for the same (item, store).
+                var accessBlockedStores = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
                 var stores = new List<(string StoreID, string Country, string VolumeGroup, int MerchNeedMonth, int SKUMax, double? Ots)>(perStore.Count);
                 foreach (var (storeId, info) in perStore)
                 {
-                    var sidU  = storeId.Trim().ToUpperInvariant();
-                    var deptU = dept.ToUpperInvariant();
-                    var deptHit = !string.IsNullOrEmpty(dept) && deptBlocks.Contains((sidU, divCode, deptU));
-                    var divHit  = divBlocks.Contains((sidU, divCode));
-                    if (deptHit || divHit)
+                    var (accessHit, reason) = AccessBlock(storeId);
+                    if (accessHit)
                     {
-                        var reason = deptHit && divHit ? "DeptAccess+DivAccess" : (deptHit ? "DeptAccess" : "DivAccess");
+                        accessBlockedStores.Add(storeId);
                         storeNameById.TryGetValue(storeId, out var sName);
                         blocked.Add(new BlockedItemRow(
                             Contno: line.ContNo, ItemCode: line.ItemCode, ItemName: orgRow.itemname,
@@ -1398,6 +1412,32 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                             if (line.Qty >= b.From && line.Qty <= b.To) return true;
                         return false;
                     }
+                    // Hard block: LPM_StoreDeptAccess / LPM_StoreDivAccess (IsActive = 0).
+                    //
+                    // This branch builds `eligible` from the OTS run, NOT from the
+                    // block-filtered `stores` list above, so it never consulted those
+                    // two tables — a store barred from a division still won stock here
+                    // while appearing in Blocked Items, which is how BFL-TEC took 340
+                    // units of DivCode 413 on AELOC8081 despite an IsActive = 0 row.
+                    // Only FillSKUMax / RoundRobin ever honoured them.
+                    var accessBlocked = eligible
+                        .Where(r => AccessBlock(r.StoreID).Hit)
+                        .ToList();
+                    foreach (var r in accessBlocked)
+                    {
+                        eligible.Remove(r);
+                        // The loop above already recorded any store that had an
+                        // LPM_SKUMaxRule band; do not add a second row for it.
+                        if (!accessBlockedStores.Add(r.StoreID)) continue;
+                        storeNameById.TryGetValue(r.StoreID, out var sName);
+                        blocked.Add(new BlockedItemRow(
+                            Contno: line.ContNo, ItemCode: line.ItemCode, ItemName: orgRow.itemname,
+                            Division: itemRow.Division, Department: itemRow.Department,
+                            StoreID: r.StoreID, StoreName: sName, Country: r.Country,
+                            PoQty: line.Qty, DivCode: divCode,
+                            BlockReason: AccessBlock(r.StoreID).Reason ?? "DivAccess"));
+                    }
+
                     var noBandStores = eligible.Where(r => !HasBand(r)).ToList();
                     foreach (var r in noBandStores)
                     {
