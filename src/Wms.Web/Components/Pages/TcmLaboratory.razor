@@ -32,7 +32,7 @@
                 </span>
             </div>
             <div style="display:flex; gap:10px">
-                <button class="aiwms-btn aiwms-btn-primary" @onclick="ImportDataAsync" disabled="@(_selectedFile is null || _busy)">
+                <button class="aiwms-btn aiwms-btn-primary" @onclick="ImportDataAsync" disabled="@(_selectedFile is null || _busy || _importSucceeded)">
                     @(_busy ? "Parsing..." : "Import Data")
                 </button>
                 <button class="aiwms-btn aiwms-btn-secondary" @onclick="Reset" disabled="@_busy">Reset</button>
@@ -130,15 +130,15 @@
             <div style="display:flex; align-items:end; gap:10px">
                 <div style="width:160px">
                     <label class="aiwms-input-lbl">SUPPLIER COST</label>
-                    <input class="aiwms-input" type="number" step="0.0001" @bind="SupplierCostText" style="color:var(--danger)" />
+                    <input class="aiwms-input" type="number" step="0.0001" @bind="SupplierCostText" style="color:var(--danger); font-weight:700" />
                 </div>
                 <div style="width:160px">
                     <label class="aiwms-input-lbl">FC RATE FOR COST</label>
-                    <input class="aiwms-input" type="number" step="0.0001" @bind="FcRateForCostText" style="color:var(--danger)" />
+                    <input class="aiwms-input" type="number" step="0.0001" @bind="FcRateForCostText" style="color:var(--danger); font-weight:700" />
                 </div>
                 <div style="width:160px">
                     <label class="aiwms-input-lbl">ADDITIONAL EXPENSES %</label>
-                    <input class="aiwms-input" type="number" step="0.0001" @bind="AdditionalExpensesPctText" style="color:var(--danger)" />
+                    <input class="aiwms-input" type="number" step="0.0001" @bind="AdditionalExpensesPctText" style="color:var(--danger); font-weight:700" />
                 </div>
                 <label style="width:fit-content; box-sizing:border-box; height:38px; padding:0 12px; border:1px solid var(--border-default); border-radius:var(--r-sm); background:var(--bfl-white); display:flex; align-items:center; gap:6px; cursor:pointer">
                     <input type="checkbox" @bind="_mrpPct" />
@@ -151,9 +151,9 @@
 
             @if (_profitMarginRows.Count > 0)
             {
-                <div style="margin-top:14px; overflow-x:auto">
+                <div style="margin-top:14px; max-height:520px; overflow:auto">
                     <table class="aiwms-table aiwms-table-dense">
-                        <thead>
+                        <thead style="position:sticky; top:0; background:white; z-index:1">
                             <tr>
                                 <th>Item Code</th>
                                 <th>Description</th>
@@ -203,6 +203,7 @@
     private string _uploadedExcelFileName = "";
     private IBrowserFile? _selectedFile;
     private bool _busy;
+    private bool _importSucceeded;
     private bool _calcBusy;
     private List<TcmMatchedColumn> _columns = new();
     private List<Dictionary<string, string>> _rows = new();
@@ -273,6 +274,7 @@
         _columns = new();
         _rows = new();
         _activeTab = "Details";
+        _importSucceeded = false;
     }
 
     private void OnExcelFileSelected(InputFileChangeEventArgs e)
@@ -340,6 +342,7 @@
 
             var inserted = await ImportSvc.InsertRowsAsync(_containerNo.Trim(), _refNo.Trim(), _labType, Me.Name, _rows);
             Snack.Add($"Inserted {inserted} row(s) into tmptcmitemslab.", Severity.Success);
+            _importSucceeded = true;
         }
         catch (Exception ex)
         {
@@ -439,6 +442,7 @@
             .Select(c => c!)
             .ToList();
 
+        var hasItemcodeColumn = columns.Any(c => c.Key == "Itemcode");
         var rows = new List<Dictionary<string, string>>();
         for (int r = 2; r <= last.RowNumber(); r++)
         {
@@ -450,7 +454,14 @@
                 rowValues[col.Key] = v;
                 if (v.Length > 0) anyValue = true;
             }
-            if (anyValue) rows.Add(rowValues);
+
+            // Trailing summary/total rows in the source Excel (e.g. a grand-total Qty with
+            // every other matched column blank) have no Itemcode, so they aren't real line
+            // items — skip them instead of inserting them as data.
+            var isRealRow = hasItemcodeColumn
+                ? !string.IsNullOrEmpty(rowValues.GetValueOrDefault("Itemcode", ""))
+                : anyValue;
+            if (isRealRow) rows.Add(rowValues);
         }
         return (columns, rows);
     }
