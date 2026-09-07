@@ -6,7 +6,7 @@ namespace Wms.Data.Lpm;
 
 /// <summary>
 /// Compares two ECOM SOH sources into dbo.LPM_ECOM_SOH_COMPARISON, one row per
-/// (Country, Itemcode) present in EITHER source (FULL OUTER JOIN, missing side
+/// (Country, Itemcode) present in ANY of the four sources below (missing side(s)
 /// written as 0):
 ///   IncreffSOH -> dbo.LPM_ECOM_INCREFF_SOH  (BigQuery INCREFF feed, populated
 ///                 by IncreffSohFromGcpService — run that first for a fresh
@@ -16,10 +16,13 @@ namespace Wms.Data.Lpm;
 ///
 /// GateKeeperRejectedSummer/Winter -> RACKS.dbo.WHBoxItems (PalletType 'GS'/'GW'
 /// respectively), summed by Itemcode. UAE-only — that table carries no country
-/// split, so KSA rows always get 0 for both. These are enrichment values keyed
-/// onto the Increff/Mfcs spine via LEFT JOIN, not folded into the FULL OUTER
-/// JOIN itself (an Itemcode that only appears in WHBoxItems and neither SOH
-/// source would otherwise need a row of its own, which isn't wanted here).
+/// split, so KSA rows always get 0 for both. These participate in the same
+/// "present in ANY source" row set as Increff/Mfcs (a UNION-built key spine,
+/// not a two-way FULL OUTER JOIN, which doesn't extend cleanly to more than two
+/// sources) — an Itemcode with a rejected pallet but no Increff/MFCS entry
+/// still gets its own row (IncreffSOH/MFCS_SOH = 0), so the report's total GS/GW
+/// always matches a plain SUM(Qty) over WHBoxItems, not just the subset that
+/// happens to overlap with the other two sources.
 ///
 /// Variance (= MFCS_SOH - (IncreffSOH + GateKeeperRejectedSummer +
 /// GateKeeperRejectedWinter), signed — negative when the right side is bigger)
@@ -92,6 +95,15 @@ public class IncreffMfcsSohCompareService(IOnPremConnectionResolver resolver)
              WHERE PalletType = 'GW'
              GROUP BY ItemCode
         ),
+        Spine AS (
+            SELECT Country, Itemcode FROM Increff
+            UNION
+            SELECT Country, Itemcode FROM Mfcs
+            UNION
+            SELECT Country, Itemcode FROM GsRejected
+            UNION
+            SELECT Country, Itemcode FROM GwRejected
+        ),
         Subclass AS (
             SELECT Itemcode, Division, Department, class AS Class, subclass AS Subclass, Family,
                    ROW_NUMBER() OVER (PARTITION BY Itemcode ORDER BY (SELECT NULL)) AS rn
@@ -101,19 +113,20 @@ public class IncreffMfcsSohCompareService(IOnPremConnectionResolver resolver)
             (Country, Itemcode, IncreffSOH, MFCS_SOH, GateKeeperRejectedSummer, GateKeeperRejectedWinter,
              CreateTS, Division, Department, Class, Subclass, Family)
         SELECT
-            COALESCE(i.Country, m.Country)   AS Country,
-            COALESCE(i.Itemcode, m.Itemcode) AS Itemcode,
+            sp.Country,
+            sp.Itemcode,
             ISNULL(i.SOH, 0)                 AS IncreffSOH,
             ISNULL(m.SOH, 0)                 AS MFCS_SOH,
             ISNULL(gs.Qty, 0)                AS GateKeeperRejectedSummer,
             ISNULL(gw.Qty, 0)                AS GateKeeperRejectedWinter,
             DATEADD(hour, 4, SYSUTCDATETIME()) AS CreateTS,
             s.Division, s.Department, s.Class, s.Subclass, s.Family
-          FROM Increff i
-          FULL OUTER JOIN Mfcs m ON m.Country = i.Country AND m.Itemcode = i.Itemcode
-          LEFT JOIN GsRejected gs ON gs.Country = COALESCE(i.Country, m.Country) AND gs.Itemcode = COALESCE(i.Itemcode, m.Itemcode)
-          LEFT JOIN GwRejected gw ON gw.Country = COALESCE(i.Country, m.Country) AND gw.Itemcode = COALESCE(i.Itemcode, m.Itemcode)
-          LEFT JOIN Subclass s ON s.Itemcode = COALESCE(i.Itemcode, m.Itemcode) AND s.rn = 1;";
+          FROM Spine sp
+          LEFT JOIN Increff i    ON i.Country = sp.Country AND i.Itemcode = sp.Itemcode
+          LEFT JOIN Mfcs m       ON m.Country = sp.Country AND m.Itemcode = sp.Itemcode
+          LEFT JOIN GsRejected gs ON gs.Country = sp.Country AND gs.Itemcode = sp.Itemcode
+          LEFT JOIN GwRejected gw ON gw.Country = sp.Country AND gw.Itemcode = sp.Itemcode
+          LEFT JOIN Subclass s   ON s.Itemcode = sp.Itemcode AND s.rn = 1;";
 
     /// <summary>On-demand "Refresh Now" — rebuilds dbo.LPM_ECOM_SOH_COMPARISON from
     /// scratch. Run IncreffSohFromGcpService.RefreshAsync first for a fresh compare.</summary>
