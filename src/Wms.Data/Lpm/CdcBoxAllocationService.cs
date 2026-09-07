@@ -160,12 +160,14 @@ public class CdcBoxAllocationService(IOnPremConnectionResolver resolver, ICurren
 
         var tDiv       = LoadDivByItemAsync(itemCodesCsv, ct);
         var tOts       = LoadOtsRunRowsAsync(ctry, nowGst, ct);
+        var tDivBlocks = LoadDivBlocksAsync(ct);
+        var tSimBlk    = LoadSimSkuMaxBlockedAsync(itemCodesCsv, ct);
         var tGrade     = LoadStoreDivGradeAsync(nowGst, ct);
         var tSoh       = LoadItemSohByStoreAsync(itemCodesCsv, ct);
         var tVgOrder   = LoadVolumeGroupOrderAsync(ct);
         var tBandPct   = LoadOtsBandPctAsync(ct);
 
-        await Task.WhenAll(tDiv, tOts, tGrade, tSoh, tVgOrder, tBandPct);
+        await Task.WhenAll(tDiv, tOts, tGrade, tSoh, tVgOrder, tBandPct, tDivBlocks, tSimBlk);
 
         var divByItem      = await tDiv;
         var otsRows        = await tOts;
@@ -173,6 +175,16 @@ public class CdcBoxAllocationService(IOnPremConnectionResolver resolver, ICurren
         var itemSohByStore = await tSoh;
         var vgSortOrder    = await tVgOrder;
         var otsBandPct     = await tBandPct;
+        var divBlocks      = await tDivBlocks;
+        var simSkuMaxBlocked = await tSimBlk;
+
+        // A store barred from a division must not be given DC stock for it. Applied
+        // here, on the store universe, so every SKU of that division skips the store —
+        // the same rule PO allocation applies to its own eligible set.
+        var blockedRows = otsRows.RemoveAll(r =>
+            divBlocks.Contains((r.StoreID.Trim().ToUpperInvariant(), r.DivCode)));
+        if (blockedRows > 0)
+            warnings.Add($"{blockedRows:N0} store/division row(s) excluded — blocked in LPM_StoreDivAccess.");
 
         if (otsRows.Count == 0)
             return CdcDcSohAllocationResult.Fail(
@@ -207,6 +219,7 @@ public class CdcBoxAllocationService(IOnPremConnectionResolver resolver, ICurren
         var countryScope = string.Join(", ", ctry);
 
         var outRows       = new List<CdcDcSohAllocationRow>();
+        var simBlockedPairs = 0;
         var noDivision    = 0;
         var noStores      = 0;
         var noBand        = 0;
@@ -226,6 +239,15 @@ public class CdcBoxAllocationService(IOnPremConnectionResolver resolver, ICurren
             var eligible = new List<(CdcOtsStoreRow Row, (int From, int To, int? MinMin, int? MinMax, int? IdealMax, int? MaxMax) Band)>();
             foreach (var r in divStores)
             {
+                // LPM_SimItemSkuMax.SkuMax = 0 bars this (Store, Item) outright — the
+                // same hard block PO allocation applies. Note the asymmetry with a
+                // MISSING row: no row means unconstrained here, so this is an opt-in
+                // block list, not a whitelist.
+                if (simSkuMaxBlocked.Contains((r.StoreID.Trim().ToUpperInvariant(), item)))
+                {
+                    simBlockedPairs++;
+                    continue;
+                }
                 if (string.IsNullOrWhiteSpace(r.VolumeGroup)) continue;
                 if (!bandsByKey.TryGetValue((div, r.VolumeGroup!), out var bands)) continue;
                 foreach (var b in bands)
@@ -275,6 +297,8 @@ public class CdcBoxAllocationService(IOnPremConnectionResolver resolver, ICurren
 
         if (noDivision > 0) warnings.Add($"{noDivision:N0} SKU(s) skipped — no DivID in datareporting..vupc_subclass.");
         if (noStores   > 0) warnings.Add($"{noStores:N0} SKU(s) skipped — no OTS store rows for their division in the selected countries.");
+        if (simBlockedPairs > 0)
+            warnings.Add($"{simBlockedPairs:N0} (store, SKU) pair(s) skipped — LPM_SimItemSkuMax.SkuMax = 0.");
         if (noBand     > 0) warnings.Add($"{noBand:N0} SKU(s) skipped — no LPM_SkuMaxBands (BFLGROUP) row covering their DC qty for any graded store.");
 
         var unallocated = totalDcQty - totalAlloc;
@@ -870,6 +894,46 @@ public class CdcBoxAllocationService(IOnPremConnectionResolver resolver, ICurren
         var d = new Dictionary<(string, string), int>();
         foreach (var r in rows) d[(r.storeid.ToUpperInvariant(), r.itemcode.ToUpperInvariant())] = r.SOH;
         return d;
+    }
+
+    /// <summary>
+    /// (StoreId, Itemcode) pairs with LPM_SimItemSkuMax.SkuMax = 0 — barred outright.
+    ///
+    /// Only an explicit zero blocks: a (Store, Item) with NO row is unconstrained and
+    /// goes on to the band lookup, so this is an opt-in block list rather than a
+    /// whitelist. Same reading PO allocation takes.
+    /// </summary>
+    private async Task<HashSet<(string StoreId, string ItemCode)>> LoadSimSkuMaxBlockedAsync(
+        string itemCodesCsv, CancellationToken ct)
+    {
+        await using var c = OpenOnPremBackup();
+        var rows = await c.QueryAsync<(string StoreId, string Itemcode, int SkuMax)>(new CommandDefinition(@"
+            SELECT DISTINCT CAST(value AS VARCHAR(50)) AS ItemCode INTO #cdcSkuMaxItems FROM STRING_SPLIT(@itemCodesCsv, ',');
+            CREATE CLUSTERED INDEX IX_cdcSkuMaxItems ON #cdcSkuMaxItems(ItemCode);
+
+            SELECT s.StoreId, s.Itemcode, ISNULL(s.SkuMax, 0) AS SkuMax
+              FROM dbo.LPM_SimItemSkuMax s WITH (NOLOCK)
+              INNER JOIN #cdcSkuMaxItems i ON i.ItemCode = s.Itemcode;",
+            new { itemCodesCsv }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+
+        var blocked = new HashSet<(string, string)>();
+        foreach (var r in rows)
+            if (r.SkuMax == 0)
+                blocked.Add((r.StoreId.Trim().ToUpperInvariant(), r.Itemcode.Trim().ToUpperInvariant()));
+        return blocked;
+    }
+
+    /// <summary>
+    /// (StoreID, DivCode) pairs barred from allocation. IsActive = 0 means BLOCKED —
+    /// the inverted convention every LpmSim block table uses.
+    /// </summary>
+    private async Task<HashSet<(string Sid, int DivCode)>> LoadDivBlocksAsync(CancellationToken ct)
+    {
+        await using var c = OpenOnPremBackup();
+        var rows = await c.QueryAsync<(string StoreID, int DivCode)>(new CommandDefinition(
+            "SELECT StoreID, DivCode FROM dbo.LPM_StoreDivAccess WITH (NOLOCK) WHERE IsActive = 0",
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        return rows.Select(r => ((r.StoreID ?? "").Trim().ToUpperInvariant(), r.DivCode)).ToHashSet();
     }
 
     private async Task<Dictionary<string, int>> LoadVolumeGroupOrderAsync(CancellationToken ct)

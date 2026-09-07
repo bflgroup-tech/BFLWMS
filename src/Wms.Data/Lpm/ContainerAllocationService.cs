@@ -1479,7 +1479,13 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                         ecomOtsRow = eligible.FirstOrDefault(r => string.Equals(r.StoreID, "ONLINE", StringComparison.OrdinalIgnoreCase));
                         eligible.RemoveAll(r => string.Equals(r.StoreID, "ONLINE", StringComparison.OrdinalIgnoreCase));
 
-                        if (!IsSimSkuBlocked("ONLINE")
+                        // ONLINE's access blocks bind the manual figure too. The filter
+                        // above removes a blocked ONLINE from `eligible`, but this branch
+                        // allocates from WmsManualAllocation without consulting it, so a
+                        // manual row would have walked straight past a DivAccess block.
+                        // An operator's manual qty is a request, not an override.
+                        if (!AccessBlock("ONLINE").Hit
+                            && !IsSimSkuBlocked("ONLINE")
                             && initialAllocByKey.TryGetValue(("ONLINE", line.ItemCode.ToUpperInvariant()), out var ecomManualQty)
                             && ecomManualQty > 0)
                         {
