@@ -870,11 +870,13 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
         //   * Result / flags / Company / ShopCode from the store's DataSettings row
         //   * OrPrice from the store's own DB, SalesPrice = FCCode + ' ' + OrPrice
         //   * RefNo from BFLDATA..RFIDTransfer, created for today if absent
-        //   * AddInfo from the store's own [Dataname].dbo.ItemMH, suffixed with -MMyy
+        //   * AddInfo from bfldata.dbo.UPCBARCODES_EXT.Article, suffixed with MMyy
+        //   * ArabicItemname from DATAREPORTING.dbo.ArabicSubClass via UPC_SUBCLASS
         var settings = await LoadProdStoreSettingsAsync(rows.Select(r => r.StoreID), ct);
         var prices   = await LoadRfSalesPricesAsync(rows.Select(r => r.Itemcode), settings, ct);
         var (refNos, refNoFailures) = await ResolveRefNosAsync(settings, ct);
-        var addInfos = await LoadAddInfoAsync(rows.Select(r => r.Itemcode), settings, ct);
+        var addInfos = await LoadAddInfoAsync(rows.Select(r => r.Itemcode), ct);
+        var arabicItemnames = await LoadArabicItemnamesAsync(rows.Select(r => r.Itemcode), ct);
 
         var unmatchedStores = rows
             .Select(r => r.StoreID?.Trim() ?? "")
@@ -883,7 +885,7 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
             .Where(s => !settings.ContainsKey(s))
             .ToList();
 
-        var dt = BuildPhotoCheckingResultDataTable(rows, settings, prices, refNos, addInfos);
+        var dt = BuildPhotoCheckingResultDataTable(rows, settings, prices, refNos, addInfos, arabicItemnames);
 
         await using var conn = OpenWmsProductionDb();
         using var bulk = new SqlBulkCopy(conn)
@@ -1148,23 +1150,16 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
     }
 
     /// <summary>
-    /// AddInfo per (Dataname, Itemcode) — ISNULL(AddInfo,'') + '-' + the current
-    /// month/year (MMyy) read from the store's own [Dataname].dbo.ItemMH. Same
-    /// one-round-trip-per-Dataname batching as LoadRfSalesPricesAsync, and not
-    /// gated by print flag — this is item-master metadata, not a sticker field.
+    /// AddInfo per Itemcode — LEFT(article, LEN(article) - 4) + the current month/year
+    /// (MMyy), from the shared bfldata.dbo.UPCBARCODES_EXT.Article (blank when Article
+    /// is 1 char or less). This table isn't per-country like RFSalesPrice/ItemMH, so
+    /// it's one query total rather than one per Dataname, and not gated by print flag —
+    /// this is item-master metadata, not a sticker field.
     /// </summary>
-    private async Task<Dictionary<(string Dataname, string Itemcode), string>> LoadAddInfoAsync(
-        IEnumerable<string?> itemcodeSource, Dictionary<string, ProdStoreSettings> settings, CancellationToken ct)
+    private async Task<Dictionary<string, string>> LoadAddInfoAsync(
+        IEnumerable<string?> itemcodeSource, CancellationToken ct)
     {
-        var result = new Dictionary<(string, string), string>();
-
-        var dataNames = settings.Values
-            .Where(s => !string.IsNullOrWhiteSpace(s.Dataname))
-            .Select(s => s.Dataname!.Trim())
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .Where(d => Regex.IsMatch(d, @"^[A-Za-z0-9_]+$"))   // 3-part name is interpolated
-            .ToArray();
-        if (dataNames.Length == 0) return result;
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
         var itemcodes = itemcodeSource.Where(i => !string.IsNullOrWhiteSpace(i))
                             .Select(i => i!.Trim())
@@ -1173,32 +1168,72 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
         var itemsCsv = string.Join(",", itemcodes);
 
         await using var c = OpenOnPremBackup();
-        foreach (var dn in dataNames)
+        try
         {
-            try
-            {
-                // CSV + STRING_SPLIT rather than IN @items — same 2100-parameter-limit
-                // reason as LoadRfSalesPricesAsync.
-                var sql = $@"
-                    SELECT DISTINCT CAST(value AS VARCHAR(50)) AS ItemCode INTO #addInfoItems FROM STRING_SPLIT(@itemsCsv, ',');
-                    CREATE CLUSTERED INDEX IX_addInfoItems ON #addInfoItems(ItemCode);
+            // CSV + STRING_SPLIT rather than IN @items — same 2100-parameter-limit
+            // reason as LoadRfSalesPricesAsync.
+            const string sql = @"
+                SELECT DISTINCT CAST(value AS VARCHAR(50)) AS ItemCode INTO #addInfoItems FROM STRING_SPLIT(@itemsCsv, ',');
+                CREATE CLUSTERED INDEX IX_addInfoItems ON #addInfoItems(ItemCode);
 
-                    SELECT m.Itemcode, AddInfo = ISNULL(m.AddInfo, '') + '-' + FORMAT(GETDATE(), 'MMyy')
-                      FROM [{dn}].dbo.ItemMH m WITH (NOLOCK)
-                      INNER JOIN #addInfoItems i ON i.ItemCode = m.Itemcode;";
-                var infos = await c.QueryAsync<(string Itemcode, string AddInfo)>(new CommandDefinition(
-                    sql, new { itemsCsv },
-                    commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-                foreach (var x in infos)
-                    if (!string.IsNullOrWhiteSpace(x.Itemcode))
-                        result[((string)dn, x.Itemcode.Trim())] = x.AddInfo;
-            }
-            catch (Exception ex)
-            {
-                // A country DB without ItemMH (or without AddInfo) must not fail the
-                // whole sync — those rows simply get no AddInfo suffix.
-                Console.Error.WriteLine($"[DataSync] WARN: ItemMH AddInfo lookup failed for '{dn}': {ex.Message}");
-            }
+                SELECT u.itemcode, AddInfo = CASE WHEN LEN(u.article) > 1
+                                                   THEN LEFT(u.article, LEN(u.article) - 4) + FORMAT(GETDATE(), 'MMyy')
+                                                   ELSE '' END
+                  FROM bfldata.dbo.UPCBARCODES_EXT u WITH (NOLOCK)
+                  INNER JOIN #addInfoItems i ON i.ItemCode = u.itemcode;";
+            var infos = await c.QueryAsync<(string Itemcode, string AddInfo)>(new CommandDefinition(
+                sql, new { itemsCsv },
+                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            foreach (var x in infos)
+                if (!string.IsNullOrWhiteSpace(x.Itemcode))
+                    result[x.Itemcode.Trim()] = x.AddInfo;
+        }
+        catch (Exception ex)
+        {
+            // Must not fail the whole sync — rows simply get no AddInfo suffix.
+            Console.Error.WriteLine($"[DataSync] WARN: UPCBARCODES_EXT AddInfo lookup failed: {ex.Message}");
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// ArabicItemname per Itemcode — DATAREPORTING.dbo.ArabicSubClass.ASubClass for the
+    /// item's SubClass, resolved via DATAREPORTING.dbo.UPC_SUBCLASS. Shared/central like
+    /// UPCBARCODES_EXT, so one query total rather than one per Dataname.
+    /// </summary>
+    private async Task<Dictionary<string, string>> LoadArabicItemnamesAsync(
+        IEnumerable<string?> itemcodeSource, CancellationToken ct)
+    {
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        var itemcodes = itemcodeSource.Where(i => !string.IsNullOrWhiteSpace(i))
+                            .Select(i => i!.Trim())
+                            .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        if (itemcodes.Length == 0) return result;
+        var itemsCsv = string.Join(",", itemcodes);
+
+        await using var c = OpenOnPremBackup();
+        try
+        {
+            const string sql = @"
+                SELECT DISTINCT CAST(value AS VARCHAR(50)) AS ItemCode INTO #arabicNameItems FROM STRING_SPLIT(@itemsCsv, ',');
+                CREATE CLUSTERED INDEX IX_arabicNameItems ON #arabicNameItems(ItemCode);
+
+                SELECT us.itemcode, ArabicItemname = a.ASubClass
+                  FROM DATAREPORTING.dbo.UPC_SUBCLASS us WITH (NOLOCK)
+                  INNER JOIN #arabicNameItems i ON i.ItemCode = us.itemcode
+                  INNER JOIN DATAREPORTING.dbo.ArabicSubClass a WITH (NOLOCK) ON a.SubClass = us.SubClass;";
+            var names = await c.QueryAsync<(string Itemcode, string ArabicItemname)>(new CommandDefinition(
+                sql, new { itemsCsv },
+                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            foreach (var x in names)
+                if (!string.IsNullOrWhiteSpace(x.Itemcode))
+                    result[x.Itemcode.Trim()] = x.ArabicItemname;
+        }
+        catch (Exception ex)
+        {
+            // Must not fail the whole sync — rows simply get no ArabicItemname.
+            Console.Error.WriteLine($"[DataSync] WARN: ArabicSubClass lookup failed: {ex.Message}");
         }
         return result;
     }
@@ -1498,7 +1533,8 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
         Dictionary<string, ProdStoreSettings> settings,
         Dictionary<(string Dataname, string Itemcode), decimal> prices,
         Dictionary<string, string> refNos,
-        Dictionary<(string Dataname, string Itemcode), string> addInfos)
+        Dictionary<string, string> addInfos,
+        Dictionary<string, string> arabicItemnames)
     {
         // One row PER PIECE: an allocation of 8 becomes 8 rows with Qty = 1, because
         // the legacy checking flow scans individual pieces. Rows with no allocated
@@ -1528,6 +1564,7 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
         dt.Columns.Add("Company",          typeof(string));
         dt.Columns.Add("ShopCode",         typeof(string));
         dt.Columns.Add("Itemname",         typeof(string));
+        dt.Columns.Add("ArabicItemname",   typeof(string));
         dt.Columns.Add("Barcode",          typeof(string));
         dt.Columns.Add("SalesPrice",       typeof(string));   // varchar(30) on PhotoCheckingResult
         dt.Columns.Add("ArabicSalesPrice", typeof(string));
@@ -1600,18 +1637,17 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
             // Arabic stickers are a Qatar-only thing — every other Dataname gets "N".
             var arabicPrintFlag = string.Equals(st?.Dataname?.Trim(), "BFLQATAR", StringComparison.OrdinalIgnoreCase) ? "Y" : "N";
 
-            // AddInfo — the store's own [Dataname].dbo.ItemMH.AddInfo plus a "-MMyy"
-            // suffix for the current month, regardless of print flag (this isn't a
-            // sticker field, it's item-master metadata).
-            var addInfo = "";
-            if (st is not null)
-            {
-                var dn = st.Dataname?.Trim();
-                var ic = r.Itemcode?.Trim();
-                if (!string.IsNullOrEmpty(dn) && !string.IsNullOrEmpty(ic)
-                    && addInfos.TryGetValue((dn, ic), out var ai))
-                    addInfo = ai;
-            }
+            // AddInfo (bfldata.dbo.UPCBARCODES_EXT.Article + MMyy) and ArabicItemname
+            // (DATAREPORTING.dbo.ArabicSubClass via UPC_SUBCLASS) are both keyed by
+            // Itemcode alone — not per-Dataname like OrPrice/SalesPrice — and not gated
+            // by print flag, since neither is a sticker-only field.
+            var itemcode = r.Itemcode?.Trim();
+            var addInfo = !string.IsNullOrEmpty(itemcode) && addInfos.TryGetValue(itemcode, out var ai)
+                ? ai
+                : "";
+            var arabicItemname = !string.IsNullOrEmpty(itemcode) && arabicItemnames.TryGetValue(itemcode, out var an)
+                ? an
+                : "";
 
             for (var i = 0; i < pieces; i++)
             {
@@ -1640,6 +1676,7 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
                     st?.Company ?? "",
                     (object?)st?.ShopCode       ?? DBNull.Value,
                     (object?)r.Itemname         ?? DBNull.Value,
+                    arabicItemname,
                     barcode,
                     salesPrice,
                     arabicSalesPrice,
