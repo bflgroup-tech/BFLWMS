@@ -6,6 +6,7 @@
 @attribute [Authorize(Policy = MenuKeys.PENDING_FOR_COUNTING)]
 @inject PendingForCountingService Svc
 @inject BulkPoAllocationService BulkSvc
+@inject ICurrentUser CurrentUser
 @inject Microsoft.JSInterop.IJSRuntime JS
 
 <PageTitle>WMS — Pending for Counting</PageTitle>
@@ -34,8 +35,9 @@
             <button class="aiwms-btn aiwms-btn-secondary" @onclick="ExportCsvAsync" disabled="@(_loading || _rows.Count == 0)">
                 Export to Excel
             </button>
-            @* Admin-only: this writes a work queue other people will run. *@
-            @if (_isAdmin)
+            @* Granted per user on Admin → Users → Section Access; Admins bypass.
+               This writes a work queue other people will run. *@
+            @if (_canPush)
             {
                 <button class="aiwms-btn aiwms-btn-primary" @onclick="PushToBulkQueueAsync"
                         disabled="@(_loading || _pushing || FilteredContnos.Count == 0)"
@@ -169,9 +171,7 @@
 }
 
 @code {
-    [CascadingParameter] private Task<AuthenticationState>? AuthState { get; set; }
-
-    private bool _isAdmin;
+    private bool _canPush;
     private bool _pushing;
 
     /// <summary>
@@ -187,7 +187,7 @@
 
     private async Task PushToBulkQueueAsync()
     {
-        if (!_isAdmin || _pushing) return;
+        if (!_canPush || _pushing) return;
         var contnos = FilteredContnos;
         if (contnos.Count == 0) return;
 
@@ -396,11 +396,8 @@
     // a scan nobody had asked for yet. Load is now an explicit click.
     protected override async Task OnInitializedAsync()
     {
-        if (AuthState is not null)
-        {
-            var auth = await AuthState;
-            _isAdmin = auth.User.IsInRole(Roles.Admin);
-        }
+        await CurrentUser.EnsureLoadedAsync();
+        _canPush = CurrentUser.CanSeeSection(SectionKeys.BULKALLOC_PUSH_QUEUE);
         ShowInfo("Set the receipt date and press Load.");
     }
 

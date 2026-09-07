@@ -202,6 +202,8 @@
     }
 </div>
 
+@if (_canRunBulk)
+{
 <div class="aiwms-section">
     @* Collapsed by default: bulk is an occasional operation, and 35 queue rows
        between the Inputs panel and the allocation grid buries the thing most
@@ -353,6 +355,7 @@
     }
 }
 </div>
+}
 
 @if (_poData.Count > 0)
 {
@@ -928,8 +931,10 @@
         _allowedAllocCountries = _simCountries.ToList();
         _allocCountries = new HashSet<string>(_simCountries, StringComparer.OrdinalIgnoreCase);
 
+        _canRunBulk = CurrentUser.CanSeeSection(SectionKeys.BULKALLOC_RUN);
+
         await RefreshProcessedContnosAsync();
-        await ReloadBulkQueueAsync();
+        if (_canRunBulk) await ReloadBulkQueueAsync();
     }
 
     private async Task OnCountryChangedAsync()
@@ -1219,6 +1224,10 @@
     // Collapsed on arrival: bulk is an occasional operation, and an expanded queue
     // pushes the allocation grid — what most visits are actually for — off screen.
     private bool _bulkExpanded;
+    // Granted per user on Admin → Users → Section Access; Admins bypass. Running a
+    // batch writes allocations for dozens of containers, so it is not something
+    // every holder of the Container Allocation menu should be able to trigger.
+    private bool _canRunBulk;
     // ContNo -> the countries the run will use, previewed via the shared resolver.
     private Dictionary<string, ContainerAllocationCountries> _bulkCountries = new(StringComparer.OrdinalIgnoreCase);
     // "" = every batch. Bound to a <select>, hence string rather than int?.
@@ -1283,7 +1292,7 @@
 
     private async Task DeleteAndRequeueAsync()
     {
-        if (_bulkQueue.Count == 0 || _bulkBusy) return;
+        if (!_canRunBulk || _bulkQueue.Count == 0 || _bulkBusy) return;
 
         var scope = BulkBatchNo is null ? "all batches" : $"batch #{BulkBatchNo}";
         var ok = await JS.InvokeAsync<bool>("confirm",
@@ -1359,7 +1368,9 @@
     private async Task RunBulkAsync()
     {
         var count = BulkPendingCount;
-        if (count == 0 || _bulkBusy) return;
+        // The panel is hidden without the grant, but a stale circuit could still
+        // reach this. Hiding a button is presentation, not a control.
+        if (!_canRunBulk || count == 0 || _bulkBusy) return;
 
         // Same reasoning as the single-container confirm: this can run for many
         // minutes and writes real allocations, so the inputs get one last look.
