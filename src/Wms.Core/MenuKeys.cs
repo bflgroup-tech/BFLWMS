@@ -90,7 +90,7 @@ public static class MenuKeys
 
         new MenuEntry(ROBOTIC_CHUTE_MAPPING,  "Robotic",             "Chute Mapping (Jafza)",      "robotic/chute-mapping",     new[] { Roles.Admin, Roles.WHAssociate, Roles.WHSupervisor, Roles.WHManager }),
         new MenuEntry(ROBOTIC_CHUTE_MAPPING_TECHNO, "Robotic",       "Chute Mapping (Techno)",     "robotic/chute-mapping-techno", new[] { Roles.Admin, Roles.WHAssociate, Roles.WHSupervisor, Roles.WHManager }),
-        new MenuEntry(TCM_LABORATORY,         "TCM Laboratory",      "Upload TCM File",            "tcm-laboratory",            new[] { Roles.Admin, Roles.WHManager, Roles.WHSupervisor }),
+        new MenuEntry(TCM_LABORATORY,         "TCM Lab",             "Upload TCM File",            "tcm-laboratory",            new[] { Roles.Admin, Roles.WHManager, Roles.WHSupervisor }),
 
         new MenuEntry(DATASYNC_CONTAINER_ALLOCATION, "Data Sync",   "Container Allocation Data Sync", "datasync/container-allocation", new[] { Roles.Admin, Roles.WHManager }),
         new MenuEntry(DATASYNC_MASTER,               "Data Sync",   "Master Data Sync",               "datasync/master",               new[] { Roles.Admin, Roles.WHManager }),
