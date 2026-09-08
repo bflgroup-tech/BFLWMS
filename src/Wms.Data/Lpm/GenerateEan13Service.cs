@@ -25,9 +25,13 @@ public class GenerateEan13Service(IOnPremConnectionResolver resolver, ScheduledJ
     private const int CommandTimeoutSeconds = 600;
     public const string JobName = "GenerateEAN13";
 
-    private SqlConnection OpenOnPremBackup()
+    // WmsProductionDb, not OnPremBackup — the OnPremBackup login has no UPDATE
+    // grant on DATAREPORTING.dbo.UPC_SUBCLASS (same class of issue documented on
+    // ContainerAllocationDataSyncService's PhotoCheckingResult/RFIDTransfer
+    // writes, which use WmsProductionDb for the same reason).
+    private SqlConnection OpenWmsProductionDb()
     {
-        var b = new SqlConnectionStringBuilder(resolver.GetOnPremBackupConnectionString()) { ConnectTimeout = ConnectTimeoutSeconds };
+        var b = new SqlConnectionStringBuilder(resolver.GetWmsProductionDbConnectionString()) { ConnectTimeout = ConnectTimeoutSeconds };
         var c = new SqlConnection(b.ConnectionString);
         c.Open();
         return c;
@@ -90,7 +94,7 @@ public class GenerateEan13Service(IOnPremConnectionResolver resolver, ScheduledJ
         var runId = await jobs.StartRunAsync(JobName, mode, null, triggeredBy, ct);
         try
         {
-            await using var c = OpenOnPremBackup();
+            await using var c = OpenWmsProductionDb();
 
             var skus = (await c.QueryAsync<string>(new CommandDefinition(
                 SelectSql, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
