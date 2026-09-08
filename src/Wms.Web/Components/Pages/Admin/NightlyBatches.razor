@@ -13,6 +13,7 @@
 @inject ScheduledJobService Jobs
 @inject IncreffSohFromGcpService IncreffSoh
 @inject IncreffMfcsSohCompareService IncreffCompare
+@inject GenerateEan13Service Ean13
 @inject OtsPoAllocationService Ots
 @inject ContainerAllocationDataSyncService Sync
 @inject PendingGoodsReceiptEmailService Pgr
@@ -318,6 +319,17 @@
                 compare.IsActive ? NextDailyFireGst(new(8, 15, 0)) : null,
                 active => ToggleSingleAsync(IncreffMfcsSohCompareService.JobName, active),
                 new() { ("Refresh Now", EventCallback.Factory.Create(this, RefreshIncreffCompareNowAsync)) }));
+
+            // 10. GenerateEAN13 — on-demand only, no timer. Backfills DATAREPORTING.
+            //     dbo.UPC_SUBCLASS.EAN13 for rows with an ORACLE_SKU but no EAN13 yet.
+            //     No activation state to toggle, so the checkbox is disabled.
+            list.Add(new JobVm(
+                GenerateEan13Service.JobName, "On-demand", null,
+                true, default, "",
+                null,
+                active => Task.CompletedTask,
+                new() { ("Generate Now", EventCallback.Factory.Create(this, GenerateEan13NowAsync)) },
+                "on-demand only"));
         }
         catch (Exception ex) { Show($"Failed to load jobs: {ex.Message}", true); }
 
@@ -428,6 +440,18 @@
         {
             await Gcp.FinishJobRunAsync(runId, "Failed", null, 0, ex.Message);
             Show($"Refresh failed: {ex.Message}", true);
+        }
+        finally { _busy = false; await RefreshLogAsync(); }
+    }
+
+    private async Task GenerateEan13NowAsync()
+    {
+        _busy = true; Show("Generating EAN13 barcodes…", false); await InvokeAsync(StateHasChanged);
+        try
+        {
+            var (rows, err) = await Ean13.RunOnceAsync("OnDemand", CurrentUser.Name ?? "");
+            if (err is null) Show($"GenerateEAN13 done — {rows:N0} rows updated.", false);
+            else             Show($"GenerateEAN13 failed: {err}", true);
         }
         finally { _busy = false; await RefreshLogAsync(); }
     }
