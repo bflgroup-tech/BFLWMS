@@ -392,6 +392,18 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         // Each parallel task opens its own SqlConnection because Dapper +
         // SqlConnection aren't thread-safe for concurrent commands.
 
+        // Clear this container's planning flags before anything else. Pass 4 writes them
+        // mid-loop while the allocation is only saved at the end, so a run that dies —
+        // AEINT7639 timed out twice — leaves flags behind describing a shortfall that
+        // never happened. They were only cleared by Delete, so a later successful run
+        // inherited them and Pass 5 then placed quantity the container was not short by.
+        await using (var cFlags = OpenOnPremBackup())
+        {
+            await cFlags.ExecuteAsync(new CommandDefinition(
+                "DELETE FROM LPMSIM.dbo.WmsPlanningFlag WHERE ContNo = @c",
+                new { c = contno }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        }
+
         progress?.Report(new AllocationProgress(0, 0, "Prefetching: PO line items"));
         List<(string ContNo, string OraPONo, string ItemCode, int Qty, string? LPM, DateTime? LPMDt)> lines;
         await using (var c0 = OpenOnPremBackup())
@@ -3127,10 +3139,20 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
     {
         await using var c = OpenOnPremBackup();
         var rows = await c.QueryAsync<PlanningFlagRow>(new CommandDefinition(@"
-            SELECT FlaggedTS, ContNo, PONo, ItemCode, DivCode, PoQty, RemainingQty, RunOption, FlaggedBy
-              FROM LPMSIM.dbo.WmsPlanningFlag WITH (NOLOCK)
-             WHERE ContNo = @c
-             ORDER BY FlaggedTS DESC, ItemCode",
+            -- Brand is USAOrgFile.vendor keyed on (ContNo, itemcode) - the same source
+            -- the PO Data grid and the trace export use. Pre-aggregated because
+            -- USAOrgFile has a row per PO line and would otherwise duplicate flags.
+            SELECT f.FlaggedTS, f.ContNo, f.PONo, f.ItemCode, Brand = b.Brand,
+                   f.DivCode, f.PoQty, f.RemainingQty, f.RunOption, f.FlaggedBy
+              FROM LPMSIM.dbo.WmsPlanningFlag f WITH (NOLOCK)
+              LEFT JOIN (
+                  SELECT ContNo, itemcode, Brand = MAX(vendor)
+                    FROM usa.dbo.USAOrgFile WITH (NOLOCK)
+                   WHERE ContNo = @c
+                   GROUP BY ContNo, itemcode
+              ) b ON b.ContNo = f.ContNo AND b.itemcode = f.ItemCode
+             WHERE f.ContNo = @c
+             ORDER BY f.FlaggedTS DESC, f.ItemCode",
             new { c = contno }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         return rows.AsList();
     }
