@@ -389,13 +389,21 @@
                 _selectedCountries = new HashSet<string> { CurrentUser.Country! };
             }
 
-            await RefreshCurrentAsync();
-            await RefreshBoxPlanAsync();
         }
         catch (Exception ex)
         {
             ShowError($"Could not load the page inputs: {ex.Message}");
         }
+
+        // Previous results are decoration on top of the inputs. Loading them inside
+        // the same try meant one bad read — a missing table, or the COUNT(DISTINCT)
+        // OVER() that SQL Server rejects — took the whole page down, LPM picker and
+        // all, with nothing usable on screen.
+        try { await RefreshCurrentAsync(); }
+        catch (Exception ex) { ShowError($"Could not load the current DC SOH allocation: {ex.Message}"); }
+
+        try { await RefreshBoxPlanAsync(); }
+        catch (Exception ex) { ShowError($"Could not load the box plan: {ex.Message}"); }
     }
 
     private async Task AllocateAsync()

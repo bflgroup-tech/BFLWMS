@@ -756,10 +756,16 @@ public class CdcBoxAllocationService(IOnPremConnectionResolver resolver, ICurren
         await using var c = OpenOnPremBackup();
         var row = await c.QueryFirstOrDefaultAsync<(DateTime? RunTS, string? RunBy, string? LpmScope, string? CountryScope, int Boxes, long Qty)>(
             new CommandDefinition(@"
-                SELECT TOP 1 RunTS, RunBy, LpmScope, CountryScope,
-                       Boxes = COUNT(DISTINCT BoxNo) OVER (),
-                       Qty   = SUM(CAST(Qty AS bigint)) OVER ()
-                  FROM dbo.DC_BOX_ALLOCATION WITH (NOLOCK)",
+                -- CROSS JOIN to a one-row aggregate, NOT COUNT(DISTINCT ...) OVER ():
+                -- SQL Server rejects DISTINCT inside a window function outright
+                -- (""Use of DISTINCT is not allowed with the OVER clause""), which
+                -- took this page down on load.
+                SELECT TOP 1 b.RunTS, b.RunBy, b.LpmScope, b.CountryScope,
+                       agg.Boxes, agg.Qty
+                  FROM dbo.DC_BOX_ALLOCATION b WITH (NOLOCK)
+                 CROSS JOIN (SELECT Boxes = COUNT(DISTINCT BoxNo),
+                                    Qty   = SUM(CAST(Qty AS bigint))
+                               FROM dbo.DC_BOX_ALLOCATION WITH (NOLOCK)) agg",
                 commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
 
         return row.RunTS is null
