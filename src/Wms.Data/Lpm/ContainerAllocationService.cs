@@ -44,6 +44,10 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         return c;
     }
 
+    /// <summary>Trim a value to a column width. Null and short values pass through.</summary>
+    private static string? Clip(string? s, int max) =>
+        string.IsNullOrEmpty(s) || s.Length <= max ? s : s[..max];
+
     private SqlConnection OpenWms()
     {
         var c = new SqlConnection(WithConnectTimeout(resolver.GetWmsAzureConnectionString()));
@@ -2466,7 +2470,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                                             RemainingAfter: 0,
                                             RunningOtsQtyAfter: 0,
                                             RunOption: runOption.ToString(),
-                                            SkipReason: "Flagged (all A-E stores at Min-Min)",
+                                            SkipReason: "Flagged: A-E all at MinMin",
                                             DefaultSkuMax: null, RawSkuMax: null, RatioSkuMax: null,
                                             AvgOtsPercent: avgOtsDecimal,
                                             AvgOtsMin: avgOtsMinDecimal,
@@ -2619,7 +2623,12 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                     t.Cap, t.Soh, t.CurrentBeforeTake, t.RemainingBefore, t.Take,
                     t.RemainingAfter, t.RunningOtsQtyAfter, t.RunOption,
                     (object?)user.Name ?? DBNull.Value,
-                    (object?)t.SkipReason     ?? DBNull.Value,
+                    // SkipReason is NVARCHAR(30). SqlBulkCopy does NOT truncate — it
+                    // aborts the whole insert, so one over-long reason string fails the
+                    // entire Process at save time with a column-conversion error rather
+                    // than a readable message. Clip here so a wording change can never
+                    // do that again.
+                    (object?)Clip(t.SkipReason, 30) ?? DBNull.Value,
                     (object?)t.DefaultSkuMax  ?? DBNull.Value,
                     (object?)t.RawSkuMax      ?? DBNull.Value,
                     (object?)t.RatioSkuMax    ?? DBNull.Value,

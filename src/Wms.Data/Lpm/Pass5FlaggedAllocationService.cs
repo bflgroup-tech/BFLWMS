@@ -500,7 +500,8 @@ public class Pass5FlaggedAllocationService(IOnPremConnectionResolver resolver, I
                     cap = r.Tier, soh = r.Soh, cur = r.AlreadyAllocated, take = qty,
                     ro = runOption.ToString(), by = user.Name,
                     // Stage 2 exceeded the tier on purpose; the trace says which it was.
-                    skip = r.Stage2Qty > 0 ? $"Pass5 (S1 {r.Stage1Qty}, S2 {r.Stage2Qty} above tier)" : "Pass5",
+                    // SkipReason is NVARCHAR(30) - keep it terse rather than descriptive.
+                    skip = r.Stage2Qty > 0 ? $"Pass5 S1={r.Stage1Qty} S2={r.Stage2Qty}" : "Pass5",
                     po = r.PONo, poqty = r.PoQty, ctry = r.Country,
                 },
                 transaction: tx, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
@@ -515,7 +516,7 @@ public class Pass5FlaggedAllocationService(IOnPremConnectionResolver resolver, I
                      RunOption, RunBy, SkipReason, PONo, POLineSizeQty)
                 VALUES (@c, @i, 'Flagged', @d, 5, 0, 'Flagged',
                         @q, 0, 0, @q, @q, 0,
-                        @ro, @by, 'Flagged (no store available after Pass 5)', @po, @poqty)",
+                        @ro, @by, 'Flagged: no store (Pass 5)', @po, @poqty)",
                 new
                 {
                     c = contno, i = u.ItemCode, d = u.DivCode, q = u.Qty,
