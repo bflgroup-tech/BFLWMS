@@ -16,10 +16,13 @@ public sealed record Pass5StoreOption(
 
 /// <summary>One line of the Pass 5 result, per (Item, Store).</summary>
 public sealed record Pass5AllocationRow(
-    string ItemCode,
-    int    DivCode,
-    string Country,
-    string StoreID,
+    string  ItemCode,
+    int     DivCode,
+    string  Country,
+    string  StoreID,
+    string? PONo,
+    int     PoQty,
+    string? VolumeGroup,
     int    Tier,        // the chosen tier's value for this (Div, VG, PoQty)
     int    Soh,
     int    AlreadyAllocated,
@@ -200,9 +203,9 @@ public class Pass5FlaggedAllocationService(IOnPremConnectionResolver resolver, I
         await using var conn = OpenOnPremBackup();
         var nowGst = NowGst();
 
-        var flags = (await conn.QueryAsync<(string ItemCode, int DivCode, int PoQty, int RemainingQty)>(
+        var flags = (await conn.QueryAsync<(string ItemCode, int DivCode, string? PONo, int PoQty, int RemainingQty)>(
             new CommandDefinition(@"
-                SELECT ItemCode, DivCode = ISNULL(DivCode, 0), PoQty, RemainingQty
+                SELECT ItemCode, DivCode = ISNULL(DivCode, 0), PONo, PoQty, RemainingQty
                   FROM dbo.WmsPlanningFlag WITH (NOLOCK)
                  WHERE ContNo = @c AND RemainingQty > 0 AND ISNULL(DivCode, 0) <> 0",
             new { c = contno }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).AsList();
@@ -276,6 +279,9 @@ public class Pass5FlaggedAllocationService(IOnPremConnectionResolver resolver, I
 
         // ---------- 3. Place ----------
         var plan = new List<Pass5AllocationRow>();
+        // Items Pass 5 could not place at all — re-flagged in the trace so the export
+        // still reconciles to PO qty after the old Flagged rows are removed.
+        var unplaced = new List<(string ItemCode, int DivCode, string? PONo, int PoQty, int Qty)>();
         int totalFlagged = 0, totalStage1 = 0, totalStage2 = 0, totalUnplaced = 0;
         var noBand = 0;
 
@@ -299,7 +305,7 @@ public class Pass5FlaggedAllocationService(IOnPremConnectionResolver resolver, I
             if (placeable <= 0) continue;   // fully allocated already — the flag is an orphan
 
             // Candidate stores: picked, carrying this division, not blocked.
-            var cands = new List<(string StoreID, string Country, int Tier, int Soh, int Already)>();
+            var cands = new List<(string StoreID, string Country, string? VG, int Tier, int Soh, int Already)>();
             foreach (var sid in picked)
             {
                 if (!storeByKey.TryGetValue((sid, f.DivCode), out var st)) continue;
@@ -309,13 +315,18 @@ public class Pass5FlaggedAllocationService(IOnPremConnectionResolver resolver, I
                 var tier = TierFor(bands, f.DivCode, st.VG, f.PoQty, tierName);
                 if (tier is null) continue;
 
-                cands.Add((sid, st.Country,
+                cands.Add((sid, st.Country, st.VG,
                     tier.Value,
                     soh.GetValueOrDefault((sid.ToUpperInvariant(), item), 0),
                     already.GetValueOrDefault((sid.ToUpperInvariant(), item), 0)));
             }
 
-            if (cands.Count == 0) { noBand++; totalUnplaced += placeable; continue; }
+            if (cands.Count == 0)
+            {
+                noBand++; totalUnplaced += placeable;
+                unplaced.Add((f.ItemCode.Trim(), f.DivCode, f.PONo, f.PoQty, placeable));
+                continue;
+            }
 
             var take = new Dictionary<string, (int S1, int S2)>(StringComparer.OrdinalIgnoreCase);
             var remaining = placeable;
@@ -361,6 +372,7 @@ public class Pass5FlaggedAllocationService(IOnPremConnectionResolver resolver, I
                 totalStage2 += t.S2;
                 plan.Add(new Pass5AllocationRow(
                     f.ItemCode.Trim(), f.DivCode, cnd.Country, cnd.StoreID,
+                    f.PONo, f.PoQty, cnd.VG,
                     cnd.Tier, cnd.Soh, cnd.Already, t.S1, t.S2));
             }
         }
@@ -385,7 +397,7 @@ public class Pass5FlaggedAllocationService(IOnPremConnectionResolver resolver, I
                 flags.Count, totalFlagged, 0, 0, 0, totalUnplaced, warnings);
 
         // ---------- 4. Write ----------
-        await PersistAsync(conn, batchNo, contno, plan, ct);
+        await PersistAsync(conn, batchNo, contno, plan, unplaced, runOption, ct);
 
         return new Pass5Result(true, null,
             flags.Count, totalFlagged, allocated, totalStage1, totalStage2, totalUnplaced, warnings);
@@ -401,7 +413,9 @@ public class Pass5FlaggedAllocationService(IOnPremConnectionResolver resolver, I
     /// Barcode, GroupCode, POQty …). Only the store-level fields are overridden.
     /// </summary>
     private async Task PersistAsync(
-        SqlConnection conn, int batchNo, string contno, List<Pass5AllocationRow> plan, CancellationToken ct)
+        SqlConnection conn, int batchNo, string contno, List<Pass5AllocationRow> plan,
+        List<(string ItemCode, int DivCode, string? PONo, int PoQty, int Qty)> unplaced,
+        RunOption runOption, CancellationToken ct)
     {
         await using var tx = (SqlTransaction)await conn.BeginTransactionAsync(ct);
 
@@ -456,6 +470,59 @@ public class Pass5FlaggedAllocationService(IOnPremConnectionResolver resolver, I
             "DELETE FROM dbo.WmsPlanningFlag WHERE ContNo = @c AND RemainingQty <= 0",
             new { c = contno }, transaction: tx,
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+
+        // ---- Trace: drop Pass 4's Flagged rows, add Pass 5's, re-flag the rest ----
+        //
+        // The Flagged rows exist so SUM(Take) per item reconciles to PO qty. Once
+        // Pass 5 places that quantity they are wrong — leaving them alongside the new
+        // rows would double-count the item in the export, which is why they go first
+        // and only genuinely unplaced quantity is flagged again.
+        await conn.ExecuteAsync(new CommandDefinition(
+            "DELETE FROM dbo.WmsAllocationTrace WHERE ContNo = @c AND StoreID = 'Flagged'",
+            new { c = contno }, transaction: tx,
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+
+        foreach (var r in plan)
+        {
+            var qty = r.Stage1Qty + r.Stage2Qty;
+            await conn.ExecuteAsync(new CommandDefinition(@"
+                INSERT INTO dbo.WmsAllocationTrace
+                    (ContNo, Itemcode, StoreID, DivCode, Pass, SortRank, VolumeGroup, TierName,
+                     Cap, Soh, CurrentBeforeTake, RemainingBefore, Take, RemainingAfter,
+                     RunOption, RunBy, SkipReason, RawSkuMax, PONo, POLineSizeQty, Country)
+                VALUES (@c, @i, @s, @d, 5, 0, @vg, @tier,
+                        @cap, @soh, @cur, @take, @take, 0,
+                        @ro, @by, @skip, @cap, @po, @poqty, @ctry)",
+                new
+                {
+                    c = contno, i = r.ItemCode, s = r.StoreID, d = r.DivCode,
+                    vg = r.VolumeGroup, tier = "Pass5",
+                    cap = r.Tier, soh = r.Soh, cur = r.AlreadyAllocated, take = qty,
+                    ro = runOption.ToString(), by = user.Name,
+                    // Stage 2 exceeded the tier on purpose; the trace says which it was.
+                    skip = r.Stage2Qty > 0 ? $"Pass5 (S1 {r.Stage1Qty}, S2 {r.Stage2Qty} above tier)" : "Pass5",
+                    po = r.PONo, poqty = r.PoQty, ctry = r.Country,
+                },
+                transaction: tx, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        }
+
+        foreach (var u in unplaced)
+        {
+            await conn.ExecuteAsync(new CommandDefinition(@"
+                INSERT INTO dbo.WmsAllocationTrace
+                    (ContNo, Itemcode, StoreID, DivCode, Pass, SortRank, TierName,
+                     Cap, Soh, CurrentBeforeTake, RemainingBefore, Take, RemainingAfter,
+                     RunOption, RunBy, SkipReason, PONo, POLineSizeQty)
+                VALUES (@c, @i, 'Flagged', @d, 5, 0, 'Flagged',
+                        @q, 0, 0, @q, @q, 0,
+                        @ro, @by, 'Flagged (no store available after Pass 5)', @po, @poqty)",
+                new
+                {
+                    c = contno, i = u.ItemCode, d = u.DivCode, q = u.Qty,
+                    ro = runOption.ToString(), by = user.Name, po = u.PONo, poqty = u.PoQty,
+                },
+                transaction: tx, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        }
 
         await tx.CommitAsync(ct);
     }
