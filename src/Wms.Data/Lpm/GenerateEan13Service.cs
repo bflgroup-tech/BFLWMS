@@ -37,8 +37,11 @@ public class GenerateEan13Service(IOnPremConnectionResolver resolver, ScheduledJ
         return c;
     }
 
+    // TEMP TEST MODE — TOP 1000 caps a run's blast radius while this is still
+    // being validated against production data. REVERT before merging to main:
+    // drop the "TOP 1000".
     private const string SelectSql = @"
-        SELECT ORACLE_SKU
+        SELECT TOP 1000 ORACLE_SKU
           FROM DATAREPORTING.dbo.UPC_SUBCLASS
          WHERE ISNULL(ORACLE_SKU, '') <> '' AND ISNULL(EAN13, '') = '';";
 
