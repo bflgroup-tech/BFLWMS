@@ -231,6 +231,34 @@ public class Pass5FlaggedAllocationService(IOnPremConnectionResolver resolver, I
             .GroupBy(r => (r.StoreID, r.DivCode))
             .ToDictionary(g => g.Key, g => (g.First().Country, VG: g.First().Grade));
 
+        // What each item is ACTUALLY still short by, computed live rather than trusted
+        // from the flag row.
+        //
+        // Flags are written mid-run, inside Pass 4's item loop, while the allocation is
+        // only saved at the end — so a run that dies (AEINT7639 timed out twice) leaves
+        // flags behind with no matching shortfall. A later successful run then allocates
+        // the container in full and the orphan flags remain, claiming quantity that was
+        // never dropped. Trusting RemainingQty put 3,619 pcs on top of a complete
+        // allocation and pushed AEINT7639 past its PO qty.
+        //
+        // outstanding = PO qty for the item − what this batch already allocated for it.
+        // Capping at that is self-correcting: a stale flag simply places nothing.
+        var poByItem = (await conn.QueryAsync<(string ItemCode, int Qty)>(new CommandDefinition(@"
+            SELECT ItemCode, Qty = SUM(CAST(ISNULL(orgqty, 0) AS int))
+              FROM usa.dbo.usaorgfile_LPM WITH (NOLOCK)
+             WHERE ContNo = @c
+             GROUP BY ItemCode",
+            new { c = contno }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
+            .ToDictionary(r => r.ItemCode.Trim().ToUpperInvariant(), r => r.Qty);
+
+        var allocByItem = (await conn.QueryAsync<(string Itemcode, int Qty)>(new CommandDefinition(@"
+            SELECT Itemcode, Qty = SUM(CAST(ISNULL(AllocatedQty, 0) AS int))
+              FROM dbo.WMS_ContAllocationData WITH (NOLOCK)
+             WHERE BatchNo = @b
+             GROUP BY Itemcode",
+            new { b = batchNo }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
+            .ToDictionary(r => r.Itemcode.Trim().ToUpperInvariant(), r => r.Qty);
+
         var bands = await LoadBandsAsync(conn, flags.Select(f => f.DivCode).Distinct().ToArray(), ct);
         var soh   = await LoadSohAsync(conn, itemCodesCsv, ct);
         var simBlocked = await LoadSimSkuMaxBlockedAsync(conn, itemCodesCsv, ct);
@@ -251,10 +279,24 @@ public class Pass5FlaggedAllocationService(IOnPremConnectionResolver resolver, I
         int totalFlagged = 0, totalStage1 = 0, totalStage2 = 0, totalUnplaced = 0;
         var noBand = 0;
 
+        var staleItems = 0;
+        var staleQty   = 0;
+
         foreach (var f in flags)
         {
             totalFlagged += f.RemainingQty;
             var item = f.ItemCode.Trim().ToUpperInvariant();
+
+            // Never place more than the item is genuinely short by.
+            var outstanding = Math.Max(0,
+                poByItem.GetValueOrDefault(item, 0) - allocByItem.GetValueOrDefault(item, 0));
+            var placeable = Math.Min(f.RemainingQty, outstanding);
+            if (placeable < f.RemainingQty)
+            {
+                staleItems++;
+                staleQty += f.RemainingQty - placeable;
+            }
+            if (placeable <= 0) continue;   // fully allocated already — the flag is an orphan
 
             // Candidate stores: picked, carrying this division, not blocked.
             var cands = new List<(string StoreID, string Country, int Tier, int Soh, int Already)>();
@@ -273,10 +315,10 @@ public class Pass5FlaggedAllocationService(IOnPremConnectionResolver resolver, I
                     already.GetValueOrDefault((sid.ToUpperInvariant(), item), 0)));
             }
 
-            if (cands.Count == 0) { noBand++; totalUnplaced += f.RemainingQty; continue; }
+            if (cands.Count == 0) { noBand++; totalUnplaced += placeable; continue; }
 
             var take = new Dictionary<string, (int S1, int S2)>(StringComparer.OrdinalIgnoreCase);
-            var remaining = f.RemainingQty;
+            var remaining = placeable;
 
             // ---- Stage 1: round-robin up to headroom ----
             var headroom = cands.ToDictionary(
@@ -323,6 +365,9 @@ public class Pass5FlaggedAllocationService(IOnPremConnectionResolver resolver, I
             }
         }
 
+        if (staleItems > 0)
+            warnings.Add($"{staleItems:N0} flag(s) claimed {staleQty:N0} pc(s) the container is NOT short by - " +
+                         "left over from a run that died before saving. Capped to the real outstanding qty.");
         if (noBand > 0)
             warnings.Add($"{noBand:N0} flagged item(s) had no selected store with a {tierName} band for their " +
                          "division and grade — their quantity is still unplaced.");

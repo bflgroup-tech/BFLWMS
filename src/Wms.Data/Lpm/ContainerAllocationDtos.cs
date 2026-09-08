@@ -173,6 +173,7 @@ public record PlanningFlagRow(
     string    ContNo,
     string?   PONo,
     string    ItemCode,
+    string?   Brand,
     int?      DivCode,
     int       PoQty,
     int       RemainingQty,
