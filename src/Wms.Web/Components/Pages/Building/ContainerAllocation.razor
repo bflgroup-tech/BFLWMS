@@ -6,6 +6,7 @@
 @attribute [Authorize(Policy = MenuKeys.CONTAINER_ALLOCATION)]
 @inject ContainerAllocationService Svc
 @inject BulkPoAllocationService BulkSvc
+@inject Pass5FlaggedAllocationService Pass5Svc
 @inject ICurrentUser CurrentUser
 @inject Microsoft.JSInterop.IJSRuntime JS
 
@@ -426,7 +427,79 @@
     <div class="aiwms-section">
         <div class="aiwms-card-header" style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px">
             <span>Planning Flags — @_planningFlags.Count row(s) for @_contno</span>
+            @if (_planningFlags.Count > 0 && !IsApproved)
+            {
+                <button class="aiwms-btn aiwms-btn-primary" style="font-size:11px; padding:4px 10px"
+                        @onclick="TogglePass5Async" disabled="@_busy"
+                        title="Place the flagged quantity by hand: pick countries, stores and a SKU Max tier. Stores below the tier are filled first; any balance then goes round-robin across all the stores you picked.">
+                    @(_showPass5 ? "Hide" : "Allocate Flagged (Pass 5)")
+                </button>
+            }
         </div>
+
+        @if (_showPass5)
+        {
+            <div style="padding:12px 14px; border-bottom:1px solid var(--border-default); background:var(--bfl-grey-50)">
+                <div style="display:grid; grid-template-columns: 1.2fr 1.8fr 160px auto auto; gap:12px; align-items:end">
+                    <div>
+                        <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COUNTRIES</label>
+                        <MudSelect T="string" Dense="true" MultiSelection="true" SelectAll="true"
+                                   SelectedValues="_p5Countries"
+                                   SelectedValuesChanged="@(async v => { _p5Countries = v.ToHashSet(); await ReloadPass5StoresAsync(); })"
+                                   Placeholder="Pick countries" Variant="Variant.Outlined" Margin="Margin.Dense"
+                                   Disabled="@_busy">
+                            @foreach (var sc in _allowedAllocCountries) { <MudSelectItem T="string" Value="@sc">@sc</MudSelectItem> }
+                        </MudSelect>
+                    </div>
+                    <div>
+                        <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">STORES (@_p5Stores.Count selected)</label>
+                        <MudSelect T="string" Dense="true" MultiSelection="true" SelectAll="true"
+                                   SelectedValues="_p5Stores"
+                                   SelectedValuesChanged="@(v => _p5Stores = v.ToHashSet())"
+                                   Placeholder="@(_p5StoreOptions.Count == 0 ? "Pick countries first" : "Pick stores")"
+                                   Variant="Variant.Outlined" Margin="Margin.Dense"
+                                   Disabled="@(_busy || _p5StoreOptions.Count == 0)">
+                            @foreach (var s in _p5StoreOptions.GroupBy(x => x.StoreID).Select(g => g.First()).OrderBy(x => x.Country).ThenBy(x => x.StoreID))
+                            {
+                                <MudSelectItem T="string" Value="@s.StoreID">@s.StoreID — @s.StoreName (@s.Country)</MudSelectItem>
+                            }
+                        </MudSelect>
+                    </div>
+                    <div>
+                        <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">SKU MAX TIER</label>
+                        <select @bind="_p5Tier" disabled="@_busy"
+                                style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white">
+                            @foreach (var t in Pass5FlaggedAllocationService.Tiers) { <option value="@t">@t</option> }
+                        </select>
+                    </div>
+                    <button class="aiwms-btn aiwms-btn-secondary" @onclick="() => RunPass5Async(false)"
+                            disabled="@(_busy || _p5Stores.Count == 0)">Preview</button>
+                    <button class="aiwms-btn aiwms-btn-primary" @onclick="() => RunPass5Async(true)"
+                            disabled="@(_busy || _p5Stores.Count == 0)">Allocate</button>
+                </div>
+
+                <p style="font-size:11px; color:var(--text-secondary); margin:10px 0 0">
+                    Stores <b>below</b> the chosen tier are filled up to it first (tier − store SOH − what this
+                    container already gave them), round-robin. Only if quantity still remains do the stores
+                    already at the tier come back in, and the balance is spread round-robin across everything
+                    you picked with no cap — that part is reported separately.
+                    Division, department, export-country and SkuMax = 0 blocks still apply.
+                </p>
+
+                @if (!string.IsNullOrEmpty(_p5Message))
+                {
+                    <div class="aiwms-alert @(_p5IsError ? "error" : "info")" style="margin-top:10px">@_p5Message</div>
+                }
+                @if (_p5Warnings.Count > 0)
+                {
+                    <div class="aiwms-alert" style="margin-top:8px; background:#fef3c7; border:1px solid #f59e0b; color:#92400e">
+                        <ul style="margin:0 0 0 18px; padding:0">
+                            @foreach (var w in _p5Warnings) { <li>@w</li> }
+                        </ul>
+                    </div>
+                }
+            </div>
+        }
         @if (_planningFlags.Count == 0)
         {
             <div style="padding:14px; font-style:italic; color:var(--text-secondary)">No records.</div>
@@ -857,6 +930,94 @@
     private bool _showBlocked;
     private List<PlanningFlagRow> _planningFlags = new();
     private bool _showPlanningFlags;
+
+    // ===================== Pass 5 — planner's manual placement of flagged qty =====================
+    private bool _showPass5;
+    private HashSet<string> _p5Countries = new(StringComparer.OrdinalIgnoreCase);
+    private HashSet<string> _p5Stores    = new(StringComparer.OrdinalIgnoreCase);
+    private List<Pass5StoreOption> _p5StoreOptions = new();
+    private string _p5Tier = "IdealMax";
+    private string _p5Message = "";
+    private bool _p5IsError;
+    private List<string> _p5Warnings = new();
+
+    private async Task TogglePass5Async()
+    {
+        _showPass5 = !_showPass5;
+        if (!_showPass5) return;
+        // Default to the countries this container is actually allowed to ship to,
+        // so the planner starts from the same set Process would have used.
+        if (_p5Countries.Count == 0)
+            _p5Countries = new HashSet<string>(_allocCountries, StringComparer.OrdinalIgnoreCase);
+        await ReloadPass5StoresAsync();
+    }
+
+    private async Task ReloadPass5StoresAsync()
+    {
+        _p5Message = ""; _p5IsError = false;
+        try
+        {
+            _p5StoreOptions = await Pass5Svc.GetStoreOptionsAsync(_contno, _p5Countries.ToList());
+            // Drop any picked store that the new country set no longer offers.
+            var offered = _p5StoreOptions.Select(s => s.StoreID).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            _p5Stores.RemoveWhere(s => !offered.Contains(s));
+            if (_p5StoreOptions.Count == 0)
+                _p5Message = "No store in those countries carries a flagged item's division with a Volume Group for this month.";
+        }
+        catch (Exception ex) { _p5Message = $"Could not load stores: {ex.Message}"; _p5IsError = true; }
+    }
+
+    private async Task RunPass5Async(bool commit)
+    {
+        if (_p5Stores.Count == 0 || _busy) return;
+
+        if (commit)
+        {
+            var ok = await JS.InvokeAsync<bool>("confirm",
+                $"Allocate the flagged quantity for {_contno}?\n\n" +
+                $"Tier: {_p5Tier}\nStores: {_p5Stores.Count}\n\n" +
+                "Stores below the tier are filled first; any balance then goes round-robin " +
+                "across all selected stores with no cap.\n\nContinue?");
+            if (!ok) return;
+        }
+
+        _busy = true; _p5Message = ""; _p5IsError = false; _p5Warnings.Clear();
+        await InvokeAsync(StateHasChanged);
+        try
+        {
+            var ro = _runOption switch
+            {
+                "RoundRobin"           => RunOption.RoundRobin,
+                "FillSKUMaxRoundRobin" => RunOption.FillSKUMaxRoundRobin,
+                "FillMinMinPlusOthers" => RunOption.FillMinMinPlusOthers,
+                _                      => RunOption.FillSKUMax,
+            };
+
+            var res = await Pass5Svc.AllocateFlaggedAsync(
+                _country, _contno, ro, _p5Tier, _p5Stores.ToList(), commit);
+
+            if (!res.Success) { _p5Message = res.Message ?? "Pass 5 failed."; _p5IsError = true; return; }
+
+            _p5Warnings = res.Warnings;
+            _p5Message =
+                (commit ? "Allocated " : "Would allocate ") +
+                $"{res.AllocatedQty:N0} of {res.FlaggedQty:N0} flagged pc(s) across {res.FlaggedItems:N0} item(s) — " +
+                $"{res.Stage1Qty:N0} up to {_p5Tier}, {res.Stage2Qty:N0} beyond it" +
+                (res.UnplacedQty > 0 ? $", {res.UnplacedQty:N0} still unplaced." : ".");
+            _p5IsError = false;
+
+            if (commit)
+            {
+                // The grid, the flag list and the status counters all move together.
+                await RefreshStatusAsync();
+                _planningFlags = await Svc.LoadPlanningFlagsAsync(_contno);
+                _allocation    = await Svc.LoadFinalAsync(_country, _contno, ro);
+                _totalPoQty    = await Svc.GetTotalPoQtyAsync(_contno);
+            }
+        }
+        catch (Exception ex) { _p5Message = $"Pass 5 failed: {ex.Message}"; _p5IsError = true; }
+        finally { _busy = false; await InvokeAsync(StateHasChanged); }
+    }
     private bool _busy;
     private string _message = "";
     private bool _messageIsError;
