@@ -143,6 +143,10 @@ public class Program
         // previous GST month, chained after WeeklySalesFromGCP succeeds each Sunday.
         builder.Services.AddScoped<LpmSalesTurnsRefreshService>();
 
+        // Backfills DATAREPORTING.dbo.UPC_SUBCLASS.EAN13 from ORACLE_SKU. On-demand
+        // only ("Generate Now" on the Nightly Batches admin page) — no timer.
+        builder.Services.AddScoped<GenerateEan13Service>();
+
         // Robotics chute-mapping/status APIs used by the Chute Mapping page.
         builder.Services.Configure<Wms.Data.Robotic.RoboticApiOptions>(
             builder.Configuration.GetSection(Wms.Data.Robotic.RoboticApiOptions.SectionName));
