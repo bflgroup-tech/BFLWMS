@@ -37,10 +37,8 @@ public class GenerateEan13Service(IOnPremConnectionResolver resolver, ScheduledJ
         return c;
     }
 
-    // TEMP TEST MODE — TOP 10 so a test run only touches a handful of rows.
-    // REVERT before merging to main: drop the "TOP 10".
     private const string SelectSql = @"
-        SELECT TOP 10 ORACLE_SKU
+        SELECT ORACLE_SKU
           FROM DATAREPORTING.dbo.UPC_SUBCLASS
          WHERE ISNULL(ORACLE_SKU, '') <> '' AND ISNULL(EAN13, '') = '';";
 
