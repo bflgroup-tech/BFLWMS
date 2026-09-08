@@ -161,13 +161,14 @@ public class CdcBoxAllocationService(IOnPremConnectionResolver resolver, ICurren
         var tDiv       = LoadDivByItemAsync(itemCodesCsv, ct);
         var tOts       = LoadOtsRunRowsAsync(ctry, nowGst, ct);
         var tDivBlocks = LoadDivBlocksAsync(ct);
+        var tEx2Blk    = LoadEx2CountryDivBlocksAsync(ct);
         var tSimBlk    = LoadSimSkuMaxBlockedAsync(itemCodesCsv, ct);
         var tGrade     = LoadStoreDivGradeAsync(nowGst, ct);
         var tSoh       = LoadItemSohByStoreAsync(itemCodesCsv, ct);
         var tVgOrder   = LoadVolumeGroupOrderAsync(ct);
         var tBandPct   = LoadOtsBandPctAsync(ct);
 
-        await Task.WhenAll(tDiv, tOts, tGrade, tSoh, tVgOrder, tBandPct, tDivBlocks, tSimBlk);
+        await Task.WhenAll(tDiv, tOts, tGrade, tSoh, tVgOrder, tBandPct, tDivBlocks, tSimBlk, tEx2Blk);
 
         var divByItem      = await tDiv;
         var otsRows        = await tOts;
@@ -176,15 +177,25 @@ public class CdcBoxAllocationService(IOnPremConnectionResolver resolver, ICurren
         var vgSortOrder    = await tVgOrder;
         var otsBandPct     = await tBandPct;
         var divBlocks      = await tDivBlocks;
+        var ex2CountryDivBlocks = await tEx2Blk;
         var simSkuMaxBlocked = await tSimBlk;
 
         // A store barred from a division must not be given DC stock for it. Applied
         // here, on the store universe, so every SKU of that division skips the store —
         // the same rule PO allocation applies to its own eligible set.
+        // Counted before removal so the two rules can be reported separately — one
+        // blocked store and a whole country going dark are very different findings.
+        var ex2Hits = otsRows.Count(r =>
+            ex2CountryDivBlocks.Contains((r.Country.Trim().ToUpperInvariant(), r.DivCode)));
         var blockedRows = otsRows.RemoveAll(r =>
-            divBlocks.Contains((r.StoreID.Trim().ToUpperInvariant(), r.DivCode)));
-        if (blockedRows > 0)
-            warnings.Add($"{blockedRows:N0} store/division row(s) excluded — blocked in LPM_StoreDivAccess.");
+            divBlocks.Contains((r.StoreID.Trim().ToUpperInvariant(), r.DivCode)) ||
+            ex2CountryDivBlocks.Contains((r.Country.Trim().ToUpperInvariant(), r.DivCode)));
+
+        if (ex2Hits > 0)
+            warnings.Add($"{ex2Hits:N0} store/division row(s) excluded — the export country is blocked " +
+                         "for that division (LPM_StoreDivAccess, Country = 'Ex2Locations').");
+        if (blockedRows - ex2Hits > 0)
+            warnings.Add($"{blockedRows - ex2Hits:N0} store/division row(s) excluded — blocked in LPM_StoreDivAccess.");
 
         if (otsRows.Count == 0)
             return CdcDcSohAllocationResult.Fail(
@@ -921,6 +932,43 @@ public class CdcBoxAllocationService(IOnPremConnectionResolver resolver, ICurren
             if (r.SkuMax == 0)
                 blocked.Add((r.StoreId.Trim().ToUpperInvariant(), r.Itemcode.Trim().ToUpperInvariant()));
         return blocked;
+    }
+
+    /// <summary>
+    /// (Country, DivCode) pairs barred from allocation because an Ex2 export LOCATION
+    /// is blocked for that division.
+    ///
+    /// LPM_StoreDivAccess rows with Country = 'Ex2Locations' do not name a store —
+    /// StoreID there is an export location (BFL-X2B, BFL-X2K …), so the block covers
+    /// the whole destination country, not one store.
+    ///
+    /// LPM_Ex2LocationConfig.Country is mixed case ('BAHRAIN', 'Malaysia') and does
+    /// not agree with the OTS run ('Bahrain', 'MALAYSIA'), so both sides are
+    /// upper-cased at load and at lookup.
+    /// </summary>
+    private async Task<HashSet<(string Country, int DivCode)>> LoadEx2CountryDivBlocksAsync(CancellationToken ct)
+    {
+        try
+        {
+            await using var c = OpenOnPremBackup();
+            var rows = await c.QueryAsync<(string Country, int DivCode)>(new CommandDefinition(@"
+                SELECT UPPER(LTRIM(RTRIM(cfg.Country))) AS Country, a.DivCode
+                  FROM dbo.LPM_StoreDivAccess a WITH (NOLOCK)
+                  JOIN dbo.LPM_Ex2LocationConfig cfg WITH (NOLOCK)
+                    ON UPPER(LTRIM(RTRIM(cfg.Ex2StoreID))) = UPPER(LTRIM(RTRIM(a.StoreID)))
+                 WHERE a.IsActive = 0
+                   AND UPPER(LTRIM(RTRIM(a.Country))) = 'EX2LOCATIONS'
+                   AND cfg.Country IS NOT NULL",
+                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            return rows.Where(r => !string.IsNullOrWhiteSpace(r.Country))
+                       .Select(r => (r.Country.Trim(), r.DivCode))
+                       .ToHashSet();
+        }
+        catch
+        {
+            // LPM_Ex2LocationConfig absent -> no export-country blocks, as before.
+            return new HashSet<(string, int)>();
+        }
     }
 
     /// <summary>
