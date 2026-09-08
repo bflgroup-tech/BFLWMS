@@ -2012,6 +2012,20 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                             var c = char.ToUpperInvariant(vg.Trim()[0]);
                             return c is 'Z' or 'A' or 'B' or 'C';
                         }
+
+                        // Pass 4's own band: A–E, with Z above A as everywhere else.
+                        //
+                        // Deliberately NOT the same predicate as IsTopGrade. That one also
+                        // drives the Bypass Pass 1b coverage calculation (MinMinCoverPct =
+                        // ABCReqdStock / PoQty) and its Stage 1 top-up; widening it there
+                        // would change which items skip Pass 1b entirely, which is a
+                        // different decision from who Pass 4 spreads the remainder across.
+                        static bool IsPass4Grade(string? vg)
+                        {
+                            if (string.IsNullOrWhiteSpace(vg)) return false;
+                            var c = char.ToUpperInvariant(vg.Trim()[0]);
+                            return c is 'Z' or 'A' or 'B' or 'C' or 'D' or 'E';
+                        }
                         int MinMinCapFor(OtsRunLookupRow r)
                         {
                             if (BandsFor(r.DivCode, r.VolumeGroup) is not { } bands) return 0;
@@ -2287,13 +2301,13 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                             }
                             else
                             {
-                                // Distribute proportionally to A/B/C stores by raw MinMax.
-                                // Filter: VG in {A, B, C} AND LiveOts > 0. Sort: LiveOts desc
-                                // (across A/B/C flat — highest-OTS store first regardless of
-                                // grade). Ratio uses raw MinMax as the weight; each store's
+                                // Distribute proportionally to A–E stores by raw MinMax.
+                                // Filter: VG in {A..E} AND LiveOts > 0. Sort: LiveOts desc
+                                // (flat across the band — highest-OTS store first regardless
+                                // of grade). Ratio uses raw MinMax as the weight; each store's
                                 // share is take-as-is (no per-store cap).
                                 var top3 = eligible
-                                    .Where(r => IsTopGrade(r.VolumeGroup))   // Z, A, B, C by letter — decoupled from SortOrder config so an S=Special row cannot shove C out of the top rank
+                                    .Where(r => IsPass4Grade(r.VolumeGroup))   // Z, A–E by letter — decoupled from SortOrder config so an S=Special row cannot shove E out of the band
                                     .Where(r => LiveOtsPct(r) > 0)                                                // positive-OTS stores only
                                     .Select(r => (Row: r, MinMax: RawMinMaxFor(r)))
                                     .Where(x => x.MinMax > 0)
@@ -3411,9 +3425,23 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
 
         await using var c = OpenOnPremBackup();
         await using var cmd = c.CreateCommand();
-        cmd.CommandText = @"SELECT * FROM LPMSIM.dbo.WmsAllocationTrace WITH (NOLOCK)
-                             WHERE ContNo = @c
-                             ORDER BY Itemcode, Pass, SortRank";
+        // Brand is not on the trace table. It is USAOrgFile.vendor keyed on
+        // (ContNo, itemcode) — the same source the PO Data grid uses; there is no
+        // Brand column on usaorgfile_LPM.
+        //
+        // Pre-aggregated in a derived table rather than joined directly: USAOrgFile
+        // has a row per PO line, so a SKU spanning several lines would multiply the
+        // trace rows. MAX() because the vendor is the same on each.
+        cmd.CommandText = @"SELECT t.*, Brand = b.Brand
+                              FROM LPMSIM.dbo.WmsAllocationTrace t WITH (NOLOCK)
+                              LEFT JOIN (
+                                  SELECT ContNo, itemcode, Brand = MAX(vendor)
+                                    FROM usa.dbo.USAOrgFile WITH (NOLOCK)
+                                   WHERE ContNo = @c
+                                   GROUP BY ContNo, itemcode
+                              ) b ON b.ContNo = t.ContNo AND b.itemcode = t.Itemcode
+                             WHERE t.ContNo = @c
+                             ORDER BY t.Itemcode, t.Pass, t.SortRank";
         cmd.Parameters.AddWithValue("@c", contno.Trim());
         cmd.CommandTimeout = CommandTimeoutSeconds;
 
