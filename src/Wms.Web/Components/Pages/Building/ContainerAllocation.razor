@@ -6,6 +6,7 @@
 @attribute [Authorize(Policy = MenuKeys.CONTAINER_ALLOCATION)]
 @inject ContainerAllocationService Svc
 @inject BulkPoAllocationService BulkSvc
+@inject AllocationRunLockService RunLock
 @inject ICurrentUser CurrentUser
 @inject Microsoft.JSInterop.IJSRuntime JS
 
@@ -167,6 +168,18 @@
             @(_showPlanningFlags ? "Hide" : "Planning Flags") (@pfCount · @pfQty.ToString("N0") qty)
         </button>
     </div>
+
+    @* Shown when someone ELSE holds the lock — this session's own runs already have
+       their own progress bar, and repeating it there would just be noise. *@
+    @if (_runLock.IsHeld && !_busy && !_bulkBusy)
+    {
+        <div class="aiwms-alert" style="margin-top:12px; background:#fef3c7; border:1px solid #f59e0b; color:#92400e">
+            <b>Allocation in progress elsewhere</b> — @_runLock.Describe().
+            Process and Bulk are blocked until it finishes.
+            <button class="aiwms-btn aiwms-btn-secondary" style="font-size:11px; padding:2px 8px; margin-left:8px"
+                    @onclick="RefreshRunLockAsync">Check again</button>
+        </div>
+    }
 
     @if (_progressTotal > 0 || _busy)
     {
@@ -932,6 +945,7 @@
         _allocCountries = new HashSet<string>(_simCountries, StringComparer.OrdinalIgnoreCase);
 
         _canRunBulk = CurrentUser.CanSeeSection(SectionKeys.BULKALLOC_RUN);
+        await RefreshRunLockAsync();
 
         await RefreshProcessedContnosAsync();
         if (_canRunBulk) await ReloadBulkQueueAsync();
@@ -1116,6 +1130,17 @@
         var proceed = await JS.InvokeAsync<bool>("confirm", confirmMsg);
         if (!proceed) return;
 
+        // One allocation at a time. A single Process and a bulk run read the same
+        // OTS position and prior-allocation totals and then write against them, so
+        // overlapping runs can allocate the same OTS twice — the timeout at 310s
+        // while bulk walked 101 containers was the mild symptom, not the problem.
+        var (gotLock, holder) = await RunLock.TryAcquireAsync("Single", _contno);
+        if (!gotLock)
+        {
+            ShowError($"Another allocation is running — {holder.Describe()}. Wait for it to finish, then Process again.");
+            return;
+        }
+
         _busy = true; _message = ""; _allocation = new(); _blocked = new(); _loadedBatch = null;
         _progressCurrent = 0; _progressTotal = 0; _progressItem = null;
         // End-to-end + per-phase timing — exposed in the success message so users
@@ -1211,7 +1236,14 @@
             }
         }
         catch (Exception ex) { ShowError($"Process failed after {FmtElapsed(totalSw.ElapsedMilliseconds)}: {ex.Message}"); }
-        finally { _busy = false; _progressTotal = 0; }
+        finally
+        {
+            // Released even on failure — a crashed run must not wedge allocation.
+            // (The stale window covers the case where the app dies outright.)
+            await RunLock.ReleaseAsync();
+            await RefreshRunLockAsync();
+            _busy = false; _progressTotal = 0;
+        }
     }
 
     private static string FmtElapsed(long ms) =>
@@ -1228,6 +1260,16 @@
     // batch writes allocations for dozens of containers, so it is not something
     // every holder of the Container Allocation menu should be able to trigger.
     private bool _canRunBulk;
+
+    // Who, if anyone, is mid-allocation. Read on load and after each run so the
+    // page can say why the buttons will refuse rather than only failing on click.
+    private AllocationRunLockState _runLock = new(null, null, null, null, null);
+
+    private async Task RefreshRunLockAsync()
+    {
+        try { _runLock = await RunLock.GetStateAsync(); }
+        catch { _runLock = new(null, null, null, null, null); }
+    }
     // ContNo -> the countries the run will use, previewed via the shared resolver.
     private Dictionary<string, ContainerAllocationCountries> _bulkCountries = new(StringComparer.OrdinalIgnoreCase);
     // "" = every batch. Bound to a <select>, hence string rather than int?.
@@ -1302,6 +1344,16 @@
             "Continue?");
         if (!ok) return;
 
+        // Takes the same lock as a run: this deletes allocations, and doing that
+        // under a run in flight would pull rows out from under it.
+        var (gotLock, holder) = await RunLock.TryAcquireAsync("Bulk", $"delete & re-queue {scope}");
+        if (!gotLock)
+        {
+            _bulkMessage = $"Another allocation is running — {holder.Describe()}. Wait for it to finish, then try again.";
+            _bulkIsError = true;
+            return;
+        }
+
         _bulkBusy = true; _bulkMessage = ""; _bulkIsError = false;
         _bulkDone = 0; _bulkTotal = _bulkQueue.Count; _bulkPhase = "Starting…";
         await InvokeAsync(StateHasChanged);
@@ -1312,6 +1364,9 @@
             {
                 _bulkDone = p.Done; _bulkTotal = p.Total;
                 _bulkPhase = $"{p.ContNo} — {p.Phase}";
+                // Keep the lock alive while a long batch works, so it is not
+                // mistaken for abandoned and taken over mid-run.
+                _ = RunLock.HeartbeatAsync();
                 await InvokeAsync(StateHasChanged);
             });
 
@@ -1332,6 +1387,8 @@
         catch (Exception ex) { _bulkMessage = $"Delete & re-queue stopped: {ex.Message}"; _bulkIsError = true; }
         finally
         {
+            await RunLock.ReleaseAsync();
+            await RefreshRunLockAsync();
             _bulkBusy = false; _bulkPhase = ""; _bulkTotal = 0; _bulkDone = 0;
             await InvokeAsync(StateHasChanged);
         }
@@ -1384,6 +1441,15 @@
             "Already-processed containers are skipped.\n\nContinue?");
         if (!ok) return;
 
+        var scope = BulkBatchNo is null ? "all batches" : $"batch #{BulkBatchNo}";
+        var (gotLock, holder) = await RunLock.TryAcquireAsync("Bulk", scope);
+        if (!gotLock)
+        {
+            _bulkMessage = $"Another allocation is running — {holder.Describe()}. Wait for it to finish, then run again.";
+            _bulkIsError = true;
+            return;
+        }
+
         _bulkBusy = true; _bulkMessage = ""; _bulkIsError = false;
         _bulkDone = 0; _bulkTotal = count; _bulkPhase = "Starting…";
         await InvokeAsync(StateHasChanged);
@@ -1396,6 +1462,9 @@
             {
                 _bulkDone = p.Done; _bulkTotal = p.Total;
                 _bulkPhase = $"{p.ContNo} — {p.Phase}";
+                // Keep the lock alive while a long batch works, so it is not
+                // mistaken for abandoned and taken over mid-run.
+                _ = RunLock.HeartbeatAsync();
                 await InvokeAsync(StateHasChanged);
             });
 
@@ -1420,6 +1489,8 @@
         }
         finally
         {
+            await RunLock.ReleaseAsync();
+            await RefreshRunLockAsync();
             _bulkBusy = false; _bulkPhase = ""; _bulkTotal = 0; _bulkDone = 0;
             await InvokeAsync(StateHasChanged);
         }
