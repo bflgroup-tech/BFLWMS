@@ -320,14 +320,14 @@
                 active => ToggleSingleAsync(IncreffMfcsSohCompareService.JobName, active),
                 new() { ("Refresh Now", EventCallback.Factory.Create(this, RefreshIncreffCompareNowAsync)) }));
 
-            // 10. GenerateEAN13 — every 15 min (see Wms.Web.Hosting.GenerateEan13BatchService).
+            // 10. GenerateEAN13 — hourly (see Wms.Web.Hosting.GenerateEan13BatchService).
             //     Backfills DATAREPORTING.dbo.UPC_SUBCLASS.EAN13 for rows with an
             //     ORACLE_SKU but no EAN13 yet.
             var ean13 = await Jobs.GetSingleRowAsync(GenerateEan13Service.JobName);
             list.Add(new JobVm(
-                GenerateEan13Service.JobName, "Every 15 min", null,
+                GenerateEan13Service.JobName, "Hourly", null,
                 ean13.IsActive, ean13.UpdatedTS, ean13.UpdatedBy,
-                ean13.IsActive ? NextQuarterHourGst() : null,
+                ean13.IsActive ? NextHourGst() : null,
                 active => ToggleSingleAsync(GenerateEan13Service.JobName, active),
                 new() { ("Generate Now", EventCallback.Factory.Create(this, GenerateEan13NowAsync)) }));
         }
@@ -635,11 +635,11 @@
         return floor.AddHours(1);
     }
 
-    private static DateTime NextQuarterHourGst()
+    private static DateTime NextHourGst()
     {
         var nowGst = NowGst();
-        var floor = new DateTime(nowGst.Year, nowGst.Month, nowGst.Day, nowGst.Hour, (nowGst.Minute / 15) * 15, 0);
-        return floor.AddMinutes(15);
+        var floor = new DateTime(nowGst.Year, nowGst.Month, nowGst.Day, nowGst.Hour, 0, 0);
+        return floor.AddHours(1);
     }
 
     private static string StatusPill(string s) => s switch

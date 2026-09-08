@@ -3,7 +3,7 @@ using Wms.Data.Lpm;
 namespace Wms.Web.Hosting;
 
 /// <summary>
-/// Fires every 15 minutes to backfill DATAREPORTING.dbo.UPC_SUBCLASS.EAN13 via
+/// Fires every hour to backfill DATAREPORTING.dbo.UPC_SUBCLASS.EAN13 via
 /// GenerateEan13Service. Gated by the usual dbo.WmsRptCountryConfig toggle
 /// (JobName='GenerateEAN13', Country='') on the Nightly Batches admin page —
 /// same convention as BoxesToWmsProdScheduledService, which also writes to an
@@ -12,11 +12,11 @@ namespace Wms.Web.Hosting;
 public class GenerateEan13BatchService(IServiceProvider sp, ILogger<GenerateEan13BatchService> log)
     : BackgroundService
 {
-    private static readonly TimeSpan Interval = TimeSpan.FromMinutes(15);
+    private static readonly TimeSpan Interval = TimeSpan.FromHours(1);
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        log.LogInformation("GenerateEan13BatchService started. Fires every 15 min when the job toggle is active.");
+        log.LogInformation("GenerateEan13BatchService started. Fires every hour when the job toggle is active.");
 
         while (!stoppingToken.IsCancellationRequested)
         {
