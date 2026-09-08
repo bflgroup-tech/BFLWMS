@@ -1150,19 +1150,41 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
             return d;
         }
 
-        async Task<List<(string ContNo, string Country, string StoreID, string Itemcode, int? Qty)>> LoadApprovedRows()
+        // Every approved allocation still in flight, PRE-AGGREGATED in SQL.
+        //
+        // This used to return one row per (container, store, ITEM) and aggregate them
+        // in memory. Item count is the dominant multiplier — a single container runs
+        // to 13k rows — so once ~100 containers had been bulk-processed this was
+        // pulling well over a million rows across the wire on every Process, which is
+        // what pushed wave 2 into a 300s command timeout.
+        //
+        // DivCode is already persisted on WMS_ContAllocationData, so grouping by it
+        // here also removes the follow-up vupc_subclass lookup for items outside this
+        // container.
+        //
+        // Still grouped by (ContNo, Country): the completed-set filter below is keyed
+        // on that PAIR, and a container completed in one country but not another must
+        // keep its allocation counted for the other. Only the item dimension is
+        // collapsed, which is the one that matters for size.
+        async Task<List<(string ContNo, string Country, string StoreID, int DivCode, long Qty)>> LoadApprovedRows()
         {
             await using var c1 = OpenOnPremBackup();
             var excludeClause = completedContnos.Length > 0
                 ? "AND d.TcmContno NOT IN @excluded"
                 : "";
             var approvedSql = $@"
-                SELECT d.TcmContno AS ContNo, d.Country, d.StoreID, d.Itemcode, d.AllocatedQty AS Qty
+                SELECT d.TcmContno AS ContNo, d.Country, d.StoreID,
+                       DivCode = ISNULL(d.DivCode, 0),
+                       Qty     = SUM(CAST(ISNULL(d.AllocatedQty, 0) AS bigint))
                   FROM LPMSIM.dbo.WMS_Cont_Allocation_Header h WITH (NOLOCK)
                   JOIN LPMSIM.dbo.WMS_ContAllocationData d   WITH (NOLOCK) ON d.BatchNo = h.BatchNo
                  WHERE h.ApprovedDt IS NOT NULL
-                   {excludeClause}";
-            return (await c1.QueryAsync<(string ContNo, string Country, string StoreID, string Itemcode, int? Qty)>(new CommandDefinition(
+                   AND d.StoreID IS NOT NULL
+                   AND ISNULL(d.DivCode, 0) <> 0
+                   {excludeClause}
+                 GROUP BY d.TcmContno, d.Country, d.StoreID, ISNULL(d.DivCode, 0)
+                HAVING SUM(CAST(ISNULL(d.AllocatedQty, 0) AS bigint)) <> 0";
+            return (await c1.QueryAsync<(string ContNo, string Country, string StoreID, int DivCode, long Qty)>(new CommandDefinition(
                 approvedSql,
                 new { excluded = completedContnos },
                 commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).AsList();
@@ -1218,32 +1240,20 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         var runningAlloc = new Dictionary<(string StoreID, int DivCode), int>();
 
         // ============ prevAllocatedSeed — built from wave-2 approvedRows ============
-        // Any approved-batch item whose DivCode we don't already have from itemMeta
-        // needs a small extra vupc_subclass lookup (usually 0 rows).
+        // approvedRows now arrives grouped by (ContNo, Country, StoreID, DivCode) with
+        // DivCode read straight off WMS_ContAllocationData, so the per-item
+        // vupc_subclass top-up that used to sit here is gone with it.
+        //
+        // The (ContNo, Country) filter stays in memory rather than in SQL: `completed`
+        // comes from WmsBuildingCompletion on Azure, a different server, so it cannot
+        // be joined to the on-prem query.
         var prevAllocatedSeed = new Dictionary<(string StoreID, int DivCode), int>();
-        if (approvedRows.Count > 0)
+        foreach (var r in approvedRows)
         {
-            var extraItems = approvedRows.Select(r => r.Itemcode)
-                .Where(i => !divByItem.ContainsKey(i)).Distinct().ToArray();
-            var divByApprovedItem = new Dictionary<string, int>(divByItem, StringComparer.OrdinalIgnoreCase);
-            if (extraItems.Length > 0)
-            {
-                await using var c1 = OpenOnPremBackup();
-                var extraDivs = await c1.QueryAsync<(string itemcode, int? DivID)>(new CommandDefinition(@"
-                    SELECT itemcode, MAX(DivID) AS DivID
-                    FROM datareporting.dbo.vupc_subclass WITH (NOLOCK)
-                    WHERE itemcode IN @items GROUP BY itemcode",
-                    new { items = extraItems }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-                foreach (var r in extraDivs) divByApprovedItem[r.itemcode] = r.DivID ?? 0;
-            }
-
-            foreach (var r in approvedRows)
-            {
-                if (completed.Contains((r.ContNo, r.Country))) continue;
-                if (!divByApprovedItem.TryGetValue(r.Itemcode, out var div) || div == 0) continue;
-                var key = (r.StoreID, div);
-                prevAllocatedSeed[key] = prevAllocatedSeed.GetValueOrDefault(key, 0) + (r.Qty ?? 0);
-            }
+            if (completed.Contains((r.ContNo, r.Country))) continue;
+            var key = (r.StoreID, r.DivCode);
+            prevAllocatedSeed[key] = prevAllocatedSeed.GetValueOrDefault(key, 0)
+                                     + (int)Math.Clamp(r.Qty, int.MinValue, int.MaxValue);
         }
 
         double? ComputeOts(string sid, int div)
