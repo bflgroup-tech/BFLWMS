@@ -320,16 +320,16 @@
                 active => ToggleSingleAsync(IncreffMfcsSohCompareService.JobName, active),
                 new() { ("Refresh Now", EventCallback.Factory.Create(this, RefreshIncreffCompareNowAsync)) }));
 
-            // 10. GenerateEAN13 — on-demand only, no timer. Backfills DATAREPORTING.
-            //     dbo.UPC_SUBCLASS.EAN13 for rows with an ORACLE_SKU but no EAN13 yet.
-            //     No activation state to toggle, so the checkbox is disabled.
+            // 10. GenerateEAN13 — hourly (see Wms.Web.Hosting.GenerateEan13BatchService).
+            //     Backfills DATAREPORTING.dbo.UPC_SUBCLASS.EAN13 for rows with an
+            //     ORACLE_SKU but no EAN13 yet.
+            var ean13 = await Jobs.GetSingleRowAsync(GenerateEan13Service.JobName);
             list.Add(new JobVm(
-                GenerateEan13Service.JobName, "On-demand", null,
-                true, default, "",
-                null,
-                active => Task.CompletedTask,
-                new() { ("Generate Now", EventCallback.Factory.Create(this, GenerateEan13NowAsync)) },
-                "on-demand only"));
+                GenerateEan13Service.JobName, "Hourly", null,
+                ean13.IsActive, ean13.UpdatedTS, ean13.UpdatedBy,
+                ean13.IsActive ? NextHourGst() : null,
+                active => ToggleSingleAsync(GenerateEan13Service.JobName, active),
+                new() { ("Generate Now", EventCallback.Factory.Create(this, GenerateEan13NowAsync)) }));
         }
         catch (Exception ex) { Show($"Failed to load jobs: {ex.Message}", true); }
 
@@ -632,6 +632,13 @@
         var nowGst = NowGst();
         var floor = new DateTime(nowGst.Year, nowGst.Month, nowGst.Day, nowGst.Hour, 0, 0);
         if (nowGst < floor.AddMinutes(30)) return floor.AddMinutes(30);
+        return floor.AddHours(1);
+    }
+
+    private static DateTime NextHourGst()
+    {
+        var nowGst = NowGst();
+        var floor = new DateTime(nowGst.Year, nowGst.Month, nowGst.Day, nowGst.Hour, 0, 0);
         return floor.AddHours(1);
     }
 
