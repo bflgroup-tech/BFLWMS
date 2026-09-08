@@ -2005,22 +2005,16 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                             return c == 'Z' || (c >= 'A' && c <= 'H');
                         }
 
-                        // The top band for the A/B/C passes, with Z sitting above A.
-                        static bool IsTopGrade(string? vg)
-                        {
-                            if (string.IsNullOrWhiteSpace(vg)) return false;
-                            var c = char.ToUpperInvariant(vg.Trim()[0]);
-                            return c is 'Z' or 'A' or 'B' or 'C';
-                        }
-
-                        // Pass 4's own band: A–E, with Z above A as everywhere else.
+                        // The top band, with Z sitting above A. A–E, not A–C: Bypass Pass 1b
+                        // is the option actually in use, so its coverage calculation and
+                        // Stage 1 top-up move with Pass 4 rather than being left behind on
+                        // a narrower set.
                         //
-                        // Deliberately NOT the same predicate as IsTopGrade. That one also
-                        // drives the Bypass Pass 1b coverage calculation (MinMinCoverPct =
-                        // ABCReqdStock / PoQty) and its Stage 1 top-up; widening it there
-                        // would change which items skip Pass 1b entirely, which is a
-                        // different decision from who Pass 4 spreads the remainder across.
-                        static bool IsPass4Grade(string? vg)
+                        // The DB columns keep their ABC names (Pass1ByPass.ABCMax / ABCSOH /
+                        // ABCReqdStock) — renaming persisted columns to chase this would
+                        // break anything already reading them. The names now mean "the top
+                        // band", which is A–E.
+                        static bool IsTopGrade(string? vg)
                         {
                             if (string.IsNullOrWhiteSpace(vg)) return false;
                             var c = char.ToUpperInvariant(vg.Trim()[0]);
@@ -2307,7 +2301,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                                 // of grade). Ratio uses raw MinMax as the weight; each store's
                                 // share is take-as-is (no per-store cap).
                                 var top3 = eligible
-                                    .Where(r => IsPass4Grade(r.VolumeGroup))   // Z, A–E by letter — decoupled from SortOrder config so an S=Special row cannot shove E out of the band
+                                    .Where(r => IsTopGrade(r.VolumeGroup))   // Z, A–E by letter — decoupled from SortOrder config so an S=Special row cannot shove E out of the band
                                     .Where(r => LiveOtsPct(r) > 0)                                                // positive-OTS stores only
                                     .Select(r => (Row: r, MinMax: RawMinMaxFor(r)))
                                     .Where(x => x.MinMax > 0)
