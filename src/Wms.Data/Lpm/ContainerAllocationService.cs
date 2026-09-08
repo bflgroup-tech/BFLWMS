@@ -458,6 +458,43 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                 .ToHashSet();
         }
 
+        /// <summary>
+        /// Export-country blocks. LPM_StoreDivAccess rows with Country = 'Ex2Locations'
+        /// do not name a store — StoreID is an Ex2 export LOCATION (BFL-X2B, BFL-X2K …).
+        /// Blocking one there means the whole destination country is barred from that
+        /// division, so EVERY store in it must drop out, not just a store that happens
+        /// to share the code.
+        ///
+        /// LPM_Ex2LocationConfig.Country is mixed case ('BAHRAIN', 'Malaysia') and does
+        /// not agree with the other sources ('Bahrain', 'MALAYSIA'), so both sides are
+        /// upper-cased here and at every lookup — the same trap that once starved four
+        /// countries in the ADM band lookup.
+        /// </summary>
+        async Task<HashSet<(string Country, int DivCode)>> LoadEx2CountryDivBlocks()
+        {
+            try
+            {
+                await using var c1 = OpenOnPremBackup();
+                return (await c1.QueryAsync<(string Country, int DivCode)>(new CommandDefinition(@"
+                    SELECT UPPER(LTRIM(RTRIM(cfg.Country))) AS Country, a.DivCode
+                      FROM dbo.LPM_StoreDivAccess a WITH (NOLOCK)
+                      JOIN dbo.LPM_Ex2LocationConfig cfg WITH (NOLOCK)
+                        ON UPPER(LTRIM(RTRIM(cfg.Ex2StoreID))) = UPPER(LTRIM(RTRIM(a.StoreID)))
+                     WHERE a.IsActive = 0
+                       AND UPPER(LTRIM(RTRIM(a.Country))) = 'EX2LOCATIONS'
+                       AND cfg.Country IS NOT NULL",
+                    commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
+                    .Where(r => !string.IsNullOrWhiteSpace(r.Country))
+                    .Select(r => (r.Country.Trim(), r.DivCode))
+                    .ToHashSet();
+            }
+            catch
+            {
+                // LPM_Ex2LocationConfig absent -> no export-country blocks, same as before.
+                return new HashSet<(string, int)>();
+            }
+        }
+
         async Task<HashSet<(string Sid, int DivCode)>> LoadDivBlocks()
         {
             await using var c1 = OpenOnPremBackup();
@@ -822,6 +859,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         var w1_itemMeta       = LoadItemMeta();
         var w1_deptBlocks     = LoadDeptBlocks();
         var w1_divBlocks      = LoadDivBlocks();
+        var w1_ex2CtryBlocks  = LoadEx2CountryDivBlocks();
         var w1_orgByItem      = LoadOrgByItem();
         var w1_storeNameById  = LoadStoreNames();
         var w1_palletByStore  = LoadPalletByStore();
@@ -839,7 +877,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         var w1_vgOrder        = LoadVolumeGroupOrder();
 
         await Task.WhenAll(
-            w1_itemMeta, w1_deptBlocks, w1_divBlocks, w1_orgByItem,
+            w1_itemMeta, w1_deptBlocks, w1_divBlocks, w1_ex2CtryBlocks, w1_orgByItem,
             w1_storeNameById, w1_palletByStore, w1_priority, w1_mnw,
             w1_prices, w1_completed, w1_receiptDt, w1_initialAlloc, w1_otsRunRows,
             w1_simSkuMaxBlocked, w1_itemSohByStore, w1_otsBandPct, w1_vgOrder, w1_poMaxPct);
@@ -847,6 +885,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         var itemMeta          = await w1_itemMeta;
         var deptBlocks        = await w1_deptBlocks;
         var divBlocks         = await w1_divBlocks;
+        var ex2CountryDivBlocks = await w1_ex2CtryBlocks;
         var orgByItem         = await w1_orgByItem;
         var storeNameById     = await w1_storeNameById;
         var palletByStore     = await w1_palletByStore;
@@ -1268,13 +1307,22 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                 // universe from the OTS run, so it has to apply the same predicate —
                 // this keeps the two from drifting apart again.
                 var deptUpper = dept.ToUpperInvariant();
-                (bool Hit, string? Reason) AccessBlock(string storeId)
+                (bool Hit, string? Reason) AccessBlock(string storeId, string? country)
                 {
                     var sidU = storeId.Trim().ToUpperInvariant();
                     var deptHit = !string.IsNullOrEmpty(dept) && deptBlocks.Contains((sidU, divCode, deptUpper));
                     var divHit  = divBlocks.Contains((sidU, divCode));
-                    if (!deptHit && !divHit) return (false, null);
-                    return (true, deptHit && divHit ? "DeptAccess+DivAccess" : (deptHit ? "DeptAccess" : "DivAccess"));
+                    // Export-country block: bars every store of that country for the
+                    // division, regardless of the store's own DivAccess rows.
+                    var ctryU   = (country ?? "").Trim().ToUpperInvariant();
+                    var ex2Hit  = ctryU.Length > 0 && ex2CountryDivBlocks.Contains((ctryU, divCode));
+
+                    if (!deptHit && !divHit && !ex2Hit) return (false, null);
+                    var reasons = new List<string>(3);
+                    if (deptHit) reasons.Add("DeptAccess");
+                    if (divHit)  reasons.Add("DivAccess");
+                    if (ex2Hit)  reasons.Add("Ex2CountryBlock");
+                    return (true, string.Join("+", reasons));
                 }
 
                 // Stores this line already has a Blocked row for, so the OTS branch
@@ -1284,7 +1332,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                 var stores = new List<(string StoreID, string Country, string VolumeGroup, int MerchNeedMonth, int SKUMax, double? Ots)>(perStore.Count);
                 foreach (var (storeId, info) in perStore)
                 {
-                    var (accessHit, reason) = AccessBlock(storeId);
+                    var (accessHit, reason) = AccessBlock(storeId, info.Country);
                     if (accessHit)
                     {
                         accessBlockedStores.Add(storeId);
@@ -1421,7 +1469,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                     // units of DivCode 413 on AELOC8081 despite an IsActive = 0 row.
                     // Only FillSKUMax / RoundRobin ever honoured them.
                     var accessBlocked = eligible
-                        .Where(r => AccessBlock(r.StoreID).Hit)
+                        .Where(r => AccessBlock(r.StoreID, r.Country).Hit)
                         .ToList();
                     foreach (var r in accessBlocked)
                     {
@@ -1435,7 +1483,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                             Division: itemRow.Division, Department: itemRow.Department,
                             StoreID: r.StoreID, StoreName: sName, Country: r.Country,
                             PoQty: line.Qty, DivCode: divCode,
-                            BlockReason: AccessBlock(r.StoreID).Reason ?? "DivAccess"));
+                            BlockReason: AccessBlock(r.StoreID, r.Country).Reason ?? "DivAccess"));
                     }
 
                     var noBandStores = eligible.Where(r => !HasBand(r)).ToList();
@@ -1484,7 +1532,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                         // allocates from WmsManualAllocation without consulting it, so a
                         // manual row would have walked straight past a DivAccess block.
                         // An operator's manual qty is a request, not an override.
-                        if (!AccessBlock("ONLINE").Hit
+                        if (!AccessBlock("ONLINE", EcomCountry).Hit
                             && !IsSimSkuBlocked("ONLINE")
                             && initialAllocByKey.TryGetValue(("ONLINE", line.ItemCode.ToUpperInvariant()), out var ecomManualQty)
                             && ecomManualQty > 0)
