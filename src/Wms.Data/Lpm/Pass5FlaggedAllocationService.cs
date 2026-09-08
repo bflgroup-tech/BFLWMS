@@ -1,4 +1,3 @@
-using System.Data;
 using Wms.Core;
 using Wms.Data.Configuration;
 using Dapper;
@@ -6,70 +5,74 @@ using Microsoft.Data.SqlClient;
 
 namespace Wms.Data.Lpm;
 
-/// <summary>A store the planner can pick for Pass 5, with what it would be capped at.</summary>
-public sealed record Pass5StoreOption(
-    string  StoreID,
-    string? StoreName,
-    string  Country,
-    int     DivCode,
-    string? VolumeGroup);
+/// <summary>
+/// One preview line — a (flagged item, candidate store) pair with everything the
+/// planner needs to judge it, and the quantity the run proposes.
+///
+/// NewAllocatedQty is settable: Preview fills it, the planner may overwrite it in
+/// the grid, and Submit writes whatever the grid holds. That is the point of the
+/// screen — the algorithm proposes, the planner decides.
+/// </summary>
+public sealed class Pass5PreviewRow
+{
+    public string   StoreID          { get; set; } = "";
+    public string?  StoreName        { get; set; }
+    public string   Country          { get; set; } = "";
+    public string?  PONo             { get; set; }
+    public string   ItemCode         { get; set; } = "";
+    public int      DivCode          { get; set; }
+    public string?  Brand            { get; set; }
+    public int      PoQty            { get; set; }
+    public int      AllocatedQty     { get; set; }   // this store already has, for this item
+    public int      RemainingQty     { get; set; }   // the item's outstanding flagged qty
+    public string?  VolumeGroup      { get; set; }
+    public int      OtsFinal         { get; set; }   // OtsQtyToday for (store, div)
+    public decimal  AvgOts           { get; set; }   // mean OtsPercentToday across the candidates
+    public decimal  OtsPercent       { get; set; }   // this store's own OtsPercentToday (traced, not shown)
+    public int      SortRank         { get; set; }   // round-robin position, so the order is reconstructible
+    public string?  Lpm              { get; set; }
+    public decimal  Turns            { get; set; }   // LPM_DivStoresTurns
+    public decimal  AvgTurns         { get; set; }   // mean across the SELECTED stores of that division
+    public int?     LatestMerchNeed  { get; set; }   // LPM_OTS_Output.mnwtoday, latest row
+    public int      NewAllocatedQty  { get; set; }
+}
 
-/// <summary>One line of the Pass 5 result, per (Item, Store).</summary>
-public sealed record Pass5AllocationRow(
-    string  ItemCode,
-    int     DivCode,
-    string  Country,
-    string  StoreID,
-    string? PONo,
-    int     PoQty,
-    string? VolumeGroup,
-    int    Tier,        // the chosen tier's value for this (Div, VG, PoQty)
-    int    Soh,
-    int    AlreadyAllocated,
-    int    Stage1Qty,   // filled up to the tier
-    int    Stage2Qty);  // round-robin beyond the tier, once every store was full
-
-/// <summary>Outcome of one Pass 5 run.</summary>
+/// <summary>Outcome of a Preview or a Submit.</summary>
 public sealed record Pass5Result(
     bool         Success,
     string?      Message,
     int          FlaggedItems,
     int          FlaggedQty,
     int          AllocatedQty,
-    int          Stage1Qty,
-    int          Stage2Qty,
     int          UnplacedQty,
     List<string> Warnings)
 {
     public static Pass5Result Fail(string message) =>
-        new(false, message, 0, 0, 0, 0, 0, 0, new List<string>());
+        new(false, message, 0, 0, 0, 0, new List<string>());
 }
 
 /// <summary>
-/// Pass 5 — the planner's manual placement of Pass-4 flagged quantity.
+/// Flagged Allocation (Pass 5) — the planner places what Passes 1-4 could not.
 ///
-/// Passes 1-4 flag an item when they cannot place its residual (≥10% of PO qty).
-/// That quantity then sits in WmsPlanningFlag doing nothing. Pass 5 lets a planner
-/// choose countries, stores and a SKU Max tier, and place it deliberately.
+/// Store selection, in order:
+///   1. Every store of the flagged item's division in the selected COUNTRIES whose
+///      Volume Group is one of the selected VGs.
+///   2. Average Turns (LPM_DivStoresTurns) across THAT set — the selected stores
+///      only, so the bar is relative to what the planner picked rather than to
+///      stores they excluded.
+///   3. Keep the stores strictly above that average.
+///   4. Round-robin one unit at a time, highest OTS first.
 ///
-/// Two stages, in this order — the second only runs if the first leaves a balance:
+/// No SKU Max tier is involved: the turn filter is what decides who is worth
+/// stocking, and the planner edits the result directly.
 ///
-///   Stage 1  Stores BELOW the chosen tier are filled up to it, round-robin.
-///            Headroom = tier − store SOH − what this container already gave them,
-///            so a store already at the tier takes nothing here.
+/// Preview computes the whole placement and writes nothing. Submit writes exactly
+/// what the grid holds, edits included.
 ///
-///   Stage 2  If quantity still remains, the stores already at or above the tier
-///            come back in and the balance goes round-robin across ALL selected
-///            stores with no cap. This is the planner overriding the tier on
-///            purpose, which is the whole point of the button, so it is recorded
-///            separately (Stage2Qty) rather than blended into the total.
-///
-/// Runs only BEFORE approval and before any Azure sync: appending to a container
-/// that is already downstream cannot be undone by re-running it.
-///
-/// Every block that applies to the automatic passes applies here too — a planner
-/// choosing a store does not override a division, department, export-country or
-/// SkuMax=0 block.
+/// Runs only BEFORE approval and before any Azure sync — appending to a container
+/// that is already downstream cannot be undone by re-running it. Division,
+/// department, export-country and SkuMax = 0 blocks all still apply: choosing a
+/// store does not override a block.
 /// </summary>
 public class Pass5FlaggedAllocationService(IOnPremConnectionResolver resolver, ICurrentUser user)
 {
@@ -100,106 +103,53 @@ public class Pass5FlaggedAllocationService(IOnPremConnectionResolver resolver, I
 
     private static DateTime NowGst() => DateTime.UtcNow.AddHours(4);
 
-    /// <summary>The tiers a planner can pick, in the order the bands define them.</summary>
-    public static readonly string[] Tiers = { "MinMin", "MinMax", "IdealMax", "MaxMax" };
-
-    // ===================== Store picker =====================
+    // ===================== Filter options =====================
 
     /// <summary>
-    /// Stores available for Pass 5 on this container: those carrying a flagged
-    /// item's division, in the given countries, with a Volume Group for this month.
-    /// Blocked stores are left out here rather than filtered later, so the planner
-    /// is never offered a store the run would then refuse.
+    /// Volume Groups present among the stores that could take this container's
+    /// flagged items, for the VG filter. Derived from the data rather than a fixed
+    /// A..H list, so a VG with no store never appears as a pickable dead end.
     /// </summary>
-    public async Task<List<Pass5StoreOption>> GetStoreOptionsAsync(
+    public async Task<List<string>> GetVolumeGroupsAsync(
         string contno, IReadOnlyCollection<string> countries, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(contno) || countries.Count == 0) return new();
         var nowGst = NowGst();
 
         await using var c = OpenOnPremBackup();
-        var rows = await c.QueryAsync<Pass5StoreOption>(new CommandDefinition(@"
-            SELECT DISTINCT
-                   o.StoreID,
-                   -- PBFullname on DataSettings is where every other page reads the
-                   -- store's display name from; there is no LPM_StoreMaster here.
-                   StoreName   = s.PBFullname,
-                   o.Country,
-                   o.DivCode,
-                   VolumeGroup = g.Grade
+        var rows = await c.QueryAsync<string>(new CommandDefinition(@"
+            SELECT DISTINCT o.VolumeGroup
               FROM dbo.WmsPlanningFlag f WITH (NOLOCK)
               JOIN dbo.WmsOtsPoAllocationRun o WITH (NOLOCK)
                 ON o.DivCode = f.DivCode
                AND o.[Month] = @m AND o.[Year] = @y AND o.OTSDate = @d
-              JOIN dbo.StoreDivGrade g WITH (NOLOCK)
-                ON g.StoreID = o.StoreID AND g.DivCode = o.DivCode
-               AND g.Month1 = @m AND g.Year1 = @y
-               AND g.Grade IS NOT NULL AND g.Grade <> ''
-              OUTER APPLY (SELECT PBFullname = MAX(ds.PBFullname)
-                             FROM bfldata.dbo.DataSettings ds WITH (NOLOCK)
-                            WHERE ds.StoreID = o.StoreID) s
-             WHERE f.ContNo = @c
-               AND f.RemainingQty > 0
+               AND o.TgtEOM > 50
+             WHERE f.ContNo = @c AND f.RemainingQty > 0
                AND o.Country IN @countries
-               -- Blocked stores are not offered at all.
-               AND NOT EXISTS (SELECT 1 FROM dbo.LPM_StoreDivAccess a WITH (NOLOCK)
-                                WHERE a.IsActive = 0
-                                  AND UPPER(LTRIM(RTRIM(a.StoreID))) = UPPER(LTRIM(RTRIM(o.StoreID)))
-                                  AND a.DivCode = o.DivCode)
-             ORDER BY o.Country, o.StoreID",
+               AND o.VolumeGroup IS NOT NULL AND LTRIM(RTRIM(o.VolumeGroup)) <> ''
+             ORDER BY o.VolumeGroup",
             new { c = contno.Trim(), m = nowGst.Month, y = nowGst.Year, d = nowGst.Date, countries },
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-
         return rows.AsList();
     }
 
-    // ===================== The run =====================
+    // ===================== Preview =====================
 
-    public async Task<Pass5Result> AllocateFlaggedAsync(
-        string genCountry, string contno, RunOption runOption, string tierName,
-        IReadOnlyCollection<string> storeIds, bool commit, CancellationToken ct = default)
+    public async Task<(Pass5Result Result, List<Pass5PreviewRow> Rows)> BuildPreviewAsync(
+        string genCountry, string contno, RunOption runOption,
+        IReadOnlyCollection<string> countries, IReadOnlyCollection<string> volumeGroups,
+        CancellationToken ct = default)
     {
         var warnings = new List<string>();
         contno = (contno ?? "").Trim();
-        if (string.IsNullOrWhiteSpace(contno)) return Pass5Result.Fail("No container.");
-        if (storeIds.Count == 0)              return Pass5Result.Fail("Pick at least one store.");
-        if (!Tiers.Contains(tierName))        return Pass5Result.Fail($"Unknown tier '{tierName}'.");
+        if (string.IsNullOrWhiteSpace(contno)) return (Pass5Result.Fail("No container."), new());
+        if (countries.Count == 0)     return (Pass5Result.Fail("Pick at least one country."), new());
+        if (volumeGroups.Count == 0)  return (Pass5Result.Fail("Pick at least one Volume Group."), new());
 
-        var roTag = runOption.ToString();
+        var gate = await CheckGateAsync(genCountry, contno, runOption, ct);
+        if (gate.Error is not null) return (Pass5Result.Fail(gate.Error), new());
+        var batchNo = gate.BatchNo;
 
-        // ---------- 1. Gate: batch must exist, be unapproved and unsynced ----------
-        int batchNo;
-        await using (var c = OpenOnPremBackup())
-        {
-            var hdr = await c.QueryFirstOrDefaultAsync<(int BatchNo, DateTime? ApprovedDt)>(new CommandDefinition(@"
-                SELECT TOP 1 BatchNo, ApprovedDt
-                  FROM dbo.WMS_Cont_Allocation_Header WITH (NOLOCK)
-                 WHERE GenCountry = @gc AND ContNo = @c AND RunOption = @ro
-                 ORDER BY BatchNo DESC",
-                new { gc = genCountry, c = contno, ro = roTag },
-                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-
-            if (hdr.BatchNo == 0)
-                return Pass5Result.Fail($"No {roTag} batch for {contno} — process the container first.");
-            if (hdr.ApprovedDt is not null)
-                return Pass5Result.Fail(
-                    $"{contno} was approved on {hdr.ApprovedDt:dd-MMM-yyyy HH:mm}. Pass 5 only runs before " +
-                    "approval — appending to an approved batch cannot be undone by re-running it.");
-            batchNo = hdr.BatchNo;
-        }
-
-        await using (var w = OpenWms())
-        {
-            var synced = await w.ExecuteScalarAsync<int>(new CommandDefinition(
-                "SELECT COUNT(*) FROM dbo.WMS_ContAllocationData WITH (NOLOCK) WHERE ContNo = @c",
-                new { c = contno }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-            if (synced > 0)
-                return Pass5Result.Fail(
-                    $"{contno} already has {synced:N0} row(s) synced to Azure WMS. Pass 5 rows would not " +
-                    "reach the mirror, so the two would disagree. Clear the Azure rows first.");
-        }
-
-        // ---------- 2. Flags, stores, bands, SOH, existing allocation ----------
         await using var conn = OpenOnPremBackup();
         var nowGst = NowGst();
 
@@ -208,256 +158,285 @@ public class Pass5FlaggedAllocationService(IOnPremConnectionResolver resolver, I
                 SELECT ItemCode, DivCode = ISNULL(DivCode, 0), PONo, PoQty, RemainingQty
                   FROM dbo.WmsPlanningFlag WITH (NOLOCK)
                  WHERE ContNo = @c AND RemainingQty > 0 AND ISNULL(DivCode, 0) <> 0",
-            new { c = contno }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).AsList();
+                new { c = contno }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).AsList();
+        if (flags.Count == 0) return (Pass5Result.Fail($"No flagged quantity for {contno}."), new());
 
-        if (flags.Count == 0) return Pass5Result.Fail($"No flagged quantity for {contno}.");
-
-        var picked = storeIds.Select(s => s.Trim()).Where(s => s.Length > 0)
-                             .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         var itemCodesCsv = string.Join(",", flags.Select(f => f.ItemCode.Trim()).Distinct());
 
-        var storeRows = (await conn.QueryAsync<(string StoreID, string Country, int DivCode, string Grade)>(
+        // Candidate stores: the selected countries × the selected VGs, carrying a
+        // flagged division. Blocked stores are excluded in SQL so they never reach
+        // the average — a blocked store must not move the bar it is not competing for.
+        var cands = (await conn.QueryAsync<(string StoreID, string? StoreName, string Country, int DivCode,
+                                            string VolumeGroup, int OtsQtyToday, decimal OtsPercentToday)>(
             new CommandDefinition(@"
-                SELECT DISTINCT o.StoreID, o.Country, o.DivCode, g.Grade
+                SELECT o.StoreID, StoreName = s.PBFullname, o.Country, o.DivCode,
+                       o.VolumeGroup, o.OtsQtyToday, o.OtsPercentToday
                   FROM dbo.WmsOtsPoAllocationRun o WITH (NOLOCK)
-                  JOIN dbo.StoreDivGrade g WITH (NOLOCK)
-                    ON g.StoreID = o.StoreID AND g.DivCode = o.DivCode
-                   AND g.Month1 = @m AND g.Year1 = @y AND g.Grade IS NOT NULL AND g.Grade <> ''
+                  OUTER APPLY (SELECT PBFullname = MAX(ds.PBFullname)
+                                 FROM bfldata.dbo.DataSettings ds WITH (NOLOCK)
+                                WHERE ds.StoreID = o.StoreID) s
                  WHERE o.[Month] = @m AND o.[Year] = @y AND o.OTSDate = @d
-                   AND o.StoreID IN @stores",
-            new { m = nowGst.Month, y = nowGst.Year, d = nowGst.Date, stores = picked },
-            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).AsList();
+                   AND o.TgtEOM > 50
+                   AND o.Country IN @countries
+                   AND o.VolumeGroup IN @vgs
+                   AND NOT EXISTS (SELECT 1 FROM dbo.LPM_StoreDivAccess a WITH (NOLOCK)
+                                    WHERE a.IsActive = 0
+                                      AND UPPER(LTRIM(RTRIM(a.StoreID))) = UPPER(LTRIM(RTRIM(o.StoreID)))
+                                      AND a.DivCode = o.DivCode)",
+                new { m = nowGst.Month, y = nowGst.Year, d = nowGst.Date, countries, vgs = volumeGroups },
+                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).AsList();
 
-        // (StoreID, DivCode) -> (Country, VG). A store carries a different grade per
-        // division, so the key has to include it.
-        var storeByKey = storeRows
-            .GroupBy(r => (r.StoreID, r.DivCode))
-            .ToDictionary(g => g.Key, g => (g.First().Country, VG: g.First().Grade));
+        if (cands.Count == 0)
+            return (Pass5Result.Fail("No store matches those countries and Volume Groups."), new());
 
-        // What each item is ACTUALLY still short by, computed live rather than trusted
-        // from the flag row.
-        //
-        // Flags are written mid-run, inside Pass 4's item loop, while the allocation is
-        // only saved at the end — so a run that dies (AEINT7639 timed out twice) leaves
-        // flags behind with no matching shortfall. A later successful run then allocates
-        // the container in full and the orphan flags remain, claiming quantity that was
-        // never dropped. Trusting RemainingQty put 3,619 pcs on top of a complete
-        // allocation and pushed AEINT7639 past its PO qty.
-        //
-        // outstanding = PO qty for the item − what this batch already allocated for it.
-        // Capping at that is self-correcting: a stale flag simply places nothing.
+        // Export-country division blocks. Kept out of the candidate query on purpose:
+        // LPM_Ex2LocationConfig may be absent, and the engine degrades to "no export
+        // blocks" rather than failing the run — a joined-in table would fail it.
+        var ex2 = await LoadEx2CountryDivBlocksAsync(conn, ct);
+        if (ex2.Count > 0)
+        {
+            var before = cands.Count;
+            cands = cands
+                .Where(s => !ex2.Contains((s.Country.Trim().ToUpperInvariant(), s.DivCode)))
+                .ToList();
+            if (cands.Count == 0)
+                return (Pass5Result.Fail(
+                    "Every candidate store is in a country whose division is blocked at the Ex2 export " +
+                    "location, so none of them can be allocated to."), new());
+            if (cands.Count < before)
+                warnings.Add($"{before - cands.Count:N0} store/division pair(s) excluded by an Ex2 " +
+                             "export-country block.");
+        }
+
+        var turns   = await LoadTurnsAsync(conn, ct);
+        var mnw     = await LoadMerchNeedAsync(conn, ct);
+        var simBlk  = await LoadSimSkuMaxBlockedAsync(conn, itemCodesCsv, ct);
+        var brandBy = await LoadBrandAsync(conn, contno, ct);
+        var lpmBy   = await LoadLpmAsync(conn, contno, ct);
+
+        var alreadyStoreItem = (await conn.QueryAsync<(string StoreID, string Itemcode, int Qty)>(
+            new CommandDefinition(@"
+                SELECT StoreID, Itemcode, Qty = SUM(CAST(ISNULL(AllocatedQty,0) AS int))
+                  FROM dbo.WMS_ContAllocationData WITH (NOLOCK)
+                 WHERE BatchNo = @b GROUP BY StoreID, Itemcode",
+                new { b = batchNo }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
+            .ToDictionary(r => (r.StoreID.Trim().ToUpperInvariant(), r.Itemcode.Trim().ToUpperInvariant()), r => r.Qty);
+
+        var allocByItem = alreadyStoreItem
+            .GroupBy(kv => kv.Key.Item2)
+            .ToDictionary(g => g.Key, g => g.Sum(x => x.Value));
+
         var poByItem = (await conn.QueryAsync<(string ItemCode, int Qty)>(new CommandDefinition(@"
-            SELECT ItemCode, Qty = SUM(CAST(ISNULL(orgqty, 0) AS int))
+            SELECT ItemCode, Qty = SUM(CAST(ISNULL(orgqty,0) AS int))
               FROM usa.dbo.usaorgfile_LPM WITH (NOLOCK)
-             WHERE ContNo = @c
-             GROUP BY ItemCode",
+             WHERE ContNo = @c GROUP BY ItemCode",
             new { c = contno }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
             .ToDictionary(r => r.ItemCode.Trim().ToUpperInvariant(), r => r.Qty);
 
-        var allocByItem = (await conn.QueryAsync<(string Itemcode, int Qty)>(new CommandDefinition(@"
-            SELECT Itemcode, Qty = SUM(CAST(ISNULL(AllocatedQty, 0) AS int))
-              FROM dbo.WMS_ContAllocationData WITH (NOLOCK)
-             WHERE BatchNo = @b
-             GROUP BY Itemcode",
-            new { b = batchNo }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
-            .ToDictionary(r => r.Itemcode.Trim().ToUpperInvariant(), r => r.Qty);
+        // ---------- place ----------
+        var rows = new List<Pass5PreviewRow>();
+        int totalFlagged = 0, totalPlaced = 0, totalUnplaced = 0, staleQty = 0, noStoreItems = 0;
 
-        var bands = await LoadBandsAsync(conn, flags.Select(f => f.DivCode).Distinct().ToArray(), ct);
-        var soh   = await LoadSohAsync(conn, itemCodesCsv, ct);
-        var simBlocked = await LoadSimSkuMaxBlockedAsync(conn, itemCodesCsv, ct);
-        var divBlocks  = await LoadDivBlocksAsync(conn, ct);
-
-        // What this container has already given each (store, item) — the tier is an
-        // absolute ceiling, so prior allocation counts against it.
-        var already = (await conn.QueryAsync<(string StoreID, string Itemcode, int Qty)>(new CommandDefinition(@"
-            SELECT StoreID, Itemcode, Qty = SUM(CAST(ISNULL(AllocatedQty, 0) AS int))
-              FROM dbo.WMS_ContAllocationData WITH (NOLOCK)
-             WHERE BatchNo = @b
-             GROUP BY StoreID, Itemcode",
-            new { b = batchNo }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
-            .ToDictionary(r => (r.StoreID.Trim().ToUpperInvariant(), r.Itemcode.Trim().ToUpperInvariant()), r => r.Qty);
-
-        // ---------- 3. Place ----------
-        var plan = new List<Pass5AllocationRow>();
-        // Items Pass 5 could not place at all — re-flagged in the trace so the export
-        // still reconciles to PO qty after the old Flagged rows are removed.
-        var unplaced = new List<(string ItemCode, int DivCode, string? PONo, int PoQty, int Qty)>();
-        int totalFlagged = 0, totalStage1 = 0, totalStage2 = 0, totalUnplaced = 0;
-        var noBand = 0;
-
-        var staleItems = 0;
-        var staleQty   = 0;
+        var byDiv = cands.GroupBy(c => c.DivCode).ToDictionary(g => g.Key, g => g.ToList());
 
         foreach (var f in flags)
         {
             totalFlagged += f.RemainingQty;
             var item = f.ItemCode.Trim().ToUpperInvariant();
 
-            // Never place more than the item is genuinely short by.
+            // Never place more than the item is genuinely short by — a flag left
+            // behind by a run that died claims quantity that was never dropped.
             var outstanding = Math.Max(0,
                 poByItem.GetValueOrDefault(item, 0) - allocByItem.GetValueOrDefault(item, 0));
             var placeable = Math.Min(f.RemainingQty, outstanding);
-            if (placeable < f.RemainingQty)
+            staleQty += f.RemainingQty - placeable;
+            if (placeable <= 0) continue;
+
+            if (!byDiv.TryGetValue(f.DivCode, out var divStores) || divStores.Count == 0)
             {
-                staleItems++;
-                staleQty += f.RemainingQty - placeable;
-            }
-            if (placeable <= 0) continue;   // fully allocated already — the flag is an orphan
-
-            // Candidate stores: picked, carrying this division, not blocked.
-            var cands = new List<(string StoreID, string Country, string? VG, int Tier, int Soh, int Already)>();
-            foreach (var sid in picked)
-            {
-                if (!storeByKey.TryGetValue((sid, f.DivCode), out var st)) continue;
-                if (divBlocks.Contains((sid.ToUpperInvariant(), f.DivCode))) continue;
-                if (simBlocked.Contains((sid.ToUpperInvariant(), item))) continue;
-
-                var tier = TierFor(bands, f.DivCode, st.VG, f.PoQty, tierName);
-                if (tier is null) continue;
-
-                cands.Add((sid, st.Country, st.VG,
-                    tier.Value,
-                    soh.GetValueOrDefault((sid.ToUpperInvariant(), item), 0),
-                    already.GetValueOrDefault((sid.ToUpperInvariant(), item), 0)));
+                noStoreItems++; totalUnplaced += placeable; continue;
             }
 
-            if (cands.Count == 0)
+            var usable = divStores.Where(s => !simBlk.Contains((s.StoreID.ToUpperInvariant(), item))).ToList();
+            if (usable.Count == 0) { noStoreItems++; totalUnplaced += placeable; continue; }
+
+            // Avg Turns across the SELECTED stores of this division, then keep the
+            // ones strictly above it. A store with no turns row counts as 0 — absent
+            // data is not evidence of a good turn.
+            var avgTurns = usable.Average(s => turns.GetValueOrDefault((s.Country, s.StoreID.ToUpperInvariant(), s.DivCode), 0m));
+            var avgOts   = usable.Count > 0 ? Math.Round(usable.Average(s => s.OtsPercentToday), 2) : 0m;
+
+            var above = usable
+                .Where(s => turns.GetValueOrDefault((s.Country, s.StoreID.ToUpperInvariant(), s.DivCode), 0m) > avgTurns)
+                .OrderByDescending(s => s.OtsQtyToday)
+                .ToList();
+
+            if (above.Count == 0)
             {
-                noBand++; totalUnplaced += placeable;
-                unplaced.Add((f.ItemCode.Trim(), f.DivCode, f.PONo, f.PoQty, placeable));
-                continue;
+                // Every store sits at or below the average — possible when turns are
+                // flat or missing. Reported rather than silently placing nothing.
+                noStoreItems++; totalUnplaced += placeable; continue;
             }
 
-            var take = new Dictionary<string, (int S1, int S2)>(StringComparer.OrdinalIgnoreCase);
+            // Round-robin, highest OTS first.
+            var take = new int[above.Count];
             var remaining = placeable;
-
-            // ---- Stage 1: round-robin up to headroom ----
-            var headroom = cands.ToDictionary(
-                x => x.StoreID,
-                x => Math.Max(0, x.Tier - x.Soh - x.Already),
-                StringComparer.OrdinalIgnoreCase);
-
-            while (remaining > 0 && headroom.Values.Any(h => h > 0))
-            {
-                var gaveThisRound = false;
-                foreach (var cnd in cands)
-                {
-                    if (remaining <= 0) break;
-                    if (headroom[cnd.StoreID] <= 0) continue;
-                    headroom[cnd.StoreID]--;
-                    remaining--;
-                    var cur = take.GetValueOrDefault(cnd.StoreID);
-                    take[cnd.StoreID] = (cur.S1 + 1, cur.S2);
-                    gaveThisRound = true;
-                }
-                if (!gaveThisRound) break;   // guards against a no-progress loop
-            }
-
-            // ---- Stage 2: everyone back in, no cap ----
             while (remaining > 0)
             {
-                foreach (var cnd in cands)
-                {
-                    if (remaining <= 0) break;
-                    remaining--;
-                    var cur = take.GetValueOrDefault(cnd.StoreID);
-                    take[cnd.StoreID] = (cur.S1, cur.S2 + 1);
-                }
+                for (var i = 0; i < above.Count && remaining > 0; i++) { take[i]++; remaining--; }
             }
 
-            foreach (var cnd in cands)
+            for (var i = 0; i < above.Count; i++)
             {
-                if (!take.TryGetValue(cnd.StoreID, out var t) || t.S1 + t.S2 == 0) continue;
-                totalStage1 += t.S1;
-                totalStage2 += t.S2;
-                plan.Add(new Pass5AllocationRow(
-                    f.ItemCode.Trim(), f.DivCode, cnd.Country, cnd.StoreID,
-                    f.PONo, f.PoQty, cnd.VG,
-                    cnd.Tier, cnd.Soh, cnd.Already, t.S1, t.S2));
+                var s = above[i];
+                rows.Add(new Pass5PreviewRow
+                {
+                    StoreID = s.StoreID, StoreName = s.StoreName, Country = s.Country,
+                    PONo = f.PONo, ItemCode = f.ItemCode.Trim(), DivCode = f.DivCode,
+                    Brand = brandBy.GetValueOrDefault(item),
+                    PoQty = f.PoQty,
+                    AllocatedQty = alreadyStoreItem.GetValueOrDefault((s.StoreID.ToUpperInvariant(), item), 0),
+                    RemainingQty = placeable,
+                    VolumeGroup = s.VolumeGroup,
+                    OtsFinal = s.OtsQtyToday,
+                    AvgOts = avgOts,
+                    OtsPercent = s.OtsPercentToday,
+                    SortRank = i,
+                    Lpm = lpmBy.GetValueOrDefault(item),
+                    Turns = turns.GetValueOrDefault((s.Country, s.StoreID.ToUpperInvariant(), s.DivCode), 0m),
+                    AvgTurns = Math.Round(avgTurns, 4),
+                    LatestMerchNeed = mnw.GetValueOrDefault((s.StoreID, f.DivCode)),
+                    NewAllocatedQty = take[i],
+                });
+                totalPlaced += take[i];
             }
         }
 
-        if (staleItems > 0)
-            warnings.Add($"{staleItems:N0} flag(s) claimed {staleQty:N0} pc(s) the container is NOT short by - " +
-                         "left over from a run that died before saving. Capped to the real outstanding qty.");
-        if (noBand > 0)
-            warnings.Add($"{noBand:N0} flagged item(s) had no selected store with a {tierName} band for their " +
-                         "division and grade — their quantity is still unplaced.");
-        if (totalStage2 > 0)
-            warnings.Add($"{totalStage2:N0} pc(s) went ABOVE the {tierName} tier — every selected store was " +
-                         "already full, so the balance was spread round-robin regardless.");
+        if (staleQty > 0)
+            warnings.Add($"{staleQty:N0} flagged pc(s) are NOT outstanding - left by a run that died before " +
+                         "saving. Excluded.");
+        if (noStoreItems > 0)
+            warnings.Add($"{noStoreItems:N0} item(s) had no store above average turns in the selected " +
+                         "countries/VGs - their quantity is unplaced.");
 
-        var allocated = totalStage1 + totalStage2;
-        if (!commit)
-            return new Pass5Result(true, "Preview only — nothing written.",
-                flags.Count, totalFlagged, allocated, totalStage1, totalStage2, totalUnplaced, warnings);
-
-        if (plan.Count == 0)
-            return new Pass5Result(true, "Nothing could be placed.",
-                flags.Count, totalFlagged, 0, 0, 0, totalUnplaced, warnings);
-
-        // ---------- 4. Write ----------
-        await PersistAsync(conn, batchNo, contno, plan, unplaced, runOption, ct);
-
-        return new Pass5Result(true, null,
-            flags.Count, totalFlagged, allocated, totalStage1, totalStage2, totalUnplaced, warnings);
+        return (new Pass5Result(true, null, flags.Count, totalFlagged, totalPlaced, totalUnplaced, warnings), rows);
     }
 
+    // ===================== Submit =====================
+
     /// <summary>
-    /// Top up existing rows, insert rows for stores that had none, and reduce the
-    /// flags by what was placed — all in one transaction, because a partial apply
-    /// would leave the flag and the allocation disagreeing about what is outstanding.
-    ///
-    /// A new row is cloned from an existing row of the same item in this batch, which
-    /// carries the item-level enrichment (Brand, Division, Season, Style, Size, UPC,
-    /// Barcode, GroupCode, POQty …). Only the store-level fields are overridden.
+    /// Write exactly what the grid holds. The planner may have edited
+    /// NewAllocatedQty, so this does not recompute — it takes the rows as given and
+    /// only refuses quantities that would push an item past its PO qty.
     /// </summary>
+    public async Task<Pass5Result> SubmitAsync(
+        string genCountry, string contno, RunOption runOption,
+        IReadOnlyCollection<Pass5PreviewRow> rows, CancellationToken ct = default)
+    {
+        var warnings = new List<string>();
+        contno = (contno ?? "").Trim();
+        var live = rows.Where(r => r.NewAllocatedQty > 0).ToList();
+        if (live.Count == 0) return Pass5Result.Fail("Nothing to submit — every New Allocated Qty is zero.");
+
+        var gate = await CheckGateAsync(genCountry, contno, runOption, ct);
+        if (gate.Error is not null) return Pass5Result.Fail(gate.Error);
+        var batchNo = gate.BatchNo;
+
+        await using var conn = OpenOnPremBackup();
+
+        // Re-check the ceiling against live data, not against what Preview saw. The
+        // grid is editable and may have been sitting open while something else moved.
+        var poByItem = (await conn.QueryAsync<(string ItemCode, int Qty)>(new CommandDefinition(@"
+            SELECT ItemCode, Qty = SUM(CAST(ISNULL(orgqty,0) AS int))
+              FROM usa.dbo.usaorgfile_LPM WITH (NOLOCK)
+             WHERE ContNo = @c GROUP BY ItemCode",
+            new { c = contno }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
+            .ToDictionary(r => r.ItemCode.Trim().ToUpperInvariant(), r => r.Qty);
+
+        var allocByItem = (await conn.QueryAsync<(string Itemcode, int Qty)>(new CommandDefinition(@"
+            SELECT Itemcode, Qty = SUM(CAST(ISNULL(AllocatedQty,0) AS int))
+              FROM dbo.WMS_ContAllocationData WITH (NOLOCK)
+             WHERE BatchNo = @b GROUP BY Itemcode",
+            new { b = batchNo }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
+            .ToDictionary(r => r.Itemcode.Trim().ToUpperInvariant(), r => r.Qty);
+
+        var trimmed = 0;
+        foreach (var g in live.GroupBy(r => r.ItemCode.Trim().ToUpperInvariant()))
+        {
+            var headroom = Math.Max(0, poByItem.GetValueOrDefault(g.Key, 0) - allocByItem.GetValueOrDefault(g.Key, 0));
+            var asked = g.Sum(r => r.NewAllocatedQty);
+            if (asked <= headroom) continue;
+
+            // Trim from the smallest rows up, so the planner's biggest deliberate
+            // placements survive and the loss lands where it matters least.
+            var over = asked - headroom;
+            trimmed += over;
+            foreach (var r in g.OrderBy(r => r.NewAllocatedQty))
+            {
+                if (over <= 0) break;
+                var cut = Math.Min(over, r.NewAllocatedQty);
+                r.NewAllocatedQty -= cut;
+                over -= cut;
+            }
+        }
+        if (trimmed > 0)
+            warnings.Add($"{trimmed:N0} pc(s) trimmed - the edited quantities exceeded what those items are " +
+                         "still short by, which would have allocated past the PO.");
+
+        live = live.Where(r => r.NewAllocatedQty > 0).ToList();
+        if (live.Count == 0)
+            return new Pass5Result(true, "Nothing written — every quantity was trimmed to zero.", 0, 0, 0, 0, warnings);
+
+        await PersistAsync(conn, batchNo, contno, live, runOption, ct);
+
+        var placed = live.Sum(r => r.NewAllocatedQty);
+        return new Pass5Result(true, null,
+            live.Select(r => r.ItemCode).Distinct(StringComparer.OrdinalIgnoreCase).Count(),
+            placed, placed, 0, warnings);
+    }
+
     private async Task PersistAsync(
-        SqlConnection conn, int batchNo, string contno, List<Pass5AllocationRow> plan,
-        List<(string ItemCode, int DivCode, string? PONo, int PoQty, int Qty)> unplaced,
+        SqlConnection conn, int batchNo, string contno, List<Pass5PreviewRow> rows,
         RunOption runOption, CancellationToken ct)
     {
         await using var tx = (SqlTransaction)await conn.BeginTransactionAsync(ct);
 
-        foreach (var r in plan)
+        foreach (var r in rows)
         {
-            var qty = r.Stage1Qty + r.Stage2Qty;
-
             var updated = await conn.ExecuteAsync(new CommandDefinition(@"
                 UPDATE dbo.WMS_ContAllocationData
                    SET AllocatedQty = ISNULL(AllocatedQty, 0) + @q,
                        Pass5Qty     = ISNULL(Pass5Qty, 0) + @q
                  WHERE BatchNo = @b AND StoreID = @s AND Itemcode = @i",
-                new { b = batchNo, s = r.StoreID, i = r.ItemCode, q = qty },
+                new { b = batchNo, s = r.StoreID, i = r.ItemCode, q = r.NewAllocatedQty },
                 transaction: tx, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
 
             if (updated > 0) continue;
 
-            // No row for this (store, item) yet — clone one from the same item.
+            // No row for this (store, item) — clone one of the same item for the
+            // item-level enrichment and override only the store-level fields.
             await conn.ExecuteAsync(new CommandDefinition(@"
                 INSERT INTO dbo.WMS_ContAllocationData
                     (BatchNo, ContNo, Country, TrnDate, Time1, UPC, Itemcode, Barcode, GroupCode,
                      POQty, SkuMax, AllocatedQty, PrevAllocatedQty, QtyIssue, StoreID, TcmContno,
                      Itemname, BuildingCategory, LPMDt, ORAPONo, Division, Brand, DivCode,
                      Department, Season, Style, Size, SalesPrice, ResultType, FinalResult,
-                     Remarks, Pass5Qty, Soh, RawSkuMax)
+                     Remarks, Pass5Qty)
                 SELECT TOP 1
                      t.BatchNo, t.ContNo, @country, t.TrnDate, t.Time1, t.UPC, t.Itemcode, t.Barcode, t.GroupCode,
-                     t.POQty, @tier, @q, 0, 0, @store, t.TcmContno,
+                     t.POQty, 0, @q, 0, 0, @store, t.TcmContno,
                      t.Itemname, t.BuildingCategory, t.LPMDt, t.ORAPONo, t.Division, t.Brand, t.DivCode,
                      t.Department, t.Season, t.Style, t.Size, t.SalesPrice, t.ResultType, t.FinalResult,
-                     'Pass 5 (planner)', @q, @soh, @tier
+                     'Pass 5 (planner)', @q
                   FROM dbo.WMS_ContAllocationData t WITH (NOLOCK)
                  WHERE t.BatchNo = @b AND t.Itemcode = @i",
-                new { b = batchNo, i = r.ItemCode, store = r.StoreID, country = r.Country,
-                      q = qty, tier = r.Tier, soh = r.Soh },
+                new { b = batchNo, i = r.ItemCode, store = r.StoreID, country = r.Country, q = r.NewAllocatedQty },
                 transaction: tx, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         }
 
-        // Reduce the flags by what was placed; clear the ones fully absorbed.
-        foreach (var g in plan.GroupBy(p => p.ItemCode, StringComparer.OrdinalIgnoreCase))
+        foreach (var g in rows.GroupBy(r => r.ItemCode, StringComparer.OrdinalIgnoreCase))
         {
-            var placed = g.Sum(x => x.Stage1Qty + x.Stage2Qty);
+            var placed = g.Sum(x => x.NewAllocatedQty);
             await conn.ExecuteAsync(new CommandDefinition(@"
                 UPDATE dbo.WmsPlanningFlag
                    SET RemainingQty = CASE WHEN RemainingQty - @p < 0 THEN 0 ELSE RemainingQty - @p END
@@ -471,122 +450,190 @@ public class Pass5FlaggedAllocationService(IOnPremConnectionResolver resolver, I
             new { c = contno }, transaction: tx,
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
 
-        // ---- Trace: drop Pass 4's Flagged rows, add Pass 5's, re-flag the rest ----
-        //
-        // The Flagged rows exist so SUM(Take) per item reconciles to PO qty. Once
-        // Pass 5 places that quantity they are wrong — leaving them alongside the new
-        // rows would double-count the item in the export, which is why they go first
-        // and only genuinely unplaced quantity is flagged again.
+        // Trace: Pass 4's Flagged rows described a shortfall that no longer exists.
+        // They go first — left beside the Pass 5 rows they would double-count the item.
         await conn.ExecuteAsync(new CommandDefinition(
             "DELETE FROM dbo.WmsAllocationTrace WHERE ContNo = @c AND StoreID = 'Flagged'",
             new { c = contno }, transaction: tx,
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
 
-        foreach (var r in plan)
+        foreach (var r in rows)
         {
-            var qty = r.Stage1Qty + r.Stage2Qty;
             await conn.ExecuteAsync(new CommandDefinition(@"
                 INSERT INTO dbo.WmsAllocationTrace
                     (ContNo, Itemcode, StoreID, DivCode, Pass, SortRank, VolumeGroup, TierName,
-                     Cap, Soh, CurrentBeforeTake, RemainingBefore, Take, RemainingAfter,
-                     RunOption, RunBy, SkipReason, RawSkuMax, PONo, POLineSizeQty, Country)
-                VALUES (@c, @i, @s, @d, 5, 0, @vg, @tier,
-                        @cap, @soh, @cur, @take, @take, 0,
-                        @ro, @by, @skip, @cap, @po, @poqty, @ctry)",
+                     LiveOtsPctBefore, Cap, Soh, CurrentBeforeTake, RemainingBefore, Take, RemainingAfter,
+                     RunningOtsQtyAfter, RunOption, RunBy, SkipReason,
+                     AvgOtsPercent, InitialOtsPct, PONo, POLineSizeQty, Country)
+                VALUES (@c, @i, @s, @d, 5, @rank, @vg, 'Pass5',
+                        @otspct, 0, 0, @cur, @rem, @take, @after,
+                        @otsqty, @ro, @by, @skip,
+                        @avgots, @otspct, @po, @poqty, @ctry)",
                 new
                 {
                     c = contno, i = r.ItemCode, s = r.StoreID, d = r.DivCode,
-                    vg = r.VolumeGroup, tier = "Pass5",
-                    cap = r.Tier, soh = r.Soh, cur = r.AlreadyAllocated, take = qty,
+                    rank = r.SortRank, vg = r.VolumeGroup,
+                    // Cap is 0 because no tier cap applies in Pass 5 — the turn filter
+                    // decided who is eligible, and the planner decided the quantity.
+                    // The turn that qualified the store is recorded in SkipReason.
+                    otspct = r.OtsPercent, otsqty = r.OtsFinal,
+                    cur = r.AllocatedQty, rem = r.RemainingQty, take = r.NewAllocatedQty,
+                    after = Math.Max(0, r.RemainingQty - r.NewAllocatedQty),
                     ro = runOption.ToString(), by = user.Name,
-                    // Stage 2 exceeded the tier on purpose; the trace says which it was.
-                    // SkipReason is NVARCHAR(30) - keep it terse rather than descriptive.
-                    skip = r.Stage2Qty > 0 ? $"Pass5 S1={r.Stage1Qty} S2={r.Stage2Qty}" : "Pass5",
-                    po = r.PONo, poqty = r.PoQty, ctry = r.Country,
+                    skip = Clip($"P5 turn {r.Turns:0.##}>{r.AvgTurns:0.##}", 30),
+                    avgots = r.AvgOts, po = r.PONo, poqty = r.PoQty, ctry = r.Country,
                 },
                 transaction: tx, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         }
 
-        foreach (var u in unplaced)
-        {
-            await conn.ExecuteAsync(new CommandDefinition(@"
-                INSERT INTO dbo.WmsAllocationTrace
-                    (ContNo, Itemcode, StoreID, DivCode, Pass, SortRank, TierName,
-                     Cap, Soh, CurrentBeforeTake, RemainingBefore, Take, RemainingAfter,
-                     RunOption, RunBy, SkipReason, PONo, POLineSizeQty)
-                VALUES (@c, @i, 'Flagged', @d, 5, 0, 'Flagged',
-                        @q, 0, 0, @q, @q, 0,
-                        @ro, @by, 'Flagged: no store (Pass 5)', @po, @poqty)",
-                new
-                {
-                    c = contno, i = u.ItemCode, d = u.DivCode, q = u.Qty,
-                    ro = runOption.ToString(), by = user.Name, po = u.PONo, poqty = u.PoQty,
-                },
-                transaction: tx, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-        }
+        // Whatever Pass 5 could not place is still flagged, so it needs its own
+        // Flagged trace row again — with the NEW smaller quantity. The engine's
+        // convention is Cap = Take = the dropped remainder, so that SUM(Take) per
+        // (ContNo, Itemcode) still reconciles to the PO line qty. Deleting the old
+        // rows without writing these back would leave the trace short by the
+        // still-unplaced quantity.
+        await conn.ExecuteAsync(new CommandDefinition(@"
+            INSERT INTO dbo.WmsAllocationTrace
+                (ContNo, Itemcode, StoreID, DivCode, Pass, SortRank, VolumeGroup, TierName,
+                 LiveOtsPctBefore, Cap, Soh, CurrentBeforeTake, RemainingBefore, Take, RemainingAfter,
+                 RunningOtsQtyAfter, RunOption, RunBy, SkipReason, PONo, POLineSizeQty, Country)
+            SELECT @c, f.ItemCode, 'Flagged', ISNULL(f.DivCode, 0), 4, 0, NULL, 'Flagged',
+                   NULL, f.RemainingQty, 0, 0, f.RemainingQty, f.RemainingQty, 0,
+                   0, @ro, @by, 'Flagged: after Pass 5', f.PONo, f.PoQty, NULL
+              FROM dbo.WmsPlanningFlag f
+             WHERE f.ContNo = @c AND f.RemainingQty > 0",
+            new { c = contno, ro = runOption.ToString(), by = user.Name },
+            transaction: tx, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
 
         await tx.CommitAsync(ct);
     }
 
-    // ===================== Lookups =====================
+    // ===================== Gate + lookups =====================
 
-    private static int? TierFor(
-        Dictionary<(int, string), List<(int From, int To, int? MinMin, int? MinMax, int? IdealMax, int? MaxMax)>> bands,
-        int divCode, string? vg, int poQty, string tierName)
+    private async Task<(int BatchNo, string? Error)> CheckGateAsync(
+        string genCountry, string contno, RunOption runOption, CancellationToken ct)
     {
-        if (!bands.TryGetValue((divCode, vg ?? ""), out var list)) return null;
-        foreach (var b in list)
+        var roTag = runOption.ToString();
+        await using (var c = OpenOnPremBackup())
         {
-            if (poQty < b.From || poQty > b.To) continue;
-            var v = tierName switch
-            {
-                "MinMin"   => b.MinMin,
-                "MinMax"   => b.MinMax,
-                "IdealMax" => b.IdealMax,
-                _          => b.MaxMax,
-            };
-            return v is > 0 ? v : null;
+            var hdr = await c.QueryFirstOrDefaultAsync<(int BatchNo, DateTime? ApprovedDt)>(new CommandDefinition(@"
+                SELECT TOP 1 BatchNo, ApprovedDt
+                  FROM dbo.WMS_Cont_Allocation_Header WITH (NOLOCK)
+                 WHERE GenCountry = @gc AND ContNo = @c AND RunOption = @ro
+                 ORDER BY BatchNo DESC",
+                new { gc = genCountry, c = contno, ro = roTag },
+                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+
+            if (hdr.BatchNo == 0)
+                return (0, $"No {roTag} batch for {contno} — process the container first.");
+            if (hdr.ApprovedDt is not null)
+                return (0, $"{contno} was approved on {hdr.ApprovedDt:dd-MMM-yyyy HH:mm}. Pass 5 only runs " +
+                           "before approval — appending to an approved batch cannot be undone by re-running it.");
+
+            await using var w = OpenWms();
+            var synced = await w.ExecuteScalarAsync<int>(new CommandDefinition(
+                "SELECT COUNT(*) FROM dbo.WMS_ContAllocationData WITH (NOLOCK) WHERE ContNo = @c",
+                new { c = contno }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            if (synced > 0)
+                return (0, $"{contno} already has {synced:N0} row(s) synced to Azure WMS. Pass 5 rows would " +
+                           "not reach the mirror, so the two would disagree. Clear the Azure rows first.");
+
+            return (hdr.BatchNo, null);
         }
-        return null;
     }
 
-    private static async Task<Dictionary<(int, string), List<(int, int, int?, int?, int?, int?)>>> LoadBandsAsync(
-        SqlConnection c, int[] divs, CancellationToken ct)
+    /// <summary>
+    /// Export-country division blocks, same shape and same casing discipline as the
+    /// engine's own loader: LPM_Ex2LocationConfig.Country disagrees in case with every
+    /// other source, so both sides are upper-cased here and at lookup.
+    /// </summary>
+    private static async Task<HashSet<(string Country, int DivCode)>> LoadEx2CountryDivBlocksAsync(
+        SqlConnection c, CancellationToken ct)
     {
-        var d = new Dictionary<(int, string), List<(int, int, int?, int?, int?, int?)>>();
-        if (divs.Length == 0) return d;
-        var rows = await c.QueryAsync<(int DivCode, string VolumeGroup, int PoQtyFrom, int PoQtyTo, int? MinMin, int? MinMax, int? IdealMax, int? MaxMax)>(
-            new CommandDefinition(@"
-                SELECT DivCode, VolumeGroup, PoQtyFrom, PoQtyTo, MinMin, MinMax, IdealMax, MaxMax
-                  FROM dbo.LPM_SkuMaxBands WITH (NOLOCK)
-                 WHERE DivCode IN @divs AND IsActive = 1
-                   AND UPPER(LTRIM(RTRIM(Country))) = 'BFLGROUP'
-                 ORDER BY DivCode, VolumeGroup, PoQtyFrom",
-            new { divs }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-        foreach (var r in rows)
+        try
         {
-            var key = (r.DivCode, r.VolumeGroup ?? "");
-            if (!d.TryGetValue(key, out var list)) { list = new(); d[key] = list; }
-            list.Add((r.PoQtyFrom, r.PoQtyTo, r.MinMin, r.MinMax, r.IdealMax, r.MaxMax));
+            return (await c.QueryAsync<(string Country, int DivCode)>(new CommandDefinition(@"
+                SELECT UPPER(LTRIM(RTRIM(cfg.Country))) AS Country, a.DivCode
+                  FROM dbo.LPM_StoreDivAccess a WITH (NOLOCK)
+                  JOIN dbo.LPM_Ex2LocationConfig cfg WITH (NOLOCK)
+                    ON UPPER(LTRIM(RTRIM(cfg.Ex2StoreID))) = UPPER(LTRIM(RTRIM(a.StoreID)))
+                 WHERE a.IsActive = 0
+                   AND UPPER(LTRIM(RTRIM(a.Country))) = 'EX2LOCATIONS'
+                   AND cfg.Country IS NOT NULL",
+                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
+                .Where(r => !string.IsNullOrWhiteSpace(r.Country))
+                .Select(r => (r.Country.Trim(), r.DivCode))
+                .ToHashSet();
         }
+        catch
+        {
+            // Table absent -> no export-country blocks, matching the engine.
+            return new HashSet<(string, int)>();
+        }
+    }
+
+    /// <summary>Per-store, per-division turn. Missing rows read as 0 downstream.</summary>
+    private static async Task<Dictionary<(string Country, string StoreID, int DivCode), decimal>> LoadTurnsAsync(
+        SqlConnection c, CancellationToken ct)
+    {
+        try
+        {
+            var rows = await c.QueryAsync<(string Country, string StoreID, int DivCode, decimal Turns)>(
+                new CommandDefinition(
+                    "SELECT Country, StoreID, DivCode, Turns FROM dbo.LPM_DivStoresTurns WITH (NOLOCK)",
+                    commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            var d = new Dictionary<(string, string, int), decimal>();
+            foreach (var r in rows) d[(r.Country, r.StoreID.Trim().ToUpperInvariant(), r.DivCode)] = r.Turns;
+            return d;
+        }
+        catch
+        {
+            // Table not deployed / empty -> every store reads 0, the average is 0, and
+            // nothing is strictly above it. The caller reports that as "no store above
+            // average" rather than silently allocating to everyone.
+            return new();
+        }
+    }
+
+    private static async Task<Dictionary<(string StoreID, int DivCode), int?>> LoadMerchNeedAsync(
+        SqlConnection c, CancellationToken ct)
+    {
+        var rows = await c.QueryAsync<(string StoreID, int DivCode, int? MnwToday)>(new CommandDefinition(@"
+            WITH latest AS (
+                SELECT StoreID, DivCode, mnwtoday,
+                       rn = ROW_NUMBER() OVER (PARTITION BY StoreID, DivCode ORDER BY OTSDate DESC)
+                  FROM dbo.LPM_OTS_Output WITH (NOLOCK)
+            )
+            SELECT StoreID, DivCode, mnwtoday AS MnwToday FROM latest WHERE rn = 1",
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        var d = new Dictionary<(string, int), int?>();
+        foreach (var r in rows) d[(r.StoreID, r.DivCode)] = r.MnwToday;
         return d;
     }
 
-    private static async Task<Dictionary<(string, string), int>> LoadSohAsync(
-        SqlConnection c, string itemCodesCsv, CancellationToken ct)
+    private static async Task<Dictionary<string, string?>> LoadBrandAsync(
+        SqlConnection c, string contno, CancellationToken ct)
     {
-        var rows = await c.QueryAsync<(string storeid, string itemcode, int SOH)>(new CommandDefinition(@"
-            SELECT DISTINCT CAST(value AS VARCHAR(50)) AS ItemCode INTO #p5Items FROM STRING_SPLIT(@itemCodesCsv, ',');
-            CREATE CLUSTERED INDEX IX_p5Items ON #p5Items(ItemCode);
+        var rows = await c.QueryAsync<(string itemcode, string? Brand)>(new CommandDefinition(@"
+            SELECT itemcode, Brand = MAX(vendor)
+              FROM usa.dbo.USAOrgFile WITH (NOLOCK)
+             WHERE ContNo = @c GROUP BY itemcode",
+            new { c = contno }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        var d = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        foreach (var r in rows) d[r.itemcode.Trim().ToUpperInvariant()] = r.Brand;
+        return d;
+    }
 
-            SELECT l.storeid, l.itemcode, SUM(CAST(ISNULL(l.SOH,0) AS INT)) AS SOH
-              FROM racks.dbo.LPM_locstock l WITH (NOLOCK)
-              INNER JOIN #p5Items i ON i.ItemCode = l.itemcode
-             GROUP BY l.storeid, l.itemcode;",
-            new { itemCodesCsv }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-
-        var d = new Dictionary<(string, string), int>();
-        foreach (var r in rows) d[(r.storeid.ToUpperInvariant(), r.itemcode.ToUpperInvariant())] = r.SOH;
+    private static async Task<Dictionary<string, string?>> LoadLpmAsync(
+        SqlConnection c, string contno, CancellationToken ct)
+    {
+        var rows = await c.QueryAsync<(string ItemCode, string? LPM)>(new CommandDefinition(@"
+            SELECT ItemCode, LPM = MAX(LPM)
+              FROM usa.dbo.usaorgfile_LPM WITH (NOLOCK)
+             WHERE ContNo = @c GROUP BY ItemCode",
+            new { c = contno }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        var d = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        foreach (var r in rows) d[r.ItemCode.Trim().ToUpperInvariant()] = r.LPM;
         return d;
     }
 
@@ -608,11 +655,7 @@ public class Pass5FlaggedAllocationService(IOnPremConnectionResolver resolver, I
         return set;
     }
 
-    private static async Task<HashSet<(string, int)>> LoadDivBlocksAsync(SqlConnection c, CancellationToken ct)
-    {
-        var rows = await c.QueryAsync<(string StoreID, int DivCode)>(new CommandDefinition(
-            "SELECT StoreID, DivCode FROM dbo.LPM_StoreDivAccess WITH (NOLOCK) WHERE IsActive = 0",
-            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-        return rows.Select(r => ((r.StoreID ?? "").Trim().ToUpperInvariant(), r.DivCode)).ToHashSet();
-    }
+    /// <summary>WmsAllocationTrace.SkipReason is NVARCHAR(30) and bulk inserts abort rather than truncate.</summary>
+    private static string? Clip(string? s, int max) =>
+        string.IsNullOrEmpty(s) || s.Length <= max ? s : s[..max];
 }
