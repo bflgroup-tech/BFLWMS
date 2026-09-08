@@ -2329,6 +2329,19 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                                     .Where(x => x.MinMax > 0)
                                     .OrderByDescending(x => LiveOtsPct(x.Row))
                                     .ToList();
+                                // Per-store CAP, not just a weight. Pass 4 used to size off
+                                // the MinMax ratio and take the share as-is, so a store with
+                                // MinMax 4 could take 7 — the trace's Cap column held the
+                                // weight and read as a limit that was never applied.
+                                //
+                                // It now caps at Min-Min less what the store already holds:
+                                // cap = max(0, MinMin − SOH − current allocation).
+                                // MinMinCapFor already returns max(0, MinMin − SOH), so only the
+                                // container's own prior allocation is subtracted here. Taking SOH
+                                // off a second time would have halved every store's headroom.
+                                int MinMinCapForPass4(OtsRunLookupRow r, int current) =>
+                                    Math.Max(0, MinMinCapFor(r) - current);
+
                                 var totalMinMax = top3.Sum(x => x.MinMax);
                                 if (top3.Count > 0 && totalMinMax > 0)
                                 {
@@ -2355,6 +2368,15 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                                     for (int j = 0; j < leftover && j < takeShares.Length; j++)
                                         takeShares[j] += 1;
 
+                                    // Headroom per store, kept live so the top-up below can
+                                    // see what each still has after its ratio share.
+                                    var p4Head = new int[top3.Count];
+                                    for (int i = 0; i < top3.Count; i++)
+                                    {
+                                        var cur0 = allocs.TryGetValue(top3[i].Row.StoreID, out var r0) ? r0.AllocQty : 0;
+                                        p4Head[i] = MinMinCapForPass4(top3[i].Row, cur0);
+                                    }
+
                                     for (int i = 0; i < top3.Count; i++)
                                     {
                                         var (r, minMax) = top3[i];
@@ -2364,17 +2386,98 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                                         // ECOM container budget has to be applied here too.
                                         take = Math.Min(take, RemainingAllowance(r.Country, r.DivCode));
                                         var current = allocs.TryGetValue(r.StoreID, out var row) ? row.AllocQty : 0;
+                                        // The Min-Min ceiling. This is what makes Pass 4 a real
+                                        // cap rather than a ratio: a store cannot be pushed past
+                                        // Min-Min just because the ratio handed it a big share.
+                                        var minMinCap = p4Head[i];
+                                        take = Math.Min(take, minMinCap);
                                         var remBefore = remaining;
                                         if (take <= 0)
                                         {
-                                            RecordTrace(4, i, r, "MinMax", minMax, current, remBefore, 0, skipReason: "ShareZero", ratioSkuMaxOverride: ratioShare);
+                                            RecordTrace(4, i, r, "MinMin", minMinCap, current, remBefore, 0,
+                                                skipReason: minMinCap <= 0 ? "AtMinMin" : "ShareZero",
+                                                ratioSkuMaxOverride: ratioShare);
                                             continue;
                                         }
-                                        allocs[r.StoreID] = BumpRow(row, r, take, 0, pass: 4, tierNameOverride: "MinMax")
+                                        allocs[r.StoreID] = BumpRow(row, r, take, 0, pass: 4, tierNameOverride: "MinMin")
                                             with { RatioSkuMax = ratioShare };
                                         remaining -= take;
-                                        RecordTrace(4, i, r, "MinMax", minMax, current, remBefore, take, ratioSkuMaxOverride: ratioShare);
+                                        p4Head[i]  = Math.Max(0, p4Head[i] - take);
+                                        RecordTrace(4, i, r, "MinMin", minMinCap, current, remBefore, take, ratioSkuMaxOverride: ratioShare);
                                     }
+
+                                    // Capping leaves a residual the ratio would previously have
+                                    // forced onto someone. Hand it round-robin to whoever still
+                                    // has Min-Min headroom, highest LiveOts first — the same
+                                    // order the ratio used, so the cap changes how much a store
+                                    // gets, not which stores are preferred.
+                                    while (remaining > 0 && p4Head.Any(h => h > 0))
+                                    {
+                                        var gave = false;
+                                        for (int i = 0; i < top3.Count && remaining > 0; i++)
+                                        {
+                                            if (p4Head[i] <= 0) continue;
+                                            var r = top3[i].Row;
+                                            if (RemainingAllowance(r.Country, r.DivCode) <= 0) continue;
+                                            var cur = allocs.TryGetValue(r.StoreID, out var rw) ? rw.AllocQty : 0;
+                                            var rb  = remaining;
+                                            allocs[r.StoreID] = BumpRow(rw, r, 1, 0, pass: 4, tierNameOverride: "MinMin");
+                                            remaining--;
+                                            p4Head[i]--;
+                                            gave = true;
+                                            RecordTrace(4, i, r, "MinMin", p4Head[i] + 1, cur, rb, 1,
+                                                skipReason: "TopUpToMinMin");
+                                        }
+                                        if (!gave) break;
+                                    }
+                                }
+
+                                // Capping at Min-Min can leave a residual that the old
+                                // uncapped ratio would have forced onto a store. It is
+                                // flagged, not dropped silently — the planner sees it in
+                                // Planning Flags and places it through Pass 5.
+                                if (remaining > 0)
+                                {
+                                    await using (var wFlag2 = OpenOnPremBackup())
+                                    {
+                                        await wFlag2.ExecuteAsync(new CommandDefinition(@"
+                                            INSERT dbo.WmsPlanningFlag
+                                                (ContNo, PONo, ItemCode, DivCode, PoQty, RemainingQty, RunOption, FlaggedBy)
+                                            VALUES (@c, @p, @i, @d, @q, @r, @o, @u)",
+                                            new
+                                            {
+                                                c = line.ContNo, p = line.OraPONo, i = line.ItemCode,
+                                                d = (int?)divCode, q = line.Qty, r = remaining,
+                                                o = runOption.ToString(), u = user.Name ?? "",
+                                            },
+                                            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+                                    }
+                                    if (trace is not null)
+                                    {
+                                        trace.Add(new AllocationTraceRow(
+                                            ContNo: line.ContNo, Itemcode: line.ItemCode, StoreID: "Flagged",
+                                            DivCode: divCode, Pass: 4, SortRank: 0,
+                                            VolumeGroup: null, TierName: "Flagged",
+                                            LiveOtsPctBefore: null,
+                                            Cap: remaining, Soh: 0,
+                                            CurrentBeforeTake: 0,
+                                            RemainingBefore: remaining,
+                                            Take: remaining,
+                                            RemainingAfter: 0,
+                                            RunningOtsQtyAfter: 0,
+                                            RunOption: runOption.ToString(),
+                                            SkipReason: "Flagged (all A-E stores at Min-Min)",
+                                            DefaultSkuMax: null, RawSkuMax: null, RatioSkuMax: null,
+                                            AvgOtsPercent: avgOtsDecimal,
+                                            AvgOtsMin: avgOtsMinDecimal,
+                                            AvgOtsMax: avgOtsMaxDecimal,
+                                            InitialOtsPct: null,
+                                            PONo: line.OraPONo,
+                                            LPMDt: line.LPMDt,
+                                            POLineSizeQty: line.Qty,
+                                            Country: null));
+                                    }
+                                    remaining = 0;
                                 }
                             }
                         }
