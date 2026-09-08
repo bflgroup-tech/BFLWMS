@@ -21,8 +21,19 @@
     </span>
 </div>
 
+<div style="display:flex; gap:4px; border-bottom:2px solid var(--border-default); margin:0 0 16px 0; flex-wrap:wrap;">
+    @foreach (var t in Views)
+    {
+        var isActive = _activeView == t;
+        <button @onclick="@(() => _activeView = t)"
+                style="@($"padding:10px 18px; border:none; background:none; cursor:pointer; font-size:13px; font-weight:{(isActive ? "700" : "500")}; color:{(isActive ? "var(--bfl-black)" : "var(--text-secondary)")}; border-bottom:3px solid {(isActive ? "var(--bfl-yellow)" : "transparent")}; margin-bottom:-2px;")">
+            @t
+        </button>
+    }
+</div>
+
 <div class="aiwms-section">
-    <div style="display:grid; grid-template-columns: 1fr 1fr 1fr 1fr auto; gap:12px; align-items:end;">
+    <div style="display:grid; grid-template-columns: 1fr 1fr 1fr 1fr 1fr auto; gap:12px; align-items:end;">
         <div>
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COUNTRY (select any)</label>
             <MudSelect T="string" Dense="true" MultiSelection="true" SelectAll="true" Placeholder="All"
@@ -51,18 +62,29 @@
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">BRAND</label>
             <input @bind="_brandSearch" @bind:event="oninput" placeholder="e.g. Nike" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
         </div>
+        @if (_activeView == ItemLevel)
+        {
+            <div>
+                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">ITEMCODE</label>
+                <input @bind="_itemcodeSearch" @bind:event="oninput" placeholder="e.g. 1000030288026" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;" />
+            </div>
+        }
+        else
+        {
+            <div></div>
+        }
         <div style="display:flex; gap:8px">
             <button class="aiwms-btn" style="background:var(--s-live); color:#fff; border-radius:10px;"
-                    @onclick="@(() => LoadAsync(1))" disabled="@_loading">
-                <span class="mi" style="font-size:16px;">play_arrow</span> @(_loading ? "Loading..." : "Load")
+                    @onclick="LoadActiveViewAsync" disabled="@(_loading || _summaryLoading)">
+                <span class="mi" style="font-size:16px;">play_arrow</span> @((_loading || _summaryLoading) ? "Loading..." : "Load")
             </button>
             <button class="aiwms-btn" style="background:#fff; color:var(--text-primary); border:1.5px solid var(--border-strong); border-radius:10px;"
-                    @onclick="ClearFilters" disabled="@_loading">
+                    @onclick="ClearFilters" disabled="@(_loading || _summaryLoading)">
                 <span class="mi" style="font-size:16px;">refresh</span> Clear Filters
             </button>
             <button class="aiwms-btn" style="background:#fff; color:var(--s-active); border:1.5px solid var(--s-active); border-radius:10px;"
-                    @onclick="ExportExcelAsync" disabled="@(_exporting || _totals is null || _totals.RowCount == 0)">
-                <span class="mi" style="font-size:16px;">download</span> @(_exporting ? "Exporting..." : "Export Excel")
+                    @onclick="ExportActiveViewExcelAsync" disabled="@IsExportDisabled">
+                <span class="mi" style="font-size:16px;">download</span> @((_exporting || _summaryExporting) ? "Exporting..." : "Export Excel")
             </button>
         </div>
     </div>
@@ -79,7 +101,7 @@
     }
 </div>
 
-@if (_loaded)
+@if (_activeView == ItemLevel && _loaded)
 {
     <div class="aiwms-section">
         <div class="aiwms-card-header" style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px">
@@ -160,7 +182,69 @@
     </div>
 }
 
+@if (_activeView == DivisionSummary && _summaryLoaded)
+{
+    <div class="aiwms-section">
+        <div class="aiwms-card-header">Division Summary - @_summaryRows.Count.ToString("N0") row(s)</div>
+        <div style="overflow-x:auto">
+        <table class="aiwms-table aiwms-table-dense">
+            <thead>
+                <tr>
+                    <th>Country</th>
+                    <th>Division</th>
+                    <th style="text-align:right">Items</th>
+                    <th style="text-align:right">MFCS_SOH</th>
+                    <th style="text-align:right">INCREFF_SOH</th>
+                    <th style="text-align:right">GS Summer Pallet</th>
+                    <th style="text-align:right">GW Winter Pallet</th>
+                    <th style="text-align:right">Variance (MFCS_SOH - (INCREFF_SOH + GS + GW))</th>
+                    <th style="text-align:right">InTransit UAE</th>
+                    <th style="text-align:right">InTransit KSA</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr style="font-weight:700; background:var(--surface-1, #f7f7f5);">
+                    <td colspan="2">Total</td>
+                    <td style="text-align:right">@_summaryRows.Sum(r => r.ItemCount).ToString("N0")</td>
+                    <td style="text-align:right">@_summaryRows.Sum(r => r.MFCS_SOH).ToString("N0")</td>
+                    <td style="text-align:right">@_summaryRows.Sum(r => r.IncreffSOH).ToString("N0")</td>
+                    <td style="text-align:right">@_summaryRows.Sum(r => r.GateKeeperRejectedSummer).ToString("N0")</td>
+                    <td style="text-align:right">@_summaryRows.Sum(r => r.GateKeeperRejectedWinter).ToString("N0")</td>
+                    <td style="text-align:right">@_summaryRows.Sum(r => r.Variance).ToString("N0")</td>
+                    <td style="text-align:right">@_summaryRows.Sum(r => r.InTransitUAE).ToString("N0")</td>
+                    <td style="text-align:right">@_summaryRows.Sum(r => r.InTransitKSA).ToString("N0")</td>
+                </tr>
+                @foreach (var r in _summaryRows)
+                {
+                    <tr>
+                        <td>@r.Country</td>
+                        <td style="word-break:break-word">@r.Division</td>
+                        <td style="text-align:right">@r.ItemCount.ToString("N0")</td>
+                        <td style="text-align:right">@r.MFCS_SOH.ToString("N0")</td>
+                        <td style="text-align:right">@r.IncreffSOH.ToString("N0")</td>
+                        <td style="text-align:right">@r.GateKeeperRejectedSummer.ToString("N0")</td>
+                        <td style="text-align:right">@r.GateKeeperRejectedWinter.ToString("N0")</td>
+                        <td style="text-align:right; font-weight:@(r.Variance == 0 ? "400" : "700")">@r.Variance.ToString("N0")</td>
+                        <td style="text-align:right">@r.InTransitUAE.ToString("N0")</td>
+                        <td style="text-align:right">@r.InTransitKSA.ToString("N0")</td>
+                    </tr>
+                }
+                @if (_summaryRows.Count == 0)
+                {
+                    <tr><td colspan="10" style="color:var(--text-secondary)">No rows for the selected filters.</td></tr>
+                }
+            </tbody>
+        </table>
+        </div>
+    </div>
+}
+
 @code {
+    private const string ItemLevel = "Item Level";
+    private const string DivisionSummary = "Division Summary";
+    private static readonly string[] Views = [ItemLevel, DivisionSummary];
+    private string _activeView = ItemLevel;
+
     private List<string> _countries = new();
     private HashSet<string> _selectedCountries = new();
     private List<string> _divisions = new();
@@ -168,6 +252,7 @@
     private List<string> _departments = new();
     private HashSet<string> _selectedDepartments = new();
     private string _brandSearch = "";
+    private string _itemcodeSearch = "";
     private bool _loading;
     private bool _loaded;
     private string _message = "";
@@ -180,8 +265,23 @@
     private int _pageJumpInput = 1;
     private DateTime? _lastRefreshed;
 
+    private bool _summaryLoading;
+    private bool _summaryLoaded;
+    private bool _summaryExporting;
+    private List<EcomStockVarianceDivisionSummaryRow> _summaryRows = new();
+
     private int TotalPages => _totals is null || _totals.RowCount == 0
         ? 1 : (int)Math.Ceiling(_totals.RowCount / (double)EcomStockVarianceReportService.PageSize);
+
+    private bool IsExportDisabled => _activeView == ItemLevel
+        ? _exporting || _totals is null || _totals.RowCount == 0
+        : _summaryExporting || _summaryRows.Count == 0;
+
+    private Task LoadActiveViewAsync() =>
+        _activeView == ItemLevel ? LoadAsync(1) : LoadDivisionSummaryAsync();
+
+    private Task ExportActiveViewExcelAsync() =>
+        _activeView == ItemLevel ? ExportExcelAsync() : ExportDivisionSummaryExcelAsync();
 
     // null (no argument at all) means "genuinely unrestricted"; a user with zero
     // country grants gets the deny-by-default empty (non-null) list instead of
@@ -217,19 +317,35 @@
         try
         {
             var totals = await Svc.GetTotalsAsync(
-                EffectiveCountriesOrNull, EffectiveDivisionsOrNull, EffectiveDepartmentsOrNull, _brandSearch, _varianceOnly);
+                EffectiveCountriesOrNull, EffectiveDivisionsOrNull, EffectiveDepartmentsOrNull,
+                _brandSearch, _itemcodeSearch, _varianceOnly);
             _totals = totals;
             _pageNumber = Math.Clamp(pageNumber, 1, Math.Max(1, TotalPages));
             _pageJumpInput = _pageNumber;
             _rows = totals.RowCount == 0
                 ? new()
                 : await Svc.GetReportPageAsync(
-                    EffectiveCountriesOrNull, EffectiveDivisionsOrNull, EffectiveDepartmentsOrNull, _brandSearch, _varianceOnly, _pageNumber);
+                    EffectiveCountriesOrNull, EffectiveDivisionsOrNull, EffectiveDepartmentsOrNull,
+                    _brandSearch, _itemcodeSearch, _varianceOnly, _pageNumber);
             _loaded = true;
             if (totals.RowCount == 0) _message = "No rows for the selected filters.";
         }
         catch (Exception ex) { _message = ex.Message; _isError = true; }
         finally { _loading = false; }
+    }
+
+    private async Task LoadDivisionSummaryAsync()
+    {
+        _summaryLoading = true; _message = ""; _isError = false; await InvokeAsync(StateHasChanged);
+        try
+        {
+            _summaryRows = await Svc.GetDivisionSummaryAsync(
+                EffectiveCountriesOrNull, EffectiveDivisionsOrNull, EffectiveDepartmentsOrNull, _brandSearch, _varianceOnly);
+            _summaryLoaded = true;
+            if (_summaryRows.Count == 0) _message = "No rows for the selected filters.";
+        }
+        catch (Exception ex) { _message = ex.Message; _isError = true; }
+        finally { _summaryLoading = false; }
     }
 
     // "Variance only" is applied server-side (it changes the filtered row count,
@@ -238,7 +354,8 @@
     private async Task VarianceOnlyChangedAsync(ChangeEventArgs e)
     {
         _varianceOnly = (bool)e.Value!;
-        if (_loaded) await LoadAsync(1);
+        if (_activeView == ItemLevel && _loaded) await LoadAsync(1);
+        else if (_activeView == DivisionSummary && _summaryLoaded) await LoadDivisionSummaryAsync();
     }
 
     private void ClearFilters()
@@ -247,10 +364,13 @@
         _selectedDivisions = new();
         _selectedDepartments = new();
         _brandSearch = "";
+        _itemcodeSearch = "";
         _rows = new();
         _totals = null;
         _pageNumber = 1;
         _loaded = false;
+        _summaryRows = new();
+        _summaryLoaded = false;
         _message = "";
         _isError = false;
     }
@@ -262,7 +382,8 @@
         try
         {
             var all = await Svc.GetReportAsync(
-                EffectiveCountriesOrNull, EffectiveDivisionsOrNull, EffectiveDepartmentsOrNull, _brandSearch, _varianceOnly);
+                EffectiveCountriesOrNull, EffectiveDivisionsOrNull, EffectiveDepartmentsOrNull,
+                _brandSearch, _itemcodeSearch, _varianceOnly);
 
             using var wb = new XLWorkbook();
             var ws = wb.AddWorksheet("ECOM Stock Variance");
@@ -306,5 +427,48 @@
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
         }
         finally { _exporting = false; }
+    }
+
+    private async Task ExportDivisionSummaryExcelAsync()
+    {
+        if (_summaryRows.Count == 0) return;
+        _summaryExporting = true;
+        try
+        {
+            using var wb = new XLWorkbook();
+            var ws = wb.AddWorksheet("Division Summary");
+            string[] headers =
+            {
+                "Country", "Division", "Items", "MFCS_SOH", "INCREFF_SOH", "GS Summer Pallet", "GW Winter Pallet",
+                "Variance (MFCS_SOH - (INCREFF_SOH + GS + GW))", "InTransit UAE", "InTransit KSA"
+            };
+            for (int i = 0; i < headers.Length; i++) ws.Cell(1, i + 1).Value = headers[i];
+            ws.Row(1).Style.Font.Bold = true;
+
+            int row = 2;
+            foreach (var r in _summaryRows)
+            {
+                ws.Cell(row, 1).Value = r.Country;
+                ws.Cell(row, 2).Value = r.Division;
+                ws.Cell(row, 3).Value = r.ItemCount;
+                ws.Cell(row, 4).Value = r.MFCS_SOH;
+                ws.Cell(row, 5).Value = r.IncreffSOH;
+                ws.Cell(row, 6).Value = r.GateKeeperRejectedSummer;
+                ws.Cell(row, 7).Value = r.GateKeeperRejectedWinter;
+                ws.Cell(row, 8).Value = r.Variance;
+                ws.Cell(row, 9).Value = r.InTransitUAE;
+                ws.Cell(row, 10).Value = r.InTransitKSA;
+                row++;
+            }
+            ws.Columns().AdjustToContents();
+
+            using var ms = new MemoryStream();
+            wb.SaveAs(ms);
+            var b64 = Convert.ToBase64String(ms.ToArray());
+            var name = $"ecom-division-summary-{DateTime.UtcNow.AddHours(4):yyyyMMdd-HHmm}.xlsx";
+            await JS.InvokeVoidAsync("downloadFileWithPicker", name, b64,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        }
+        finally { _summaryExporting = false; }
     }
 }

@@ -15,6 +15,11 @@ public record EcomStockVarianceTotals(
     long GateKeeperRejectedSummer, long GateKeeperRejectedWinter, long Variance,
     long InTransitUAE, long InTransitKSA);
 
+public record EcomStockVarianceDivisionSummaryRow(
+    string Country, string? Division, int ItemCount, long IncreffSOH, long MFCS_SOH,
+    long GateKeeperRejectedSummer, long GateKeeperRejectedWinter, long Variance,
+    long InTransitUAE, long InTransitKSA);
+
 /// <summary>
 /// Backing service for the ECOM Stock Variance Report — reads
 /// dbo.LPM_ECOM_SOH_COMPARISON directly. Division/Department/Class/Subclass/
@@ -129,17 +134,19 @@ public class EcomStockVarianceReportService(IOnPremConnectionResolver resolver)
     // list means "match nothing" (a deny-by-default caller with zero country grants) —
     // same convention as ReportsService.GetPoCountingAsync. brandSearch is a plain
     // substring match (Brand has ~4,100 distinct values — too many for a dropdown,
-    // unlike Division/Department).
+    // unlike Division/Department). itemcodeSearch is an exact match, same convention
+    // as EmpCode-style filters elsewhere in this app.
     private const string FilterWhereSql = @"
              WHERE (@noCountryFilter = 1 OR Country IN @countries)
                AND (@noDivisionFilter = 1 OR Division IN @divisions)
                AND (@noDepartmentFilter = 1 OR Department IN @departments)
                AND (@brandFilter IS NULL OR Brand LIKE '%' + @brandFilter + '%')
+               AND (@itemcodeFilter IS NULL OR Itemcode = @itemcodeFilter)
                AND (@varianceOnly = 0 OR Variance <> 0)";
 
     private static object BuildFilterParams(
         IEnumerable<string>? countries, IEnumerable<string>? divisions, IEnumerable<string>? departments,
-        string? brandSearch, bool varianceOnly) => new
+        string? brandSearch, string? itemcodeSearch, bool varianceOnly) => new
     {
         countries = countries?.Where(s => !string.IsNullOrWhiteSpace(s)).ToArray() ?? Array.Empty<string>(),
         noCountryFilter = countries is null ? 1 : 0,
@@ -148,6 +155,7 @@ public class EcomStockVarianceReportService(IOnPremConnectionResolver resolver)
         departments = departments?.Where(s => !string.IsNullOrWhiteSpace(s)).ToArray() ?? Array.Empty<string>(),
         noDepartmentFilter = departments is null ? 1 : 0,
         brandFilter = string.IsNullOrWhiteSpace(brandSearch) ? null : brandSearch.Trim(),
+        itemcodeFilter = string.IsNullOrWhiteSpace(itemcodeSearch) ? null : itemcodeSearch.Trim(),
         varianceOnly = varianceOnly ? 1 : 0,
         excludedDivisions = ExcludedDivisions,
     };
@@ -156,7 +164,7 @@ public class EcomStockVarianceReportService(IOnPremConnectionResolver resolver)
     /// the pager's "N rows / M pages" display.</summary>
     public async Task<EcomStockVarianceTotals> GetTotalsAsync(
         IEnumerable<string>? countries, IEnumerable<string>? divisions, IEnumerable<string>? departments,
-        string? brandSearch, bool varianceOnly, CancellationToken ct = default)
+        string? brandSearch, string? itemcodeSearch, bool varianceOnly, CancellationToken ct = default)
     {
         await using var c = OpenOnPremBackup();
         var totals = await c.QuerySingleAsync<EcomStockVarianceTotals>(new CommandDefinition($@"
@@ -170,7 +178,7 @@ public class EcomStockVarianceReportService(IOnPremConnectionResolver resolver)
                    ISNULL(SUM(CAST(InTransitKSA AS BIGINT)), 0) AS InTransitKSA
               FROM dbo.LPM_ECOM_SOH_COMPARISON
             {FilterWhereSql};",
-            BuildFilterParams(countries, divisions, departments, brandSearch, varianceOnly),
+            BuildFilterParams(countries, divisions, departments, brandSearch, itemcodeSearch, varianceOnly),
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         return totals;
     }
@@ -178,7 +186,7 @@ public class EcomStockVarianceReportService(IOnPremConnectionResolver resolver)
     /// <summary>One page (PageSize rows) of the filtered set, 1-indexed.</summary>
     public async Task<List<EcomStockVarianceRow>> GetReportPageAsync(
         IEnumerable<string>? countries, IEnumerable<string>? divisions, IEnumerable<string>? departments,
-        string? brandSearch, bool varianceOnly, int pageNumber, CancellationToken ct = default)
+        string? brandSearch, string? itemcodeSearch, bool varianceOnly, int pageNumber, CancellationToken ct = default)
     {
         var offset = Math.Max(0, pageNumber - 1) * PageSize;
         await using var c = OpenOnPremBackup();
@@ -200,6 +208,7 @@ public class EcomStockVarianceReportService(IOnPremConnectionResolver resolver)
                 departments = departments?.Where(s => !string.IsNullOrWhiteSpace(s)).ToArray() ?? Array.Empty<string>(),
                 noDepartmentFilter = departments is null ? 1 : 0,
                 brandFilter = string.IsNullOrWhiteSpace(brandSearch) ? null : brandSearch.Trim(),
+                itemcodeFilter = string.IsNullOrWhiteSpace(itemcodeSearch) ? null : itemcodeSearch.Trim(),
                 varianceOnly = varianceOnly ? 1 : 0,
                 excludedDivisions = ExcludedDivisions,
                 offset,
@@ -213,7 +222,7 @@ public class EcomStockVarianceReportService(IOnPremConnectionResolver resolver)
     /// a one-off user-initiated action; not used for the on-screen grid.</summary>
     public async Task<List<EcomStockVarianceRow>> GetReportAsync(
         IEnumerable<string>? countries, IEnumerable<string>? divisions, IEnumerable<string>? departments,
-        string? brandSearch, bool varianceOnly, CancellationToken ct = default)
+        string? brandSearch, string? itemcodeSearch, bool varianceOnly, CancellationToken ct = default)
     {
         await using var c = OpenOnPremBackup();
         var rows = await c.QueryAsync<EcomStockVarianceRow>(new CommandDefinition($@"
@@ -224,7 +233,35 @@ public class EcomStockVarianceReportService(IOnPremConnectionResolver resolver)
               FROM dbo.LPM_ECOM_SOH_COMPARISON
             {FilterWhereSql}
              ORDER BY Country, Itemcode;",
-            BuildFilterParams(countries, divisions, departments, brandSearch, varianceOnly),
+            BuildFilterParams(countries, divisions, departments, brandSearch, itemcodeSearch, varianceOnly),
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        return rows.AsList();
+    }
+
+    /// <summary>Division-level (Country + Division) roll-up of the filtered set — small
+    /// enough (dozens of rows) that it's loaded whole, no paging. The Itemcode filter
+    /// doesn't apply here (there's no Itemcode input on the summary tab).</summary>
+    public async Task<List<EcomStockVarianceDivisionSummaryRow>> GetDivisionSummaryAsync(
+        IEnumerable<string>? countries, IEnumerable<string>? divisions, IEnumerable<string>? departments,
+        string? brandSearch, bool varianceOnly, CancellationToken ct = default)
+    {
+        await using var c = OpenOnPremBackup();
+        var rows = await c.QueryAsync<EcomStockVarianceDivisionSummaryRow>(new CommandDefinition($@"
+            SELECT Country,
+                   CASE WHEN Division IN @excludedDivisions THEN NULL ELSE Division END AS Division,
+                   COUNT(*) AS ItemCount,
+                   ISNULL(SUM(CAST(IncreffSOH AS BIGINT)), 0) AS IncreffSOH,
+                   ISNULL(SUM(CAST(MFCS_SOH AS BIGINT)), 0)   AS MFCS_SOH,
+                   ISNULL(SUM(CAST(GateKeeperRejectedSummer AS BIGINT)), 0) AS GateKeeperRejectedSummer,
+                   ISNULL(SUM(CAST(GateKeeperRejectedWinter AS BIGINT)), 0) AS GateKeeperRejectedWinter,
+                   ISNULL(SUM(CAST(Variance AS BIGINT)), 0)   AS Variance,
+                   ISNULL(SUM(CAST(InTransitUAE AS BIGINT)), 0) AS InTransitUAE,
+                   ISNULL(SUM(CAST(InTransitKSA AS BIGINT)), 0) AS InTransitKSA
+              FROM dbo.LPM_ECOM_SOH_COMPARISON
+            {FilterWhereSql}
+             GROUP BY Country, CASE WHEN Division IN @excludedDivisions THEN NULL ELSE Division END
+             ORDER BY Country, Division;",
+            BuildFilterParams(countries, divisions, departments, brandSearch, null, varianceOnly),
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         return rows.AsList();
     }
