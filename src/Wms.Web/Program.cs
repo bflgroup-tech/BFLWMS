@@ -71,6 +71,7 @@ public class Program
         builder.Services.AddScoped<PendingForCountingService>();
         builder.Services.AddScoped<ManualAllocationService>();
         builder.Services.AddScoped<MaxCapService>();
+        builder.Services.AddScoped<DivStoresTurnsService>();
         builder.Services.AddScoped<Wms.Data.Encoding.ItemEncodingService>();
 
         // WMS Itemmaster external API — Building's Tier-3 fallback goes through

@@ -1,0 +1,410 @@
+@page "/lpm/div-stores-turns"
+@rendermode RenderMode.InteractiveServer
+@using Wms.Core
+@using Wms.Data.Lpm
+@using ClosedXML.Excel
+@using Microsoft.AspNetCore.Components.Forms
+@attribute [Authorize(Policy = MenuKeys.DIV_STORES_TURNS)]
+@inject DivStoresTurnsService Svc
+@inject ICurrentUser Me
+@inject Microsoft.JSInterop.IJSRuntime JS
+
+<PageTitle>WMS — Div Stores Turns Upload</PageTitle>
+
+<div class="aiwms-page-header">
+    <h2>Div Stores Turns Upload</h2>
+    <p>
+        Stock turn per store and division. Flagged Allocation (Pass 5) averages these
+        across the stores you select and allocates only to the stores above that average —
+        so with this table empty, Pass 5 has nothing to rank and places nothing.
+    </p>
+    <AuthorizeView Roles="Admin">
+        <p>Stored in <code>LPMSIM.dbo.LPM_DivStoresTurns</code>, keyed (Country, StoreID, DivCode).</p>
+    </AuthorizeView>
+</div>
+
+@if (!string.IsNullOrEmpty(_message))
+{
+    <div class="aiwms-alert @(_isError ? "error" : "info")">@_message</div>
+}
+@if (_warnings.Count > 0)
+{
+    <div class="aiwms-alert" style="background:#fef3c7; border:1px solid #f59e0b; color:#92400e">
+        <ul style="margin:0 0 0 18px; padding:0">
+            @foreach (var w in _warnings) { <li>@w</li> }
+        </ul>
+    </div>
+}
+
+<div class="aiwms-section">
+    <div class="aiwms-card-header">Upload Excel</div>
+    <p style="margin:0 0 10px 0; color:var(--text-secondary); font-size:12px">
+        Header row required. The first four columns are mandatory; the last two are optional and
+        stored for audit only — nothing reads them.
+    </p>
+    <table class="aiwms-table aiwms-table-dense" style="max-width:720px; font-size:12px; margin-bottom:14px">
+        <thead>
+            <tr>
+                <th>COUNTRY</th>
+                <th>STOREID</th>
+                <th style="text-align:right">DIVCODE</th>
+                <th style="text-align:right">TURNS</th>
+                <th style="text-align:right">SOLDQTY</th>
+                <th style="text-align:right">SOHQTY</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr style="color:var(--text-secondary)">
+                <td>UAE</td>
+                <td>BFL-NAR</td>
+                <td style="text-align:right">410</td>
+                <td style="text-align:right">1.85</td>
+                <td style="text-align:right">740</td>
+                <td style="text-align:right">400</td>
+            </tr>
+        </tbody>
+    </table>
+    <p style="margin:0 0 10px 0; color:var(--text-secondary); font-size:12px">
+        <b>Turns is a ratio, so decimals matter</b> — 0.85 and 1.85 rank very differently, and a column
+        formatted as a whole number in Excel will still be read at full precision from the cell value.
+        <b>Country must match the allocation run</b> (UAE, KSA, …); it is upper-cased on save.
+        Uploading <b>replaces</b> the turn for a store/division that already has one, and leaves every
+        other row alone.
+    </p>
+    <InputFile OnChange="OnFileSelected" accept=".xlsx" disabled="@_busy" />
+</div>
+
+@if (_uploadRows.Count > 0)
+{
+    <div class="aiwms-section">
+        <div class="aiwms-card-header" style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px">
+            <span>
+                Preview — @_uploadRows.Count.ToString("N0") row(s),
+                @_uploadRows.Select(r => r.Country).Distinct(StringComparer.OrdinalIgnoreCase).Count() country(ies),
+                @_uploadRows.Select(r => r.DivCode).Distinct().Count() division(s)
+            </span>
+            <button class="aiwms-btn aiwms-btn-primary" @onclick="SaveUploadAsync" disabled="@_busy">Save</button>
+        </div>
+        <div style="max-height:420px; overflow:auto">
+            <table class="aiwms-table aiwms-table-dense" style="font-size:12px">
+                <thead style="position:sticky; top:0; background:white; z-index:1">
+                    <tr>
+                        <th>Country</th>
+                        <th>Store ID</th>
+                        <th style="text-align:right">Div Code</th>
+                        <th style="text-align:right">Turns</th>
+                        <th style="text-align:right">Sold Qty</th>
+                        <th style="text-align:right">SOH Qty</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var r in _uploadRows)
+                    {
+                        <tr>
+                            <td>@r.Country</td>
+                            <td>@r.StoreID</td>
+                            <td style="text-align:right">@r.DivCode</td>
+                            <td style="text-align:right">@r.Turns.ToString("N4")</td>
+                            <td style="text-align:right">@(r.SoldQty?.ToString("N0") ?? "")</td>
+                            <td style="text-align:right">@(r.SohQty?.ToString("N0") ?? "")</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    </div>
+}
+
+<div class="aiwms-section">
+    <div class="aiwms-card-header" style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px">
+        <span>Existing rows@(_loaded ? $" — {_rows.Count:N0}" : "")</span>
+        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap">
+            <select @bind="_countryFilter" disabled="@_busy"
+                    style="min-width:160px; padding:6px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); background:white; font-size:13px">
+                <option value="">ALL countries</option>
+                @foreach (var c in _countries) { <option value="@c">@c</option> }
+            </select>
+            <button class="aiwms-btn aiwms-btn-primary" @onclick="LoadRowsAsync" disabled="@_busy">Load</button>
+            <AuthorizeView Roles="Admin">
+                <button class="aiwms-btn aiwms-btn-secondary" @onclick="DeleteAsync" disabled="@_busy">
+                    Delete @(string.IsNullOrEmpty(_countryFilter) ? "ALL" : _countryFilter)
+                </button>
+            </AuthorizeView>
+        </div>
+    </div>
+    @if (!_loaded)
+    {
+        <p style="color:var(--text-secondary); font-size:13px">Click Load to show what is already in the table.</p>
+    }
+    else if (_rows.Count == 0)
+    {
+        <p style="color:var(--text-secondary); font-size:13px">
+            No rows. Until this table has data, Pass 5 reads every turn as 0 and can place nothing automatically.
+        </p>
+    }
+    else
+    {
+        <div style="max-height:520px; overflow:auto">
+            <table class="aiwms-table aiwms-table-dense" style="font-size:12px">
+                <thead style="position:sticky; top:0; background:white; z-index:1">
+                    <tr>
+                        <th>Country</th>
+                        <th>Store ID</th>
+                        <th style="text-align:right">Div Code</th>
+                        <th style="text-align:right">Turns</th>
+                        <th style="text-align:right">Sold Qty</th>
+                        <th style="text-align:right">SOH Qty</th>
+                        <th style="text-align:right">Year</th>
+                        <th style="text-align:right">Month</th>
+                        <th>Updated</th>
+                        <th>Updated By</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var r in _rows)
+                    {
+                        <tr>
+                            <td>@r.Country</td>
+                            <td>@r.StoreID</td>
+                            <td style="text-align:right">@r.DivCode</td>
+                            <td style="text-align:right">@r.Turns.ToString("N4")</td>
+                            <td style="text-align:right">@(r.SoldQty?.ToString("N0") ?? "")</td>
+                            <td style="text-align:right">@(r.SohQty?.ToString("N0") ?? "")</td>
+                            <td style="text-align:right">@r.Year1</td>
+                            <td style="text-align:right">@r.Month1</td>
+                            <td>@r.UpdatedTS.ToString("dd-MMM-yyyy HH:mm")</td>
+                            <td>@r.UpdatedBy</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+</div>
+
+@code {
+    private bool _busy;
+    private string _message = "";
+    private bool _isError;
+    private List<string> _warnings = new();
+
+    private string _countryFilter = "";
+    private bool _loaded;
+    private List<string> _countries = new();
+    private List<DivStoresTurnRow> _rows = new();
+    private List<DivStoresTurnUploadRow> _uploadRows = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await Me.EnsureLoadedAsync();
+        // Only the country list up front — the rows themselves wait for Load, since
+        // this table is one row per store per division and will not stay small.
+        try { _countries = await Svc.GetCountriesAsync(); }
+        catch (Exception ex) { ShowError($"Failed to load countries: {ex.Message}"); }
+    }
+
+    private async Task LoadRowsAsync()
+    {
+        _busy = true; _message = ""; _warnings.Clear();
+        StateHasChanged();
+        try
+        {
+            _rows = await Svc.GetRowsAsync(_countryFilter);
+            _loaded = true;
+        }
+        catch (Exception ex) { ShowError($"Load failed: {ex.Message}"); }
+        finally { _busy = false; }
+    }
+
+    private async Task DeleteAsync()
+    {
+        var scope = string.IsNullOrEmpty(_countryFilter) ? "EVERY country" : _countryFilter;
+        var confirm = await JS.InvokeAsync<bool>("confirm",
+            $"Delete the turns rows for {scope}?\n\n" +
+            "Pass 5 will not be able to rank those stores until they are uploaded again. " +
+            "This cannot be undone.");
+        if (!confirm) return;
+
+        _busy = true; _message = ""; _warnings.Clear();
+        StateHasChanged();
+        try
+        {
+            var n = await Svc.DeleteAsync(_countryFilter);
+            _countries = await Svc.GetCountriesAsync();
+            _rows = await Svc.GetRowsAsync(_countryFilter);
+            ShowInfo($"Deleted {n:N0} row(s) for {scope}.");
+        }
+        catch (Exception ex) { ShowError($"Delete failed: {ex.Message}"); }
+        finally { _busy = false; }
+    }
+
+    private async Task OnFileSelected(InputFileChangeEventArgs e)
+    {
+        var file = e.File;
+        if (file is null) return;
+        if (!file.Name.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase))
+        {
+            ShowError("File must be .xlsx");
+            return;
+        }
+
+        _busy = true; _message = ""; _warnings.Clear(); _uploadRows = new();
+        StateHasChanged();
+        try
+        {
+            List<DivStoresTurnUploadRow> parsed;
+            var problems = new List<string>();
+            await using (var stream = file.OpenReadStream(maxAllowedSize: 20 * 1024 * 1024))
+            using (var ms = new MemoryStream())
+            {
+                await stream.CopyToAsync(ms);
+                ms.Position = 0;
+                parsed = ParseXlsx(ms, problems);
+            }
+
+            if (parsed.Count == 0)
+            {
+                ShowError(problems.Count > 0
+                    ? $"No usable rows. {problems[0]}"
+                    : "No data rows found in the Excel.");
+                _warnings = problems.Skip(1).Take(10).ToList();
+                return;
+            }
+
+            // A (Country, StoreID, DivCode) appearing twice in one file would upsert
+            // twice and silently keep whichever came last. Named rather than guessed at.
+            var dupes = parsed
+                .GroupBy(r => (r.Country.ToUpperInvariant(), r.StoreID.ToUpperInvariant(), r.DivCode))
+                .Where(g => g.Count() > 1)
+                .Select(g => $"{g.Key.Item1}/{g.Key.Item2}/{g.Key.DivCode}")
+                .Take(5)
+                .ToList();
+            if (dupes.Count > 0)
+                problems.Add($"Duplicate store/division rows in the file — the LAST one wins: {string.Join(", ", dupes)}");
+
+            _uploadRows = parsed;
+            _warnings = problems.Take(10).ToList();
+            ShowInfo($"Loaded {_uploadRows.Count:N0} row(s). Review below, then click Save.");
+        }
+        catch (Exception ex) { ShowError($"Excel parse failed: {ex.Message}"); }
+        finally { _busy = false; }
+    }
+
+    private async Task SaveUploadAsync()
+    {
+        var confirm = await JS.InvokeAsync<bool>("confirm",
+            $"Save {_uploadRows.Count:N0} turns row(s)?\n\n" +
+            "A store/division that already has a turn will be replaced; everything else is left alone.");
+        if (!confirm) return;
+
+        _busy = true; _message = ""; _warnings.Clear();
+        StateHasChanged();
+        try
+        {
+            var result = await Svc.SaveAsync(_uploadRows, Me.Name ?? "");
+            if (result.Ok)
+            {
+                ShowInfo($"Saved {result.RowsSaved:N0} row(s).");
+                _warnings = result.Warnings;
+                _uploadRows = new();
+                _countries = await Svc.GetCountriesAsync();
+                if (_loaded) _rows = await Svc.GetRowsAsync(_countryFilter);
+            }
+            else
+            {
+                ShowError(result.Error ?? "Save failed.");
+                _warnings = result.Warnings;
+            }
+        }
+        catch (Exception ex) { ShowError($"Save failed: {ex.Message}"); }
+        finally { _busy = false; }
+    }
+
+    /// <summary>
+    /// Header-name driven so column order does not matter. Bad rows are collected
+    /// and reported rather than thrown on — one stray line in a 2,000-row file
+    /// should not cost the whole upload.
+    /// </summary>
+    private static List<DivStoresTurnUploadRow> ParseXlsx(Stream stream, List<string> problems)
+    {
+        using var wb = new XLWorkbook(stream);
+        var ws = wb.Worksheet(1);
+        var last = ws.LastRowUsed();
+        if (last is null) return new();
+
+        var header = ws.Row(1);
+        int colCountry = 0, colStore = 0, colDiv = 0, colTurns = 0, colSold = 0, colSoh = 0;
+        for (int col = 1; col <= header.LastCellUsed()!.Address.ColumnNumber; col++)
+        {
+            var h = (header.Cell(col).GetString() ?? "").Trim().ToLowerInvariant()
+                .Replace(" ", "").Replace("_", "").Replace(".", "");
+            switch (h)
+            {
+                case "country":                        colCountry = col; break;
+                case "storeid": case "store":          colStore   = col; break;
+                case "divcode": case "division":       colDiv     = col; break;
+                case "turns": case "turn":             colTurns   = col; break;
+                case "soldqty": case "sold":           colSold    = col; break;
+                case "sohqty": case "soh":             colSoh     = col; break;
+            }
+        }
+        if (colCountry == 0 || colStore == 0 || colDiv == 0 || colTurns == 0)
+            throw new InvalidOperationException(
+                "Header row must include: COUNTRY, STOREID, DIVCODE, TURNS (SOLDQTY and SOHQTY optional).");
+
+        var rows = new List<DivStoresTurnUploadRow>();
+        for (int r = 2; r <= last.RowNumber(); r++)
+        {
+            var country = (ws.Cell(r, colCountry).GetString() ?? "").Trim();
+            var store   = (ws.Cell(r, colStore  ).GetString() ?? "").Trim();
+            if (country.Length == 0 && store.Length == 0) continue;   // blank row
+
+            if (country.Length == 0 || store.Length == 0)
+            {
+                problems.Add($"Row {r}: Country and StoreID are both required — skipped.");
+                continue;
+            }
+
+            if (!TryReadDecimal(ws.Cell(r, colDiv), out var divRaw) || divRaw <= 0)
+            {
+                problems.Add($"Row {r}: DivCode '{ws.Cell(r, colDiv).GetString()}' is not a positive number — skipped.");
+                continue;
+            }
+
+            if (!TryReadDecimal(ws.Cell(r, colTurns), out var turns))
+            {
+                problems.Add($"Row {r}: Turns '{ws.Cell(r, colTurns).GetString()}' is not a number — skipped.");
+                continue;
+            }
+            if (turns < 0)
+            {
+                problems.Add($"Row {r}: Turns is negative ({turns}) — skipped.");
+                continue;
+            }
+
+            // Column index 0 means the optional header was absent — ws.Cell(r, 0)
+            // would throw, so it never gets asked for.
+            rows.Add(new DivStoresTurnUploadRow(
+                country, store, (int)divRaw, decimal.Round(turns, 4),
+                colSold > 0 ? ReadOptionalInt(ws.Cell(r, colSold)) : null,
+                colSoh  > 0 ? ReadOptionalInt(ws.Cell(r, colSoh))  : null));
+        }
+        return rows;
+    }
+
+    private static bool TryReadDecimal(IXLCell cell, out decimal value)
+    {
+        try { value = (decimal)cell.GetDouble(); return true; }
+        catch { return decimal.TryParse((cell.GetString() ?? "").Trim(), out value); }
+    }
+
+    private static int? ReadOptionalInt(IXLCell? cell)
+    {
+        if (cell is null) return null;
+        if (cell.IsEmpty()) return null;
+        return TryReadDecimal(cell, out var v) ? (int)v : null;
+    }
+
+    private void ShowError(string m) { _message = m; _isError = true; }
+    private void ShowInfo(string m)  { _message = m; _isError = false; }
+}
