@@ -239,6 +239,20 @@ public class Pass5FlaggedAllocationService(IOnPremConnectionResolver resolver, I
 
         var byDiv = cands.GroupBy(c => c.DivCode).ToDictionary(g => g.Key, g => g.ToList());
 
+        // Country is upper-cased on BOTH sides, like StoreID. LPM_DivStoresTurns is
+        // loaded by hand and its Country will not reliably agree in case with
+        // WmsOtsPoAllocationRun ('Uae' vs 'UAE') — a case-sensitive key would miss
+        // every row, read every turn as 0, and quietly place nothing. That is the
+        // same trap that once starved four countries in the ADM band lookup.
+        decimal TurnOf((string StoreID, string? StoreName, string Country, int DivCode,
+                        string VolumeGroup, int OtsQtyToday, decimal OtsPercentToday) s) =>
+            turns.GetValueOrDefault(
+                (s.Country.Trim().ToUpperInvariant(), s.StoreID.Trim().ToUpperInvariant(), s.DivCode), 0m);
+
+        // Distinguishes "turns are flat" from "there are no turns at all", so the
+        // warning can name the real cause instead of leaving the planner guessing.
+        var candsWithTurns = cands.Count(s => TurnOf(s) > 0m);
+
         foreach (var f in flags)
         {
             totalFlagged += f.RemainingQty;
@@ -263,32 +277,39 @@ public class Pass5FlaggedAllocationService(IOnPremConnectionResolver resolver, I
             // Avg Turns across the SELECTED stores of this division, then keep the
             // ones strictly above it. A store with no turns row counts as 0 — absent
             // data is not evidence of a good turn.
-            var avgTurns = usable.Average(s => turns.GetValueOrDefault((s.Country, s.StoreID.ToUpperInvariant(), s.DivCode), 0m));
-            var avgOts   = usable.Count > 0 ? Math.Round(usable.Average(s => s.OtsPercentToday), 2) : 0m;
+            var avgTurns = usable.Average(TurnOf);
+            var avgOts   = Math.Round(usable.Average(s => s.OtsPercentToday), 2);
 
             var above = usable
-                .Where(s => turns.GetValueOrDefault((s.Country, s.StoreID.ToUpperInvariant(), s.DivCode), 0m) > avgTurns)
+                .Where(s => TurnOf(s) > avgTurns)
                 .OrderByDescending(s => s.OtsQtyToday)
                 .ToList();
 
-            if (above.Count == 0)
+            // When nothing clears the average — flat turns, or no turns loaded at all —
+            // the candidates are still listed with a proposed 0 rather than dropped off
+            // the screen. An empty grid gives the planner nothing to override; a listed
+            // store with 0 in New Allocated Qty can simply be typed into.
+            var placing = above.Count > 0;
+            var ranked  = placing ? above : usable.OrderByDescending(s => s.OtsQtyToday).ToList();
+
+            var take = new int[ranked.Count];
+            if (placing)
             {
-                // Every store sits at or below the average — possible when turns are
-                // flat or missing. Reported rather than silently placing nothing.
-                noStoreItems++; totalUnplaced += placeable; continue;
+                // Round-robin, highest OTS first.
+                var remaining = placeable;
+                while (remaining > 0)
+                {
+                    for (var i = 0; i < ranked.Count && remaining > 0; i++) { take[i]++; remaining--; }
+                }
+            }
+            else
+            {
+                noStoreItems++; totalUnplaced += placeable;
             }
 
-            // Round-robin, highest OTS first.
-            var take = new int[above.Count];
-            var remaining = placeable;
-            while (remaining > 0)
+            for (var i = 0; i < ranked.Count; i++)
             {
-                for (var i = 0; i < above.Count && remaining > 0; i++) { take[i]++; remaining--; }
-            }
-
-            for (var i = 0; i < above.Count; i++)
-            {
-                var s = above[i];
+                var s = ranked[i];
                 rows.Add(new Pass5PreviewRow
                 {
                     StoreID = s.StoreID, StoreName = s.StoreName, Country = s.Country,
@@ -303,7 +324,7 @@ public class Pass5FlaggedAllocationService(IOnPremConnectionResolver resolver, I
                     OtsPercent = s.OtsPercentToday,
                     SortRank = i,
                     Lpm = lpmBy.GetValueOrDefault(item),
-                    Turns = turns.GetValueOrDefault((s.Country, s.StoreID.ToUpperInvariant(), s.DivCode), 0m),
+                    Turns = TurnOf(s),
                     AvgTurns = Math.Round(avgTurns, 4),
                     LatestMerchNeed = mnw.GetValueOrDefault((s.StoreID, f.DivCode)),
                     NewAllocatedQty = take[i],
@@ -316,8 +337,18 @@ public class Pass5FlaggedAllocationService(IOnPremConnectionResolver resolver, I
             warnings.Add($"{staleQty:N0} flagged pc(s) are NOT outstanding - left by a run that died before " +
                          "saving. Excluded.");
         if (noStoreItems > 0)
-            warnings.Add($"{noStoreItems:N0} item(s) had no store above average turns in the selected " +
-                         "countries/VGs - their quantity is unplaced.");
+        {
+            if (candsWithTurns == 0)
+                warnings.Add(
+                    $"No turns found in LPM_DivStoresTurns for ANY of the {cands.Count:N0} candidate " +
+                    "store/division rows, so every turn reads 0 and nothing can be above average. " +
+                    "Load that table (Country / StoreID / DivCode / Turns) - or type the quantities " +
+                    "in by hand below and Submit.");
+            else
+                warnings.Add(
+                    $"{noStoreItems:N0} item(s) had no store above average turns in the selected " +
+                    "countries/VGs - listed below with 0 so you can place them by hand.");
+        }
 
         return (new Pass5Result(true, null, flags.Count, totalFlagged, totalPlaced, totalUnplaced, warnings), rows);
     }
@@ -583,7 +614,9 @@ public class Pass5FlaggedAllocationService(IOnPremConnectionResolver resolver, I
                     "SELECT Country, StoreID, DivCode, Turns FROM dbo.LPM_DivStoresTurns WITH (NOLOCK)",
                     commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
             var d = new Dictionary<(string, string, int), decimal>();
-            foreach (var r in rows) d[(r.Country, r.StoreID.Trim().ToUpperInvariant(), r.DivCode)] = r.Turns;
+            // Country upper-cased here and at every lookup — see TurnOf in BuildPreviewAsync.
+            foreach (var r in rows)
+                d[(r.Country.Trim().ToUpperInvariant(), r.StoreID.Trim().ToUpperInvariant(), r.DivCode)] = r.Turns;
             return d;
         }
         catch
