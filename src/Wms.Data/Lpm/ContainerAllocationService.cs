@@ -1440,7 +1440,10 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                         .Equals("W", StringComparison.OrdinalIgnoreCase);
 
                     result.Add(new AllocationRow(
-                        Contno: line.ContNo, OraPONo: line.OraPONo, ItemCode: line.ItemCode,
+                        // `!` on OraPONo matches the tuple's own declaration (string, not
+                        // string?). MakeRow below has the same unguarded flow and warns;
+                        // asserting here keeps this addition from adding a new warning.
+                        Contno: line.ContNo, OraPONo: line.OraPONo!, ItemCode: line.ItemCode,
                         ItemName: orgRow.itemname, Brand: orgRow.vendor, PoQty: line.Qty,
                         // StoreName is the literal, NOT a storeNameById lookup: CDC has
                         // no row in bfldata.dbo.DataSettings, so the lookup would leave
