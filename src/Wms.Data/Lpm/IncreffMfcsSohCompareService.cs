@@ -81,6 +81,32 @@ public class IncreffMfcsSohCompareService(IOnPremConnectionResolver resolver)
         return c;
     }
 
+    /// <summary>Sanity check for the RACKS/USA sources behind GateKeeperRejected*/
+    /// InTransit*/Brand, run before the scheduled (not manual) refresh. Those three
+    /// tables are owned by other systems, not this app — observed empty at our exact
+    /// 08:15 GST fire time on multiple occasions (confirmed healthy again on a manual
+    /// re-run minutes later each time), most likely an external refresh window
+    /// collision. Querying them at the wrong instant doesn't error, it just finds
+    /// zero rows, which would otherwise silently zero out those columns for the
+    /// WHOLE table rather than fail loudly. UPCBarCodes is an ~18M-row static
+    /// reference table in practice, so a low count there means mid-refresh/truncated,
+    /// not a legitimate day-to-day fluctuation — 1,000 is a safely conservative floor
+    /// (never observed anywhere near it, healthy or not).</summary>
+    public async Task<bool> IsSourceDataHealthyAsync(CancellationToken ct = default)
+    {
+        await using var c = OpenOnPremBackup();
+        var gsGwCount = await c.ExecuteScalarAsync<int>(new CommandDefinition(
+            "SELECT COUNT(*) FROM RACKS.dbo.WHBoxItems WHERE PalletType IN ('GS','GW')",
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        var inTransitCount = await c.ExecuteScalarAsync<int>(new CommandDefinition(
+            "SELECT COUNT(*) FROM RACKS.dbo.MFCS_LOCSTOCK_INT WHERE MFCS_TOLOCID IN (10007, 20002)",
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        var vendorCount = await c.ExecuteScalarAsync<int>(new CommandDefinition(
+            "SELECT COUNT(*) FROM USA.dbo.UPCBarCodes",
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        return gsGwCount > 0 && inTransitCount > 0 && vendorCount > 1000;
+    }
+
     private const string InsertSql = @"
         ;WITH Increff AS (
             SELECT Country, Itemcode, SUM(SOH) AS SOH
