@@ -99,6 +99,14 @@
         <label style="display:flex; align-items:center; gap:6px; font-size:12px; cursor:pointer">
             <input type="checkbox" @bind="_validate" /> Validate before Process
         </label>
+        @* Not wrapped in a run-option check: the CDC hold is applied before the
+           store universe is built, so it is not specific to the OTS algorithms. *@
+        <label style="display:flex; align-items:center; gap:6px; font-size:12px; cursor:pointer"
+               title="@($"PO lines whose LPMDt is on or after {FutureLpmCutoff:dd/MM/yyyy} (two or more calendar months ahead) are held at StoreID 'CDC' under country UAE instead of being allocated to stores. Those lines skip every pass — no OTS is consumed, and no VolumeGroup, SkuMax band or PO-share ceiling applies. Mandatory: a container carrying such lines is refused until this is ticked, whether or not Validate before Process is on.")">
+            <input type="checkbox" @bind="_futureLpmToCdc" disabled="@_busy" />
+            Future LPMDt → CDC
+            <span style="color:var(--text-secondary)">(from @FutureLpmCutoff.ToString("dd/MM/yyyy"))</span>
+        </label>
         @if (_runOption == "FillSKUMaxRoundRobin" || _runOption == "FillMinMinPlusOthers")
         {
             <label style="display:flex; align-items:center; gap:6px; font-size:12px; cursor:pointer"
@@ -976,6 +984,19 @@
     private bool _ecomManualPriority => string.Equals(_ecomMode, "manual", StringComparison.OrdinalIgnoreCase);
     private bool _traceEnabled = true;
     private bool _bypassPass1b = true;
+    // Defaults OFF on purpose. "Mandatory" here means the operator has to tick it
+    // for a container that has future-dated lines — both ValidateAsync and
+    // ProcessAllocationAsync refuse such a container while it is off. Defaulting it
+    // on would make holding next season's stock the silent default, which is the
+    // opposite of a conscious decision.
+    private bool _futureLpmToCdc = false;
+    // Same rule as ContainerAllocationService.FutureLpmCdcCutoff — 1st of
+    // (this month + 2), GST. Shown in the label so the operator sees the actual
+    // date rather than having to work out what "2 months" resolves to today.
+    private static DateTime FutureLpmCutoff
+    {
+        get { var n = DateTime.UtcNow.AddHours(4); return new DateTime(n.Year, n.Month, 1).AddMonths(2); }
+    }
     private long _totalPoQty;
     private List<BlockedItemRow> _blocked = new();
     private bool _showBlocked;
@@ -1416,7 +1437,7 @@
             if (_validate)
             {
                 var sw = System.Diagnostics.Stopwatch.StartNew();
-                _validation = await Svc.ValidateAsync(_country, _contno, progress, ro, _allocCountries, _ecomManualPriority);
+                _validation = await Svc.ValidateAsync(_country, _contno, progress, ro, _allocCountries, _ecomManualPriority, _futureLpmToCdc);
                 validateMs = sw.ElapsedMilliseconds;
                 if (!_validation.Ok) { ShowError($"Validation failed — see steps below ({FmtElapsed(totalSw.ElapsedMilliseconds)})."); return; }
             }
@@ -1428,7 +1449,7 @@
             var allocCsv = string.Join(",", _allocCountries);
             {
                 var sw = System.Diagnostics.Stopwatch.StartNew();
-                var procResult = await Svc.ProcessAllocationAsync(_contno, progress, ro, _allocCountries, _ecomManualPriority, _traceEnabled, _bypassPass1b);
+                var procResult = await Svc.ProcessAllocationAsync(_contno, progress, ro, _allocCountries, _ecomManualPriority, _traceEnabled, _bypassPass1b, _futureLpmToCdc);
                 algoMs = sw.ElapsedMilliseconds;
                 _allocation = procResult.Allocations;
                 _blocked    = procResult.Blocked;
@@ -1608,7 +1629,8 @@
             // saying "All" inherited some other container's restriction.
             FallbackCountries: _simCountries.ToList(),
             Validate: _validate, EcomManualPriority: _ecomManualPriority,
-            TraceEnabled: _traceEnabled, BypassPass1b: _bypassPass1b);
+            TraceEnabled: _traceEnabled, BypassPass1b: _bypassPass1b,
+            FutureLpmToCdc: _futureLpmToCdc);
     }
 
     private async Task RunBulkAsync()
