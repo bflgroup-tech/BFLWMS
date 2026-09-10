@@ -13,7 +13,10 @@ namespace Wms.Web.Hosting;
 /// batch's "crossed my fire time and haven't run today" branch would otherwise
 /// trigger in the same second, racing IncreffSohFromGCP rather than following it.
 /// When that job hasn't succeeded today the fire is DEFERRED (lastFireGstDate is
-/// left unset) and retried on the next wake, at most an hour later.
+/// left unset) and retried on the next wake, at most an hour later. Same deferral
+/// applies if IsSourceDataHealthyAsync finds RACKS/USA source tables anomalously
+/// empty (observed at our exact fire time on multiple occasions — see that
+/// method's doc comment).
 ///
 /// Gated on the dbo.WmsRptCountryConfig row (JobName='IncreffMfcsSohCompare',
 /// Country=''); missing or inactive means the loop no-ops. Lives in-process,
@@ -102,6 +105,15 @@ public class IncreffMfcsSohCompareBatchService(IServiceProvider sp, ILogger<Incr
         {
             log.LogInformation("IncreffMfcsSohCompareBatchService: already succeeded today — nothing to do.");
             return true;
+        }
+
+        // RACKS/USA source tables occasionally look empty at exactly our fire time —
+        // see IsSourceDataHealthyAsync's doc comment. Defer rather than commit a
+        // zeroed snapshot; the next wake (at most an hour later) re-checks.
+        if (!await svc.IsSourceDataHealthyAsync(ct))
+        {
+            log.LogWarning("IncreffMfcsSohCompareBatchService: RACKS/USA source tables look anomalously empty — deferring, will retry on the next wake.");
+            return false;
         }
 
         // Every App Service instance runs this HostedService — skip rather than
