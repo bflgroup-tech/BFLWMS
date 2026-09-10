@@ -31,6 +31,35 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
     private const int ConnectTimeoutSeconds = 60;
     private const int CommandTimeoutSeconds = 300;
 
+    // ===================== Future-LPMDt CDC hold =====================
+    // A PO line whose LPMDt lands two calendar months or more ahead is stock for
+    // a season the stores are not selling yet. Pushing it out now parks it in a
+    // shop's back room for months and consumes OTS that the current season needs,
+    // so those lines are held at the central DC instead and re-allocated nearer
+    // the date.
+    //
+    // Destination is StoreID 'CDC' carrying the GENERATING country (UAE) rather
+    // than a country of its own: SaveFinalDirectAsync writes per-row Country and
+    // the reports group on it, so a 'CDC' country label would split the container
+    // across a country nobody allocates to. The hold is physically in the UAE DC.
+    public const string CdcHoldStoreId = "CDC";
+    public const string CdcHoldCountry = "UAE";
+
+    /// <summary>
+    /// First LPMDt that counts as "two months out": the 1st of (current month + 2).
+    /// On 10/09/2026 that is 01/11/2026 — the whole of November is future, and
+    /// October (one month out) is not. Month-start rather than a rolling 60 days so
+    /// the boundary does not drift within a month and two runs on different days of
+    /// the same month classify a container identically.
+    /// </summary>
+    public static DateTime FutureLpmCdcCutoff(DateTime nowGst) =>
+        new DateTime(nowGst.Year, nowGst.Month, 1).AddMonths(2);
+
+    /// <summary>True when this line's LPMDt is on or after the cutoff. A null
+    /// LPMDt is not future and allocates through the normal passes.</summary>
+    public static bool IsFutureLpmForCdc(DateTime? lpmDt, DateTime nowGst) =>
+        lpmDt.HasValue && lpmDt.Value.Date >= FutureLpmCdcCutoff(nowGst);
+
     private static string WithConnectTimeout(string cs)
     {
         var b = new SqlConnectionStringBuilder(cs) { ConnectTimeout = ConnectTimeoutSeconds };
@@ -109,6 +138,11 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         // sheet present. Defaulted true so an omitted argument keeps the old
         // (stricter) behaviour rather than silently dropping the gate.
         bool ecomManualPriority = true,
+        // Operator's acknowledgement that any PO line two or more months out is to
+        // be held at the CDC. Defaulted FALSE so an omitted argument keeps the
+        // stricter behaviour: a container carrying such lines fails validation
+        // rather than quietly pushing next season's stock to the shops.
+        bool futureLpmToCdc = false,
         CancellationToken ct = default)
     {
         var steps = new List<ValidationStep>();
@@ -123,7 +157,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
             return new ContainerAllocationValidationResult(false, steps);
         }
         contno = contno.Trim();
-        const int TOTAL = 9;
+        const int TOTAL = 10;
 
         await using (var c = OpenOnPremBackup())
         {
@@ -338,6 +372,51 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                           + " Add the missing bands, then re-run Process."));
                 if (!bandsOk) return new ContainerAllocationValidationResult(false, steps);
             }
+
+            // 11. Future-LPMDt CDC hold — MANDATORY acknowledgement.
+            //     Any PO line dated two or more calendar months out is next
+            //     season's stock; it is held at the CDC rather than pushed to
+            //     stores. The operator has to tick the box for that to happen, so
+            //     a container carrying such lines cannot be processed while the
+            //     box is off — otherwise the default (silently allocating them to
+            //     shops) is exactly the outcome the rule exists to prevent.
+            //
+            //     Runs for EVERY run option: the routing happens before the store
+            //     universe is built, so it is not specific to the OTS algorithms.
+            {
+                progress?.Report(new AllocationProgress(10, TOTAL, "Validating: future LPMDt (CDC hold)"));
+                var nowGst  = DateTime.UtcNow.AddHours(4);
+                var cutoff  = FutureLpmCdcCutoff(nowGst);
+                await using var opb = OpenOnPremBackup();
+                // Only lines that would actually allocate — orgqty > 0 matches the
+                // `if (line.Qty <= 0) continue` guard in the process loop, so the
+                // count here cannot disagree with what the run holds.
+                // Dapper maps value tuples POSITIONALLY, so the select list order
+                // below has to stay (Lines, Qty).
+                var future = (await opb.QueryAsync<(int Lines, int Qty)>(new CommandDefinition(@"
+                    SELECT COUNT(1) AS Lines,
+                           ISNULL(SUM(CAST(ISNULL(orgqty, 0) AS INT)), 0) AS Qty
+                      FROM usa.dbo.usaorgfile_LPM WITH (NOLOCK)
+                     WHERE ContNo = @c
+                       AND LPMDt IS NOT NULL
+                       AND LPMDt >= @cutoff
+                       AND CAST(ISNULL(orgqty, 0) AS INT) > 0",
+                    new { c = contno, cutoff },
+                    commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).Single();
+
+                var cdcOk = future.Lines == 0 || futureLpmToCdc;
+                steps.Add(new ValidationStep(
+                    $"Future LPMDt (on/after {cutoff:dd/MM/yyyy}) acknowledged for CDC hold",
+                    cdcOk,
+                    cdcOk
+                        ? (future.Lines == 0
+                            ? null
+                            : $"{future.Lines:N0} line(s) / {future.Qty:N0} pcs will be held at StoreID '{CdcHoldStoreId}'.")
+                        : $"{future.Lines:N0} PO line(s) ({future.Qty:N0} pcs) have LPMDt on or after "
+                          + $"{cutoff:dd/MM/yyyy} — two or more months ahead. Tick \"Future LPMDt → CDC\" to hold "
+                          + $"them at StoreID '{CdcHoldStoreId}', or correct the LPMDt on those lines first."));
+                if (!cdcOk) return new ContainerAllocationValidationResult(false, steps);
+            }
         }
 
         return new ContainerAllocationValidationResult(true, steps);
@@ -358,6 +437,12 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         bool ecomManualPriority = false,
         bool traceEnabled = false,
         bool bypassPass1b = false,
+        // Hold PO lines dated two or more calendar months out at the CDC instead of
+        // allocating them to stores. A container carrying such lines is REFUSED
+        // while this is off (see the guard below, and the matching ValidateAsync
+        // step), so the hold is always a deliberate operator choice — never a
+        // default, and never skippable by unticking Validate.
+        bool futureLpmToCdc = false,
         CancellationToken ct = default)
     {
         var result  = new List<AllocationRow>();
@@ -443,6 +528,25 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         var hasCountryFilter  = allocationCountries is { Count: > 0 };
         var countryFilter     = hasCountryFilter ? allocationCountries!.ToArray() : Array.Empty<string>();
         var nowGst            = DateTime.UtcNow.AddHours(4);
+
+        // Future-LPMDt hold is MANDATORY, so it is enforced here as well as in
+        // ValidateAsync. "Validate before Process" is itself a checkbox the operator
+        // can untick, which would have left the gate bypassable and pushed next
+        // season's stock to the shops — the exact outcome the rule prevents. Every
+        // other gate lives only in ValidateAsync and is bypassable that way; this
+        // one must not be.
+        //
+        // Costs no extra round-trip: `lines` is already in memory, and the throw
+        // happens before wave 1 fans out, so a refused run does no work.
+        var futureLpmLines = lines
+            .Where(l => l.Qty > 0 && IsFutureLpmForCdc(l.LPMDt, nowGst))
+            .ToList();
+        if (futureLpmLines.Count > 0 && !futureLpmToCdc)
+            throw new InvalidOperationException(
+                $"{futureLpmLines.Count:N0} PO line(s) ({futureLpmLines.Sum(l => (long)l.Qty):N0} pcs) on {contno} "
+                + $"have LPMDt on or after {FutureLpmCdcCutoff(nowGst):dd/MM/yyyy} — two or more months ahead. "
+                + $"Tick \"Future LPMDt → CDC\" to hold them at StoreID '{CdcHoldStoreId}', or correct the LPMDt "
+                + "on those lines first.");
 
         // ================= Wave 1 =================
         progress?.Report(new AllocationProgress(0, 0, "Prefetching: wave 1 (11 lookups in parallel)"));
@@ -1306,10 +1410,76 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                 progress?.Report(new AllocationProgress(idxLine, lines.Count, line.ItemCode));
                 if (line.Qty <= 0) continue;
                 if (!divByItem.TryGetValue(line.ItemCode, out var divCode) || divCode == 0) continue;
-                if (!storesByDiv.TryGetValue(divCode, out var divStores)) continue;
 
                 itemMeta.TryGetValue(line.ItemCode, out var itemRow);
                 orgByItem.TryGetValue(line.ItemCode, out var orgRow);
+
+                // ---------- CDC hold: LPMDt two or more months out ----------
+                // The whole line goes to StoreID 'CDC' and skips the store universe
+                // and every pass. Deliberately BEFORE the storesByDiv guard: a hold
+                // does not need an eligible store, a VolumeGroup, a SkuMax band or
+                // an OTS row, so a division with no store coverage still parks its
+                // future stock rather than dropping the line silently.
+                //
+                // Nothing is charged against the run's state — no runningAlloc, no
+                // runningOtsQty, no SpendAllowance — because the units never reach a
+                // store: counting them would starve the current season's allocation
+                // by the size of next season's order.
+                if (futureLpmToCdc && IsFutureLpmForCdc(line.LPMDt, nowGst))
+                {
+                    storeNameById.TryGetValue(CdcHoldStoreId, out var cdcStoreName);
+                    pricesByCountryItem.TryGetValue((CdcHoldCountry, line.ItemCode), out var cdcPrice);
+                    palletByStore.TryGetValue(CdcHoldStoreId, out var cdcPallet);
+                    var cdcIsWinter = (orgRow.season ?? "").Trim()
+                        .Equals("W", StringComparison.OrdinalIgnoreCase);
+
+                    result.Add(new AllocationRow(
+                        Contno: line.ContNo, OraPONo: line.OraPONo, ItemCode: line.ItemCode,
+                        ItemName: orgRow.itemname, Brand: orgRow.vendor, PoQty: line.Qty,
+                        StoreID: CdcHoldStoreId, StoreName: cdcStoreName, Country: CdcHoldCountry,
+                        Division: itemRow.Division, VolumeGroup: "",
+                        // Cap == take: the hold is the whole line, so there is no
+                        // shortfall to read off SkuMax vs AllocQty.
+                        SkuMax: line.Qty, AllocQty: line.Qty, MerchNeedMonth: 0,
+                        DivCode: divCode, RoundRobinExtra: 0,
+                        LPM: line.LPM, LPMDt: line.LPMDt, OTS: null,
+                        Season: orgRow.season, Style: orgRow.Style, Size: orgRow.Size,
+                        Department: itemRow.Department, SalesPrice: cdcPrice,
+                        PalletType: cdcIsWinter ? cdcPallet.PalletTypeW : cdcPallet.PalletTypeS));
+
+                    // Pass 0 — ahead of ECOM's Pass 1a, so the trace reads in the
+                    // order the units were actually decided. Every OTS/tier column
+                    // is null: none of them was consulted.
+                    if (trace is not null)
+                    {
+                        trace.Add(new AllocationTraceRow(
+                            ContNo: line.ContNo, Itemcode: line.ItemCode, StoreID: CdcHoldStoreId,
+                            DivCode: divCode, Pass: 0, SortRank: 0,
+                            VolumeGroup: null, TierName: "CdcFutureLPM",
+                            LiveOtsPctBefore: null,
+                            Cap: line.Qty,
+                            Soh: itemSohByStore.GetValueOrDefault(
+                                (CdcHoldStoreId, line.ItemCode.ToUpperInvariant()), 0),
+                            CurrentBeforeTake: 0,
+                            RemainingBefore: line.Qty,
+                            Take: line.Qty,
+                            RemainingAfter: 0,
+                            RunningOtsQtyAfter: 0,
+                            RunOption: runOption.ToString(),
+                            SkipReason: null,
+                            DefaultSkuMax: null, RawSkuMax: null, RatioSkuMax: null,
+                            AvgOtsPercent: null, AvgOtsMin: null, AvgOtsMax: null,
+                            InitialOtsPct: null,
+                            PONo: line.OraPONo,
+                            LPMDt: line.LPMDt,
+                            POLineSizeQty: line.Qty,
+                            Country: CdcHoldCountry));
+                    }
+                    continue;
+                }
+
+                if (!storesByDiv.TryGetValue(divCode, out var divStores)) continue;
+
                 var dept = (itemRow.Department ?? "").Trim();
 
                 // Resolve (StoreID -> band-matching SKUMax + current OTS) for this item.

@@ -78,7 +78,12 @@ public sealed record BulkAllocationDefaults(
     bool                    Validate,
     bool                    EcomManualPriority,
     bool                    TraceEnabled,
-    bool                    BypassPass1b);
+    bool                    BypassPass1b,
+    // Mirrors the page checkbox. Without it the queue would fail every container
+    // carrying a PO line two or more months out (ValidateAsync gates on it), or —
+    // with Validate off — push next season's stock to the shops, which is the one
+    // outcome the CDC hold exists to prevent.
+    bool                    FutureLpmToCdc);
 
 /// <summary>Progress ping for the bulk run — one per container, plus phase text.</summary>
 public sealed record BulkAllocationProgress(int Done, int Total, string ContNo, string Phase);
@@ -546,7 +551,7 @@ public class BulkPoAllocationService(
                     Report("validating");
                     var v = await alloc.ValidateAsync(
                         country, contno, null, runOption, allocCountries,
-                        defaults.EcomManualPriority, ct);
+                        defaults.EcomManualPriority, defaults.FutureLpmToCdc, ct);
                     if (!v.Ok)
                     {
                         var firstBad = v.Steps.FirstOrDefault(s => !s.Ok);
@@ -562,7 +567,8 @@ public class BulkPoAllocationService(
                 Report("allocating");
                 var res = await alloc.ProcessAllocationAsync(
                     contno, null, runOption, allocCountries,
-                    defaults.EcomManualPriority, defaults.TraceEnabled, defaults.BypassPass1b, ct);
+                    defaults.EcomManualPriority, defaults.TraceEnabled, defaults.BypassPass1b,
+                    defaults.FutureLpmToCdc, ct);
 
                 if (res.Allocations.Count == 0 && res.Blocked.Count == 0)
                 {

@@ -130,7 +130,7 @@ public record AllocationTraceRow(
     string   Itemcode,
     string   StoreID,
     int      DivCode,
-    int      Pass,               // 1..4
+    int      Pass,               // 0 = CDC future-LPMDt hold, then 1..4
     int      SortRank,           // position in the pass's sorted store list (0-based)
     string?  VolumeGroup,
     string?  TierName,           // MinMin / MinMax / IdealMax / MaxMax
