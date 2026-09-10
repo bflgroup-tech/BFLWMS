@@ -42,6 +42,13 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
     // than a country of its own: SaveFinalDirectAsync writes per-row Country and
     // the reports group on it, so a 'CDC' country label would split the container
     // across a country nobody allocates to. The hold is physically in the UAE DC.
+    //
+    // 'CDC' is NOT a row in bfldata.dbo.DataSettings and is not meant to become
+    // one — it is a holding bucket, not a shop. StoreName is therefore stamped
+    // with the same literal rather than resolved through storeNameById, which
+    // would leave it null. Store-keyed lookups (VolumeGroup, SkuMax band, SOH,
+    // OTS) simply miss and fall back to their defaults, which is why the hold is
+    // routed before the store universe is built and consults none of them.
     public const string CdcHoldStoreId = "CDC";
     public const string CdcHoldCountry = "UAE";
 
@@ -1427,7 +1434,6 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                 // by the size of next season's order.
                 if (futureLpmToCdc && IsFutureLpmForCdc(line.LPMDt, nowGst))
                 {
-                    storeNameById.TryGetValue(CdcHoldStoreId, out var cdcStoreName);
                     pricesByCountryItem.TryGetValue((CdcHoldCountry, line.ItemCode), out var cdcPrice);
                     palletByStore.TryGetValue(CdcHoldStoreId, out var cdcPallet);
                     var cdcIsWinter = (orgRow.season ?? "").Trim()
@@ -1436,7 +1442,10 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                     result.Add(new AllocationRow(
                         Contno: line.ContNo, OraPONo: line.OraPONo, ItemCode: line.ItemCode,
                         ItemName: orgRow.itemname, Brand: orgRow.vendor, PoQty: line.Qty,
-                        StoreID: CdcHoldStoreId, StoreName: cdcStoreName, Country: CdcHoldCountry,
+                        // StoreName is the literal, NOT a storeNameById lookup: CDC has
+                        // no row in bfldata.dbo.DataSettings, so the lookup would leave
+                        // the name null and the grid would show a blank destination.
+                        StoreID: CdcHoldStoreId, StoreName: CdcHoldStoreId, Country: CdcHoldCountry,
                         Division: itemRow.Division, VolumeGroup: "",
                         // Cap == take: the hold is the whole line, so there is no
                         // shortfall to read off SkuMax vs AllocQty.
