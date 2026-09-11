@@ -11,8 +11,11 @@ namespace Wms.Data.Lpm;
 ///   IncreffSOH -> dbo.LPM_ECOM_INCREFF_SOH  (BigQuery INCREFF feed, populated
 ///                 by IncreffSohFromGcpService — run that first for a fresh
 ///                 compare)
-///   MFCS_SOH   -> RACKS.dbo.lpm_locstock    (MFCS online-store stock;
-///                 StoreID = 'ONLINE' for UAE, 'ONLINEKSA' for KSA)
+///   MFCS_SOH   -> RACKS.dbo.lpm_locstock.MFCS_SOH (MFCS online-store stock;
+///                 StoreID = 'ONLINE' for UAE, 'ONLINEKSA' for KSA). That table
+///                 also carries its own separate SOH column — the two disagree
+///                 on ~25,000 rows — but MFCS_SOH is the one this report's
+///                 MFCS_SOH column is meant to reflect.
 ///
 /// GateKeeperRejectedSummer/Winter -> RACKS.dbo.WHBoxItems (PalletType 'GS'/'GW'
 /// respectively), summed by Itemcode. UAE-only — that table carries no country
@@ -115,14 +118,14 @@ public class IncreffMfcsSohCompareService(IOnPremConnectionResolver resolver)
              GROUP BY Country, Itemcode
         ),
         Mfcs AS (
-            SELECT 'UAE' AS Country, Itemcode, SUM(SOH) AS SOH
+            SELECT 'UAE' AS Country, Itemcode, SUM(MFCS_SOH) AS SOH
               FROM RACKS.dbo.lpm_locstock
-             WHERE StoreID = 'ONLINE' AND SOH <> 0
+             WHERE StoreID = 'ONLINE' AND MFCS_SOH <> 0
              GROUP BY Itemcode
             UNION ALL
-            SELECT 'KSA' AS Country, Itemcode, SUM(SOH) AS SOH
+            SELECT 'KSA' AS Country, Itemcode, SUM(MFCS_SOH) AS SOH
               FROM RACKS.dbo.lpm_locstock
-             WHERE StoreID = 'ONLINEKSA' AND SOH <> 0
+             WHERE StoreID = 'ONLINEKSA' AND MFCS_SOH <> 0
              GROUP BY Itemcode
         ),
         GsRejected AS (
