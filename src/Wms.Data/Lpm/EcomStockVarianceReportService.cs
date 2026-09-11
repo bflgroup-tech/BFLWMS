@@ -20,6 +20,20 @@ public record EcomStockVarianceDivisionSummaryRow(
     long GateKeeperRejectedSummer, long GateKeeperRejectedWinter, long Variance,
     long InTransitUAE, long InTransitKSA);
 
+/// <summary>Whole-table KPI snapshot for the Dashboard tab — deliberately unfiltered
+/// (no Country/Division/Department/Brand), a fixed top-level view independent of
+/// whatever the other two tabs' filters are set to. NetVariancePercent and
+/// ExactMatchSkuPercent are computed here (not in SQL) since both are simple ratios
+/// of values already fetched.</summary>
+public record EcomStockVarianceDashboardSummary(
+    long MfcsSoh, long IncreffSoh, long NetVariance, long GrossGap,
+    int VarianceSkuCount, int PositiveStockSkuCount, int ExactMatchPositiveStockSkuCount, int RowsReviewed)
+{
+    public double NetVariancePercent => IncreffSoh == 0 ? 0 : NetVariance * 100.0 / IncreffSoh;
+    public double ExactMatchSkuPercent =>
+        PositiveStockSkuCount == 0 ? 0 : ExactMatchPositiveStockSkuCount * 100.0 / PositiveStockSkuCount;
+}
+
 /// <summary>
 /// Backing service for the ECOM Stock Variance Report — reads
 /// dbo.LPM_ECOM_SOH_COMPARISON directly. Division/Department/Class/Subclass/
@@ -264,5 +278,25 @@ public class EcomStockVarianceReportService(IOnPremConnectionResolver resolver)
             BuildFilterParams(countries, divisions, departments, brandSearch, null, varianceOnly),
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         return rows.AsList();
+    }
+
+    /// <summary>Whole-table KPI snapshot for the Dashboard tab. Deliberately unfiltered —
+    /// no Country/Division/Department/Brand/Itemcode/Variance-only, unlike every other
+    /// method here.</summary>
+    public async Task<EcomStockVarianceDashboardSummary> GetDashboardSummaryAsync(CancellationToken ct = default)
+    {
+        await using var c = OpenOnPremBackup();
+        return await c.QuerySingleAsync<EcomStockVarianceDashboardSummary>(new CommandDefinition(@"
+            SELECT
+                ISNULL(SUM(CAST(MFCS_SOH AS BIGINT)), 0)      AS MfcsSoh,
+                ISNULL(SUM(CAST(IncreffSOH AS BIGINT)), 0)    AS IncreffSoh,
+                ISNULL(SUM(CAST(Variance AS BIGINT)), 0)      AS NetVariance,
+                ISNULL(SUM(CAST(ABS(Variance) AS BIGINT)), 0) AS GrossGap,
+                SUM(CASE WHEN Variance <> 0 THEN 1 ELSE 0 END) AS VarianceSkuCount,
+                SUM(CASE WHEN MFCS_SOH > 0 THEN 1 ELSE 0 END)  AS PositiveStockSkuCount,
+                SUM(CASE WHEN MFCS_SOH > 0 AND Variance = 0 THEN 1 ELSE 0 END) AS ExactMatchPositiveStockSkuCount,
+                COUNT(*) AS RowsReviewed
+              FROM dbo.LPM_ECOM_SOH_COMPARISON;",
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
     }
 }
