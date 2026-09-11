@@ -32,6 +32,67 @@
     }
 </div>
 
+@if (_activeView == Dashboard)
+{
+    <div class="aiwms-section">
+        @if (_dashboardLoading)
+        {
+            <p style="color:var(--text-secondary)">Loading...</p>
+        }
+        else if (!string.IsNullOrEmpty(_dashboardMessage))
+        {
+            <div class="aiwms-alert error">@_dashboardMessage</div>
+        }
+        else if (_dashboard is not null)
+        {
+            <p style="color:var(--text-secondary); margin:0 0 12px 0">Whole-table KPI snapshot — always unfiltered, independent of the Item Level / Division Summary filters.</p>
+            <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:12px;">
+                <div style="background:#fbe4e6; border-radius:var(--r-sm); padding:14px;">
+                    <div style="font-size:11px; font-weight:700; color:#8a3b42; text-transform:uppercase;">MFCS SOH</div>
+                    <div style="font-size:24px; font-weight:700; color:var(--bfl-black); margin:4px 0;">@_dashboard.MfcsSoh.ToString("N0")</div>
+                    <div style="font-size:11px; color:var(--text-secondary);">Units recorded in MFCS</div>
+                </div>
+                <div style="background:#dcefe0; border-radius:var(--r-sm); padding:14px;">
+                    <div style="font-size:11px; font-weight:700; color:#2f6b3a; text-transform:uppercase;">INCREFF SOH</div>
+                    <div style="font-size:24px; font-weight:700; color:var(--bfl-black); margin:4px 0;">@_dashboard.IncreffSoh.ToString("N0")</div>
+                    <div style="font-size:11px; color:var(--text-secondary);">Units recorded in Increff</div>
+                </div>
+                <div style="background:#dbe7f7; border-radius:var(--r-sm); padding:14px;">
+                    <div style="font-size:11px; font-weight:700; color:#2c4f80; text-transform:uppercase;">Net Variance</div>
+                    <div style="font-size:24px; font-weight:700; color:var(--bfl-black); margin:4px 0;">@_dashboard.NetVariance.ToString("N0")</div>
+                    <div style="font-size:11px; color:var(--text-secondary);">Positive = MFCS higher</div>
+                </div>
+                <div style="background:#fdf1d3; border-radius:var(--r-sm); padding:14px;">
+                    <div style="font-size:11px; font-weight:700; color:#8a6d1f; text-transform:uppercase;">Net Variance %</div>
+                    <div style="font-size:24px; font-weight:700; color:var(--bfl-black); margin:4px 0;">@_dashboard.NetVariancePercent.ToString("N1")%</div>
+                    <div style="font-size:11px; color:var(--text-secondary);">Net gap as % of Increff</div>
+                </div>
+                <div style="background:#fbe6d4; border-radius:var(--r-sm); padding:14px;">
+                    <div style="font-size:11px; font-weight:700; color:#8a4f1f; text-transform:uppercase;">Gross Gap</div>
+                    <div style="font-size:24px; font-weight:700; color:var(--bfl-black); margin:4px 0;">@_dashboard.GrossGap.ToString("N0")</div>
+                    <div style="font-size:11px; color:var(--text-secondary);">Absolute bucket variance</div>
+                </div>
+                <div style="background:#e9dcf5; border-radius:var(--r-sm); padding:14px;">
+                    <div style="font-size:11px; font-weight:700; color:#5b3b82; text-transform:uppercase;">Variance SKU Count</div>
+                    <div style="font-size:24px; font-weight:700; color:var(--bfl-black); margin:4px 0;">@_dashboard.VarianceSkuCount.ToString("N0")</div>
+                    <div style="font-size:11px; color:var(--text-secondary);">SKUs requiring reconciliation</div>
+                </div>
+                <div style="background:#dcefe0; border-radius:var(--r-sm); padding:14px;">
+                    <div style="font-size:11px; font-weight:700; color:#2f6b3a; text-transform:uppercase;">Exact-Match SKU %</div>
+                    <div style="font-size:24px; font-weight:700; color:var(--bfl-black); margin:4px 0;">@_dashboard.ExactMatchSkuPercent.ToString("N1")%</div>
+                    <div style="font-size:11px; color:var(--text-secondary);">Positive-stock exact matches</div>
+                </div>
+                <div style="background:#dbe7f7; border-radius:var(--r-sm); padding:14px;">
+                    <div style="font-size:11px; font-weight:700; color:#2c4f80; text-transform:uppercase;">Rows Reviewed</div>
+                    <div style="font-size:24px; font-weight:700; color:var(--bfl-black); margin:4px 0;">@_dashboard.RowsReviewed.ToString("N0")</div>
+                    <div style="font-size:11px; color:var(--text-secondary);">Complete detail population</div>
+                </div>
+            </div>
+        }
+    </div>
+}
+else
+{
 <div class="aiwms-section">
     <div style="display:grid; grid-template-columns: 1fr 1fr 1fr 1fr 1fr auto; gap:12px; align-items:end;">
         <div>
@@ -100,6 +161,7 @@
         <div class="aiwms-alert @(_isError ? "error" : "info")" style="margin-top:12px">@_message</div>
     }
 </div>
+}
 
 @if (_activeView == ItemLevel && _loaded)
 {
@@ -240,10 +302,15 @@
 }
 
 @code {
+    private const string Dashboard = "Dashboard";
     private const string ItemLevel = "Item Level";
     private const string DivisionSummary = "Division Summary";
-    private static readonly string[] Views = [ItemLevel, DivisionSummary];
-    private string _activeView = ItemLevel;
+    private static readonly string[] Views = [Dashboard, ItemLevel, DivisionSummary];
+    private string _activeView = Dashboard;
+
+    private EcomStockVarianceDashboardSummary? _dashboard;
+    private bool _dashboardLoading;
+    private string _dashboardMessage = "";
 
     private List<string> _countries = new();
     private HashSet<string> _selectedCountries = new();
@@ -309,6 +376,16 @@
             _lastRefreshed = await Svc.GetLastRefreshedAsync();
         }
         catch { /* fall back to empty lists if the lookup fails */ }
+
+        await LoadDashboardAsync();
+    }
+
+    private async Task LoadDashboardAsync()
+    {
+        _dashboardLoading = true; _dashboardMessage = ""; await InvokeAsync(StateHasChanged);
+        try { _dashboard = await Svc.GetDashboardSummaryAsync(); }
+        catch (Exception ex) { _dashboardMessage = ex.Message; }
+        finally { _dashboardLoading = false; }
     }
 
     private async Task LoadAsync(int pageNumber)
