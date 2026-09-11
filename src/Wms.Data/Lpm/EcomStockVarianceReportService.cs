@@ -290,9 +290,11 @@ public class EcomStockVarianceReportService(IOnPremConnectionResolver resolver)
     }
 
     /// <summary>Whole-table KPI snapshot for the Dashboard tab. Deliberately unfiltered —
-    /// no Country/Division/Department/Brand/Itemcode/Variance-only, unlike every other
-    /// method here.</summary>
-    public async Task<EcomStockVarianceDashboardSummary> GetDashboardSummaryAsync(CancellationToken ct = default)
+    /// no Division/Department/Brand/Itemcode/Variance-only, unlike every other method
+    /// here. <paramref name="country"/> is the one exception: null gives the combined
+    /// UAE+KSA total (the tab's primary view); passing "UAE" or "KSA" gives the
+    /// per-country breakdown shown below it.</summary>
+    public async Task<EcomStockVarianceDashboardSummary> GetDashboardSummaryAsync(string? country = null, CancellationToken ct = default)
     {
         await using var c = OpenOnPremBackup();
         return await c.QuerySingleAsync<EcomStockVarianceDashboardSummary>(new CommandDefinition(@"
@@ -305,8 +307,9 @@ public class EcomStockVarianceReportService(IOnPremConnectionResolver resolver)
                 SUM(CASE WHEN MFCS_SOH > 0 THEN 1 ELSE 0 END)  AS PositiveStockSkuCount,
                 SUM(CASE WHEN MFCS_SOH > 0 AND Variance = 0 THEN 1 ELSE 0 END) AS ExactMatchPositiveStockSkuCount,
                 COUNT(*) AS RowsReviewed
-              FROM dbo.LPM_ECOM_SOH_COMPARISON;",
-            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+              FROM dbo.LPM_ECOM_SOH_COMPARISON
+             WHERE @country IS NULL OR Country = @country;",
+            new { country }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
     }
 
     // Fixed display order, independent of whatever order SQL Server happens to return
@@ -327,16 +330,17 @@ public class EcomStockVarianceReportService(IOnPremConnectionResolver resolver)
     private record BucketRaw(string Bucket, int SkuCount, long MfcsSoh, long IncreffSoh, long NetVariance);
 
     /// <summary>Dashboard's "Net Variance by Reconciliation Bucket" table — deliberately
-    /// unfiltered, same as GetDashboardSummaryAsync. Buckets partition every row by
-    /// comparing MFCS_SOH against the GS/GW-adjusted Increff figure (see
-    /// EcomStockVarianceReconciliationBucket's doc comment) — mutually exclusive and
+    /// unfiltered, same as GetDashboardSummaryAsync (and same <paramref name="country"/>
+    /// convention: null = combined UAE+KSA, "UAE"/"KSA" = per-country breakdown). Buckets
+    /// partition every row by comparing MFCS_SOH against the GS/GW-adjusted Increff figure
+    /// (see EcomStockVarianceReconciliationBucket's doc comment) — mutually exclusive and
     /// exhaustive, so the 8 rows' SkuCount/MfcsSoh/IncreffSoh/NetVariance sum exactly to
-    /// GetDashboardSummaryAsync's RowsReviewed/MfcsSoh/(IncreffSoh+GS+GW total)/NetVariance.
-    /// Each bucket's rows all share the same Variance sign by construction (e.g. every row
-    /// in "Exclusive to MFCS" has Variance = MFCS_SOH > 0), so ABS(bucket NetVariance) sums
-    /// exactly to GetDashboardSummaryAsync's GrossGap too — that's what GrossGapSharePercent
-    /// is a share of.</summary>
-    public async Task<List<EcomStockVarianceReconciliationBucket>> GetReconciliationBucketsAsync(CancellationToken ct = default)
+    /// GetDashboardSummaryAsync's RowsReviewed/MfcsSoh/(IncreffSoh+GS+GW total)/NetVariance
+    /// for the same country. Each bucket's rows all share the same Variance sign by
+    /// construction (e.g. every row in "Exclusive to MFCS" has Variance = MFCS_SOH > 0), so
+    /// ABS(bucket NetVariance) sums exactly to GetDashboardSummaryAsync's GrossGap too —
+    /// that's what GrossGapSharePercent is a share of.</summary>
+    public async Task<List<EcomStockVarianceReconciliationBucket>> GetReconciliationBucketsAsync(string? country = null, CancellationToken ct = default)
     {
         await using var c = OpenOnPremBackup();
         var raw = (await c.QueryAsync<BucketRaw>(new CommandDefinition(@"
@@ -344,6 +348,7 @@ public class EcomStockVarianceReportService(IOnPremConnectionResolver resolver)
                 SELECT MFCS_SOH, Variance, Itemcode,
                        (IncreffSOH + GateKeeperRejectedSummer + GateKeeperRejectedWinter) AS EffectiveIncreffSoh
                   FROM dbo.LPM_ECOM_SOH_COMPARISON
+                 WHERE @country IS NULL OR Country = @country
             ),
             Bucketed AS (
                 SELECT
@@ -367,7 +372,7 @@ public class EcomStockVarianceReportService(IOnPremConnectionResolver resolver)
                    SUM(CAST(Variance AS BIGINT)) AS NetVariance
               FROM Bucketed
              GROUP BY Bucket;",
-            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).AsList();
+            new { country }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).AsList();
 
         var totalGrossGap = raw.Sum(r => Math.Abs(r.NetVariance));
 
