@@ -34,6 +34,31 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
         return b.ConnectionString;
     }
 
+    // ===================== CDC hold rows =====================
+    // Container Allocation parks PO lines dated two or more months out at StoreID
+    // 'CDC' (see ContainerAllocationService.CdcHoldStoreId). CDC is a holding
+    // bucket, not a shop, so it has no bfldata.dbo.DataSettings row and no
+    // WMS_Building_PalletTypes row — which left all three Result columns NULL on
+    // both destinations: Result reads DataSettings.POAllocationResult, and
+    // FinalResult / ResultType both mirror the allocation's PalletType.
+    //
+    // Stamped explicitly here rather than seeded back in the allocation, because
+    // these are the legacy building/counting apps' codes and only matter once the
+    // rows reach PhotoCheckingResult / the Azure mirror.
+    //
+    // Result is the 3-letter code and the other two are 'CD' — asymmetric on
+    // purpose, per the operational spec. ResultType is VARCHAR(3) on both tables,
+    // so all three fit with room to spare.
+    private const string CdcResult      = "CDC";
+    private const string CdcFinalResult = "CD";
+    private const string CdcResultType  = "CD";
+
+    /// <summary>True when this allocation row is a CDC future-LPMDt hold. Keyed off
+    /// the allocation service's own constant so the two cannot drift apart.</summary>
+    private static bool IsCdcHoldStore(string? storeId) =>
+        string.Equals(storeId?.Trim(), ContainerAllocationService.CdcHoldStoreId,
+                      StringComparison.OrdinalIgnoreCase);
+
     private SqlConnection OpenOnPremBackup()
     {
         var c = new SqlConnection(WithConnectTimeout(resolver.GetOnPremBackupConnectionString()));
@@ -1389,6 +1414,7 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
             var storeId = r.StoreID?.Trim() ?? "";
             settings.TryGetValue(storeId, out var st);
             var printY = st?.PrintFlagYes == true;
+            var isCdc  = IsCdcHoldStore(storeId);
 
             // OrPrice only when the store prints stickers; 0 rather than NULL when
             // it doesn't, matching PhotoCheckingResult.
@@ -1443,12 +1469,15 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
                     (object?)r.Style            ?? DBNull.Value,
                     (object?)r.Size             ?? DBNull.Value,
                     ParseDecimalOrDbNull(r.SalesPrice),
-                    (object?)r.ResultType       ?? DBNull.Value,
-                    (object?)r.FinalResult      ?? DBNull.Value,
+                    // CDC hold rows carry fixed codes: none of the three columns has a
+                    // source for them (no DataSettings row, no PalletType), so without
+                    // this they all sync as NULL.
+                    isCdc ? CdcResultType  : (object?)r.ResultType  ?? DBNull.Value,
+                    isCdc ? CdcFinalResult : (object?)r.FinalResult ?? DBNull.Value,
                     // Result comes from the store's DataSettings row, as on Prod —
                     // falls back to the allocation's own Result when the store has
                     // no DataSettings row rather than writing NULL.
-                    (object?)(st?.POAllocationResult ?? r.Result) ?? DBNull.Value,
+                    isCdc ? CdcResult : (object?)(st?.POAllocationResult ?? r.Result) ?? DBNull.Value,
                     (object?)r.Remarks          ?? DBNull.Value,
                     (object?)r.OTS              ?? DBNull.Value,
                     (object?)r.Color            ?? DBNull.Value,
@@ -1593,6 +1622,7 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
             settings.TryGetValue(storeId, out var st);
 
             var printY = st?.PrintFlagYes == true;
+            var isCdc  = IsCdcHoldStore(storeId);
 
             // OrPrice / SalesPrice only when the store prints stickers. OrPrice
             // defaults to 0 (not NULL) when the store doesn't print or has no price.
@@ -1664,9 +1694,12 @@ public class ContainerAllocationDataSyncService(IOnPremConnectionResolver resolv
                     (object?)r.Season           ?? DBNull.Value,
                     (object?)r.Department       ?? DBNull.Value,
                     (object?)r.Division         ?? DBNull.Value,
-                    (object?)st?.POAllocationResult ?? DBNull.Value,
-                    (object?)r.FinalResult      ?? DBNull.Value,
-                    (object?)r.ResultType       ?? DBNull.Value,
+                    // CDC hold rows carry fixed codes: none of the three columns has a
+                    // source for them (no DataSettings row, no PalletType), so without
+                    // this they all sync as NULL — as seen on AEINT8356.
+                    isCdc ? CdcResult      : (object?)st?.POAllocationResult ?? DBNull.Value,
+                    isCdc ? CdcFinalResult : (object?)r.FinalResult          ?? DBNull.Value,
+                    isCdc ? CdcResultType  : (object?)r.ResultType           ?? DBNull.Value,
                     1,                                   // one piece per row
                     (object?)r.QtyIssue         ?? DBNull.Value,
                     orPrice,
