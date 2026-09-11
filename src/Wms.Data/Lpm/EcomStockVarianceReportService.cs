@@ -20,6 +20,22 @@ public record EcomStockVarianceDivisionSummaryRow(
     long GateKeeperRejectedSummer, long GateKeeperRejectedWinter, long Variance,
     long InTransitUAE, long InTransitKSA);
 
+/// <summary>Item Level's per-column "type to search" row — one substring filter per
+/// column shown in that grid, ANDed together with each other and with the Country/
+/// Division/Department/Brand/Itemcode filters above the table. Null/blank means no
+/// filter on that column. Text columns match Country/Itemcode/Division/Department/
+/// Class/Subclass/Family/Brand as-is; numeric columns (MfcsSoh/IncreffSoh/Gs/Gw/
+/// Variance/InTransitUae/InTransitKsa) match against the number's string form, same
+/// substring behavior, not a numeric comparison.</summary>
+public record EcomStockVarianceColumnFilters(
+    string? Country = null, string? Itemcode = null, string? MfcsSoh = null, string? IncreffSoh = null,
+    string? Gs = null, string? Gw = null, string? Variance = null, string? InTransitUae = null,
+    string? InTransitKsa = null, string? Division = null, string? Department = null, string? Class = null,
+    string? Subclass = null, string? Family = null, string? Brand = null)
+{
+    public static readonly EcomStockVarianceColumnFilters Empty = new();
+}
+
 /// <summary>Whole-table KPI snapshot for the Dashboard tab — deliberately unfiltered
 /// (no Country/Division/Department/Brand), a fixed top-level view independent of
 /// whatever the other two tabs' filters are set to. IncreffSoh here is
@@ -163,35 +179,84 @@ public class EcomStockVarianceReportService(IOnPremConnectionResolver resolver)
     // substring match (Brand has ~4,100 distinct values — too many for a dropdown,
     // unlike Division/Department). itemcodeSearch is an exact match, same convention
     // as EmpCode-style filters elsewhere in this app.
+    // The Country/Division/Department/Brand/Itemcode/VarianceOnly filters above the
+    // table, plus the Item Level grid's own per-column "type to search" row (see
+    // EcomStockVarianceColumnFilters) — GetDivisionSummaryAsync shares this same SQL
+    // text but always passes columnFilters: null (BuildFilterParams' default), which
+    // resolves every col* parameter to NULL and so drops out of every "col... IS NULL
+    // OR ..." condition harmlessly. Division/Department/Class/Subclass/Family column
+    // filters match against the SAME blanked-for-junk-division value the grid
+    // displays (see ClassificationSelectSql), not the raw column, so a filter never
+    // matches a row whose classification actually renders blank on screen. Numeric
+    // columns are cast to VARCHAR for a substring match, per user request — not a
+    // numeric comparison.
     private const string FilterWhereSql = @"
              WHERE (@noCountryFilter = 1 OR Country IN @countries)
                AND (@noDivisionFilter = 1 OR Division IN @divisions)
                AND (@noDepartmentFilter = 1 OR Department IN @departments)
                AND (@brandFilter IS NULL OR Brand LIKE '%' + @brandFilter + '%')
                AND (@itemcodeFilter IS NULL OR Itemcode = @itemcodeFilter)
-               AND (@varianceOnly = 0 OR Variance <> 0)";
+               AND (@varianceOnly = 0 OR Variance <> 0)
+               AND (@colCountry IS NULL OR Country LIKE '%' + @colCountry + '%')
+               AND (@colItemcode IS NULL OR Itemcode LIKE '%' + @colItemcode + '%')
+               AND (@colMfcsSoh IS NULL OR CAST(MFCS_SOH AS VARCHAR(20)) LIKE '%' + @colMfcsSoh + '%')
+               AND (@colIncreffSoh IS NULL OR CAST(IncreffSOH AS VARCHAR(20)) LIKE '%' + @colIncreffSoh + '%')
+               AND (@colGs IS NULL OR CAST(GateKeeperRejectedSummer AS VARCHAR(20)) LIKE '%' + @colGs + '%')
+               AND (@colGw IS NULL OR CAST(GateKeeperRejectedWinter AS VARCHAR(20)) LIKE '%' + @colGw + '%')
+               AND (@colVariance IS NULL OR CAST(Variance AS VARCHAR(20)) LIKE '%' + @colVariance + '%')
+               AND (@colInTransitUae IS NULL OR CAST(InTransitUAE AS VARCHAR(20)) LIKE '%' + @colInTransitUae + '%')
+               AND (@colInTransitKsa IS NULL OR CAST(InTransitKSA AS VARCHAR(20)) LIKE '%' + @colInTransitKsa + '%')
+               AND (@colDivision IS NULL OR (CASE WHEN Division IN @excludedDivisions THEN NULL ELSE Division END) LIKE '%' + @colDivision + '%')
+               AND (@colDepartment IS NULL OR (CASE WHEN Division IN @excludedDivisions THEN NULL ELSE Department END) LIKE '%' + @colDepartment + '%')
+               AND (@colClass IS NULL OR (CASE WHEN Division IN @excludedDivisions THEN NULL ELSE Class END) LIKE '%' + @colClass + '%')
+               AND (@colSubclass IS NULL OR (CASE WHEN Division IN @excludedDivisions THEN NULL ELSE Subclass END) LIKE '%' + @colSubclass + '%')
+               AND (@colFamily IS NULL OR (CASE WHEN Division IN @excludedDivisions THEN NULL ELSE Family END) LIKE '%' + @colFamily + '%')
+               AND (@colBrand IS NULL OR Brand LIKE '%' + @colBrand + '%')";
+
+    private static string? Norm(string? s) => string.IsNullOrWhiteSpace(s) ? null : s.Trim();
 
     private static object BuildFilterParams(
         IEnumerable<string>? countries, IEnumerable<string>? divisions, IEnumerable<string>? departments,
-        string? brandSearch, string? itemcodeSearch, bool varianceOnly) => new
+        string? brandSearch, string? itemcodeSearch, bool varianceOnly,
+        EcomStockVarianceColumnFilters? columnFilters = null)
     {
-        countries = countries?.Where(s => !string.IsNullOrWhiteSpace(s)).ToArray() ?? Array.Empty<string>(),
-        noCountryFilter = countries is null ? 1 : 0,
-        divisions = divisions?.Where(s => !string.IsNullOrWhiteSpace(s)).ToArray() ?? Array.Empty<string>(),
-        noDivisionFilter = divisions is null ? 1 : 0,
-        departments = departments?.Where(s => !string.IsNullOrWhiteSpace(s)).ToArray() ?? Array.Empty<string>(),
-        noDepartmentFilter = departments is null ? 1 : 0,
-        brandFilter = string.IsNullOrWhiteSpace(brandSearch) ? null : brandSearch.Trim(),
-        itemcodeFilter = string.IsNullOrWhiteSpace(itemcodeSearch) ? null : itemcodeSearch.Trim(),
-        varianceOnly = varianceOnly ? 1 : 0,
-        excludedDivisions = ExcludedDivisions,
-    };
+        var cf = columnFilters ?? EcomStockVarianceColumnFilters.Empty;
+        return new
+        {
+            countries = countries?.Where(s => !string.IsNullOrWhiteSpace(s)).ToArray() ?? Array.Empty<string>(),
+            noCountryFilter = countries is null ? 1 : 0,
+            divisions = divisions?.Where(s => !string.IsNullOrWhiteSpace(s)).ToArray() ?? Array.Empty<string>(),
+            noDivisionFilter = divisions is null ? 1 : 0,
+            departments = departments?.Where(s => !string.IsNullOrWhiteSpace(s)).ToArray() ?? Array.Empty<string>(),
+            noDepartmentFilter = departments is null ? 1 : 0,
+            brandFilter = string.IsNullOrWhiteSpace(brandSearch) ? null : brandSearch.Trim(),
+            itemcodeFilter = string.IsNullOrWhiteSpace(itemcodeSearch) ? null : itemcodeSearch.Trim(),
+            varianceOnly = varianceOnly ? 1 : 0,
+            excludedDivisions = ExcludedDivisions,
+            colCountry = Norm(cf.Country),
+            colItemcode = Norm(cf.Itemcode),
+            colMfcsSoh = Norm(cf.MfcsSoh),
+            colIncreffSoh = Norm(cf.IncreffSoh),
+            colGs = Norm(cf.Gs),
+            colGw = Norm(cf.Gw),
+            colVariance = Norm(cf.Variance),
+            colInTransitUae = Norm(cf.InTransitUae),
+            colInTransitKsa = Norm(cf.InTransitKsa),
+            colDivision = Norm(cf.Division),
+            colDepartment = Norm(cf.Department),
+            colClass = Norm(cf.Class),
+            colSubclass = Norm(cf.Subclass),
+            colFamily = Norm(cf.Family),
+            colBrand = Norm(cf.Brand),
+        };
+    }
 
     /// <summary>Row count + sums over the WHOLE filtered set, for the totals row and
     /// the pager's "N rows / M pages" display.</summary>
     public async Task<EcomStockVarianceTotals> GetTotalsAsync(
         IEnumerable<string>? countries, IEnumerable<string>? divisions, IEnumerable<string>? departments,
-        string? brandSearch, string? itemcodeSearch, bool varianceOnly, CancellationToken ct = default)
+        string? brandSearch, string? itemcodeSearch, bool varianceOnly,
+        EcomStockVarianceColumnFilters? columnFilters = null, CancellationToken ct = default)
     {
         await using var c = OpenOnPremBackup();
         var totals = await c.QuerySingleAsync<EcomStockVarianceTotals>(new CommandDefinition($@"
@@ -205,7 +270,7 @@ public class EcomStockVarianceReportService(IOnPremConnectionResolver resolver)
                    ISNULL(SUM(CAST(InTransitKSA AS BIGINT)), 0) AS InTransitKSA
               FROM dbo.LPM_ECOM_SOH_COMPARISON
             {FilterWhereSql};",
-            BuildFilterParams(countries, divisions, departments, brandSearch, itemcodeSearch, varianceOnly),
+            BuildFilterParams(countries, divisions, departments, brandSearch, itemcodeSearch, varianceOnly, columnFilters),
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         return totals;
     }
@@ -213,10 +278,14 @@ public class EcomStockVarianceReportService(IOnPremConnectionResolver resolver)
     /// <summary>One page (PageSize rows) of the filtered set, 1-indexed.</summary>
     public async Task<List<EcomStockVarianceRow>> GetReportPageAsync(
         IEnumerable<string>? countries, IEnumerable<string>? divisions, IEnumerable<string>? departments,
-        string? brandSearch, string? itemcodeSearch, bool varianceOnly, int pageNumber, CancellationToken ct = default)
+        string? brandSearch, string? itemcodeSearch, bool varianceOnly, int pageNumber,
+        EcomStockVarianceColumnFilters? columnFilters = null, CancellationToken ct = default)
     {
         var offset = Math.Max(0, pageNumber - 1) * PageSize;
         await using var c = OpenOnPremBackup();
+        var p = new DynamicParameters(BuildFilterParams(countries, divisions, departments, brandSearch, itemcodeSearch, varianceOnly, columnFilters));
+        p.Add("offset", offset);
+        p.Add("pageSize", PageSize);
         var rows = await c.QueryAsync<EcomStockVarianceRow>(new CommandDefinition($@"
             SELECT Country, Itemcode, IncreffSOH, MFCS_SOH,
                    GateKeeperRejectedSummer, GateKeeperRejectedWinter, Variance,
@@ -226,22 +295,7 @@ public class EcomStockVarianceReportService(IOnPremConnectionResolver resolver)
             {FilterWhereSql}
              ORDER BY Country, Itemcode
             OFFSET @offset ROWS FETCH NEXT @pageSize ROWS ONLY;",
-            new
-            {
-                countries = countries?.Where(s => !string.IsNullOrWhiteSpace(s)).ToArray() ?? Array.Empty<string>(),
-                noCountryFilter = countries is null ? 1 : 0,
-                divisions = divisions?.Where(s => !string.IsNullOrWhiteSpace(s)).ToArray() ?? Array.Empty<string>(),
-                noDivisionFilter = divisions is null ? 1 : 0,
-                departments = departments?.Where(s => !string.IsNullOrWhiteSpace(s)).ToArray() ?? Array.Empty<string>(),
-                noDepartmentFilter = departments is null ? 1 : 0,
-                brandFilter = string.IsNullOrWhiteSpace(brandSearch) ? null : brandSearch.Trim(),
-                itemcodeFilter = string.IsNullOrWhiteSpace(itemcodeSearch) ? null : itemcodeSearch.Trim(),
-                varianceOnly = varianceOnly ? 1 : 0,
-                excludedDivisions = ExcludedDivisions,
-                offset,
-                pageSize = PageSize,
-            },
-            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            p, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         return rows.AsList();
     }
 
@@ -249,7 +303,8 @@ public class EcomStockVarianceReportService(IOnPremConnectionResolver resolver)
     /// a one-off user-initiated action; not used for the on-screen grid.</summary>
     public async Task<List<EcomStockVarianceRow>> GetReportAsync(
         IEnumerable<string>? countries, IEnumerable<string>? divisions, IEnumerable<string>? departments,
-        string? brandSearch, string? itemcodeSearch, bool varianceOnly, CancellationToken ct = default)
+        string? brandSearch, string? itemcodeSearch, bool varianceOnly,
+        EcomStockVarianceColumnFilters? columnFilters = null, CancellationToken ct = default)
     {
         await using var c = OpenOnPremBackup();
         var rows = await c.QueryAsync<EcomStockVarianceRow>(new CommandDefinition($@"
@@ -260,7 +315,7 @@ public class EcomStockVarianceReportService(IOnPremConnectionResolver resolver)
               FROM dbo.LPM_ECOM_SOH_COMPARISON
             {FilterWhereSql}
              ORDER BY Country, Itemcode;",
-            BuildFilterParams(countries, divisions, departments, brandSearch, itemcodeSearch, varianceOnly),
+            BuildFilterParams(countries, divisions, departments, brandSearch, itemcodeSearch, varianceOnly, columnFilters),
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         return rows.AsList();
     }
