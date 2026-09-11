@@ -166,6 +166,17 @@ else
                     <th>Family</th>
                     <th>Brand</th>
                 </tr>
+                <tr style="background:#fff;">
+                    @foreach (var key in ColumnFilterKeys)
+                    {
+                        <th style="padding:3px 4px; font-weight:400;">
+                            <input value="@_colFilters[key]"
+                                   @oninput="@(e => OnColumnFilterChanged(key, e.Value?.ToString() ?? ""))"
+                                   placeholder="Search"
+                                   style="@($"width:100%; box-sizing:border-box; padding:4px 6px; border:1px solid var(--border-default); border-radius:4px; font-size:12px; font-weight:400; color:var(--text-primary); background:#fff; {(NumericColumnKeys.Contains(key) ? "text-align:right;" : "")}")" />
+                        </th>
+                    }
+                </tr>
             </thead>
             <tbody>
                 <tr style="font-weight:700; background:var(--surface-1, #f7f7f5);">
@@ -307,6 +318,58 @@ else
     private bool _summaryExporting;
     private List<EcomStockVarianceDivisionSummaryRow> _summaryRows = new();
 
+    // Item Level's per-column "type to search" row — keys match
+    // EcomStockVarianceColumnFilters' properties, ordered to match the grid's own
+    // column order so ColumnFilterKeys.Select(...) renders one input per header.
+    private static readonly string[] ColumnFilterKeys =
+    [
+        "Country", "Itemcode", "MfcsSoh", "IncreffSoh", "Gs", "Gw", "Variance",
+        "InTransitUae", "InTransitKsa", "Division", "Department", "Class", "Subclass", "Family", "Brand",
+    ];
+    private static readonly HashSet<string> NumericColumnKeys =
+        ["MfcsSoh", "IncreffSoh", "Gs", "Gw", "Variance", "InTransitUae", "InTransitKsa"];
+    private readonly Dictionary<string, string> _colFilters = ColumnFilterKeys.ToDictionary(k => k, _ => "");
+    private CancellationTokenSource? _colFilterDebounceCts;
+
+    private EcomStockVarianceColumnFilters BuildColumnFilters() => new(
+        Country: NullIfBlank(_colFilters["Country"]),
+        Itemcode: NullIfBlank(_colFilters["Itemcode"]),
+        MfcsSoh: NullIfBlank(_colFilters["MfcsSoh"]),
+        IncreffSoh: NullIfBlank(_colFilters["IncreffSoh"]),
+        Gs: NullIfBlank(_colFilters["Gs"]),
+        Gw: NullIfBlank(_colFilters["Gw"]),
+        Variance: NullIfBlank(_colFilters["Variance"]),
+        InTransitUae: NullIfBlank(_colFilters["InTransitUae"]),
+        InTransitKsa: NullIfBlank(_colFilters["InTransitKsa"]),
+        Division: NullIfBlank(_colFilters["Division"]),
+        Department: NullIfBlank(_colFilters["Department"]),
+        Class: NullIfBlank(_colFilters["Class"]),
+        Subclass: NullIfBlank(_colFilters["Subclass"]),
+        Family: NullIfBlank(_colFilters["Family"]),
+        Brand: NullIfBlank(_colFilters["Brand"]));
+
+    private static string? NullIfBlank(string s) => string.IsNullOrWhiteSpace(s) ? null : s.Trim();
+
+    // Typing re-queries the server (342K+ rows, no client-side filtering), so each
+    // keystroke restarts a short debounce instead of reloading immediately — only
+    // the last keystroke in a burst actually triggers Svc.GetTotalsAsync/GetReportPageAsync.
+    private void OnColumnFilterChanged(string key, string value)
+    {
+        _colFilters[key] = value;
+        _colFilterDebounceCts?.Cancel();
+        var cts = new CancellationTokenSource();
+        _colFilterDebounceCts = cts;
+        _ = DebouncedReloadAsync(cts.Token);
+    }
+
+    private async Task DebouncedReloadAsync(CancellationToken token)
+    {
+        try { await Task.Delay(450, token); }
+        catch (TaskCanceledException) { return; }
+        if (token.IsCancellationRequested) return;
+        await InvokeAsync(() => LoadAsync(1));
+    }
+
     private int TotalPages => _totals is null || _totals.RowCount == 0
         ? 1 : (int)Math.Ceiling(_totals.RowCount / (double)EcomStockVarianceReportService.PageSize);
 
@@ -371,9 +434,10 @@ else
         _loading = true; _message = ""; _isError = false; await InvokeAsync(StateHasChanged);
         try
         {
+            var columnFilters = BuildColumnFilters();
             var totals = await Svc.GetTotalsAsync(
                 EffectiveCountriesOrNull, EffectiveDivisionsOrNull, EffectiveDepartmentsOrNull,
-                _brandSearch, _itemcodeSearch, _varianceOnly);
+                _brandSearch, _itemcodeSearch, _varianceOnly, columnFilters);
             _totals = totals;
             _pageNumber = Math.Clamp(pageNumber, 1, Math.Max(1, TotalPages));
             _pageJumpInput = _pageNumber;
@@ -381,7 +445,7 @@ else
                 ? new()
                 : await Svc.GetReportPageAsync(
                     EffectiveCountriesOrNull, EffectiveDivisionsOrNull, EffectiveDepartmentsOrNull,
-                    _brandSearch, _itemcodeSearch, _varianceOnly, _pageNumber);
+                    _brandSearch, _itemcodeSearch, _varianceOnly, _pageNumber, columnFilters);
             _loaded = true;
             if (totals.RowCount == 0) _message = "No rows for the selected filters.";
         }
@@ -420,6 +484,7 @@ else
         _selectedDepartments = new();
         _brandSearch = "";
         _itemcodeSearch = "";
+        foreach (var key in ColumnFilterKeys) _colFilters[key] = "";
         _rows = new();
         _totals = null;
         _pageNumber = 1;
@@ -438,7 +503,7 @@ else
         {
             var all = await Svc.GetReportAsync(
                 EffectiveCountriesOrNull, EffectiveDivisionsOrNull, EffectiveDepartmentsOrNull,
-                _brandSearch, _itemcodeSearch, _varianceOnly);
+                _brandSearch, _itemcodeSearch, _varianceOnly, BuildColumnFilters());
 
             using var wb = new XLWorkbook();
             var ws = wb.AddWorksheet("ECOM Stock Variance");
