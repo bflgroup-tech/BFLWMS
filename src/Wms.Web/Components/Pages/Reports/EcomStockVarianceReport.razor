@@ -90,6 +90,48 @@
             </div>
         }
     </div>
+
+    @if (_reconciliationBuckets.Count > 0)
+    {
+        <div class="aiwms-section">
+            <div class="aiwms-card-header">Net Variance by Reconciliation Bucket</div>
+            <div style="overflow-x:auto">
+            <table class="aiwms-table aiwms-table-dense">
+                <thead>
+                    <tr>
+                        <th>Bucket</th>
+                        <th style="text-align:right">SKU Count</th>
+                        <th style="text-align:right">MFCS SOH</th>
+                        <th style="text-align:right">Increff SOH</th>
+                        <th style="text-align:right">Net Variance</th>
+                        <th style="text-align:right">Gross Gap Share</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var b in _reconciliationBuckets)
+                    {
+                        <tr>
+                            <td>@b.Bucket</td>
+                            <td style="text-align:right">@b.SkuCount.ToString("N0")</td>
+                            <td style="text-align:right">@b.MfcsSoh.ToString("N0")</td>
+                            <td style="text-align:right">@b.IncreffSoh.ToString("N0")</td>
+                            <td style="text-align:right; color:@(b.NetVariance > 0 ? "var(--s-active)" : b.NetVariance < 0 ? "#b3261e" : "inherit")">@b.NetVariance.ToString("N0")</td>
+                            <td style="text-align:right">@b.GrossGapSharePercent.ToString("N1")%</td>
+                        </tr>
+                    }
+                    <tr style="font-weight:700; background:var(--surface-1, #f7f7f5);">
+                        <td>TOTAL / RECONCILED</td>
+                        <td style="text-align:right">@_reconciliationBuckets.Sum(b => b.SkuCount).ToString("N0")</td>
+                        <td style="text-align:right">@_reconciliationBuckets.Sum(b => b.MfcsSoh).ToString("N0")</td>
+                        <td style="text-align:right">@_reconciliationBuckets.Sum(b => b.IncreffSoh).ToString("N0")</td>
+                        <td style="text-align:right">@_reconciliationBuckets.Sum(b => b.NetVariance).ToString("N0")</td>
+                        <td style="text-align:right">@_reconciliationBuckets.Sum(b => b.GrossGapSharePercent).ToString("N1")%</td>
+                    </tr>
+                </tbody>
+            </table>
+            </div>
+        </div>
+    }
 }
 else
 {
@@ -309,6 +351,7 @@ else
     private string _activeView = Dashboard;
 
     private EcomStockVarianceDashboardSummary? _dashboard;
+    private List<EcomStockVarianceReconciliationBucket> _reconciliationBuckets = new();
     private bool _dashboardLoading;
     private string _dashboardMessage = "";
 
@@ -383,7 +426,11 @@ else
     private async Task LoadDashboardAsync()
     {
         _dashboardLoading = true; _dashboardMessage = ""; await InvokeAsync(StateHasChanged);
-        try { _dashboard = await Svc.GetDashboardSummaryAsync(); }
+        try
+        {
+            _dashboard = await Svc.GetDashboardSummaryAsync();
+            _reconciliationBuckets = await Svc.GetReconciliationBucketsAsync();
+        }
         catch (Exception ex) { _dashboardMessage = ex.Message; }
         finally { _dashboardLoading = false; }
     }
