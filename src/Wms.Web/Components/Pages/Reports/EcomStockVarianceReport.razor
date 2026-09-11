@@ -152,7 +152,7 @@ else
                 <tr>
                     <th>Country</th>
                     <th>Itemcode</th>
-                    <th style="text-align:right">MFCS_SOH</th>
+                    <th style="text-align:right">MFCS_SOH (After GRN)</th>
                     <th style="text-align:right">INCREFF_SOH</th>
                     <th style="text-align:right">GS Summer Pallet</th>
                     <th style="text-align:right">GW Winter Pallet</th>
@@ -220,7 +220,7 @@ else
                     <th>Country</th>
                     <th>Division</th>
                     <th style="text-align:right">Items</th>
-                    <th style="text-align:right">MFCS_SOH</th>
+                    <th style="text-align:right">MFCS_SOH (After GRN)</th>
                     <th style="text-align:right">INCREFF_SOH</th>
                     <th style="text-align:right">GS Summer Pallet</th>
                     <th style="text-align:right">GW Winter Pallet</th>
@@ -444,7 +444,7 @@ else
             var ws = wb.AddWorksheet("ECOM Stock Variance");
             string[] headers =
             {
-                "Country", "Itemcode", "MFCS_SOH", "INCREFF_SOH", "GS Summer Pallet", "GW Winter Pallet",
+                "Country", "Itemcode", "MFCS_SOH (After GRN)", "INCREFF_SOH", "GS Summer Pallet", "GW Winter Pallet",
                 "Variance (MFCS_SOH - (INCREFF_SOH + GS + GW))",
                 "InTransit UAE", "InTransit KSA", "Division", "Department", "Class", "Subclass", "Family", "Brand", "Last Refreshed"
             };
@@ -494,7 +494,7 @@ else
             var ws = wb.AddWorksheet("Division Summary");
             string[] headers =
             {
-                "Country", "Division", "Items", "MFCS_SOH", "INCREFF_SOH", "GS Summer Pallet", "GW Winter Pallet",
+                "Country", "Division", "Items", "MFCS_SOH (After GRN)", "INCREFF_SOH", "GS Summer Pallet", "GW Winter Pallet",
                 "Variance (MFCS_SOH - (INCREFF_SOH + GS + GW))", "InTransit UAE", "InTransit KSA"
             };
             for (int i = 0; i < headers.Length; i++) ws.Cell(1, i + 1).Value = headers[i];
