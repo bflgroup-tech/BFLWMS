@@ -34,6 +34,15 @@ public record EcomStockVarianceDashboardSummary(
         PositiveStockSkuCount == 0 ? 0 : ExactMatchPositiveStockSkuCount * 100.0 / PositiveStockSkuCount;
 }
 
+/// <summary>One row of the Dashboard's "Net Variance by Reconciliation Bucket" table.
+/// IncreffSoh here is IncreffSOH+GateKeeperRejectedSummer+GateKeeperRejectedWinter (the
+/// same adjustment already baked into the Variance column) — NOT the raw IncreffSOH
+/// shown elsewhere, so NetVariance always equals MfcsSoh - IncreffSoh exactly, and
+/// stays the same "Variance" everywhere in this report. GrossGapSharePercent is
+/// computed after fetching all buckets (needs the grand total across buckets).</summary>
+public record EcomStockVarianceReconciliationBucket(
+    string Bucket, int SkuCount, long MfcsSoh, long IncreffSoh, long NetVariance, double GrossGapSharePercent);
+
 /// <summary>
 /// Backing service for the ECOM Stock Variance Report — reads
 /// dbo.LPM_ECOM_SOH_COMPARISON directly. Division/Department/Class/Subclass/
@@ -298,5 +307,79 @@ public class EcomStockVarianceReportService(IOnPremConnectionResolver resolver)
                 COUNT(*) AS RowsReviewed
               FROM dbo.LPM_ECOM_SOH_COMPARISON;",
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+    }
+
+    // Fixed display order, independent of whatever order SQL Server happens to return
+    // groups in — a bucket with zero rows still gets a row (with zeros) rather than
+    // disappearing from the table.
+    private static readonly string[] ReconciliationBucketOrder =
+    [
+        "Unmapped / Blank Item Code",
+        "Negative MFCS Inventory",
+        "Exclusive to MFCS",
+        "Exclusive to Increff",
+        "Common - Exact Match",
+        "Common - MFCS Higher",
+        "Common - Increff Higher",
+        "Both Zero / No Stock",
+    ];
+
+    private record BucketRaw(string Bucket, int SkuCount, long MfcsSoh, long IncreffSoh, long NetVariance);
+
+    /// <summary>Dashboard's "Net Variance by Reconciliation Bucket" table — deliberately
+    /// unfiltered, same as GetDashboardSummaryAsync. Buckets partition every row by
+    /// comparing MFCS_SOH against the GS/GW-adjusted Increff figure (see
+    /// EcomStockVarianceReconciliationBucket's doc comment) — mutually exclusive and
+    /// exhaustive, so the 8 rows' SkuCount/MfcsSoh/IncreffSoh/NetVariance sum exactly to
+    /// GetDashboardSummaryAsync's RowsReviewed/MfcsSoh/(IncreffSoh+GS+GW total)/NetVariance.
+    /// Each bucket's rows all share the same Variance sign by construction (e.g. every row
+    /// in "Exclusive to MFCS" has Variance = MFCS_SOH > 0), so ABS(bucket NetVariance) sums
+    /// exactly to GetDashboardSummaryAsync's GrossGap too — that's what GrossGapSharePercent
+    /// is a share of.</summary>
+    public async Task<List<EcomStockVarianceReconciliationBucket>> GetReconciliationBucketsAsync(CancellationToken ct = default)
+    {
+        await using var c = OpenOnPremBackup();
+        var raw = (await c.QueryAsync<BucketRaw>(new CommandDefinition(@"
+            ;WITH Base AS (
+                SELECT MFCS_SOH, Variance, Itemcode,
+                       (IncreffSOH + GateKeeperRejectedSummer + GateKeeperRejectedWinter) AS EffectiveIncreffSoh
+                  FROM dbo.LPM_ECOM_SOH_COMPARISON
+            ),
+            Bucketed AS (
+                SELECT
+                    CASE
+                        WHEN Itemcode IS NULL OR LTRIM(RTRIM(Itemcode)) = '' THEN 'Unmapped / Blank Item Code'
+                        WHEN MFCS_SOH < 0 THEN 'Negative MFCS Inventory'
+                        WHEN MFCS_SOH > 0 AND EffectiveIncreffSoh = 0 THEN 'Exclusive to MFCS'
+                        WHEN MFCS_SOH = 0 AND EffectiveIncreffSoh > 0 THEN 'Exclusive to Increff'
+                        WHEN MFCS_SOH = EffectiveIncreffSoh AND MFCS_SOH > 0 THEN 'Common - Exact Match'
+                        WHEN MFCS_SOH > EffectiveIncreffSoh THEN 'Common - MFCS Higher'
+                        WHEN MFCS_SOH < EffectiveIncreffSoh THEN 'Common - Increff Higher'
+                        ELSE 'Both Zero / No Stock'
+                    END AS Bucket,
+                    MFCS_SOH, EffectiveIncreffSoh, Variance
+                  FROM Base
+            )
+            SELECT Bucket,
+                   COUNT(*) AS SkuCount,
+                   SUM(CAST(MFCS_SOH AS BIGINT)) AS MfcsSoh,
+                   SUM(CAST(EffectiveIncreffSoh AS BIGINT)) AS IncreffSoh,
+                   SUM(CAST(Variance AS BIGINT)) AS NetVariance
+              FROM Bucketed
+             GROUP BY Bucket;",
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).AsList();
+
+        var totalGrossGap = raw.Sum(r => Math.Abs(r.NetVariance));
+
+        return ReconciliationBucketOrder
+            .Select(name =>
+            {
+                var r = raw.FirstOrDefault(x => x.Bucket == name);
+                var netVariance = r?.NetVariance ?? 0;
+                var share = totalGrossGap == 0 ? 0 : Math.Abs(netVariance) * 100.0 / totalGrossGap;
+                return new EcomStockVarianceReconciliationBucket(
+                    name, r?.SkuCount ?? 0, r?.MfcsSoh ?? 0, r?.IncreffSoh ?? 0, netVariance, share);
+            })
+            .ToList();
     }
 }
