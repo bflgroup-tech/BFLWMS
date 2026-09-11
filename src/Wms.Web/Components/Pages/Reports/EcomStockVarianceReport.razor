@@ -156,7 +156,7 @@ else
                     <th style="text-align:right">INCREFF_SOH</th>
                     <th style="text-align:right">GS Summer Pallet</th>
                     <th style="text-align:right">GW Winter Pallet</th>
-                    <th style="text-align:right">Variance (MFCS_SOH - (INCREFF_SOH + GS + GW))</th>
+                    <th style="text-align:right">Variance (MFCS_SOH - (INCREFF_SOH + GS + GW + InTransit UAE + InTransit KSA))</th>
                     <th style="text-align:right">InTransit UAE</th>
                     <th style="text-align:right">InTransit KSA</th>
                     <th>Division</th>
@@ -224,7 +224,7 @@ else
                     <th style="text-align:right">INCREFF_SOH</th>
                     <th style="text-align:right">GS Summer Pallet</th>
                     <th style="text-align:right">GW Winter Pallet</th>
-                    <th style="text-align:right">Variance (MFCS_SOH - (INCREFF_SOH + GS + GW))</th>
+                    <th style="text-align:right">Variance (MFCS_SOH - (INCREFF_SOH + GS + GW + InTransit UAE + InTransit KSA))</th>
                     <th style="text-align:right">InTransit UAE</th>
                     <th style="text-align:right">InTransit KSA</th>
                 </tr>
@@ -445,7 +445,7 @@ else
             string[] headers =
             {
                 "Country", "Itemcode", "MFCS_SOH", "INCREFF_SOH", "GS Summer Pallet", "GW Winter Pallet",
-                "Variance (MFCS_SOH - (INCREFF_SOH + GS + GW))",
+                "Variance (MFCS_SOH - (INCREFF_SOH + GS + GW + InTransit UAE + InTransit KSA))",
                 "InTransit UAE", "InTransit KSA", "Division", "Department", "Class", "Subclass", "Family", "Brand", "Last Refreshed"
             };
             for (int i = 0; i < headers.Length; i++) ws.Cell(1, i + 1).Value = headers[i];
@@ -495,7 +495,7 @@ else
             string[] headers =
             {
                 "Country", "Division", "Items", "MFCS_SOH", "INCREFF_SOH", "GS Summer Pallet", "GW Winter Pallet",
-                "Variance (MFCS_SOH - (INCREFF_SOH + GS + GW))", "InTransit UAE", "InTransit KSA"
+                "Variance (MFCS_SOH - (INCREFF_SOH + GS + GW + InTransit UAE + InTransit KSA))", "InTransit UAE", "InTransit KSA"
             };
             for (int i = 0; i < headers.Length; i++) ws.Cell(1, i + 1).Value = headers[i];
             ws.Row(1).Style.Font.Bold = true;

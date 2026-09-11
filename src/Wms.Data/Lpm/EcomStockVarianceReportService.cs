@@ -35,11 +35,12 @@ public record EcomStockVarianceDashboardSummary(
 }
 
 /// <summary>One row of the Dashboard's "Net Variance by Reconciliation Bucket" table.
-/// IncreffSoh here is IncreffSOH+GateKeeperRejectedSummer+GateKeeperRejectedWinter (the
-/// same adjustment already baked into the Variance column) — NOT the raw IncreffSOH
-/// shown elsewhere, so NetVariance always equals MfcsSoh - IncreffSoh exactly, and
-/// stays the same "Variance" everywhere in this report. GrossGapSharePercent is
-/// computed after fetching all buckets (needs the grand total across buckets).</summary>
+/// IncreffSoh here is IncreffSOH+GateKeeperRejectedSummer+GateKeeperRejectedWinter+
+/// InTransitUAE+InTransitKSA (the same adjustment already baked into the persisted
+/// Variance column) — NOT the raw IncreffSOH shown elsewhere, so NetVariance always
+/// equals MfcsSoh - IncreffSoh exactly, and stays the same "Variance" everywhere in
+/// this report. GrossGapSharePercent is computed after fetching all buckets (needs
+/// the grand total across buckets).</summary>
 public record EcomStockVarianceReconciliationBucket(
     string Bucket, int SkuCount, long MfcsSoh, long IncreffSoh, long NetVariance, double GrossGapSharePercent);
 
@@ -332,21 +333,22 @@ public class EcomStockVarianceReportService(IOnPremConnectionResolver resolver)
     /// <summary>Dashboard's "Net Variance by Reconciliation Bucket" table — deliberately
     /// unfiltered, same as GetDashboardSummaryAsync (and same <paramref name="country"/>
     /// convention: null = combined UAE+KSA, "UAE"/"KSA" = per-country breakdown). Buckets
-    /// partition every row by comparing MFCS_SOH against the GS/GW-adjusted Increff figure
-    /// (see EcomStockVarianceReconciliationBucket's doc comment) — mutually exclusive and
-    /// exhaustive, so the 8 rows' SkuCount/MfcsSoh/IncreffSoh/NetVariance sum exactly to
-    /// GetDashboardSummaryAsync's RowsReviewed/MfcsSoh/(IncreffSoh+GS+GW total)/NetVariance
-    /// for the same country. Each bucket's rows all share the same Variance sign by
-    /// construction (e.g. every row in "Exclusive to MFCS" has Variance = MFCS_SOH > 0), so
-    /// ABS(bucket NetVariance) sums exactly to GetDashboardSummaryAsync's GrossGap too —
-    /// that's what GrossGapSharePercent is a share of.</summary>
+    /// partition every row by comparing MFCS_SOH against the GS/GW/InTransit-adjusted
+    /// Increff figure (see EcomStockVarianceReconciliationBucket's doc comment) — mutually
+    /// exclusive and exhaustive, so the 8 rows' SkuCount/MfcsSoh/IncreffSoh/NetVariance sum
+    /// exactly to GetDashboardSummaryAsync's RowsReviewed/MfcsSoh/(IncreffSoh+GS+GW+InTransit
+    /// total)/NetVariance for the same country. Each bucket's rows all share the same
+    /// Variance sign by construction (e.g. every row in "Exclusive to MFCS" has
+    /// Variance = MFCS_SOH > 0), so ABS(bucket NetVariance) sums exactly to
+    /// GetDashboardSummaryAsync's GrossGap too — that's what GrossGapSharePercent is a
+    /// share of.</summary>
     public async Task<List<EcomStockVarianceReconciliationBucket>> GetReconciliationBucketsAsync(string? country = null, CancellationToken ct = default)
     {
         await using var c = OpenOnPremBackup();
         var raw = (await c.QueryAsync<BucketRaw>(new CommandDefinition(@"
             ;WITH Base AS (
                 SELECT MFCS_SOH, Variance, Itemcode,
-                       (IncreffSOH + GateKeeperRejectedSummer + GateKeeperRejectedWinter) AS EffectiveIncreffSoh
+                       (IncreffSOH + GateKeeperRejectedSummer + GateKeeperRejectedWinter + InTransitUAE + InTransitKSA) AS EffectiveIncreffSoh
                   FROM dbo.LPM_ECOM_SOH_COMPARISON
                  WHERE @country IS NULL OR Country = @country
             ),
