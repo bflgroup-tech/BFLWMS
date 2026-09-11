@@ -22,9 +22,13 @@ public record EcomStockVarianceDivisionSummaryRow(
 
 /// <summary>Whole-table KPI snapshot for the Dashboard tab — deliberately unfiltered
 /// (no Country/Division/Department/Brand), a fixed top-level view independent of
-/// whatever the other two tabs' filters are set to. NetVariancePercent and
-/// ExactMatchSkuPercent are computed here (not in SQL) since both are simple ratios
-/// of values already fetched.</summary>
+/// whatever the other two tabs' filters are set to. IncreffSoh here is
+/// IncreffSOH+GateKeeperRejectedSummer+GateKeeperRejectedWinter, NOT the raw
+/// IncreffSOH column — same GS/GW fold already applied to the reconciliation
+/// bucket table's IncreffSoh, so NetVariance/IncreffSoh (and NetVariancePercent)
+/// stay consistent with the persisted Variance column everywhere in this report.
+/// NetVariancePercent and ExactMatchSkuPercent are computed here (not in SQL)
+/// since both are simple ratios of values already fetched.</summary>
 public record EcomStockVarianceDashboardSummary(
     long MfcsSoh, long IncreffSoh, long NetVariance, long GrossGap,
     int VarianceSkuCount, int PositiveStockSkuCount, int ExactMatchPositiveStockSkuCount, int RowsReviewed)
@@ -300,7 +304,7 @@ public class EcomStockVarianceReportService(IOnPremConnectionResolver resolver)
         return await c.QuerySingleAsync<EcomStockVarianceDashboardSummary>(new CommandDefinition(@"
             SELECT
                 ISNULL(SUM(CAST(MFCS_SOH AS BIGINT)), 0)      AS MfcsSoh,
-                ISNULL(SUM(CAST(IncreffSOH AS BIGINT)), 0)    AS IncreffSoh,
+                ISNULL(SUM(CAST(IncreffSOH + GateKeeperRejectedSummer + GateKeeperRejectedWinter AS BIGINT)), 0) AS IncreffSoh,
                 ISNULL(SUM(CAST(Variance AS BIGINT)), 0)      AS NetVariance,
                 ISNULL(SUM(CAST(ABS(Variance) AS BIGINT)), 0) AS GrossGap,
                 SUM(CASE WHEN Variance <> 0 THEN 1 ELSE 0 END) AS VarianceSkuCount,
