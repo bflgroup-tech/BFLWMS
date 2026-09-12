@@ -1,4 +1,5 @@
 using System.Data;
+using System.Reflection;
 using Dapper;
 using Microsoft.Data.SqlClient;
 using Wms.Data.Configuration;
@@ -57,6 +58,29 @@ public class ScheduledJobService(IOnPremConnectionResolver resolver)
 
     /// <summary>Country key for jobs that have no per-country dimension.</summary>
     public const string SingleRowKey = "";
+
+    // Stamped onto every run row so a stale App Service worker running old code
+    // is instantly visible from the admin page instead of needing an ad-hoc SQL
+    // comparison to diagnose. Observed 2026-09-12: a scheduled run produced
+    // MFCS_SOH numbers matching a formula that had been fixed and deployed 17
+    // hours earlier — a worker that hadn't picked up the redeploy won the job
+    // lock (see TryAcquireJobLockAsync's doc comment for the same failure class).
+    // Read from the ENTRY assembly (the host process, Wms.Web), not this
+    // library's own assembly, since Wms.Web.csproj is what stamps Version and
+    // LatestPrNumber at build time (same values MainLayout.razor's footer shows).
+    private static readonly string BuildVersion = ComputeBuildVersion();
+
+    private static string ComputeBuildVersion()
+    {
+        var asm = Assembly.GetEntryAssembly();
+        var version = asm?.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion?.Split('+')[0]
+            ?? asm?.GetName().Version?.ToString(3)
+            ?? "dev";
+        var pr = asm?.GetCustomAttributes<AssemblyMetadataAttribute>()
+            .FirstOrDefault(a => a.Key == "LatestPrNumber")?.Value
+            ?? "dev";
+        return $"{version} (PR #{pr})";
+    }
 
     private SqlConnection OpenWms()
     {
@@ -186,10 +210,10 @@ public class ScheduledJobService(IOnPremConnectionResolver resolver)
     {
         await using var c = OpenWms();
         return await c.ExecuteScalarAsync<long>(new CommandDefinition(@"
-            INSERT INTO dbo.WmsRptJobRun (JobName, Country, Mode, StartTS, Status, TriggeredBy)
+            INSERT INTO dbo.WmsRptJobRun (JobName, Country, Mode, StartTS, Status, TriggeredBy, BuildVersion)
             OUTPUT INSERTED.RunId
-            VALUES (@j, @c, @m, DATEADD(hour, 4, SYSUTCDATETIME()), 'Running', @t);",
-            new { j = jobName, c = country, m = mode, t = triggeredBy },
+            VALUES (@j, @c, @m, DATEADD(hour, 4, SYSUTCDATETIME()), 'Running', @t, @bv);",
+            new { j = jobName, c = country, m = mode, t = triggeredBy, bv = BuildVersion },
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
     }
 
@@ -245,7 +269,7 @@ public class ScheduledJobService(IOnPremConnectionResolver resolver)
         await using var c = OpenWms();
         var rows = await c.QueryAsync<RptJobRunRow>(new CommandDefinition(@"
             SELECT RunId, JobName, Country, Mode, StartTS, EndTS, Status,
-                   RowsProcessed, DatesProcessed, ErrorMessage, TriggeredBy
+                   RowsProcessed, DatesProcessed, ErrorMessage, TriggeredBy, BuildVersion
               FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY JobName ORDER BY StartTS DESC, RunId DESC) AS rn
                       FROM dbo.WmsRptJobRun) x
              WHERE rn = 1;",
