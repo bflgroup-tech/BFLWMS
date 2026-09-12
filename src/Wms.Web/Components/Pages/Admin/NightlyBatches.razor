@@ -130,7 +130,7 @@
             <tr>
                 <th>RunId</th><th>Job</th><th>Country</th><th>Mode</th><th>Started</th><th>Ended</th>
                 <th>Status</th><th style="text-align:right">Rows</th>
-                <th style="text-align:right">Days</th><th>Triggered By</th><th>Error</th>
+                <th style="text-align:right">Days</th><th>Triggered By</th><th>Build</th><th>Error</th>
             </tr>
         </thead>
         <tbody>
@@ -147,12 +147,13 @@
                     <td style="text-align:right">@r.RowsProcessed</td>
                     <td style="text-align:right">@r.DatesProcessed</td>
                     <td>@r.TriggeredBy</td>
+                    <td style="white-space:nowrap; font-size:11px; color:var(--text-secondary)">@r.BuildVersion</td>
                     <td style="max-width:380px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap" title="@r.ErrorMessage">@r.ErrorMessage</td>
                 </tr>
             }
             @if (FilteredRuns.Count == 0)
             {
-                <tr><td colspan="11" style="font-style:italic; color:var(--text-secondary)">No runs @(_jobFilter == "" ? "yet" : "for this process").</td></tr>
+                <tr><td colspan="12" style="font-style:italic; color:var(--text-secondary)">No runs @(_jobFilter == "" ? "yet" : "for this process").</td></tr>
             }
         </tbody>
     </table>

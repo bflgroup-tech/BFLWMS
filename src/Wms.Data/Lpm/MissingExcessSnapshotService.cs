@@ -124,7 +124,7 @@ public class MissingExcessSnapshotService(IOnPremConnectionResolver resolver, IC
         await using var c = OpenWms();
         var rows = await c.QueryAsync<RptJobRunRow>(new CommandDefinition($@"
             SELECT TOP ({top}) RunId, JobName, Country, Mode, StartTS, EndTS,
-                   Status, RowsProcessed, DatesProcessed, ErrorMessage, TriggeredBy
+                   Status, RowsProcessed, DatesProcessed, ErrorMessage, TriggeredBy, BuildVersion
               FROM dbo.WmsRptJobRun
              ORDER BY StartTS DESC",
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
