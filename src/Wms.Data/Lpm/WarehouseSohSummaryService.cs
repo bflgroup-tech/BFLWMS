@@ -417,14 +417,18 @@ public class WarehouseSohSummaryService(IOnPremConnectionResolver resolver)
     // UAE's own 3 warehouses (folded the same way as WarehouseGroupCaseSql) plus every
     // export country as its own single group -- these are single-facility countries,
     // so no warehouse-level split is needed for them, matching the report's own mockup
-    // (Techno/Yoto/JAFZA/KSA/QATAR/Kuwait/MYS/Bahrain, 8 groups). BAHRAIN currently has
-    // no rows in dbo.WMS_WHSTOCK_LASTDAY (WhStockLastDayFromGCP hasn't landed data for
-    // it yet, or the BigQuery feed has none) -- it's still included here so its column
-    // is ready and just shows "no data" rather than needing another code change later.
+    // (Techno/Yoto/JAFZA/KSA/QATAR/Kuwait/MYS/Bahrain, 8 groups). TECHNO is UAE's catch-all
+    // here: YOTO/YOTO-BU and JAFZA are carved out explicitly first, and every other UAE
+    // warehouse value (blank, TECHNO, TECHNO-E, BLACKBOX, 3PLF&B, LFLWH/LFL-WH, or anything
+    // not yet seen) folds into TECHNO -- this report has no separate column for those, and
+    // their stock is physically part of / adjacent to the Techno facility. BAHRAIN currently
+    // has no rows in dbo.WMS_WHSTOCK_LASTDAY (WhStockLastDayFromGCP hasn't landed data for it
+    // yet, or the BigQuery feed has none) -- it's still included here so its column is ready
+    // and just shows "no data" rather than needing another code change later.
     private const string SohMonthlyGroupLabelCaseSql = @"
-        CASE WHEN Country = 'UAE' AND (ISNULL(Warehouse, '') = '' OR Warehouse IN ('TECHNO', 'TECHNO-E')) THEN 'TECHNO'
-             WHEN Country = 'UAE' AND Warehouse IN ('YOTO', 'YOTO-BU')                                    THEN 'YOTO'
-             WHEN Country = 'UAE' AND Warehouse = 'JAFZA'                                                 THEN 'JAFZA'
+        CASE WHEN Country = 'UAE' AND Warehouse IN ('YOTO', 'YOTO-BU')                                     THEN 'YOTO'
+             WHEN Country = 'UAE' AND Warehouse = 'JAFZA'                                                  THEN 'JAFZA'
+             WHEN Country = 'UAE'                                                                          THEN 'TECHNO'
              WHEN Country = 'KSA'                                                                          THEN 'KSA'
              WHEN Country = 'QATAR'                                                                        THEN 'QATAR'
              WHEN Country = 'KUWAIT'                                                                       THEN 'KUWAIT'
@@ -435,10 +439,15 @@ public class WarehouseSohSummaryService(IOnPremConnectionResolver resolver)
 
     /// <summary>"SOH Monthly Summary" -- one row per (group, month-end) for the given
     /// year, rolled up from dbo.WMS_WHSTOCK_LASTDAY (the monthly BigQuery snapshot
-    /// pulled by WhStockLastDayFromGcpService). 8 fixed groups: UAE's TECHNO/YOTO/JAFZA
-    /// plus KSA/QATAR/KUWAIT/MYS/BAHRAIN as single-facility country totals. Summed
-    /// across every PalletCategory/Division/Season row for that group+month, since the
-    /// report only cares about the whole-group total.</summary>
+    /// pulled by WhStockLastDayFromGcpService). 9 fixed groups: UAE's TECHNO/YOTO/JAFZA
+    /// split, plus a "UAE (Total)" group that re-sums every UAE row regardless of
+    /// warehouse (JAFZA + YOTO/YOTO-BU + TECHNO's catch-all, i.e. blank/TECHNO/TECHNO-E/
+    /// BLACKBOX/3PLF&B/LFLWH/LFL-WH/anything else) so the country has one grand-total
+    /// column alongside the per-warehouse breakdown, matching how KSA/QATAR/KUWAIT/MYS/
+    /// BAHRAIN already show as single-facility totals. Then KSA/QATAR/KUWAIT/MYS/BAHRAIN
+    /// as single-facility country totals. Summed across every PalletCategory/Division/
+    /// Season row for that group+month, since the report only cares about the
+    /// whole-group total.</summary>
     public async Task<List<SohMonthlyRow>> GetSohMonthlySummaryAsync(int year, CancellationToken ct = default)
     {
         await using var c = OpenOnPremBackup();
@@ -458,6 +467,19 @@ public class WarehouseSohSummaryService(IOnPremConnectionResolver resolver)
               FROM Grp
              WHERE GroupLabel IS NOT NULL
              GROUP BY GroupLabel, LastDayOfMonth
+
+            UNION ALL
+
+            SELECT
+                GroupLabel  = 'UAE (Total)',
+                LastDayOfMonth,
+                Qty         = CAST(ISNULL(SUM(Qty), 0) AS BIGINT),
+                BoxCount    = CAST(ISNULL(SUM(BoxCount), 0) AS BIGINT),
+                PalletCount = CAST(ISNULL(SUM(PalletCount), 0) AS BIGINT)
+              FROM dbo.WMS_WHSTOCK_LASTDAY
+             WHERE YEAR(LastDayOfMonth) = @year AND Country = 'UAE'
+             GROUP BY LastDayOfMonth
+
              ORDER BY LastDayOfMonth, GroupLabel";
         var pYear = cmd.CreateParameter(); pYear.ParameterName = "@year"; pYear.Value = year;
         cmd.Parameters.Add(pYear);
