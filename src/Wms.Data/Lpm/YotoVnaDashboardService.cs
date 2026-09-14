@@ -53,7 +53,10 @@ public class YotoVnaDashboardService(IOnPremConnectionResolver resolver)
             GROUP BY refno
         )";
 
-    /// <summary>Containers fully offloaded (present in UsaPallets/KNBBoxes) within [from, toExclusive).</summary>
+    /// <summary>Containers fully offloaded (present in UsaPallets/KNBBoxes) within [from, toExclusive).
+    /// Includes Warehouse = JAFZA alongside YOTO -- offloading for these containers physically
+    /// happens at YOTO even when receipt was recorded against JAFZA (same fix already applied
+    /// to the Total Inbound Summary queries below).</summary>
     public async Task<List<YotoOffloadGroupRow>> GetCompletedOffloadingAsync(
         DateTime from, DateTime toExclusive, CancellationToken ct = default)
     {
@@ -70,7 +73,7 @@ public class YotoVnaDashboardService(IOnPremConnectionResolver resolver)
                     ON a.PalletNo = b.palletno AND a.Contno = b.Contno
                 JOIN bfldata.dbo.ContReceipt cr WITH (NOLOCK) ON cr.RefNo = a.Contno
                 JOIN OrderAgg oa ON oa.refno = a.Contno
-                WHERE a.whouse = @wh
+                WHERE a.whouse IN (@wh, 'JAFZA')
                   AND (a.Contno LIKE 'AEINT%' OR a.Contno LIKE 'AELOC%')
                   AND a.trndate >= @from AND a.trndate < @to
                 GROUP BY a.Contno

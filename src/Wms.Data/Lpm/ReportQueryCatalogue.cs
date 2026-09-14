@@ -1775,7 +1775,7 @@ SELECT
                     ON a.PalletNo = b.palletno AND a.Contno = b.Contno
                 JOIN bfldata.dbo.ContReceipt cr WITH (NOLOCK) ON cr.RefNo = a.Contno
                 JOIN OrderAgg oa ON oa.refno = a.Contno
-                WHERE a.whouse = @wh
+                WHERE a.whouse IN (@wh, 'JAFZA')
                   AND (a.Contno LIKE 'AEINT%' OR a.Contno LIKE 'AELOC%')
                   AND a.trndate >= @from AND a.trndate < @to
                 GROUP BY a.Contno
@@ -2097,5 +2097,383 @@ SELECT
  WHERE d.WHouse = 'YOTO' AND d.TrnDate BETWEEN @fromDt AND @toDt
  GROUP BY d.TrnDate, u.Empcode, u.UserName, u.FullName
  ORDER BY d.TrnDate DESC, u.FullName"),
+
+        // ============================== Nightly Batches Status ==============================
+        // Not one of the 17 Reports-menu reports above -- this covers the scheduled batch jobs
+        // listed on Admin > Nightly Batches Status (src/Wms.Web/Components/Pages/Admin/NightlyBatches.razor),
+        // in the same order they appear on that page. Several of these jobs have no single query
+        // (they orchestrate multiple statements, or delegate to a large multi-step engine) -- those
+        // entries say so explicitly and give the most representative statement(s) instead of
+        // fabricating one query that doesn't exist in the source.
+        new QueryEntry("Nightly Batches Status", "MissingExcessSnapshot", "bfldata.dbo.CloseR1pallet, usa.dbo.AMEChecking, usa.dbo.vUPCBoxDet, racks.dbo.lpm_locstock, hodata.dbo.itemmaster, datareporting.dbo.vupc_subclass (read) -> dbo.WmsRptMissingExcess_BoxSummary / _BoxDetail / _ItemSummary (write, wipe+MERGE) -- MissingExcessSnapshotService.RefreshDayAsync", @"
+SET NOCOUNT ON;
+IF OBJECT_ID('tempdb..#BadBoxes') IS NOT NULL DROP TABLE #BadBoxes;
+SELECT DISTINCT
+    cr.Palletno  AS BoxNo,
+    cr.Trndate   AS ClosedDt,
+    cr.closedby  AS ClosedBy,
+    ISNULL(cr.missqty,0) AS MissQty,
+    ISNULL(cr.zeroqty,0) AS ExcessQty
+  INTO #BadBoxes
+  FROM bfldata.dbo.CloseR1pallet cr WITH (NOLOCK)
+ WHERE cr.Trndate = @day
+   AND ISNULL(cr.missqty,0) + ISNULL(cr.zeroqty,0) > 0
+   AND EXISTS (
+       SELECT 1 FROM usa.dbo.AMEChecking a WITH (NOLOCK)
+        WHERE a.contno = cr.Palletno AND a.Trndate >= @floor);
+CREATE CLUSTERED INDEX IX_BadBoxes ON #BadBoxes (BoxNo);
+
+-- Result 1: Box Summary (one per BoxNo/ClosedDt/ClosedBy)
+SELECT BoxNo, ClosedDt, ClosedBy,
+       SUM(MissQty) AS MissQty, SUM(ExcessQty) AS ExcessQty
+  FROM #BadBoxes
+ GROUP BY BoxNo, ClosedDt, ClosedBy;
+
+-- Result 2: Box Detail -- one row per (box, item). Missing fires only when
+-- Status='' and QtyIssued < qty. Excess = QtyIssued when Status<>''.
+SELECT b.ClosedDt,
+       d.BoxNo, d.preparedby AS PreparedBy, d.itemcode AS ItemCode,
+       d.qty AS Qty, d.QtyIssued AS QtyIssued,
+       CASE WHEN ISNULL(d.Status,'') = '' AND d.QtyIssued < d.qty
+            THEN (d.qty - d.QtyIssued) ELSE 0 END AS MissingQty,
+       CASE WHEN ISNULL(d.Status,'') <> ''
+            THEN d.QtyIssued          ELSE 0 END AS ExcessQty
+  FROM usa.dbo.vUPCBoxDet d WITH (NOLOCK)
+  INNER JOIN #BadBoxes b ON b.BoxNo = d.BoxNo
+ WHERE (ISNULL(d.Status,'') = '' AND d.QtyIssued < d.qty)
+    OR (ISNULL(d.Status,'') <> '' AND d.QtyIssued > 0);
+
+-- Result 3: Item Summary per item, with current HOStock
+;WITH base AS (
+    SELECT d.itemcode,
+           CASE WHEN ISNULL(d.Status,'') = '' AND d.QtyIssued < d.qty
+                THEN (d.qty - d.QtyIssued) ELSE 0 END AS MissingQty,
+           CASE WHEN ISNULL(d.Status,'') <> ''
+                THEN d.QtyIssued          ELSE 0 END AS ExcessQty
+      FROM usa.dbo.vUPCBoxDet d WITH (NOLOCK)
+      INNER JOIN #BadBoxes b ON b.BoxNo = d.BoxNo
+), agg AS (
+    SELECT itemcode,
+           SUM(MissingQty) AS MissingQty, SUM(ExcessQty) AS ExcessQty
+      FROM base GROUP BY itemcode
+     HAVING SUM(MissingQty) + SUM(ExcessQty) > 0
+), soh AS (
+    SELECT itemcode, SUM(soh) AS HOStock
+      FROM racks.dbo.lpm_locstock WITH (NOLOCK)
+     WHERE itemcode IN (SELECT itemcode FROM agg)
+     GROUP BY itemcode
+)
+SELECT a.itemcode             AS ItemCode,
+       im.description         AS ItemName,
+       sub.Division           AS Division,
+       sub.Department         AS Department,
+       a.MissingQty           AS MissingQty,
+       a.ExcessQty            AS ExcessQty,
+       ISNULL(s.HOStock, 0)   AS HOStock
+  FROM agg a
+  LEFT JOIN hodata.dbo.itemmaster           im  WITH (NOLOCK) ON im.itemcode  = a.itemcode
+  LEFT JOIN datareporting.dbo.vupc_subclass sub WITH (NOLOCK) ON sub.itemcode = a.itemcode
+  LEFT JOIN soh s                                              ON s.itemcode  = a.itemcode;
+-- BackfillRangeAsync doesn't run a different query -- it just loops this once per day
+-- from the picked start date through today (floored at 2026-02-21)."),
+
+        new QueryEntry("Nightly Batches Status", "WeeklySalesFromGCP", "mvp-data-bi.cdm_silver.it_sales_qty (BigQuery) -> dbo.LPM_Weekly_SalesAmt (MERGE) -- WeeklySalesFromGcpService.RefreshCountryAsync / UpsertRowsAsync", @"
+-- BigQuery source SELECT
+SELECT storeid, DivCode, CalendarYear, CalendarMonth, CalendarWeek, Soldqty, NetSalesExVAT
+  FROM cdm_silver.it_sales_qty;
+
+-- SQL Server side: bulk-copy the fetched rows into #Staging, then MERGE
+CREATE TABLE #Staging (
+    StoreID  NVARCHAR(50)  NOT NULL,
+    DivCode  INT           NOT NULL,
+    Year1    INT           NOT NULL,
+    Month1   INT           NOT NULL,
+    Week     INT           NOT NULL,
+    SalesQty INT           NULL,
+    SalesAmt DECIMAL(18,2) NULL
+);
+
+MERGE dbo.LPM_Weekly_SalesAmt AS t
+USING #Staging AS s
+  ON t.StoreID = s.StoreID AND t.DivCode = s.DivCode AND t.Year1 = s.Year1 AND t.Month1 = s.Month1 AND t.Week = s.Week
+WHEN MATCHED THEN
+  UPDATE SET SalesQty = s.SalesQty, SalesAmt = s.SalesAmt, UpdatedTS = DATEADD(hour, 4, SYSUTCDATETIME())
+WHEN NOT MATCHED THEN
+  INSERT (StoreID, DivCode, Year1, Month1, Week, SalesQty, SalesAmt, CreateTS)
+  VALUES (s.StoreID, s.DivCode, s.Year1, s.Month1, s.Week, s.SalesQty, s.SalesAmt, DATEADD(hour, 4, SYSUTCDATETIME()));"),
+
+        new QueryEntry("Nightly Batches Status", "WhStockLastDayFromGCP", "mvp-data-bi.cdm_silver.wh_stock_last_day (BigQuery) -> dbo.WMS_WHSTOCK_LASTDAY (scoped DELETE + INSERT) -- WhStockLastDayFromGcpService.UpsertRowsAsync", @"
+-- Per country: the fetched slice is bulk-copied into #Staging first, then:
+
+-- 1) Delete every existing row for this country at the months present in the fetch
+DELETE FROM dbo.WMS_WHSTOCK_LASTDAY
+ WHERE Country = @country
+   AND LastDayOfMonth IN (SELECT DISTINCT LastDayOfMonth FROM #Staging);
+
+-- 2) Insert the fresh slice in full
+INSERT INTO dbo.WMS_WHSTOCK_LASTDAY
+    (Country, Warehouse, PalletCategory, LastDayOfMonth, Division, Season, Qty, SKUCount, BoxCount, PalletCount, Created_ts)
+SELECT Country, Warehouse, PalletCategory, LastDayOfMonth, Division, Season, Qty, SKUCount, BoxCount, PalletCount, Created_ts
+  FROM #Staging;
+-- Scoped to (Country, LastDayOfMonth) so other months/countries untouched by this run
+-- are left alone -- not a MERGE (never deletes stale combos) and not a blind TRUNCATE
+-- TABLE (would wipe every month/country, not just this run's)."),
+
+        new QueryEntry("Nightly Batches Status", "VolumeGroupWeekly", "dbo.LPM_EOM_Output, dbo.LPM_Weekly_SalesAmt, dbo.LPM_WeeklyWeights, dbo.LPM_VolumeGroupRange_Country, dbo.LPM_StoreDivVgFixedPO/BlockPO (read) -> dbo.StoreDivGrade or dbo.LPM_StoreDivGrade_Country (write, via SqlBulkCopy) -- OtsPoAllocationService.GenerateStoreDivGradesAsync (\"Run Now\" on the VolumeGroupWeekly row)", @"
+-- No single query -- this computes store/division Volume Group grades (A, B..I,
+-- Z for ECOM) from a weighted 12-week sales rollup vs. division average, checked
+-- against configured %-bands, with Fixed/Block PO overrides applied after. Several
+-- separate reads feed it; the foundational one (rows to grade) is:
+SELECT Country, StoreID, DivCode, CAST(NULL AS DECIMAL(18,2)) AS SalesAmt
+  FROM dbo.LPM_EOM_Output WITH (NOLOCK)
+ WHERE Month1 = @m AND Year1 = @y
+   AND Country IS NOT NULL AND LTRIM(RTRIM(Country)) <> ''
+   AND Country <> 'Ex2Locations'
+   -- AND Country = @ct   (appended only when a single country is picked, not BFLGROUP)
+ ;
+-- Followed by: anchor-week lookup (LPM_OTS_Output), a weight refresh UPDATE against
+-- LPM_Weekly_SalesAmt/LPM_WeeklyWeights, the 12-week weighted rollup itself, band
+-- lookup (LPM_VolumeGroupRange_Country), Fixed/Block PO override reads, then
+-- DELETE FROM {gradeTable} WHERE Month1=@m AND Year1=@y [AND Country=@ct] followed
+-- by a SqlBulkCopy insert into the same table. Grade assignment itself is C#, not SQL."),
+
+        new QueryEntry("Nightly Batches Status", "OtsWeekly", "dbo.LPM_EOM_Output, dbo.WmsCountryOtsWeeks, dbo.StoreDivGrade, dbo.LPM_OTS_Output (read) -> dbo.WmsOtsPoAllocationRun (write) -- OtsWeeklyService.RunOnceAsync -> OtsPoAllocationService.GenerateAndPersistAsync -> GenerateAsync", @"
+-- RunOnceAsync itself runs no SQL -- it just does job-lock bookkeeping and delegates
+-- to OtsPoAllocationService.GenerateAndPersistAsync, which checks a precondition:
+SELECT COUNT(1) FROM dbo.StoreDivGrade WITH (NOLOCK) WHERE CAST(GeneratedTS AS DATE) = @dt;
+
+-- ...then calls GenerateAsync -- a large multi-step OTS engine with no single
+-- representative query. Its foundational base-data read:
+;WITH storeNames AS (
+    SELECT StoreID, PBFullname,
+           rn = ROW_NUMBER() OVER (PARTITION BY StoreID ORDER BY PBFullname)
+      FROM bfldata.dbo.DataSettings WITH (NOLOCK)
+     WHERE SIMCountry IS NOT NULL AND LTRIM(RTRIM(SIMCountry)) <> ''
+       AND PBFullname IS NOT NULL AND LTRIM(RTRIM(PBFullname)) <> ''
+),
+sdgLatest AS (
+    -- Latest StoreDivGrade row per (StoreID, DivCode) at or before the picked Month/Year.
+    SELECT sdg.StoreID, sdg.DivCode, sdg.Grade,
+           ROW_NUMBER() OVER (PARTITION BY sdg.StoreID, sdg.DivCode
+                              ORDER BY sdg.Year1 DESC, sdg.Month1 DESC) AS rn
+      FROM LPMSIM.dbo.StoreDivGrade sdg WITH (NOLOCK)
+     WHERE (sdg.Year1 * 100 + sdg.Month1) <= (@year * 100 + @month)
+)
+SELECT
+    e.Country, e.StoreID, sn.PBFullname AS StoreName, e.DivCode, dv.Division AS Division,
+    sdg.Grade AS VolumeGroup,   -- source of truth: StoreDivGrade only
+    e.PriorityRank, e.TargetEOM AS TgtEOM, ISNULL(w.Weeks, 1) AS NoOfLeadWeeks,
+    ISNULL((
+        SELECT SUM(prev.TargetEOM)
+          FROM dbo.LPM_EOM_Output prev WITH (NOLOCK)
+         WHERE prev.StoreID = e.StoreID AND prev.DivCode = e.DivCode
+           AND prev.Month1 = @prevMonth AND prev.Year1 = @prevYear
+    ), 0) AS PrevMonthEOM
+  FROM dbo.LPM_EOM_Output e WITH (NOLOCK)
+  LEFT JOIN LPMSIM.dbo.Division dv WITH (NOLOCK) ON dv.DivCode = e.DivCode
+  LEFT JOIN storeNames sn ON sn.StoreID = e.StoreID AND sn.rn = 1
+  LEFT JOIN dbo.WmsCountryOtsWeeks w WITH (NOLOCK) ON w.SimCountry = e.Country
+  LEFT JOIN sdgLatest sdg ON sdg.StoreID = e.StoreID AND sdg.DivCode = e.DivCode AND sdg.rn = 1
+ WHERE e.Month1 = @month AND e.Year1 = @year AND e.Country <> 'Ex2Locations'
+   AND (@ct IS NULL OR e.Country = @ct)
+ ORDER BY e.Country, e.StoreID, e.DivCode;
+-- Dozens more queries and C# arithmetic follow (per-country week bookkeeping, target-EOM
+-- calc, etc.) before a final DELETE + SqlBulkCopy persists to dbo.WmsOtsPoAllocationRun."),
+
+        new QueryEntry("Nightly Batches Status", "ToteMasterSync", "{Dataname}.dbo.BlueToteIDMaster, racks.dbo.whboxitems (read, per country) -> dbo.WmsBlueToteIDMaster (write) -- ContainerAllocationDataSyncService.SyncToteIDMasterAsync / SyncOneCountryAsync", @"
+-- Per country: source totes from yesterday
+SELECT DISTINCT ToteID
+  FROM {toteSrcTable} WITH (NOLOCK)
+ WHERE CurrDate >= DATEADD(day, -1, CAST(DATEADD(hour, 4, SYSUTCDATETIME()) AS DATE))
+   AND CurrDate <  CAST(DATEADD(hour, 4, SYSUTCDATETIME()) AS DATE)
+   AND ToteID IS NOT NULL AND LTRIM(RTRIM(ToteID)) <> '';
+
+-- New totes not already known are bulk-inserted into dbo.WmsBlueToteIDMaster, then
+-- totes seen as used in the country's own box-items feed are marked used:
+SELECT DISTINCT ToteId
+  FROM {usedSrcTable} WITH (NOLOCK)
+ WHERE ToteId IS NOT NULL AND LTRIM(RTRIM(ToteId)) <> '';
+
+UPDATE dbo.WmsBlueToteIDMaster
+   SET Used = 'Y'
+ WHERE Country = @ct
+   AND ToteID IN @list
+   AND (Used IS NULL OR Used = 'N');
+-- {toteSrcTable}/{usedSrcTable} are interpolated per country (e.g. bfldata.dbo.BlueToteIDMaster,
+-- racks.dbo.whboxitems for UAE) -- no single query covers every country in one shot."),
+
+        new QueryEntry("Nightly Batches Status", "BoxesToWmsProd", "dbo.WmsUPCBoxHead / WmsUPCBoxDet (Azure source) -> usa.dbo.upcboxhead / upcboxdet (on-prem destination) -- ContainerAllocationDataSyncService.SyncBoxesToWmsProdAsync", @"
+-- Unpublished heads/dets pulled from Azure
+SELECT Country, BoxNo, TrnDate, Time1, PreparedBy, PalletType, ToteID, LPMDT, PONo,
+       WHouse, Userid, Closed, Remarks
+  FROM dbo.WmsUPCBoxHead WITH (NOLOCK)
+ WHERE PublishedTS IS NULL
+ ORDER BY TrnDate, BoxNo;
+
+SELECT Country, BoxNo, Itemcode, SrNo, Qty, UPC, StoreId, Status, ToteID
+  FROM dbo.WmsUPCBoxDet WITH (NOLOCK)
+ WHERE BoxNo IN @b;
+
+-- Then per box, in its own transaction: existence check, insert head + dets, commit,
+-- stamp PublishedTS:
+SELECT TOP 1 1 FROM usa.dbo.upcboxhead WITH (NOLOCK) WHERE BoxNo = @b;
+
+INSERT INTO usa.dbo.upcboxhead
+    (BoxNo, TrnDate, Time1, PreparedBy, PalletType, ToteID, LPMDT, PONo, WHouse, Userid, Closed, Remarks)
+VALUES
+    (@BoxNo, @TrnDate, @Time1, @PreparedBy, @PalletType, @ToteID, @LPMDT, @PONo, @WHouse, @Userid, @Closed, @Remarks);
+
+INSERT INTO usa.dbo.upcboxdet
+    (BoxNo, Itemcode, SrNo, Qty, UPC, StoreId, Status, ToteID)
+VALUES
+    (@BoxNo, @Itemcode, @SrNo, @Qty, @UPC, @StoreId, @Status, @ToteID);
+
+UPDATE dbo.WmsUPCBoxHead
+   SET PublishedTS = SYSDATETIME()
+ WHERE Country = @c AND BoxNo = @b;"),
+
+        new QueryEntry("Nightly Batches Status", "PendingGoodsReceiptEmail", "bfldata.dbo.BuildingCompletion, usa.dbo.usapurchase, Online.dbo.PhotoCheckingResult, bfldata.dbo.BUILDINGCOMPLETIONSumm -- CountingReportsService.GetPendingPurchaseAsync (called from PendingGoodsReceiptEmailSender.SendNowAsync)", @"
+SELECT bc.ContNo,
+       CAST(bc.Trndate AS DATE) AS CountingDate,
+       LEFT(bc.TrnTime, 8) AS CompletionTime,
+       ISNULL(bc.BuildingQty, 0) AS CountedQty,
+       DATEDIFF(day, bc.Trndate,
+                CAST(DATEADD(hour, 4, SYSUTCDATETIME()) AS DATE)) AS AgeingDays,
+       Divisions = ISNULL(NULLIF(STUFF((
+           SELECT ', ' + d.v
+             FROM (SELECT DISTINCT pcr.Division AS v
+                     FROM Online.dbo.PhotoCheckingResult pcr WITH (NOLOCK)
+                    WHERE pcr.ContNo = bc.ContNo
+                      AND ISNULL(pcr.Division, '') <> '') d
+            ORDER BY d.v
+              FOR XML PATH(''), TYPE).value('.', 'NVARCHAR(MAX)'), 1, 2, ''), ''),
+           (SELECT TOP 1 bcs.division
+              FROM bfldata.dbo.BUILDINGCOMPLETIONSumm bcs WITH (NOLOCK)
+             WHERE bcs.ContNo = bc.ContNo
+               AND ISNULL(bcs.division, '') <> ''))
+  FROM bfldata.dbo.BuildingCompletion bc WITH (NOLOCK)
+ WHERE bc.Trndate >= '2026-01-01'
+   AND NOT EXISTS (
+       SELECT 1
+         FROM usa.dbo.usapurchase up WITH (NOLOCK)
+        WHERE up.Contno = bc.ContNo
+   )
+ ORDER BY AgeingDays DESC, bc.ContNo;
+-- This is the ""Pending Goods Receipt"" section of the email. A second section,
+-- ""Purchased Containers -- Today"" (CountingReportsService.GetPurchasedContainersAsync),
+-- runs alongside it against the same tables."),
+
+        new QueryEntry("Nightly Batches Status", "IncreffSohFromGCP", "mvp-data-bi.Ecom_Bronze.INCREFF_{Country}_SOH (BigQuery) -> dbo.LPM_ECOM_INCREFF_SOH (DELETE by country + bulk insert) -- IncreffSohFromGcpService.RefreshAsync / UpsertRowsAsync", @"
+-- BigQuery source SELECT (per country, UAE or KSA)
+SELECT `Client Sku ID` AS ItemCode, SUM(quantity) AS Soh
+  FROM Ecom_Bronze.INCREFF_{country}_SOH
+ WHERE CalenderDate = @date
+ GROUP BY 1;
+
+-- SQL Server side: wipe this country's rows, then SqlBulkCopy the fresh rows in
+-- (no literal INSERT statement -- bulk copy API)
+DELETE FROM dbo.LPM_ECOM_INCREFF_SOH WHERE Country = @country;"),
+
+        new QueryEntry("Nightly Batches Status", "IncreffMfcsSohCompare", "dbo.LPM_ECOM_INCREFF_SOH, RACKS.dbo.lpm_locstock, RACKS.dbo.WHBoxItems, RACKS.dbo.MFCS_LOCSTOCK_INT, DATAREPORTING.dbo.vUPC_SUBCLASS, USA.dbo.UPCBarCodes -> dbo.LPM_ECOM_SOH_COMPARISON (TRUNCATE + INSERT) -- IncreffMfcsSohCompareService.RefreshAsync", @"
+TRUNCATE TABLE dbo.LPM_ECOM_SOH_COMPARISON;
+
+;WITH Increff AS (
+    SELECT Country, Itemcode, SUM(SOH) AS SOH
+      FROM dbo.LPM_ECOM_INCREFF_SOH
+     WHERE SOH <> 0
+     GROUP BY Country, Itemcode
+),
+Mfcs AS (
+    SELECT 'UAE' AS Country, Itemcode, SUM(MFCS_SOH) AS SOH
+      FROM RACKS.dbo.lpm_locstock
+     WHERE StoreID = 'ONLINE' AND SOH <> 0
+     GROUP BY Itemcode
+    UNION ALL
+    SELECT 'KSA' AS Country, Itemcode, SUM(MFCS_SOH) AS SOH
+      FROM RACKS.dbo.lpm_locstock
+     WHERE StoreID = 'ONLINEKSA' AND SOH <> 0
+     GROUP BY Itemcode
+),
+GsRejected AS (
+    SELECT 'UAE' AS Country, ItemCode AS Itemcode, SUM(Qty) AS Qty
+      FROM RACKS.dbo.WHBoxItems
+     WHERE PalletType = 'GS'
+     GROUP BY ItemCode
+),
+GwRejected AS (
+    SELECT 'UAE' AS Country, ItemCode AS Itemcode, SUM(Qty) AS Qty
+      FROM RACKS.dbo.WHBoxItems
+     WHERE PalletType = 'GW'
+     GROUP BY ItemCode
+),
+InTransitUae AS (
+    SELECT ITEMCODE AS Itemcode, SUM(INTRANSIT_QTY) AS Qty
+      FROM RACKS.dbo.MFCS_LOCSTOCK_INT
+     WHERE MFCS_TOLOCID = 10007
+     GROUP BY ITEMCODE
+),
+InTransitKsa AS (
+    SELECT ITEMCODE AS Itemcode, SUM(INTRANSIT_QTY) AS Qty
+      FROM RACKS.dbo.MFCS_LOCSTOCK_INT
+     WHERE MFCS_TOLOCID = 20002
+     GROUP BY ITEMCODE
+),
+Spine AS (
+    SELECT Country, Itemcode FROM Increff
+    UNION SELECT Country, Itemcode FROM Mfcs
+    UNION SELECT Country, Itemcode FROM GsRejected
+    UNION SELECT Country, Itemcode FROM GwRejected
+    UNION SELECT 'UAE', Itemcode FROM InTransitUae
+    UNION SELECT 'KSA', Itemcode FROM InTransitKsa
+),
+Subclass AS (
+    SELECT Itemcode, Division, Department, class AS Class, subclass AS Subclass, Family,
+           ROW_NUMBER() OVER (PARTITION BY Itemcode ORDER BY (SELECT NULL)) AS rn
+      FROM DATAREPORTING.dbo.vUPC_SUBCLASS
+),
+Vendor AS (
+    SELECT Itemcode, Vendor,
+           ROW_NUMBER() OVER (PARTITION BY Itemcode ORDER BY (SELECT NULL)) AS rn
+      FROM USA.dbo.UPCBarCodes
+)
+INSERT INTO dbo.LPM_ECOM_SOH_COMPARISON
+    (Country, Itemcode, IncreffSOH, MFCS_SOH, GateKeeperRejectedSummer, GateKeeperRejectedWinter,
+     InTransitUAE, InTransitKSA, CreateTS, Division, Department, Class, Subclass, Family, Brand)
+SELECT
+    sp.Country, sp.Itemcode,
+    ISNULL(i.SOH, 0)  AS IncreffSOH,
+    ISNULL(m.SOH, 0)  AS MFCS_SOH,
+    ISNULL(gs.Qty, 0) AS GateKeeperRejectedSummer,
+    ISNULL(gw.Qty, 0) AS GateKeeperRejectedWinter,
+    ISNULL(iu.Qty, 0) AS InTransitUAE,
+    ISNULL(ik.Qty, 0) AS InTransitKSA,
+    DATEADD(hour, 4, SYSUTCDATETIME()) AS CreateTS,
+    s.Division, s.Department, s.Class, s.Subclass, s.Family,
+    v.Vendor AS Brand
+  FROM Spine sp
+  LEFT JOIN Increff i     ON i.Country = sp.Country AND i.Itemcode = sp.Itemcode
+  LEFT JOIN Mfcs m        ON m.Country = sp.Country AND m.Itemcode = sp.Itemcode
+  LEFT JOIN GsRejected gs ON gs.Country = sp.Country AND gs.Itemcode = sp.Itemcode
+  LEFT JOIN GwRejected gw ON gw.Country = sp.Country AND gw.Itemcode = sp.Itemcode
+  LEFT JOIN InTransitUae iu ON iu.Itemcode = sp.Itemcode AND sp.Country = 'UAE'
+  LEFT JOIN InTransitKsa ik ON ik.Itemcode = sp.Itemcode AND sp.Country = 'KSA'
+  LEFT JOIN Subclass s    ON s.Itemcode = sp.Itemcode AND s.rn = 1
+  LEFT JOIN Vendor v      ON v.Itemcode = sp.Itemcode AND v.rn = 1;"),
+
+        new QueryEntry("Nightly Batches Status", "GenerateEAN13", "DATAREPORTING.dbo.UPC_SUBCLASS -- GenerateEan13Service.RunOnceAsync (EAN13 computed in C#, written back via staging UPDATE)", @"
+SELECT TOP 100000 ORACLE_SKU
+  FROM DATAREPORTING.dbo.UPC_SUBCLASS
+ WHERE ISNULL(ORACLE_SKU, '') <> '' AND ISNULL(EAN13, '') = '';
+-- (TOP 100000 -- see source comment, this cap is a temp test-mode leftover)
+
+-- EAN13 itself is computed in C# per row (digits from ORACLE_SKU, padded to 9 and
+-- prefixed '200', normalized to a 13-digit barcode with check digit) -- not SQL.
+-- Results are bulk-copied into a staging table, then written back:
+CREATE TABLE #Ean13Updates (ORACLE_SKU NVARCHAR(50) NOT NULL PRIMARY KEY, EAN13 CHAR(13) NOT NULL);
+
+UPDATE us
+   SET us.EAN13 = u.EAN13
+  FROM DATAREPORTING.dbo.UPC_SUBCLASS us
+ INNER JOIN #Ean13Updates u ON u.ORACLE_SKU = us.ORACLE_SKU;"),
     };
 }
