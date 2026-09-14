@@ -317,11 +317,13 @@
 }
 
 @code {
-    // Report 1 (Monthly Summary): UAE's 3 main warehouses plus every export country as
-    // its own single-facility group, matching the report's own mockup exactly. Always
-    // shows all 8 -- not affected by the Country filter below (that filter is for
+    // Report 1 (Monthly Summary): UAE's 3 main warehouses, then a "UAE (Total)" column
+    // that re-sums every UAE row regardless of warehouse (JAFZA + YOTO/YOTO-BU + TECHNO's
+    // catch-all -- blank, BlackBox, and every other UAE warehouse code), then every
+    // export country as its own single-facility group, matching the report's own mockup.
+    // Always shows all 9 -- not affected by the Country filter below (that filter is for
     // reports 2/3 only).
-    private static readonly string[] MonthlyGroups = { "TECHNO", "YOTO", "JAFZA", "KSA", "QATAR", "KUWAIT", "MYS", "BAHRAIN" };
+    private static readonly string[] MonthlyGroups = { "TECHNO", "YOTO", "JAFZA", "UAE (Total)", "KSA", "QATAR", "KUWAIT", "MYS", "BAHRAIN" };
     private static readonly string[] SeasonGroups = { "Summer", "Winter" };
 
     // Display label -> actual Country value stored in dbo.WMS_WHSTOCK_LASTDAY

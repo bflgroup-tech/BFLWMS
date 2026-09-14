@@ -18,17 +18,27 @@ public record WhStockLastDayGcpRow(
 
 /// <summary>
 /// Pulls the monthly warehouse-stock-last-day snapshot from BigQuery
-/// (mvp-data-bi.cdm_silver.wh_stock_last_day) and MERGE-upserts it into LPMSIM's
-/// dbo.WMS_WHSTOCK_LASTDAY. Unlike WeeklySalesFromGcpService's source, this one
-/// already carries its own Country column -- rather than a per-country "add
-/// country" activation step (which just meant clicking Add six times for six
-/// countries the feed already has), this job is a single Active toggle: the full
-/// feed is fetched once and every distinct country found in it gets upserted,
-/// same single-row shape WeeklySalesFromGCP already uses on Nightly Batches Status.
+/// (mvp-data-bi.cdm_silver.wh_stock_last_day) and replaces it into LPMSIM's
+/// dbo.WMS_WHSTOCK_LASTDAY, scoped to (Country, LastDayOfMonth): for each active
+/// country, every existing row for the exact LastDayOfMonth values present in
+/// that country's fetched slice is deleted, then the fresh slice is inserted in
+/// full. This -- not a MERGE -- is deliberate: a MERGE's "WHEN MATCHED THEN
+/// UPDATE" never removes a (Division, Season, PalletCategory, Warehouse) combo
+/// that used to exist for a given country/month but has since dropped out of the
+/// BigQuery feed, so stale combos would accumulate forever. Delete-then-insert
+/// scoped to the touched months means other months/countries not part of this
+/// run are left untouched, unlike a blind TRUNCATE TABLE of the whole table.
+///
+/// Unlike WeeklySalesFromGcpService's source, this one already carries its own
+/// Country column -- rather than a per-country "add country" activation step
+/// (which just meant clicking Add six times for six countries the feed already
+/// has), this job is a single Active toggle: the full feed is fetched once and
+/// every distinct country found in it gets replaced, same single-row shape
+/// WeeklySalesFromGCP already uses on Nightly Batches Status.
 ///
 /// Job-run log and the cross-instance lock live in the shared ScheduledJobService
 /// (see WhStockLastDayBatchService) rather than a duplicated copy here -- this
-/// class only knows how to fetch and upsert.
+/// class only knows how to fetch and replace.
 /// </summary>
 public class WhStockLastDayFromGcpService(IOnPremConnectionResolver resolver, IOptions<GcpBigQueryOptions> gcpOpts, IConfiguration configuration)
 {
@@ -105,10 +115,14 @@ public class WhStockLastDayFromGcpService(IOnPremConnectionResolver resolver, IO
         return rows;
     }
 
-    // ====================== Upsert into dbo.WMS_WHSTOCK_LASTDAY (one country's rows) ======================
+    // ====================== Replace one country's rows in dbo.WMS_WHSTOCK_LASTDAY ======================
     // Bulk-copies the country's slice of the already-fetched feed into a session-scoped
-    // #Staging temp table, then a single set-based MERGE — same shape as
-    // WeeklySalesFromGcpService, just filtered to one country's rows first.
+    // #Staging temp table, then DELETEs every existing row for this country at exactly
+    // the LastDayOfMonth values present in that slice (clearing out any combo that's
+    // dropped out of the feed since the last run) before INSERTing the fresh slice in
+    // full. Scoped to (Country, LastDayOfMonth) so other months/countries untouched by
+    // this run are left alone -- not a MERGE (never deletes stale combos) and not a
+    // blind TRUNCATE TABLE (would wipe every month/country, not just this run's).
 
     private const string CreateStagingSql = @"
         CREATE TABLE #Staging (
@@ -125,17 +139,18 @@ public class WhStockLastDayFromGcpService(IOnPremConnectionResolver resolver, IO
             Created_ts     DATE          NULL
         );";
 
-    private const string MergeFromStagingSql = @"
-        MERGE dbo.WMS_WHSTOCK_LASTDAY AS t
-        USING #Staging AS s
-          ON t.Country = s.Country AND t.Warehouse = s.Warehouse AND t.PalletCategory = s.PalletCategory
-         AND t.LastDayOfMonth = s.LastDayOfMonth AND t.Division = s.Division AND t.Season = s.Season
-        WHEN MATCHED THEN
-          UPDATE SET Qty = s.Qty, SKUCount = s.SKUCount, BoxCount = s.BoxCount, PalletCount = s.PalletCount,
-                     Created_ts = s.Created_ts, UpdatedTS = DATEADD(hour, 4, SYSUTCDATETIME())
-        WHEN NOT MATCHED THEN
-          INSERT (Country, Warehouse, PalletCategory, LastDayOfMonth, Division, Season, Qty, SKUCount, BoxCount, PalletCount, Created_ts)
-          VALUES (s.Country, s.Warehouse, s.PalletCategory, s.LastDayOfMonth, s.Division, s.Season, s.Qty, s.SKUCount, s.BoxCount, s.PalletCount, s.Created_ts);";
+    // #Staging holds only this one country's rows (filtered before bulk copy), so the
+    // subquery needs no Country filter of its own.
+    private const string DeleteExistingScopeSql = @"
+        DELETE FROM dbo.WMS_WHSTOCK_LASTDAY
+         WHERE Country = @country
+           AND LastDayOfMonth IN (SELECT DISTINCT LastDayOfMonth FROM #Staging);";
+
+    private const string InsertFromStagingSql = @"
+        INSERT INTO dbo.WMS_WHSTOCK_LASTDAY
+            (Country, Warehouse, PalletCategory, LastDayOfMonth, Division, Season, Qty, SKUCount, BoxCount, PalletCount, Created_ts)
+        SELECT Country, Warehouse, PalletCategory, LastDayOfMonth, Division, Season, Qty, SKUCount, BoxCount, PalletCount, Created_ts
+          FROM #Staging;";
 
     private static DataTable ToStagingTable(IReadOnlyList<WhStockLastDayGcpRow> rows)
     {
@@ -160,10 +175,12 @@ public class WhStockLastDayFromGcpService(IOnPremConnectionResolver resolver, IO
         return table;
     }
 
-    /// <summary>Upserts one country's slice of the already-fetched feed. Returns how many
-    /// of that country's rows were found in the feed (0 is a valid, real answer — see the
-    /// class-level note about BigQuery's Country values not yet being confirmed to match
-    /// WMS country names).</summary>
+    /// <summary>Replaces one country's slice of the already-fetched feed: deletes every
+    /// existing row for this country at the LastDayOfMonth values present in the fetch,
+    /// then inserts the fresh slice in full (see the class-level note on why this isn't a
+    /// MERGE or a table-wide TRUNCATE). Returns how many of that country's rows were found
+    /// in the feed (0 is a valid, real answer — see the class-level note about BigQuery's
+    /// Country values not yet being confirmed to match WMS country names).</summary>
     public async Task<int> UpsertRowsAsync(string country, IReadOnlyList<WhStockLastDayGcpRow> allRows, CancellationToken ct = default)
     {
         var rows = allRows.Where(r => string.Equals(r.Country, country, StringComparison.OrdinalIgnoreCase)).ToList();
@@ -186,7 +203,10 @@ public class WhStockLastDayFromGcpService(IOnPremConnectionResolver resolver, IO
             }
 
             await c.ExecuteAsync(new CommandDefinition(
-                MergeFromStagingSql, transaction: tx, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+                DeleteExistingScopeSql, new { country }, transaction: tx, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+
+            await c.ExecuteAsync(new CommandDefinition(
+                InsertFromStagingSql, transaction: tx, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
 
             await tx.CommitAsync(ct);
             return rows.Count;

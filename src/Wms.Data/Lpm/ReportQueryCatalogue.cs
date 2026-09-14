@@ -1717,9 +1717,9 @@ SELECT COUNT(DISTINCT c.SrNo) AS GinCount, ISNULL(SUM(c.Qty),0) AS GinQty
         // ============================== SOH Monthly Summary ==============================
         new QueryEntry("SOH Monthly Summary", "Monthly rollup by warehouse group", "dbo.WMS_WHSTOCK_LASTDAY -- WarehouseSohSummaryService.GetSohMonthlySummaryAsync", @"
 ; WITH Grp AS (
-    SELECT *, GroupLabel = CASE WHEN Country = 'UAE' AND (ISNULL(Warehouse, '') = '' OR Warehouse IN ('TECHNO', 'TECHNO-E')) THEN 'TECHNO'
-                                 WHEN Country = 'UAE' AND Warehouse IN ('YOTO', 'YOTO-BU')                                    THEN 'YOTO'
-                                 WHEN Country = 'UAE' AND Warehouse = 'JAFZA'                                                 THEN 'JAFZA'
+    SELECT *, GroupLabel = CASE WHEN Country = 'UAE' AND Warehouse IN ('YOTO', 'YOTO-BU')                                     THEN 'YOTO'
+                                 WHEN Country = 'UAE' AND Warehouse = 'JAFZA'                                                  THEN 'JAFZA'
+                                 WHEN Country = 'UAE'                                                                         THEN 'TECHNO'
                                  WHEN Country = 'KSA'                                                                        THEN 'KSA'
                                  WHEN Country = 'QATAR'                                                                      THEN 'QATAR'
                                  WHEN Country = 'KUWAIT'                                                                     THEN 'KUWAIT'
@@ -1739,6 +1739,22 @@ SELECT
   FROM Grp
  WHERE GroupLabel IS NOT NULL
  GROUP BY GroupLabel, LastDayOfMonth
+
+UNION ALL
+
+-- 'UAE (Total)' -- every UAE row regardless of warehouse (JAFZA + YOTO/YOTO-BU +
+-- TECHNO's catch-all: blank, BlackBox, and every other UAE warehouse code), so the
+-- country has one grand-total column alongside its per-warehouse breakdown.
+SELECT
+    GroupLabel  = 'UAE (Total)',
+    LastDayOfMonth,
+    Qty         = CAST(ISNULL(SUM(Qty), 0) AS BIGINT),
+    BoxCount    = CAST(ISNULL(SUM(BoxCount), 0) AS BIGINT),
+    PalletCount = CAST(ISNULL(SUM(PalletCount), 0) AS BIGINT)
+  FROM dbo.WMS_WHSTOCK_LASTDAY
+ WHERE YEAR(LastDayOfMonth) = @year AND Country = 'UAE'
+ GROUP BY LastDayOfMonth
+
  ORDER BY LastDayOfMonth, GroupLabel"),
 
         // ============================== YOTO VNA Dashboard ==============================
