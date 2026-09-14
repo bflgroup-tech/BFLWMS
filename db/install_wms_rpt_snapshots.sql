@@ -35,8 +35,7 @@ CREATE TABLE dbo.WmsRptJobRun (
     RowsProcessed  INT           NULL,
     DatesProcessed INT           NULL,
     ErrorMessage   NVARCHAR(MAX) NULL,
-    TriggeredBy    NVARCHAR(100) NULL,                     -- 'Timer' or username for on-demand
-    BuildVersion   NVARCHAR(50)  NULL                      -- app Version+LatestPrNumber running when this row started
+    TriggeredBy    NVARCHAR(100) NULL                      -- 'Timer' or username for on-demand
 );
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_WmsRptJobRun_Name_TS' AND object_id=OBJECT_ID('dbo.WmsRptJobRun'))
     CREATE INDEX IX_WmsRptJobRun_Name_TS ON dbo.WmsRptJobRun (JobName, StartTS DESC);
