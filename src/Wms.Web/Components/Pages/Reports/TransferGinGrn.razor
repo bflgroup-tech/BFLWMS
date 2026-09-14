@@ -21,7 +21,12 @@
         <div style="background:white; border-radius:8px; max-width:90vw; max-height:85vh; overflow:auto; padding:20px; box-shadow:0 8px 32px rgba(0,0,0,0.3);" @onclick:stopPropagation="true">
             <div style="display:flex; justify-content:space-between; align-items:center; gap:20px; margin-bottom:14px;">
                 <h3 style="margin:0; font-size:15px;">@_breakdownTitle</h3>
-                <button class="aiwms-btn aiwms-btn-secondary" @onclick="CloseBreakdown">Close</button>
+                <div style="display:flex; gap:8px;">
+                    <button class="aiwms-btn aiwms-btn-secondary" @onclick="ExportBreakdownCsvAsync" disabled="@(_breakdownResult is null || _breakdownResult.Rows.Count == 0)">
+                        Export to Excel
+                    </button>
+                    <button class="aiwms-btn aiwms-btn-secondary" @onclick="CloseBreakdown">Close</button>
+                </div>
             </div>
 
             @if (_breakdownLoading)
@@ -326,17 +331,20 @@
     private bool    _breakdownOpen;
     private bool    _breakdownLoading;
     private string  _breakdownTitle = "";
+    private string  _breakdownKind  = ""; // "Transfer" | "GIN" — only used for the exported filename
     private string? _breakdownError;
     private TransferGinBreakdownResult? _breakdownResult;
 
     private Task OpenTransferBreakdownAsync()
     {
+        _breakdownKind  = "Transfer";
         _breakdownTitle = "Transfer — Division / Department / Group Code / Brand";
         return LoadBreakdownAsync(() => Svc.GetTransferBreakdownAsync(_lastCountries, _lastStore, _lastDateFrom, _lastDateTo));
     }
 
     private Task OpenGinBreakdownAsync()
     {
+        _breakdownKind  = "GIN";
         _breakdownTitle = "GIN — Division / Department / Group Code / Brand";
         return LoadBreakdownAsync(() => Svc.GetGinBreakdownAsync(_lastCountries, _lastStore, _lastDateFrom, _lastDateTo));
     }
@@ -517,6 +525,24 @@
         var b64      = Convert.ToBase64String(Encoding.UTF8.GetBytes(sb.ToString()));
         var country  = _country == BflGroupValue ? "BFLGroup" : (_canSelectMultiple ? _country : _lockedCountry);
         var filename = $"TransferGinGrn_{country}_{_dateFrom:yyyyMMdd}_{_dateTo:yyyyMMdd}.csv";
+        await JS.InvokeVoidAsync("eval",
+            $"(function(){{var a=document.createElement('a');a.href='data:text/csv;base64,{b64}';" +
+            $"a.download='{filename}';document.body.appendChild(a);a.click();document.body.removeChild(a);}})();");
+    }
+
+    private async Task ExportBreakdownCsvAsync()
+    {
+        if (_breakdownResult is null) return;
+
+        var sb = new StringBuilder();
+        sb.AppendLine("Division,Department,GroupCode,Brand,Qty");
+        foreach (var r in _breakdownResult.Rows)
+            sb.AppendLine($"{Csv(r.Division)},{Csv(r.Department)},{Csv(r.GroupCode)},{Csv(r.Brand)},{r.Qty}");
+        sb.AppendLine($"Grand Total,,,,{_breakdownResult.GrandQty}");
+
+        var b64      = Convert.ToBase64String(Encoding.UTF8.GetBytes(sb.ToString()));
+        var country  = _country == BflGroupValue ? "BFLGroup" : (_canSelectMultiple ? _country : _lockedCountry);
+        var filename = $"TransferGinGrn_{_breakdownKind}Breakdown_{country}_{_lastDateFrom:yyyyMMdd}_{_lastDateTo:yyyyMMdd}.csv";
         await JS.InvokeVoidAsync("eval",
             $"(function(){{var a=document.createElement('a');a.href='data:text/csv;base64,{b64}';" +
             $"a.download='{filename}';document.body.appendChild(a);a.click();document.body.removeChild(a);}})();");
