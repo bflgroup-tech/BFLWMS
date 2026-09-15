@@ -1913,6 +1913,28 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                         return Math.Min(cap, RemainingAllowance(r.Country, r.DivCode));
                     }
 
+                    // Ceiling clamp for a sequential take. Passes 1-3 of BOTH OTS
+                    // algorithms sized their take off the tier helpers rather than
+                    // CapFor, so the (Country, DivCode) allowance never reached them —
+                    // only Pass 4 consulted it. ECOM, ranked first as Z, took its full
+                    // tier in Pass 1b and again in Pass 2 before any ceiling could bind:
+                    // 33% against a 15% cap on AEINT7248. Every sequential take now
+                    // goes through here.
+                    //
+                    // The allowance is a REMAINING budget while cap is an absolute
+                    // per-store level with `current` still to come off it, so the clamp
+                    // is on the take, not on the cap. The skip reason names the ceiling
+                    // when that is what stopped the take, so a CeilingHit row is
+                    // distinguishable in the trace from a store that is at its tier.
+                    (int Take, string? Skip) SizeTake(OtsRunLookupRow r, int cap, int current, int remaining)
+                    {
+                        var headroom = cap - current;
+                        var allow    = RemainingAllowance(r.Country, r.DivCode);
+                        var take     = Math.Min(Math.Min(headroom, remaining), allow);
+                        if (take > 0) return (take, null);
+                        return (0, headroom <= 0 ? "CapReached" : "CeilingHit");
+                    }
+
                     // Row factory bound to this item — records which pass emitted
                     // each piece and stamps AvgOtsPercent + LiveOtsPct + TgtEOM +
                     // RawSkuMax (all sourced from WmsOtsPoAllocationRun /
@@ -2080,10 +2102,10 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                             var (_, cap, tierName) = SkuMaxRawAndCapFor(r);
                             var current = allocs.TryGetValue(r.StoreID, out var row) ? row.AllocQty : 0;
                             var remBefore = remaining;
-                            var take = Math.Min(cap - current, remaining);
+                            var (take, skip) = SizeTake(r, cap, current, remaining);
                             if (take <= 0)
                             {
-                                RecordTrace(1, i, r, tierName, cap, current, remBefore, 0, skipReason: "CapReached");
+                                RecordTrace(1, i, r, tierName, cap, current, remBefore, 0, skipReason: skip);
                                 continue;
                             }
                             allocs[r.StoreID] = BumpRow(row, r, take, 0, pass: 1);
@@ -2103,10 +2125,10 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                                 var (_, cap, tierName) = SkuMaxRawAndCapFor(r);
                                 var current = allocs.TryGetValue(r.StoreID, out var row) ? row.AllocQty : 0;
                                 var remBefore = remaining;
-                                var take = Math.Min(cap - current, remaining);
+                                var (take, skip) = SizeTake(r, cap, current, remaining);
                                 if (take <= 0)
                                 {
-                                    RecordTrace(2, i, r, tierName, cap, current, remBefore, 0, skipReason: "CapReached");
+                                    RecordTrace(2, i, r, tierName, cap, current, remBefore, 0, skipReason: skip);
                                     continue;
                                 }
                                 allocs[r.StoreID] = BumpRow(row, r, take, 0, pass: 2);
@@ -2131,10 +2153,12 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                                     var r = pass3Stores[i];
                                     var (_, cap, tierName) = SkuMaxRawAndCapFor(r);
                                     var current = allocs.TryGetValue(r.StoreID, out var row) ? row.AllocQty : 0;
-                                    if (current >= cap)
+                                    // One unit per visit; the ceiling can stop it just as the tier can.
+                                    var (unit, skip) = SizeTake(r, cap, current, 1);
+                                    if (unit <= 0)
                                     {
                                         if (pass3SkipLogged.Add(r.StoreID))
-                                            RecordTrace(3, i, r, tierName, cap, current, remaining, 0, skipReason: "CapReached");
+                                            RecordTrace(3, i, r, tierName, cap, current, remaining, 0, skipReason: skip);
                                         continue;
                                     }
                                     var remBefore = remaining;
@@ -2332,10 +2356,10 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                                 var (_, cap, tierName) = SkuMaxRawAndCapFor(r);
                                 var current = allocs.TryGetValue(r.StoreID, out var row) ? row.AllocQty : 0;
                                 var remBefore = remaining;
-                                var take = Math.Min(cap - current, remaining);
+                                var (take, skip) = SizeTake(r, cap, current, remaining);
                                 if (take <= 0)
                                 {
-                                    RecordTrace(1, i, r, tierName, cap, current, remBefore, 0, skipReason: "CapReached");
+                                    RecordTrace(1, i, r, tierName, cap, current, remBefore, 0, skipReason: skip);
                                     continue;
                                 }
                                 allocs[r.StoreID] = BumpRow(row, r, take, 0, pass: 1, tierNameOverride: tierName);
@@ -2360,10 +2384,10 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                                     var cap = Math.Max(0, 1 - sohOverride);
                                     var current = allocs.TryGetValue(r.StoreID, out var row) ? row.AllocQty : 0;
                                     var remBefore = remaining;
-                                    var take = Math.Min(cap - current, remaining);
+                                    var (take, skip) = SizeTake(r, cap, current, remaining);
                                     if (take <= 0)
                                     {
-                                        RecordTrace(1, i, r, "MinMin", cap, current, remBefore, 0, skipReason: "CapReached", rawSkuMaxOverride: 1);
+                                        RecordTrace(1, i, r, "MinMin", cap, current, remBefore, 0, skipReason: skip, rawSkuMaxOverride: 1);
                                         continue;
                                     }
                                     allocs[r.StoreID] = BumpRow(row, r, take, 0, pass: 1, tierNameOverride: "MinMin");
@@ -2387,10 +2411,10 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                                 var cap = MinMinCapFor(r);
                                 var current = allocs.TryGetValue(r.StoreID, out var row) ? row.AllocQty : 0;
                                 var remBefore = remaining;
-                                var take = Math.Min(cap - current, remaining);
+                                var (take, skip) = SizeTake(r, cap, current, remaining);
                                 if (take <= 0)
                                 {
-                                    RecordTrace(1, i, r, "MinMin", cap, current, remBefore, 0, skipReason: "CapReached");
+                                    RecordTrace(1, i, r, "MinMin", cap, current, remBefore, 0, skipReason: skip);
                                     continue;
                                 }
                                 allocs[r.StoreID] = BumpRow(row, r, take, 0, pass: 1, tierNameOverride: "MinMin");
@@ -2410,10 +2434,10 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                                 var (_, tierCap, tierName) = SkuMaxRawAndCapFor(r);   // MinMax/IdealMax/MaxMax picked by OTS-vs-avg band
                                 var current = allocs.TryGetValue(r.StoreID, out var row) ? row.AllocQty : 0;
                                 var remBefore = remaining;
-                                var take = Math.Min(tierCap - current, remaining);
+                                var (take, skip) = SizeTake(r, tierCap, current, remaining);
                                 if (take <= 0)
                                 {
-                                    RecordTrace(2, i, r, tierName, tierCap, current, remBefore, 0, skipReason: "CapReached");
+                                    RecordTrace(2, i, r, tierName, tierCap, current, remBefore, 0, skipReason: skip);
                                     continue;
                                 }
                                 allocs[r.StoreID] = BumpRow(row, r, take, 0, pass: 2);
@@ -2436,10 +2460,10 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                                 var cap = MinMinCapFor(r);
                                 var current = allocs.TryGetValue(r.StoreID, out var row) ? row.AllocQty : 0;
                                 var remBefore = remaining;
-                                var take = Math.Min(cap - current, remaining);
+                                var (take, skip) = SizeTake(r, cap, current, remaining);
                                 if (take <= 0)
                                 {
-                                    RecordTrace(3, i, r, "MinMin", cap, current, remBefore, 0, skipReason: "CapReached");
+                                    RecordTrace(3, i, r, "MinMin", cap, current, remBefore, 0, skipReason: skip);
                                     continue;
                                 }
                                 allocs[r.StoreID] = BumpRow(row, r, take, 0, pass: 3, tierNameOverride: "MinMin");
