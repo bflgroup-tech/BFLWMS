@@ -54,13 +54,21 @@ public class JafzaExportProductionService(IOnPremConnectionResolver resolver)
         DateTime fromDate, DateTime toDate, CancellationToken ct = default)
     {
         await using var c = OpenOnPremBackup();
+        // FULL OUTER JOIN, not LEFT: a (Division, ShopName) can have zero late-hour
+        // activity on day X (no row in b) while still having early-hour activity on
+        // day X+1 (a row only in n). A LEFT JOIN driven by b silently drops that
+        // shop's early-hour Qty entirely, since there's no b row to attach it to.
         var rows = await c.QueryAsync<JafzaExportProductionRow>(new CommandDefinition(BucketedCte + @"
-            SELECT b.TrnDate, b.Division, b.ShopName, Qty = b.LateQty + ISNULL(n.EarlyQty, 0)
+            SELECT TrnDate  = COALESCE(b.TrnDate, DATEADD(day, -1, n.TrnDate)),
+                   Division = COALESCE(b.Division, n.Division),
+                   ShopName = COALESCE(b.ShopName, n.ShopName),
+                   Qty      = ISNULL(b.LateQty, 0) + ISNULL(n.EarlyQty, 0)
               FROM Bucketed b
-              LEFT JOIN Bucketed n
+              FULL OUTER JOIN Bucketed n
                 ON n.TrnDate = DATEADD(day, 1, b.TrnDate) AND n.Division = b.Division AND n.ShopName = b.ShopName
-             WHERE b.TrnDate >= @from AND b.TrnDate <= @to
-             ORDER BY b.TrnDate, b.Division, b.ShopName",
+             WHERE COALESCE(b.TrnDate, DATEADD(day, -1, n.TrnDate)) >= @from
+               AND COALESCE(b.TrnDate, DATEADD(day, -1, n.TrnDate)) <= @to
+             ORDER BY TrnDate, Division, ShopName",
             new { from = fromDate.Date, to = toDate.Date },
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         return rows.AsList();

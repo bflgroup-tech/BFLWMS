@@ -1264,12 +1264,16 @@ SELECT COUNT(DISTINCT c.SrNo) AS GinCount, ISNULL(SUM(c.Qty),0) AS GinQty
              WHERE Warehouse = 'JAFZA' AND TrnDate >= @from AND TrnDate <= DATEADD(day, 1, @to)
              GROUP BY TrnDate, Division, ShopName
         )
-            SELECT b.TrnDate, b.Division, b.ShopName, Qty = b.LateQty + ISNULL(n.EarlyQty, 0)
+            SELECT TrnDate  = COALESCE(b.TrnDate, DATEADD(day, -1, n.TrnDate)),
+                   Division = COALESCE(b.Division, n.Division),
+                   ShopName = COALESCE(b.ShopName, n.ShopName),
+                   Qty      = ISNULL(b.LateQty, 0) + ISNULL(n.EarlyQty, 0)
               FROM Bucketed b
-              LEFT JOIN Bucketed n
+              FULL OUTER JOIN Bucketed n
                 ON n.TrnDate = DATEADD(day, 1, b.TrnDate) AND n.Division = b.Division AND n.ShopName = b.ShopName
-             WHERE b.TrnDate >= @from AND b.TrnDate <= @to
-             ORDER BY b.TrnDate, b.Division, b.ShopName"),
+             WHERE COALESCE(b.TrnDate, DATEADD(day, -1, n.TrnDate)) >= @from
+               AND COALESCE(b.TrnDate, DATEADD(day, -1, n.TrnDate)) <= @to
+             ORDER BY TrnDate, Division, ShopName"),
 
         new QueryEntry("JAFZA Production Report", "Box GRN - Summary (Division-wise)", "USA.dbo.vUPCBoxDet, HODATA.dbo.ItemMaster, USA.dbo.USAPriority -- JafzaBoxGrnProductionService.FetchRawAsync / RawQuerySql (feeds GetSummaryAsync); Summary and Detailed both run off this same raw query, grouped differently in C#", @"
         SELECT
