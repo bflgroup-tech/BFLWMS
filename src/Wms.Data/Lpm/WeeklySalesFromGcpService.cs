@@ -239,8 +239,8 @@ public class WeeklySalesFromGcpService(IOnPremConnectionResolver resolver, IOpti
         WHEN MATCHED THEN
           UPDATE SET SalesQty = s.SalesQty, SalesAmt = s.SalesAmt, UpdatedTS = DATEADD(hour, 4, SYSUTCDATETIME())
         WHEN NOT MATCHED THEN
-          INSERT (StoreID, DivCode, Year1, Month1, Week, SalesQty, SalesAmt, CreateTS)
-          VALUES (s.StoreID, s.DivCode, s.Year1, s.Month1, s.Week, s.SalesQty, s.SalesAmt, DATEADD(hour, 4, SYSUTCDATETIME()));";
+          INSERT (StoreID, DivCode, Year1, Month1, Week, SalesQty, SalesAmt, CreateTS, Turns)
+          VALUES (s.StoreID, s.DivCode, s.Year1, s.Month1, s.Week, s.SalesQty, s.SalesAmt, DATEADD(hour, 4, SYSUTCDATETIME()), 0);";
 
     private static DataTable ToStagingTable(IReadOnlyList<WeeklySalesGcpRow> rows)
     {
