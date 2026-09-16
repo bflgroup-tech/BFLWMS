@@ -31,6 +31,14 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
     private const int ConnectTimeoutSeconds = 60;
     private const int CommandTimeoutSeconds = 300;
 
+    /// <summary>
+    /// WMS_Cont_Allocation_Header.Store_Allocation for rows this service writes.
+    /// 'N' = PO Allocation; a store allocation writer stamps 'Y'. The column is
+    /// NOT NULL with a 'N' default and a Y/N check constraint — see
+    /// db/migrate_lpmsim_cont_allocation_header_add_store_allocation.sql.
+    /// </summary>
+    private const string StoreAllocationFlagPo = "N";
+
     // ===================== Future-LPMDt CDC hold =====================
     // A PO line whose LPMDt lands two calendar months or more ahead is stock for
     // a season the stores are not selling yet. Pushing it out now parks it in a
@@ -3093,11 +3101,16 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         var batchNo = await c.ExecuteScalarAsync<int>(new CommandDefinition(@"
             INSERT INTO LPMSIM.dbo.WMS_Cont_Allocation_Header
                 (ContNo, Warehouse, GenCountry, Country, RunOption,
-                 RowCount1, TotalQty, ProcessedBy)
-            VALUES (@c, @wh, @gc, @ac, @ro, @rc, @tq, @u);
+                 RowCount1, TotalQty, ProcessedBy, Store_Allocation)
+            VALUES (@c, @wh, @gc, @ac, @ro, @rc, @tq, @u, @sa);
             SELECT CAST(SCOPE_IDENTITY() AS INT);",
             new { c = contno, wh = warehouse, gc = genCountry, ac = allocationCountries,
-                  ro = roTag, rc = rows.Count, tq = totalQty, u = user.Name },
+                  ro = roTag, rc = rows.Count, tq = totalQty, u = user.Name,
+                  // Written explicitly rather than left to the column default, so the
+                  // value this flow produces is readable here and a store-allocation
+                  // writer has an obvious place to pass 'Y' instead. Every run this
+                  // service saves is PO Allocation, whatever the RunOption.
+                  sa = StoreAllocationFlagPo },
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
 
         // 3) Write blocked rows via SqlBulkCopy. Large containers can produce

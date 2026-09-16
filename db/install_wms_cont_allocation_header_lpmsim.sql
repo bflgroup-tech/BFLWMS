@@ -36,8 +36,22 @@ CREATE TABLE dbo.WMS_Cont_Allocation_Header (
     ProcessedTS   DATETIME2(0)  NOT NULL CONSTRAINT DF_CAH_PT DEFAULT(SYSDATETIME()),
     ProcessedBy   VARCHAR(100)  NULL,
     ApprovedDt    DATETIME2(0)  NULL,
-    ApprovedBy    VARCHAR(100)  NULL
+    ApprovedBy    VARCHAR(100)  NULL,
+    -- 'N' = PO Allocation (this page), 'Y' = store allocation.
+    Store_Allocation CHAR(1)    NOT NULL
+        CONSTRAINT DF_CAH_StoreAllocation DEFAULT('N')
+        CONSTRAINT CK_CAH_StoreAllocation CHECK (Store_Allocation IN ('Y','N'))
 );
+
+-- Existing installs predate the column — see
+-- migrate_lpmsim_cont_allocation_header_add_store_allocation.sql, which also
+-- backfills and tightens it to NOT NULL. Kept here so a table created by an
+-- earlier run of THIS script picks the column up as well.
+IF COL_LENGTH('dbo.WMS_Cont_Allocation_Header','Store_Allocation') IS NULL
+    ALTER TABLE dbo.WMS_Cont_Allocation_Header
+        ADD Store_Allocation CHAR(1) NOT NULL
+            CONSTRAINT DF_CAH_StoreAllocation DEFAULT('N')
+            CONSTRAINT CK_CAH_StoreAllocation CHECK (Store_Allocation IN ('Y','N'));
 
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_CAH_GenCntCont'
                AND object_id=OBJECT_ID('dbo.WMS_Cont_Allocation_Header'))
