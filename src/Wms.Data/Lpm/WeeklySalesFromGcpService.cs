@@ -11,7 +11,7 @@ using Microsoft.Data.SqlClient;
 
 namespace Wms.Data.Lpm;
 
-public record WeeklySalesGcpRow(string StoreId, int DivCode, int Year1, int Month1, int Week, int? SalesQty, decimal? SalesAmt);
+public record WeeklySalesGcpRow(string StoreId, int DivCode, int Year1, int Month1, int Week, int? SalesQty, decimal? SalesAmt, decimal? Turns);
 
 /// <summary>
 /// Pulls the full weekly sales feed from BigQuery (mvp-data-bi.cdm_silver.it_sales_qty)
@@ -36,7 +36,7 @@ public class WeeklySalesFromGcpService(IOnPremConnectionResolver resolver, IOpti
     public const string JobName = "WeeklySalesFromGCP";
 
     private const string SourceQuery = @"
-        SELECT storeid, DivCode, CalendarYear, CalendarMonth, CalendarWeek, Soldqty, NetSalesExVAT
+        SELECT storeid, DivCode, CalendarYear, CalendarMonth, CalendarWeek, Soldqty, NetSalesExVAT, Turns
           FROM cdm_silver.it_sales_qty";
 
     private static string WithConnectTimeout(string cs)
@@ -200,7 +200,8 @@ public class WeeklySalesFromGcpService(IOnPremConnectionResolver resolver, IOpti
                 Month1:   ParseInt(row["CalendarMonth"]) ?? 0,
                 Week:     ParseInt(row["CalendarWeek"]) ?? 0,
                 SalesQty: ParseInt(row["Soldqty"]),
-                SalesAmt: ParseDecimal(row["NetSalesExVAT"])));
+                SalesAmt: ParseDecimal(row["NetSalesExVAT"]),
+                Turns:    ParseDecimal(row["Turns"])));
         }
 
         // The source can carry more than one row per (StoreId, DivCode, Year1, Month1,
@@ -212,7 +213,8 @@ public class WeeklySalesFromGcpService(IOnPremConnectionResolver resolver, IOpti
             .Select(g => new WeeklySalesGcpRow(
                 g.Key.StoreId, g.Key.DivCode, g.Key.Year1, g.Key.Month1, g.Key.Week,
                 SalesQty: g.Any(r => r.SalesQty.HasValue) ? g.Sum(r => r.SalesQty ?? 0) : null,
-                SalesAmt: g.Any(r => r.SalesAmt.HasValue) ? g.Sum(r => r.SalesAmt ?? 0) : null))
+                SalesAmt: g.Any(r => r.SalesAmt.HasValue) ? g.Sum(r => r.SalesAmt ?? 0) : null,
+                Turns:    g.Any(r => r.Turns.HasValue) ? g.Sum(r => r.Turns ?? 0) : null))
             .ToList();
     }
 
@@ -229,7 +231,8 @@ public class WeeklySalesFromGcpService(IOnPremConnectionResolver resolver, IOpti
             Month1   INT           NOT NULL,
             Week     INT           NOT NULL,
             SalesQty INT           NULL,
-            SalesAmt DECIMAL(18,2) NULL
+            SalesAmt DECIMAL(18,2) NULL,
+            Turns    DECIMAL(18,2) NULL
         );";
 
     private const string MergeFromStagingSql = @"
@@ -237,10 +240,10 @@ public class WeeklySalesFromGcpService(IOnPremConnectionResolver resolver, IOpti
         USING #Staging AS s
           ON t.StoreID = s.StoreID AND t.DivCode = s.DivCode AND t.Year1 = s.Year1 AND t.Month1 = s.Month1 AND t.Week = s.Week
         WHEN MATCHED THEN
-          UPDATE SET SalesQty = s.SalesQty, SalesAmt = s.SalesAmt, UpdatedTS = DATEADD(hour, 4, SYSUTCDATETIME())
+          UPDATE SET SalesQty = s.SalesQty, SalesAmt = s.SalesAmt, Turns = s.Turns, UpdatedTS = DATEADD(hour, 4, SYSUTCDATETIME())
         WHEN NOT MATCHED THEN
           INSERT (StoreID, DivCode, Year1, Month1, Week, SalesQty, SalesAmt, CreateTS, Turns)
-          VALUES (s.StoreID, s.DivCode, s.Year1, s.Month1, s.Week, s.SalesQty, s.SalesAmt, DATEADD(hour, 4, SYSUTCDATETIME()), 0);";
+          VALUES (s.StoreID, s.DivCode, s.Year1, s.Month1, s.Week, s.SalesQty, s.SalesAmt, DATEADD(hour, 4, SYSUTCDATETIME()), s.Turns);";
 
     private static DataTable ToStagingTable(IReadOnlyList<WeeklySalesGcpRow> rows)
     {
@@ -252,9 +255,11 @@ public class WeeklySalesFromGcpService(IOnPremConnectionResolver resolver, IOpti
         table.Columns.Add("Week", typeof(int));
         table.Columns.Add("SalesQty", typeof(int));
         table.Columns.Add("SalesAmt", typeof(decimal));
+        table.Columns.Add("Turns", typeof(decimal));
         foreach (var r in rows)
             table.Rows.Add(r.StoreId, r.DivCode, r.Year1, r.Month1, r.Week,
-                (object?)r.SalesQty ?? DBNull.Value, (object?)r.SalesAmt ?? DBNull.Value);
+                (object?)r.SalesQty ?? DBNull.Value, (object?)r.SalesAmt ?? DBNull.Value,
+                (object?)r.Turns ?? DBNull.Value);
         return table;
     }
 
