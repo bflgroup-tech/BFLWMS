@@ -209,3 +209,47 @@ public sealed record ContainerAllocationCountries(
     bool         Restricted,
     string?      RawValue,     // AllocationCountry as written on the order, e.g. "UAE:ONLINE"
     List<string> Unmatched);   // tokens naming nothing in the SIM country list
+
+/// <summary>
+/// One configured PO-share ceiling from LPMSIM.dbo.LPM_POAllocationMaxPct.
+///
+/// <paramref name="StopAtCeiling"/> is the difference between a number that is
+/// merely configured and one the allocation engine actually enforces: only rows
+/// with the flag set are loaded into the run's allowance dictionary. A report
+/// that showed the percentage without it would imply an enforcement that is not
+/// happening.
+/// </summary>
+public sealed record DivisionCeiling(decimal Pct, bool StopAtCeiling);
+
+/// <summary>
+/// Everything the Country x Division summary needs to express a division's
+/// allocation as a share of its PO and judge it against the ceiling.
+///
+/// PoQtyByDivCode is the division's PO qty across the WHOLE container, not per
+/// PO number — the same denominator ProcessAllocationAsync builds its allowance
+/// from, so the percentage shown and the ceiling applied are measured against
+/// the same base.
+/// </summary>
+public sealed record DivisionCeilingContext(
+    IReadOnlyDictionary<int, int>                                  PoQtyByDivCode,
+    IReadOnlyDictionary<(string Country, int DivCode), DivisionCeiling> Ceilings)
+{
+    public static DivisionCeilingContext Empty { get; } = new(
+        new Dictionary<int, int>(),
+        new Dictionary<(string, int), DivisionCeiling>());
+
+    /// <summary>
+    /// Ceiling for a (Country, Division), resolved exactly as the engine does:
+    /// exact (country, div) first, then the (country, 0) country-wide default,
+    /// then nothing. Null means no ceiling is configured — which is NOT the same
+    /// as a ceiling of 0 and must render blank rather than as a number.
+    /// </summary>
+    public DivisionCeiling? For(string? country, int divCode)
+    {
+        if (string.IsNullOrWhiteSpace(country)) return null;
+        var key = country.Trim().ToUpperInvariant();
+        if (Ceilings.TryGetValue((key, divCode), out var exact)) return exact;
+        if (Ceilings.TryGetValue((key, 0), out var wide))        return wide;
+        return null;
+    }
+}
