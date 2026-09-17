@@ -1288,7 +1288,17 @@
             _loadedBatch = info;
             _allocation = await Svc.LoadFinalByBatchAsync(info.BatchNo);
             _blocked    = await Svc.LoadBlockedByBatchAsync(info.BatchNo);
-            _totalPoQty = info.TotalQty ?? 0;
+            // Header.TotalQty is the run's ALLOCATED total, not the container's PO
+            // qty — reading the "Total PO Qty" card off it made that card and the
+            // "Total Allocated Qty" card beside it show the same number on every
+            // loaded batch, and disagree with the PO Qty column in the grid. Same
+            // source as the Process path now.
+            _totalPoQty = await Svc.GetTotalPoQtyAsync(info.ContNo);
+            // Div PO Qty / Alloc % / Ceiling % are keyed on the container, so they
+            // have to be loaded here too — this is the path the Processed Contnos
+            // dropdown uses, and without it those four columns render blank on every
+            // batch loaded rather than processed.
+            _divCeilings = await Svc.GetDivisionCeilingContextAsync(info.ContNo);
             ShowInfo($"Loaded {info.ContNo}#{info.BatchNo} — {_allocation.Count} rows, {_allocation.Sum(r => r.AllocQty)} pcs, {_blocked.Count} blocked.");
         }
         catch (Exception ex) { ShowError($"Load failed: {ex.Message}"); }
@@ -1772,6 +1782,7 @@
             _showPlanningFlags = false;
             _loadedBatch = null;
             _totalPoQty = 0;
+            _divCeilings = DivisionCeilingContext.Empty;
             await RefreshStatusAsync();
             await RefreshProcessedContnosAsync();
             ShowInfo($"Deleted {n} {_runOption} rows for {_contno}.");
@@ -1832,6 +1843,7 @@
         _blocked = new();
         _loadedBatch = null;
         _totalPoQty = 0;
+        _divCeilings = DivisionCeilingContext.Empty;
     }
 
     /// <summary>
