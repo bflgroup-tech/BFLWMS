@@ -34,6 +34,7 @@
             <select @bind="_selectedPeriod" style="width:230px; height:36px; box-sizing:border-box; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;">
                 <option value="Monthly">Monthly</option>
                 <option value="WeeklyAgg">Weekly (all weeks of selected month)</option>
+                <option value="Range">Custom date range (max 31 days)</option>
                 <optgroup label="Or pick a specific week">
                     @foreach (var w in Weeks)
                     {
@@ -42,15 +43,18 @@
                 </optgroup>
             </select>
         </div>
-        <div>
-            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">YEAR</label>
-            <select @bind="_selectedYear" style="width:130px; height:36px; box-sizing:border-box; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;">
-                @foreach (var y in _years)
-                {
-                    <option value="@y">@y</option>
-                }
-            </select>
-        </div>
+        @if (!IsRange)
+        {
+            <div>
+                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">YEAR</label>
+                <select @bind="_selectedYear" style="width:130px; height:36px; box-sizing:border-box; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;">
+                    @foreach (var y in _years)
+                    {
+                        <option value="@y">@y</option>
+                    }
+                </select>
+            </div>
+        }
         @if (IsMonthly || IsWeeklyAgg)
         {
             <div>
@@ -63,11 +67,26 @@
                 </select>
             </div>
         }
-        <button class="aiwms-btn aiwms-btn-primary" style="height:36px; box-sizing:border-box" @onclick="LoadAsync" disabled="@_loading">@(_loading ? "Loading…" : "Load")</button>
+        @if (IsRange)
+        {
+            <div>
+                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">FROM</label>
+                <input type="date" @bind="_rangeFrom" style="width:150px; height:36px; box-sizing:border-box; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px;" />
+            </div>
+            <div>
+                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">TO</label>
+                <input type="date" @bind="_rangeTo" style="width:150px; height:36px; box-sizing:border-box; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px;" />
+            </div>
+        }
+        <button class="aiwms-btn aiwms-btn-primary" style="height:36px; box-sizing:border-box" @onclick="LoadAsync" disabled="@(_loading || !IsRangeValid)">@(_loading ? "Loading…" : "Load")</button>
         <button class="aiwms-btn yvd-export-btn" style="height:36px; width:36px; box-sizing:border-box; display:flex; align-items:center; justify-content:center; padding:0;" title="Download all data (one sheet)" @onclick="ExportAllAsync" disabled="@(!_loadedOnce || _exporting)">
             <span class="mi sm">download</span>
         </button>
     </div>
+    @if (IsRange && !IsRangeValid)
+    {
+        <div class="aiwms-alert error" style="margin-top:12px">Date range cannot exceed 31 days.</div>
+    }
 </div>
 
 @if (_loadedOnce)
@@ -297,11 +316,14 @@
 }
 
 @code {
-    // "Monthly" | "WeeklyAgg" (all weeks of the selected month, as columns) | "W{n}" (one
-    // specific week only) -- one unified dropdown instead of a separate VIEW + WEEK pair.
+    // "Monthly" | "WeeklyAgg" (all weeks of the selected month, as columns) | "Range" (one
+    // explicit From/To date range, max 31 days) | "W{n}" (one specific week only) -- one
+    // unified dropdown instead of a separate VIEW + WEEK pair.
     private string _selectedPeriod = "Monthly";
     private int _selectedYear = DateTime.Now.Year;
     private int _selectedMonth = DateTime.Now.Month;
+    private DateTime _rangeFrom = DateTime.Today.AddDays(-6);
+    private DateTime _rangeTo = DateTime.Today;
     private List<int> _years = new();
     private bool _loading;
     private bool _loadedOnce;
@@ -318,13 +340,19 @@
 
     private bool IsMonthly => _selectedPeriod == "Monthly";
     private bool IsWeeklyAgg => _selectedPeriod == "WeeklyAgg";
-    private bool IsSpecificWeek => !IsMonthly && !IsWeeklyAgg;
+    private bool IsRange => _selectedPeriod == "Range";
+    private bool IsSpecificWeek => !IsMonthly && !IsWeeklyAgg && !IsRange;
+
+    // Only the custom-range mode has a range to validate -- every other mode picks from
+    // fixed weeks/months that are always valid by construction.
+    private bool IsRangeValid => !IsRange || (_rangeFrom <= _rangeTo && (_rangeTo - _rangeFrom).TotalDays <= 30);
 
     private int SelectedWeekNum =>
         IsSpecificWeek && _selectedPeriod.Length > 1 && int.TryParse(_selectedPeriod[1..], out var n) ? n : 1;
 
     private string SelectedPeriodLabel =>
         IsSpecificWeek ? $"W{SelectedWeekNum} ({SelectedWeekRange.Start:dd-MMM} → {SelectedWeekRange.End:dd-MMM} {_selectedYear})"
+        : IsRange       ? $"{_rangeFrom:dd-MMM-yyyy} → {_rangeTo:dd-MMM-yyyy}"
         : IsWeeklyAgg   ? $"{new DateTime(2000, _selectedMonth, 1):MMMM} {_selectedYear}, by week"
         : $"{new DateTime(2000, _selectedMonth, 1):MMMM} {_selectedYear}";
 
@@ -332,6 +360,7 @@
     // and their matching Excel export titles -- Monthly's own text is unchanged from before.
     private string PeriodSuffixLabel =>
         IsSpecificWeek ? SelectedPeriodLabel
+        : IsRange       ? SelectedPeriodLabel
         : IsWeeklyAgg   ? $"{new DateTime(2000, _selectedMonth, 1):MMMM} {_selectedYear}, by week"
         : $"{_selectedYear}, by month";
 
@@ -392,6 +421,7 @@
 
     private async Task LoadAsync()
     {
+        if (!IsRangeValid) return;
         _loading = true;
         await InvokeAsync(StateHasChanged);
         try
@@ -438,6 +468,17 @@
                     .GroupBy(b => b.Label)
                     .Select(g => new YotoInternalTransferBox(g.First().Label, g.First().CountLabel, g.First().Warehouse, g.SelectMany(b => b.Periods).ToList()))
                     .ToList();
+            }
+            else if (IsRange)
+            {
+                // Same single-range service calls the specific-week branch below uses --
+                // one period column spanning the whole explicit From/To selection.
+                var rangeStart = _rangeFrom.Date;
+                var rangeEnd = _rangeTo.Date.AddDays(1);
+                _completed = await Svc.GetCompletedOffloadingAsync(rangeStart, rangeEnd);
+                _pending = await Svc.GetPendingOffloadingAsync();
+                _periodRows = new List<YotoInboundPeriodRow> { await Svc.GetInboundSummaryForRangeAsync(rangeStart, rangeEnd, SelectedPeriodLabel, 1) };
+                _internalTransfers = await Svc.GetInternalTransferForRangeAsync(rangeStart, rangeEnd, SelectedPeriodLabel, 1);
             }
             else // specific week
             {
