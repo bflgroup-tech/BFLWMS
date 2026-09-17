@@ -1,0 +1,19 @@
+<MudDialog>
+    <TitleContent>
+        <MudText Typo="Typo.h6">@Title</MudText>
+    </TitleContent>
+    <DialogContent>
+        <pre style="white-space:pre-wrap; font-size:12px; background:#0b0b0b; color:#d4d4d4; padding:12px; border-radius:6px; overflow-x:auto; margin:0; max-height:60vh;">@Sql</pre>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Close">Close</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public string Title { get; set; } = "";
+    [Parameter] public string Sql { get; set; } = "";
+
+    private void Close() => MudDialog.Close();
+}
