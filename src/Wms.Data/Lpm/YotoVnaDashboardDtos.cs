@@ -8,6 +8,24 @@ public record YotoOffloadGroupRow(
     int    Boxes
 );
 
+/// <summary>
+/// One row per offloaded container -- the Detailed view of "Completed offloading",
+/// matching the legacy "Online Containers Offloaded" desktop screen. TrnDate is
+/// usa.dbo.UsaPallets.trndate (the legacy screen's "Sticker Printing Date"), the
+/// same column GetCompletedOffloadingAsync already filters/groups the Summary view
+/// by. PoNumbers is every distinct hodata.dbo.vUSAOrder.ORAPONo for that container,
+/// comma-joined -- a container can carry more than one PO (confirmed live), which
+/// the Summary/Group view has no room to show at all.
+/// </summary>
+public record YotoOffloadContainerRow(
+    string    Contno,
+    DateTime  TrnDate,
+    int       Pallets,
+    int       Boxes,
+    int       Qty,
+    string?   PoNumbers
+);
+
 /// <summary>One row per RefNo group for containers received but not yet offloaded.</summary>
 public record YotoPendingGroupRow(
     string Group,

@@ -1792,6 +1792,38 @@ SELECT
             FROM ContainerLevel
             GROUP BY CASE WHEN Contno LIKE 'AEINT%' THEN 'AEINT' ELSE 'AELOC' END"),
 
+        new QueryEntry("YOTO VNA Dashboard", "Offloading Shipment Summary — Completed offloading (Detailed, by container)", "usa.dbo.UsaPallets, usa.dbo.KNBBoxes, bfldata.dbo.ContReceipt, hodata.dbo.vUSAOrder -- YotoVnaDashboardService.GetCompletedOffloadingDetailAsync", @"
+        WITH OrderPo AS (
+            SELECT refno, ORAPONo, Qty = SUM(ISNULL(Qty, 0))
+            FROM hodata.dbo.vUSAOrder WITH (NOLOCK)
+            WHERE refno IS NOT NULL
+            GROUP BY refno, ORAPONo
+        ),
+        OrderAgg AS (
+            SELECT refno,
+                   Qty       = SUM(Qty),
+                   PoNumbers = STRING_AGG(CAST(ORAPONo AS VARCHAR(50)), ', ') WITHIN GROUP (ORDER BY ORAPONo)
+            FROM OrderPo
+            GROUP BY refno
+        )
+        SELECT
+            a.Contno,
+            TrnDate   = MIN(a.trndate),
+            Pallets   = COUNT(DISTINCT a.PalletNo),
+            Boxes     = COUNT(DISTINCT b.Boxno),
+            Qty       = MAX(oa.Qty),
+            PoNumbers = MAX(oa.PoNumbers)
+          FROM usa.dbo.UsaPallets a WITH (NOLOCK)
+          JOIN usa.dbo.KNBBoxes b WITH (NOLOCK)
+              ON a.PalletNo = b.palletno AND a.Contno = b.Contno
+          JOIN bfldata.dbo.ContReceipt cr WITH (NOLOCK) ON cr.RefNo = a.Contno
+          JOIN OrderAgg oa ON oa.refno = a.Contno
+         WHERE a.whouse IN (@wh, 'JAFZA')
+           AND (a.Contno LIKE 'AEINT%' OR a.Contno LIKE 'AELOC%')
+           AND a.trndate >= @from AND a.trndate < @to
+         GROUP BY a.Contno
+         ORDER BY TrnDate, a.Contno"),
+
         new QueryEntry("YOTO VNA Dashboard", "Offloading Shipment Summary — Pending for offloading", "bfldata.dbo.ContReceipt, usa.dbo.UsaPallets, hodata.dbo.vUSAOrder -- YotoVnaDashboardService.GetPendingOffloadingAsync", @"
         WITH OrderAgg AS (
             SELECT refno, SUM(Qty) AS Qty

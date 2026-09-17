@@ -78,6 +78,17 @@
                 <input type="date" @bind="_rangeTo" style="width:150px; height:36px; box-sizing:border-box; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px;" />
             </div>
         }
+        <div>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COMPLETED OFFLOADING</label>
+            <div style="display:flex; gap:10px; align-items:center; height:36px;">
+                <label style="display:flex; align-items:center; gap:4px; cursor:pointer; font-size:13px;">
+                    <input type="radio" name="offloadingView" value="Summary" checked="@(_offloadingView == "Summary")" @onchange="@(() => _offloadingView = "Summary")" /> Summary
+                </label>
+                <label style="display:flex; align-items:center; gap:4px; cursor:pointer; font-size:13px;">
+                    <input type="radio" name="offloadingView" value="Detailed" checked="@(_offloadingView == "Detailed")" @onchange="@(() => _offloadingView = "Detailed")" /> Detailed
+                </label>
+            </div>
+        </div>
         <button class="aiwms-btn aiwms-btn-primary" style="height:36px; box-sizing:border-box" @onclick="LoadAsync" disabled="@(_loading || !IsRangeValid)">@(_loading ? "Loading…" : "Load")</button>
         <button class="aiwms-btn yvd-export-btn" style="height:36px; width:36px; box-sizing:border-box; display:flex; align-items:center; justify-content:center; padding:0;" title="Download all data (one sheet)" @onclick="ExportAllAsync" disabled="@(!_loadedOnce || _exporting)">
             <span class="mi sm">download</span>
@@ -100,6 +111,8 @@
         {
         <div style="display:flex; flex-wrap:wrap; gap:0;">
             <div style="flex:1; min-width:340px; overflow-x:auto; border-right:1px solid var(--border-default);">
+                @if (IsOffloadingSummary)
+                {
                 <table class="aiwms-table aiwms-table-dense" style="text-align:center; width:100%;">
                     <thead>
                         <tr><th colspan="4" style="text-align:center">Inbound Shipment Details — Completed offloading</th></tr>
@@ -131,6 +144,43 @@
                         </tr>
                     </tbody>
                 </table>
+                }
+                else
+                {
+                <table class="aiwms-table aiwms-table-dense" style="text-align:center; width:100%;">
+                    <thead>
+                        <tr><th colspan="6" style="text-align:center">Inbound Shipment Details — Completed offloading (Detailed, by container)</th></tr>
+                        <tr>
+                            <th style="text-align:left">Container ID</th>
+                            <th style="text-align:right">Sticker Printing Date</th>
+                            <th style="text-align:right">No of Pallets</th>
+                            <th style="text-align:right">No of BoxNo</th>
+                            <th style="text-align:right">Order Qty</th>
+                            <th style="text-align:left">PO Number</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var r in _containerDetails)
+                        {
+                            <tr>
+                                <td style="text-align:left">@r.Contno</td>
+                                <td style="text-align:right">@r.TrnDate.ToString("dd-MMM-yyyy")</td>
+                                <td style="text-align:right">@r.Pallets.ToString("N0")</td>
+                                <td style="text-align:right">@r.Boxes.ToString("N0")</td>
+                                <td style="text-align:right">@r.Qty.ToString("N0")</td>
+                                <td style="text-align:left">@r.PoNumbers</td>
+                            </tr>
+                        }
+                        <tr class="yvd-total-row">
+                            <td style="text-align:left" colspan="2">Total</td>
+                            <td style="text-align:right">@_containerDetails.Sum(r => r.Pallets).ToString("N0")</td>
+                            <td style="text-align:right">@_containerDetails.Sum(r => r.Boxes).ToString("N0")</td>
+                            <td style="text-align:right">@_containerDetails.Sum(r => r.Qty).ToString("N0")</td>
+                            <td></td>
+                        </tr>
+                    </tbody>
+                </table>
+                }
             </div>
             <div style="flex:1; min-width:280px; overflow-x:auto;">
                 <table class="aiwms-table aiwms-table-dense" style="text-align:center; width:100%;">
@@ -333,7 +383,14 @@
     private bool _totalInboundCollapsed;
     private HashSet<string> _internalTransferCollapsed = new();
 
+    // "Summary" (AEINT/AELOC rollup, unchanged default) | "Detailed" (one row per container,
+    // matching the legacy "Online Containers Offloaded" desktop screen) -- Completed offloading
+    // side of Offloading Shipment Summary only; Pending for offloading is unaffected.
+    private string _offloadingView = "Summary";
+    private bool IsOffloadingSummary => _offloadingView == "Summary";
+
     private List<YotoOffloadGroupRow> _completed = new();
+    private List<YotoOffloadContainerRow> _containerDetails = new();
     private List<YotoPendingGroupRow> _pending = new();
     private List<YotoInboundPeriodRow> _periodRows = new();
     private List<YotoInternalTransferBox> _internalTransfers = new();
@@ -433,6 +490,7 @@
             {
                 // Unchanged from before -- Jan-Dec columns for the whole year.
                 _completed = await Svc.GetCompletedOffloadingAsync(monthStart, monthEnd);
+                _containerDetails = IsOffloadingSummary ? new() : await Svc.GetCompletedOffloadingDetailAsync(monthStart, monthEnd);
                 _pending = await Svc.GetPendingOffloadingAsync();
                 _periodRows = await Svc.GetMonthlyInboundSummaryAsync(_selectedYear);
                 _internalTransfers = await Svc.GetInternalTransferMonthlyAsync(_selectedYear);
@@ -443,6 +501,7 @@
                 // reuses the same single-range service calls the specific-week branch below
                 // uses, once per overlapping week, then stitches the results together.
                 _completed = await Svc.GetCompletedOffloadingAsync(monthStart, monthEnd);
+                _containerDetails = IsOffloadingSummary ? new() : await Svc.GetCompletedOffloadingDetailAsync(monthStart, monthEnd);
                 _pending = await Svc.GetPendingOffloadingAsync();
 
                 var weeksInMonth = Weeks.Where(w => w.Start < monthEnd && w.End >= monthStart).ToList();
@@ -476,6 +535,7 @@
                 var rangeStart = _rangeFrom.Date;
                 var rangeEnd = _rangeTo.Date.AddDays(1);
                 _completed = await Svc.GetCompletedOffloadingAsync(rangeStart, rangeEnd);
+                _containerDetails = IsOffloadingSummary ? new() : await Svc.GetCompletedOffloadingDetailAsync(rangeStart, rangeEnd);
                 _pending = await Svc.GetPendingOffloadingAsync();
                 _periodRows = new List<YotoInboundPeriodRow> { await Svc.GetInboundSummaryForRangeAsync(rangeStart, rangeEnd, SelectedPeriodLabel, 1) };
                 _internalTransfers = await Svc.GetInternalTransferForRangeAsync(rangeStart, rangeEnd, SelectedPeriodLabel, 1);
@@ -485,6 +545,7 @@
                 var (weekStart, weekEndInclusive) = SelectedWeekRange;
                 var weekEnd = weekEndInclusive.AddDays(1);
                 _completed = await Svc.GetCompletedOffloadingAsync(weekStart, weekEnd);
+                _containerDetails = IsOffloadingSummary ? new() : await Svc.GetCompletedOffloadingDetailAsync(weekStart, weekEnd);
                 _pending = await Svc.GetPendingOffloadingAsync();
                 _periodRows = new List<YotoInboundPeriodRow> { await Svc.GetInboundSummaryForRangeAsync(weekStart, weekEnd, SelectedPeriodLabel, SelectedWeekNum) };
                 _internalTransfers = await Svc.GetInternalTransferForRangeAsync(weekStart, weekEnd, SelectedPeriodLabel, SelectedWeekNum);
@@ -548,17 +609,36 @@
     {
         row = WriteSectionTitle(ws, row, $"Offloading Shipment Summary — {SelectedPeriodLabel}");
 
-        row = WriteSectionTitle(ws, row, "Completed offloading");
-        ws.Cell(row, 1).Value = "Type"; ws.Cell(row, 2).Value = "Containers"; ws.Cell(row, 3).Value = "Pallets"; ws.Cell(row, 4).Value = "Boxes";
-        ws.Row(row).Style.Font.Bold = true; row++;
-        foreach (var (group, label) in new[] { ("AEINT", "Total Imports AEINT"), ("AELOC", "Local Purchased AELOC") })
+        if (IsOffloadingSummary)
         {
-            var r = CompletedFor(group);
-            ws.Cell(row, 1).Value = label; ws.Cell(row, 2).Value = r.Containers; ws.Cell(row, 3).Value = r.Pallets; ws.Cell(row, 4).Value = r.Boxes;
-            row++;
+            row = WriteSectionTitle(ws, row, "Completed offloading");
+            ws.Cell(row, 1).Value = "Type"; ws.Cell(row, 2).Value = "Containers"; ws.Cell(row, 3).Value = "Pallets"; ws.Cell(row, 4).Value = "Boxes";
+            ws.Row(row).Style.Font.Bold = true; row++;
+            foreach (var (group, label) in new[] { ("AEINT", "Total Imports AEINT"), ("AELOC", "Local Purchased AELOC") })
+            {
+                var r = CompletedFor(group);
+                ws.Cell(row, 1).Value = label; ws.Cell(row, 2).Value = r.Containers; ws.Cell(row, 3).Value = r.Pallets; ws.Cell(row, 4).Value = r.Boxes;
+                row++;
+            }
+            ws.Cell(row, 1).Value = "Total"; ws.Cell(row, 2).Value = _completed.Sum(r => r.Containers); ws.Cell(row, 3).Value = _completed.Sum(r => r.Pallets); ws.Cell(row, 4).Value = _completed.Sum(r => r.Boxes);
+            ws.Row(row).Style.Font.Bold = true; row += 2;
         }
-        ws.Cell(row, 1).Value = "Total"; ws.Cell(row, 2).Value = _completed.Sum(r => r.Containers); ws.Cell(row, 3).Value = _completed.Sum(r => r.Pallets); ws.Cell(row, 4).Value = _completed.Sum(r => r.Boxes);
-        ws.Row(row).Style.Font.Bold = true; row += 2;
+        else
+        {
+            row = WriteSectionTitle(ws, row, "Completed offloading (Detailed, by container)");
+            ws.Cell(row, 1).Value = "Container ID"; ws.Cell(row, 2).Value = "Sticker Printing Date"; ws.Cell(row, 3).Value = "No of Pallets";
+            ws.Cell(row, 4).Value = "No of BoxNo"; ws.Cell(row, 5).Value = "Order Qty"; ws.Cell(row, 6).Value = "PO Number";
+            ws.Row(row).Style.Font.Bold = true; row++;
+            foreach (var r in _containerDetails)
+            {
+                ws.Cell(row, 1).Value = r.Contno; ws.Cell(row, 2).Value = r.TrnDate; ws.Cell(row, 2).Style.DateFormat.Format = "dd-MMM-yyyy";
+                ws.Cell(row, 3).Value = r.Pallets; ws.Cell(row, 4).Value = r.Boxes; ws.Cell(row, 5).Value = r.Qty; ws.Cell(row, 6).Value = r.PoNumbers;
+                row++;
+            }
+            ws.Cell(row, 1).Value = "Total";
+            ws.Cell(row, 3).Value = _containerDetails.Sum(r => r.Pallets); ws.Cell(row, 4).Value = _containerDetails.Sum(r => r.Boxes); ws.Cell(row, 5).Value = _containerDetails.Sum(r => r.Qty);
+            ws.Row(row).Style.Font.Bold = true; row += 2;
+        }
 
         row = WriteSectionTitle(ws, row, $"Pending for offloading (as of today, since {PendingFloorLabel})");
         ws.Cell(row, 1).Value = "Type"; ws.Cell(row, 2).Value = "Containers"; ws.Cell(row, 3).Value = "Qty";

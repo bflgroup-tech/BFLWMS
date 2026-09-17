@@ -90,6 +90,51 @@ public class YotoVnaDashboardService(IOnPremConnectionResolver resolver)
         return rows.AsList();
     }
 
+    /// <summary>Detailed (per-container) view of completed offloading within [from, toExclusive) --
+    /// same filter/date-column as GetCompletedOffloadingAsync, but one row per Contno instead of
+    /// rolled up to AEINT/AELOC. OrderPo sums Qty per (refno, ORAPONo) first, matching the same
+    /// fan-out guard as OrderAggCte, before re-aggregating to one Qty total and one comma-joined
+    /// PoNumbers list per container.</summary>
+    public async Task<List<YotoOffloadContainerRow>> GetCompletedOffloadingDetailAsync(
+        DateTime from, DateTime toExclusive, CancellationToken ct = default)
+    {
+        await using var c = OpenOnPremBackup();
+        var rows = await c.QueryAsync<YotoOffloadContainerRow>(new CommandDefinition($@"
+            WITH OrderPo AS (
+                SELECT refno, ORAPONo, Qty = SUM(ISNULL(Qty, 0))
+                FROM hodata.dbo.vUSAOrder WITH (NOLOCK)
+                WHERE refno IS NOT NULL
+                GROUP BY refno, ORAPONo
+            ),
+            OrderAgg AS (
+                SELECT refno,
+                       Qty       = SUM(Qty),
+                       PoNumbers = STRING_AGG(CAST(ORAPONo AS VARCHAR(50)), ', ') WITHIN GROUP (ORDER BY ORAPONo)
+                FROM OrderPo
+                GROUP BY refno
+            )
+            SELECT
+                a.Contno,
+                TrnDate   = MIN(a.trndate),
+                Pallets   = COUNT(DISTINCT a.PalletNo),
+                Boxes     = COUNT(DISTINCT b.Boxno),
+                Qty       = MAX(oa.Qty),
+                PoNumbers = MAX(oa.PoNumbers)
+              FROM usa.dbo.UsaPallets a WITH (NOLOCK)
+              JOIN usa.dbo.KNBBoxes b WITH (NOLOCK)
+                  ON a.PalletNo = b.palletno AND a.Contno = b.Contno
+              JOIN bfldata.dbo.ContReceipt cr WITH (NOLOCK) ON cr.RefNo = a.Contno
+              JOIN OrderAgg oa ON oa.refno = a.Contno
+             WHERE a.whouse IN (@wh, 'JAFZA')
+               AND (a.Contno LIKE 'AEINT%' OR a.Contno LIKE 'AELOC%')
+               AND a.trndate >= @from AND a.trndate < @to
+             GROUP BY a.Contno
+             ORDER BY TrnDate, a.Contno",
+            new { wh = Warehouse, from, to = toExclusive },
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        return rows.AsList();
+    }
+
     /// <summary>Containers received (bfldata..ContReceipt) but not yet offloaded, as of now.</summary>
     public async Task<List<YotoPendingGroupRow>> GetPendingOffloadingAsync(CancellationToken ct = default)
     {
