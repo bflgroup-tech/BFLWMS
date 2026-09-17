@@ -115,7 +115,8 @@
                 {
                 <table class="aiwms-table aiwms-table-dense" style="text-align:center; width:100%;">
                     <thead>
-                        <tr><th colspan="4" style="text-align:center">Inbound Shipment Details — Completed offloading</th></tr>
+                        <tr><th colspan="4" style="text-align:center">Inbound Shipment Details — Completed offloading@AdminQueryToggle(_showCompletedSummaryQuery, () => _showCompletedSummaryQuery = !_showCompletedSummaryQuery)</th></tr>
+                        @QueryRow(_showCompletedSummaryQuery, "Offloading Shipment Summary — Completed offloading", 4)
                         <tr>
                             <th style="text-align:left">Type</th>
                             <th style="text-align:right">Containers</th>
@@ -149,7 +150,8 @@
                 {
                 <table class="aiwms-table aiwms-table-dense" style="text-align:center; width:100%;">
                     <thead>
-                        <tr><th colspan="6" style="text-align:center">Inbound Shipment Details — Completed offloading (Detailed, by container)</th></tr>
+                        <tr><th colspan="6" style="text-align:center">Inbound Shipment Details — Completed offloading (Detailed, by container)@AdminQueryToggle(_showCompletedDetailQuery, () => _showCompletedDetailQuery = !_showCompletedDetailQuery)</th></tr>
+                        @QueryRow(_showCompletedDetailQuery, "Offloading Shipment Summary — Completed offloading (Detailed, by container)", 6)
                         <tr>
                             <th style="text-align:left">Container ID</th>
                             <th style="text-align:right">Sticker Printing Date</th>
@@ -187,7 +189,8 @@
                 {
                 <table class="aiwms-table aiwms-table-dense" style="text-align:center; width:100%;">
                     <thead>
-                        <tr><th colspan="3" style="text-align:center">Inbound Shipment Details — Pending for offloading (as of today, since @PendingFloorLabel)</th></tr>
+                        <tr><th colspan="3" style="text-align:center">Inbound Shipment Details — Pending for offloading (as of today, since @PendingFloorLabel)@AdminQueryToggle(_showPendingSummaryQuery, () => _showPendingSummaryQuery = !_showPendingSummaryQuery)</th></tr>
+                        @QueryRow(_showPendingSummaryQuery, "Offloading Shipment Summary — Pending for offloading", 3)
                         <tr>
                             <th style="text-align:left">Type</th>
                             <th style="text-align:right">Containers</th>
@@ -217,7 +220,8 @@
                 {
                 <table class="aiwms-table aiwms-table-dense" style="text-align:center; width:100%;">
                     <thead>
-                        <tr><th colspan="4" style="text-align:center">Inbound Shipment Details — Pending for offloading (Detailed, since @PendingFloorLabel)</th></tr>
+                        <tr><th colspan="4" style="text-align:center">Inbound Shipment Details — Pending for offloading (Detailed, since @PendingFloorLabel)@AdminQueryToggle(_showPendingDetailQuery, () => _showPendingDetailQuery = !_showPendingDetailQuery)</th></tr>
+                        @QueryRow(_showPendingDetailQuery, "Offloading Shipment Summary — Pending for offloading (Detailed, by container)", 4)
                         <tr>
                             <th style="text-align:left">Container ID</th>
                             <th style="text-align:right">Receipt Date</th>
@@ -613,6 +617,38 @@
         <button type="button" class="aiwms-icon-btn" title="@(collapsed ? "Expand" : "Minimize")" @onclick="toggle">
             <span class="mi sm">@(collapsed ? "add" : "remove")</span>
         </button>
+    };
+
+    // ====================== Admin-only "view query" (Report Assistant's own catalogue -- no
+    // duplicated SQL text to drift out of sync) ======================
+
+    private bool _showCompletedSummaryQuery;
+    private bool _showCompletedDetailQuery;
+    private bool _showPendingSummaryQuery;
+    private bool _showPendingDetailQuery;
+
+    private static string QuerySql(string subsection) =>
+        ReportQueryCatalogue.All.First(e => e.Report == "YOTO VNA Dashboard" && e.Subsection == subsection).Sql;
+
+    // Hidden entirely (button and "Admin view" label both) unless CurrentUser.HasAllCountriesAccess --
+    // same Admin flag already gating the two footnotes further down this page.
+    private RenderFragment AdminQueryToggle(bool showing, Action toggle) => __builder =>
+    {
+        if (CurrentUser.HasAllCountriesAccess)
+        {
+            <button type="button" class="aiwms-icon-btn" title="@(showing ? "Hide query" : "View query")" @onclick="toggle" style="margin-left:8px; vertical-align:middle;">
+                <span class="mi sm" style="font-size:14px">code</span>
+            </button>
+            <span style="font-size:9px; font-weight:400; text-transform:none; letter-spacing:0; opacity:0.7; margin-left:2px; vertical-align:middle;">Admin view</span>
+        }
+    };
+
+    private RenderFragment QueryRow(bool showing, string subsection, int colspan) => __builder =>
+    {
+        if (showing && CurrentUser.HasAllCountriesAccess)
+        {
+            <tr><td colspan="@colspan" style="text-align:left"><pre style="white-space:pre-wrap; font-size:11px; background:#0b0b0b; color:#d4d4d4; padding:10px; border-radius:6px; margin:6px 0; overflow-x:auto;">@QuerySql(subsection)</pre></td></tr>
+        }
     };
 
     // ====================== Excel export (everything on the page, one sheet) ======================
