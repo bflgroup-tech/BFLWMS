@@ -33,6 +33,19 @@ public record YotoPendingGroupRow(
     int    Qty // SUM() over vUSAOrder.Qty (an int column) stays int in SQL Server -- must match exactly for Dapper's record-constructor materialization
 );
 
+/// <summary>
+/// One row per pending (not yet offloaded) container -- the Detailed view of "Pending for
+/// offloading", same PoNumbers approach as YotoOffloadContainerRow. ReceiptDt is
+/// bfldata.dbo.ContReceipt.ReceiptDt (when the container was received) -- there is no
+/// "Sticker Printing Date" yet since offloading hasn't happened.
+/// </summary>
+public record YotoPendingContainerRow(
+    string    Contno,
+    DateTime  ReceiptDt,
+    int       Qty,
+    string?   PoNumbers
+);
+
 /// <summary>One row per period (month or in-month week) for the cumulative inbound summary.</summary>
 public record YotoInboundPeriodRow(
     string PeriodLabel,

@@ -1824,6 +1824,36 @@ SELECT
          GROUP BY a.Contno
          ORDER BY TrnDate, a.Contno"),
 
+        new QueryEntry("YOTO VNA Dashboard", "Offloading Shipment Summary — Pending for offloading (Detailed, by container)", "bfldata.dbo.ContReceipt, usa.dbo.UsaPallets, hodata.dbo.vUSAOrder -- YotoVnaDashboardService.GetPendingOffloadingDetailAsync", @"
+        WITH OrderPo AS (
+            SELECT refno, ORAPONo, Qty = SUM(ISNULL(Qty, 0))
+            FROM hodata.dbo.vUSAOrder WITH (NOLOCK)
+            WHERE refno IS NOT NULL
+            GROUP BY refno, ORAPONo
+        ),
+        OrderAgg AS (
+            SELECT refno,
+                   Qty       = SUM(Qty),
+                   PoNumbers = STRING_AGG(CAST(ORAPONo AS VARCHAR(50)), ', ') WITHIN GROUP (ORDER BY ORAPONo)
+            FROM OrderPo
+            GROUP BY refno
+        )
+        SELECT
+            cr.RefNo  AS Contno,
+            ReceiptDt = MIN(cr.ReceiptDt),
+            Qty       = MAX(oa.Qty),
+            PoNumbers = MAX(oa.PoNumbers)
+          FROM bfldata.dbo.ContReceipt cr WITH (NOLOCK)
+          JOIN OrderAgg oa ON oa.refno = cr.RefNo
+         WHERE cr.Warehouse = @wh
+           AND cr.ReceiptDt >= @floor
+           AND (cr.RefNo LIKE 'AEINT%' OR cr.RefNo LIKE 'AELOC%')
+           AND NOT EXISTS (
+               SELECT 1 FROM usa.dbo.UsaPallets a WITH (NOLOCK) WHERE a.Contno = cr.RefNo
+           )
+         GROUP BY cr.RefNo
+         ORDER BY ReceiptDt, cr.RefNo"),
+
         new QueryEntry("YOTO VNA Dashboard", "Offloading Shipment Summary — Pending for offloading", "bfldata.dbo.ContReceipt, usa.dbo.UsaPallets, hodata.dbo.vUSAOrder -- YotoVnaDashboardService.GetPendingOffloadingAsync", @"
         WITH OrderAgg AS (
             SELECT refno, SUM(Qty) AS Qty

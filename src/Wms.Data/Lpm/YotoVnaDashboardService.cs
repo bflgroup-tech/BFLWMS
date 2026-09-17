@@ -159,6 +159,46 @@ public class YotoVnaDashboardService(IOnPremConnectionResolver resolver)
         return rows.AsList();
     }
 
+    /// <summary>Detailed (per-container) view of GetPendingOffloadingAsync -- one row per RefNo
+    /// instead of rolled up to AEINT/AELOC. Same live-as-of-now floor and NOT-EXISTS-in-UsaPallets
+    /// condition, same PoNumbers approach as GetCompletedOffloadingDetailAsync.</summary>
+    public async Task<List<YotoPendingContainerRow>> GetPendingOffloadingDetailAsync(CancellationToken ct = default)
+    {
+        await using var c = OpenOnPremBackup();
+        var rows = await c.QueryAsync<YotoPendingContainerRow>(new CommandDefinition($@"
+            WITH OrderPo AS (
+                SELECT refno, ORAPONo, Qty = SUM(ISNULL(Qty, 0))
+                FROM hodata.dbo.vUSAOrder WITH (NOLOCK)
+                WHERE refno IS NOT NULL
+                GROUP BY refno, ORAPONo
+            ),
+            OrderAgg AS (
+                SELECT refno,
+                       Qty       = SUM(Qty),
+                       PoNumbers = STRING_AGG(CAST(ORAPONo AS VARCHAR(50)), ', ') WITHIN GROUP (ORDER BY ORAPONo)
+                FROM OrderPo
+                GROUP BY refno
+            )
+            SELECT
+                cr.RefNo  AS Contno,
+                ReceiptDt = MIN(cr.ReceiptDt),
+                Qty       = MAX(oa.Qty),
+                PoNumbers = MAX(oa.PoNumbers)
+              FROM bfldata.dbo.ContReceipt cr WITH (NOLOCK)
+              JOIN OrderAgg oa ON oa.refno = cr.RefNo
+             WHERE cr.Warehouse = @wh
+               AND cr.ReceiptDt >= @floor
+               AND (cr.RefNo LIKE 'AEINT%' OR cr.RefNo LIKE 'AELOC%')
+               AND NOT EXISTS (
+                   SELECT 1 FROM usa.dbo.UsaPallets a WITH (NOLOCK) WHERE a.Contno = cr.RefNo
+               )
+             GROUP BY cr.RefNo
+             ORDER BY ReceiptDt, cr.RefNo",
+            new { wh = Warehouse, floor = PendingFloor },
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        return rows.AsList();
+    }
+
     /// <summary>Cumulative offload totals per calendar month of the given year (every container, not just
     /// AEINT/AELOC). Includes Warehouse = JAFZA alongside YOTO -- offloading for these containers physically
     /// happens at YOTO even when the container's own Warehouse is recorded as JAFZA. Bucketed and filtered by
