@@ -2245,16 +2245,31 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                             return c == 'Z' || (c >= 'A' && c <= 'H');
                         }
 
-                        // The top band, with Z sitting above A. A–E, not A–C: Bypass Pass 1b
-                        // is the option actually in use, so its coverage calculation and
-                        // Stage 1 top-up move with Pass 4 rather than being left behind on
-                        // a narrower set.
+                        // Two bands, kept separate on purpose.
                         //
-                        // The DB columns keep their ABC names (Pass1ByPass.ABCMax / ABCSOH /
-                        // ABCReqdStock) — renaming persisted columns to chase this would
-                        // break anything already reading them. The names now mean "the top
-                        // band", which is A–E.
+                        // IsTopGrade — Z, A, B, C. Drives Bypass Pass 1b: the coverage
+                        // calculation (ABCReqdStock / MinMinCoverPct) and the Stage 1
+                        // top-up. When the top band cannot cover the PO on its own, ONLY
+                        // the top band is topped up to tier; everyone else waits for the
+                        // Stage 2 one-unit sweep and Pass 2. The Pass1ByPass columns are
+                        // named ABCMax / ABCSOH / ABCReqdStock because that is literally
+                        // what they hold.
+                        //
+                        // IsPass4Grade — Z, A–E. Pass 4's proportional share reaches two
+                        // grades further down than Stage 1 does.
+                        //
+                        // #577 collapsed the two into one A–E predicate, which widened
+                        // Stage 1 to D and E stores: on AEINT8542 item DivCode 407 the
+                        // Stage 1 fill ran A → E and left nothing for the sweep. The A–E
+                        // instruction was for Pass 4, which runs in both bypass modes and
+                        // so already applied — nothing in Pass 1b needed to move.
                         static bool IsTopGrade(string? vg)
+                        {
+                            if (string.IsNullOrWhiteSpace(vg)) return false;
+                            var c = char.ToUpperInvariant(vg.Trim()[0]);
+                            return c is 'Z' or 'A' or 'B' or 'C';
+                        }
+                        static bool IsPass4Grade(string? vg)
                         {
                             if (string.IsNullOrWhiteSpace(vg)) return false;
                             var c = char.ToUpperInvariant(vg.Trim()[0]);
@@ -2541,7 +2556,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                                 // of grade). Ratio uses raw MinMax as the weight; each store's
                                 // share is take-as-is (no per-store cap).
                                 var top3 = eligible
-                                    .Where(r => IsTopGrade(r.VolumeGroup))   // Z, A–E by letter — decoupled from SortOrder config so an S=Special row cannot shove E out of the band
+                                    .Where(r => IsPass4Grade(r.VolumeGroup))   // Z, A–E by letter — decoupled from SortOrder config so an S=Special row cannot shove E out of the band
                                     .Where(r => LiveOtsPct(r) > 0)                                                // positive-OTS stores only
                                     .Select(r => (Row: r, MinMax: RawMinMaxFor(r)))
                                     .Where(x => x.MinMax > 0)
