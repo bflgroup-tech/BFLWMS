@@ -3301,6 +3301,95 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
     }
 
     /// <summary>
+    /// Per-division PO qty for a container plus the configured PO-share ceilings,
+    /// for the Country x Division summary's Alloc % / Ceiling % / status columns.
+    ///
+    /// The PO qty is read from usaorgfile_LPM rather than summed off the allocation
+    /// rows on purpose. The allocation rows only cover items that actually won stock,
+    /// and the grid's own PO Qty column derives from them — so a percentage built on
+    /// that would silently exclude anything that allocated nothing. This query builds
+    /// the SAME denominator ProcessAllocationAsync uses for its allowance
+    /// (poQtyByDiv), which is what makes Alloc % and Ceiling % comparable at all.
+    ///
+    /// Degrades to an empty context rather than throwing: these columns are
+    /// decoration on a report, and a missing ceiling table must not take the page
+    /// down with it.
+    /// </summary>
+    public async Task<DivisionCeilingContext> GetDivisionCeilingContextAsync(
+        string contno, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(contno)) return DivisionCeilingContext.Empty;
+        contno = contno.Trim();
+
+        var poQtyByDiv = new Dictionary<int, int>();
+        var ceilings   = new Dictionary<(string, int), DivisionCeiling>();
+
+        await using var c = OpenOnPremBackup();
+
+        try
+        {
+            // vupc_subclass can carry more than one row per itemcode, so the division
+            // is collapsed BEFORE the join — a direct join would multiply the PO line
+            // across the duplicates and inflate the denominator. MIN rather than the
+            // engine's .First() only because a report wants the same answer twice;
+            // an item mapping to two DivIDs is a data fault either way.
+            var rows = await c.QueryAsync<(int DivCode, string? Division, int PoQty)>(
+                new CommandDefinition(@"
+                    ;WITH poLines AS (
+                        SELECT u.ItemCode, Qty = CAST(ISNULL(u.orgqty, 0) AS INT)
+                          FROM usa.dbo.usaorgfile_LPM u WITH (NOLOCK)
+                         WHERE u.ContNo = @c
+                    ), itemDiv AS (
+                        SELECT v.itemcode,
+                               DivCode  = MIN(v.DivID),
+                               Division = MIN(v.Division)
+                          FROM datareporting.dbo.vupc_subclass v WITH (NOLOCK)
+                         WHERE v.DivID IS NOT NULL
+                           AND v.itemcode IN (SELECT ItemCode FROM poLines)
+                         GROUP BY v.itemcode
+                    )
+                    SELECT d.DivCode, Division = MIN(d.Division), PoQty = SUM(l.Qty)
+                      FROM poLines l
+                      JOIN itemDiv d ON d.itemcode = l.ItemCode
+                     GROUP BY d.DivCode",
+                    new { c = contno },
+                    commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            foreach (var r in rows) poQtyByDiv[r.DivCode] = r.PoQty;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[ContainerAllocation] WARN: division PO qty lookup failed: {ex.Message}");
+        }
+
+        // StopAtCeiling is carried through rather than filtered on: the report shows
+        // every configured ceiling and says which of them the engine actually
+        // enforces. Filtering here would hide the advisory ones entirely, and an
+        // operator comparing this grid against the Division Ceiling page would find
+        // rows missing with no explanation.
+        try
+        {
+            var rows = await c.QueryAsync<(string Country, int DivCode, decimal Pct, bool Stop)>(
+                new CommandDefinition(@"
+                    SELECT Country, ISNULL(DivCode, 0) AS DivCode, POAllocationMaxPct,
+                           CAST(ISNULL(StopAtCeiling, 0) AS BIT) AS StopAtCeiling
+                      FROM LPMSIM.dbo.LPM_POAllocationMaxPct WITH (NOLOCK)
+                     WHERE Country IS NOT NULL AND POAllocationMaxPct > 0",
+                    commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            foreach (var r in rows)
+                ceilings[(r.Country.Trim().ToUpperInvariant(), r.DivCode)] =
+                    new DivisionCeiling(r.Pct, r.Stop);
+        }
+        catch (Exception ex)
+        {
+            // Table or StopAtCeiling column not deployed — every Ceiling % renders
+            // blank, which reads as "none configured" rather than as a cap of 0.
+            Console.Error.WriteLine($"[ContainerAllocation] WARN: ceiling lookup failed: {ex.Message}");
+        }
+
+        return new DivisionCeilingContext(poQtyByDiv, ceilings);
+    }
+
+    /// <summary>
     /// Load rows from LPMSIM.dbo.WMS_ContAllocationData and map back to AllocationRow.
     /// Fields not stored in the final table (PoQty, SkuMax, VolumeGroup, etc.) come
     /// back as defaults; UI still displays Allocated Qty, StoreID, Division, etc.
