@@ -859,8 +859,8 @@
                         <th style="cursor:pointer" @onclick='() => Sort("Division")'>Division @SortArrow("Division")</th>
                         <th style="cursor:pointer; text-align:right" @onclick='() => Sort("PoQty")'>PO Qty @SortArrow("PoQty")</th>
                         <th style="cursor:pointer; text-align:right" @onclick='() => Sort("AllocQty")'>Allocated Qty @SortArrow("AllocQty")</th>
-                        <th style="cursor:pointer; text-align:right" @onclick='() => Sort("DivPoQty")' title="This Division's PO qty across the WHOLE container (every PO), read from usaorgfile_LPM. This — not the per-PO 'PO Qty' column — is the base the Division Ceiling is applied to.">Div PO Qty @SortArrow("DivPoQty")</th>
-                        <th style="cursor:pointer; text-align:right" @onclick='() => Sort("AllocPct")' title="Allocated Qty / Div PO Qty. Blank when the container's Division PO qty could not be read.">Alloc % @SortArrow("AllocPct")</th>
+                        <th style="cursor:pointer; text-align:right" @onclick='() => Sort("DivPoQty")' title="This PO's qty for this Division, read from usaorgfile_LPM. Unlike the 'PO Qty' column beside it — which is derived from the allocation rows — this includes items that allocated nothing, so PO Qty lower than Div PO Qty means part of the PO won no stock.">Div PO Qty @SortArrow("DivPoQty")</th>
+                        <th style="cursor:pointer; text-align:right" @onclick='() => Sort("AllocPct")' title="Allocated Qty / Div PO Qty, for this PO and Division. Blank when the PO qty could not be read. Note the Ceiling % beside it is applied by the engine per Division across the WHOLE container, so on a multi-PO container the two are not the same grain.">Alloc % @SortArrow("AllocPct")</th>
                         <th style="cursor:pointer; text-align:right" @onclick='() => Sort("CeilingPct")' title="POAllocationMaxPct for this Country x Division from the PO Allocation (Division Ceiling) page, falling back to the country-wide default. Blank means no ceiling is configured — which is not the same as a ceiling of 0.">Ceiling % @SortArrow("CeilingPct")</th>
                         <th style="cursor:pointer" @onclick='() => Sort("CeilingStatus")' title="OVER when Alloc % exceeds Ceiling %, WITHIN when it does not, blank when no ceiling is configured. 'Enforced' means Stop at ceiling is ticked, so the allocation engine actually caps at it; without it the percentage is advisory only and nothing stops allocation passing it.">Ceiling Status @SortArrow("CeilingStatus")</th>
                         <th style="cursor:pointer; text-align:right" @onclick='() => Sort("OtsQtyToday")' title="Highest OTS Qty Today across the country's stores for this Division">OTS Qty Today @SortArrow("OtsQtyToday")</th>
@@ -2011,15 +2011,16 @@
     private record ItemSummaryRowVm(string OraPONo, string ItemCode, string? ItemName, string? Brand, string? Division, int PoQty, int TotalAlloc, int Stores, DateTime? LPMDt, int? PriorityRank, int? OtsQtyToday);
     private record StoreRowVm(string StoreID, string? StoreName, string Country, string VolumeGroup, int? OtsQtyToday, string? Division, string Brand, string OraPONo, int PoQtySum, int AllocSum, double? OTS, DateTime? LPMDt, int? PriorityRank);
     private record CountryDivSummaryRowVm(string Country, int StoresCount, string OraPONo, string? Division, int PoQty, int AllocQty, DateTime? LPMDt, int? PriorityRank, int? OtsQtyToday,
-        // DivPoQty is the division's PO qty across the WHOLE container (every PO),
-        // which is the base the ceiling is applied to. Deliberately NOT PoQty above,
-        // which is per (PO No x Division) — on a multi-PO container the two differ and
-        // only this one is comparable to CeilingPct.
+        // DivPoQty is this (PO No x Division)'s PO qty, matching the row's own grain.
+        // It differs from PoQty above, which is derived from the allocation rows and
+        // so omits any item that won no stock; this one is read from usaorgfile_LPM,
+        // so PoQty < DivPoQty is the visible signal that part of the PO allocated
+        // nothing.
         int DivPoQty = 0,
         decimal? CeilingPct = null,
         bool CeilingEnforced = false)
     {
-        /// <summary>Allocated as a share of the division's container-wide PO qty.
+        /// <summary>Allocated as a share of this (PO No x Division)'s PO qty.
         /// Null when the denominator is unknown (0), so the cell renders blank
         /// instead of a meaningless 0%.</summary>
         public decimal? AllocPct => DivPoQty > 0
@@ -2133,7 +2134,7 @@
                         g.Where(x => x.LPMDt.HasValue).Min(x => x.LPMDt),
                         g.Where(x => x.PriorityRank.HasValue).Select(x => (int?)x.PriorityRank!.Value).Min(),
                         g.Where(x => x.OtsQtyToday.HasValue).Select(x => (int?)x.OtsQtyToday!.Value).Max(),
-                        DivPoQty: _divCeilings.PoQtyByDivCode.TryGetValue(divCode, out var dq) ? dq : 0,
+                        DivPoQty: _divCeilings.PoQtyFor(g.Key.OraPONo, divCode),
                         CeilingPct: ceiling?.Pct,
                         CeilingEnforced: ceiling?.StopAtCeiling ?? false);
                 });
