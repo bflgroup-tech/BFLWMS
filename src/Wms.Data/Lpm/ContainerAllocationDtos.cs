@@ -225,18 +225,28 @@ public sealed record DivisionCeiling(decimal Pct, bool StopAtCeiling);
 /// Everything the Country x Division summary needs to express a division's
 /// allocation as a share of its PO and judge it against the ceiling.
 ///
-/// PoQtyByDivCode is the division's PO qty across the WHOLE container, not per
-/// PO number — the same denominator ProcessAllocationAsync builds its allowance
-/// from, so the percentage shown and the ceiling applied are measured against
-/// the same base.
+/// PoQtyByPoAndDiv is keyed per (PO number, DivCode) so it matches the grain of
+/// the grid row, which groups by (Country, PO No, Division). A container-wide
+/// division total was tried first and read wrong on a multi-PO container: a PO
+/// that allocated all 5,200 of its own 5,200 showed 23.2%, because the
+/// denominator was the other three POs as well.
+///
+/// The trade-off is deliberate and worth knowing: ProcessAllocationAsync applies
+/// its ceiling to the division across the WHOLE container, so on a multi-PO
+/// container a per-PO percentage and the ceiling are not the same grain.
 /// </summary>
 public sealed record DivisionCeilingContext(
-    IReadOnlyDictionary<int, int>                                  PoQtyByDivCode,
+    IReadOnlyDictionary<(string OraPONo, int DivCode), int>             PoQtyByPoAndDiv,
     IReadOnlyDictionary<(string Country, int DivCode), DivisionCeiling> Ceilings)
 {
     public static DivisionCeilingContext Empty { get; } = new(
-        new Dictionary<int, int>(),
+        new Dictionary<(string, int), int>(),
         new Dictionary<(string, int), DivisionCeiling>());
+
+    /// <summary>PO qty for one (PO No, Division). 0 when unknown, which renders
+    /// the cell blank rather than as a misleading zero.</summary>
+    public int PoQtyFor(string? oraPoNo, int divCode) =>
+        oraPoNo is not null && PoQtyByPoAndDiv.TryGetValue((oraPoNo, divCode), out var q) ? q : 0;
 
     /// <summary>
     /// Ceiling for a (Country, Division), resolved exactly as the engine does:

@@ -3301,15 +3301,20 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
     }
 
     /// <summary>
-    /// Per-division PO qty for a container plus the configured PO-share ceilings,
-    /// for the Country x Division summary's Alloc % / Ceiling % / status columns.
+    /// Per (PO number, division) PO qty for a container plus the configured PO-share
+    /// ceilings, for the Country x Division summary's Alloc % / Ceiling % / status
+    /// columns.
+    ///
+    /// Keyed per PO, matching the grain of the grid row. A container-wide division
+    /// total was tried first and read wrong on a multi-PO container — a PO that
+    /// allocated all 5,200 of its own 5,200 showed 23.2%, the other three POs having
+    /// been in the denominator.
     ///
     /// The PO qty is read from usaorgfile_LPM rather than summed off the allocation
     /// rows on purpose. The allocation rows only cover items that actually won stock,
     /// and the grid's own PO Qty column derives from them — so a percentage built on
-    /// that would silently exclude anything that allocated nothing. This query builds
-    /// the SAME denominator ProcessAllocationAsync uses for its allowance
-    /// (poQtyByDiv), which is what makes Alloc % and Ceiling % comparable at all.
+    /// that would silently exclude anything that allocated nothing, and always read
+    /// 100% for a PO whose allocated items all filled.
     ///
     /// Degrades to an empty context rather than throwing: these columns are
     /// decoration on a report, and a missing ceiling table must not take the page
@@ -3321,8 +3326,8 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         if (string.IsNullOrWhiteSpace(contno)) return DivisionCeilingContext.Empty;
         contno = contno.Trim();
 
-        var poQtyByDiv = new Dictionary<int, int>();
-        var ceilings   = new Dictionary<(string, int), DivisionCeiling>();
+        var poQtyByPoDiv = new Dictionary<(string, int), int>();
+        var ceilings     = new Dictionary<(string, int), DivisionCeiling>();
 
         await using var c = OpenOnPremBackup();
 
@@ -3333,28 +3338,27 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
             // across the duplicates and inflate the denominator. MIN rather than the
             // engine's .First() only because a report wants the same answer twice;
             // an item mapping to two DivIDs is a data fault either way.
-            var rows = await c.QueryAsync<(int DivCode, string? Division, int PoQty)>(
+            var rows = await c.QueryAsync<(string OraPONo, int DivCode, int PoQty)>(
                 new CommandDefinition(@"
                     ;WITH poLines AS (
-                        SELECT u.ItemCode, Qty = CAST(ISNULL(u.orgqty, 0) AS INT)
+                        SELECT OraPONo = ISNULL(u.OraPONo, ''), u.ItemCode,
+                               Qty = CAST(ISNULL(u.orgqty, 0) AS INT)
                           FROM usa.dbo.usaorgfile_LPM u WITH (NOLOCK)
                          WHERE u.ContNo = @c
                     ), itemDiv AS (
-                        SELECT v.itemcode,
-                               DivCode  = MIN(v.DivID),
-                               Division = MIN(v.Division)
+                        SELECT v.itemcode, DivCode = MIN(v.DivID)
                           FROM datareporting.dbo.vupc_subclass v WITH (NOLOCK)
                          WHERE v.DivID IS NOT NULL
                            AND v.itemcode IN (SELECT ItemCode FROM poLines)
                          GROUP BY v.itemcode
                     )
-                    SELECT d.DivCode, Division = MIN(d.Division), PoQty = SUM(l.Qty)
+                    SELECT l.OraPONo, d.DivCode, PoQty = SUM(l.Qty)
                       FROM poLines l
                       JOIN itemDiv d ON d.itemcode = l.ItemCode
-                     GROUP BY d.DivCode",
+                     GROUP BY l.OraPONo, d.DivCode",
                     new { c = contno },
                     commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-            foreach (var r in rows) poQtyByDiv[r.DivCode] = r.PoQty;
+            foreach (var r in rows) poQtyByPoDiv[(r.OraPONo, r.DivCode)] = r.PoQty;
         }
         catch (Exception ex)
         {
@@ -3386,7 +3390,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
             Console.Error.WriteLine($"[ContainerAllocation] WARN: ceiling lookup failed: {ex.Message}");
         }
 
-        return new DivisionCeilingContext(poQtyByDiv, ceilings);
+        return new DivisionCeilingContext(poQtyByPoDiv, ceilings);
     }
 
     /// <summary>
