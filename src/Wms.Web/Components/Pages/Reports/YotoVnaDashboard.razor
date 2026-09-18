@@ -91,9 +91,15 @@
             </div>
         </div>
         <button class="aiwms-btn aiwms-btn-primary" style="height:36px; box-sizing:border-box" @onclick="LoadAsync" disabled="@(_loading || !IsRangeValid)">@(_loading ? "Loading…" : "Load")</button>
-        <button class="aiwms-btn yvd-export-btn" style="height:36px; width:36px; box-sizing:border-box; display:flex; align-items:center; justify-content:center; padding:0;" title="Download all data (one sheet)" @onclick="ExportAllAsync" disabled="@(!_loadedOnce || _exporting)">
-            <span class="mi sm">download</span>
+        <button class="aiwms-btn yvd-export-btn" style="height:36px; box-sizing:border-box" title="Download all data (one sheet)" @onclick="ExportAllAsync" disabled="@(!_loadedOnce || _exporting)">
+            <span class="mi sm" style="vertical-align:middle;">download</span> @(_exporting ? "Exporting..." : "Export Excel")
         </button>
+        @if (CurrentUser.HasAllCountriesAccess)
+        {
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:12px; color:var(--text-secondary); height:36px;">
+                <input type="checkbox" @bind="_hideAdminControls" /> Hide admin controls (preview user view)
+            </label>
+        }
     </div>
     @if (IsRange && !IsRangeValid)
     {
@@ -413,6 +419,11 @@
     private bool _loadedOnce;
     private bool _exporting;
 
+    // Admin-only, session-local: lets an admin preview exactly what a non-admin user sees
+    // (e.g. to screenshot for sharing) without actually changing roles. Never affects
+    // CurrentUser.HasAllCountriesAccess itself, only whether AdminQueryButton renders.
+    private bool _hideAdminControls;
+
     private bool _offloadingCollapsed;
     private bool _totalInboundCollapsed;
     private HashSet<string> _internalTransferCollapsed = new();
@@ -676,7 +687,7 @@
     // placement across every section, unlike the inline-after-title approach tried and reverted.
     private RenderFragment AdminQueryButton(string subsection) => __builder =>
     {
-        if (CurrentUser.HasAllCountriesAccess)
+        if (CurrentUser.HasAllCountriesAccess && !_hideAdminControls)
         {
             <button type="button" class="aiwms-icon-btn" title="View query" @onclick="@(() => ShowQueryAsync(subsection))"
                     style="position:absolute; left:8px; right:auto; top:50%; transform:translateY(-50%); z-index:1; width:auto;
