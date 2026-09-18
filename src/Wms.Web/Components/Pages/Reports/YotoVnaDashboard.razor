@@ -261,6 +261,7 @@
                 Total Inbound Summary — Offload Containers
                 (@PeriodSuffixLabel)
             </span>
+            @AdminQueryButton(TotalInboundQuerySubsection, 34)
             @MinimizeToggle(_totalInboundCollapsed, () => _totalInboundCollapsed = !_totalInboundCollapsed)
         </div>
         @if (!_totalInboundCollapsed)
@@ -336,6 +337,7 @@
                     @box.Label
                     (@PeriodSuffixLabel)
                 </span>
+                @AdminQueryButton(InternalTransferQuerySubsection, 34)
                 @MinimizeToggle(boxCollapsed, () => { if (!_internalTransferCollapsed.Add(box.Label)) _internalTransferCollapsed.Remove(box.Label); })
             </div>
             @if (!boxCollapsed)
@@ -455,6 +457,14 @@
         : IsRange       ? SelectedPeriodLabel
         : IsWeeklyAgg   ? $"{new DateTime(2000, _selectedMonth, 1):MMMM} {_selectedYear}, by week"
         : $"{_selectedYear}, by month";
+
+    // Monthly uses GetMonthlyInboundSummaryAsync/GetInternalTransferMonthlyAsync; every other
+    // mode (WeeklyAgg/Range/specific week) uses the *ForRangeAsync single-range calls instead --
+    // same split the two ReportQueryCatalogue subsections for each of these sections document.
+    private string TotalInboundQuerySubsection =>
+        IsMonthly ? "Total Inbound Summary — Offload Containers (Monthly)" : "Total Inbound Summary — Offload Containers (Weekly/Range)";
+    private string InternalTransferQuerySubsection =>
+        IsMonthly ? "Internal Transfer Summary (all boxes, Monthly)" : "Internal Transfer Summary (all boxes, Weekly/Range)";
 
     // "@DateTime.Today.Year-01-01" previously here was NOT a date string -- Razor parsed
     // it as integer subtraction (Year - 1 - 1), silently showing the wrong value. This is
@@ -624,13 +634,14 @@
 
     // Hidden entirely (button and "Admin view" label both) unless CurrentUser.HasAllCountriesAccess --
     // same Admin flag already gating the two footnotes further down this page. Pinned to the
-    // header cell's right edge (th needs position:relative at the call site), same idiom as
-    // .yvd-header's own absolutely-positioned minimize button.
-    private RenderFragment AdminQueryButton(string subsection) => __builder =>
+    // right edge of whatever positioned ancestor the call site provides (a table <th> needs its
+    // own position:relative; .yvd-header bars already have it, but reserve right:8px for their
+    // own minimize toggle, so those callers pass rightPx=34 to sit just left of it instead).
+    private RenderFragment AdminQueryButton(string subsection, int rightPx = 8) => __builder =>
     {
         if (CurrentUser.HasAllCountriesAccess)
         {
-            <span style="position:absolute; right:8px; top:50%; transform:translateY(-50%); display:inline-flex; align-items:center; gap:4px;">
+            <span style="position:absolute; right:@(rightPx)px; top:50%; transform:translateY(-50%); display:inline-flex; align-items:center; gap:4px;">
                 <button type="button" class="aiwms-icon-btn" title="View query" @onclick="@(() => ShowQueryAsync(subsection))" style="display:inline-flex; align-items:center;">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
                         <ellipse cx="9" cy="5" rx="6" ry="2.3" />
