@@ -260,8 +260,8 @@
             <span>
                 Total Inbound Summary — Offload Containers
                 (@PeriodSuffixLabel)
+                @AdminQueryButton(TotalInboundQuerySubsection, inline: true)
             </span>
-            @AdminQueryButton(TotalInboundQuerySubsection)
             @MinimizeToggle(_totalInboundCollapsed, () => _totalInboundCollapsed = !_totalInboundCollapsed)
         </div>
         @if (!_totalInboundCollapsed)
@@ -336,8 +336,8 @@
                     }
                     @box.Label
                     (@PeriodSuffixLabel)
+                    @AdminQueryButton(InternalTransferQuerySubsection, inline: true)
                 </span>
-                @AdminQueryButton(InternalTransferQuerySubsection)
                 @MinimizeToggle(boxCollapsed, () => { if (!_internalTransferCollapsed.Add(box.Label)) _internalTransferCollapsed.Remove(box.Label); })
             </div>
             @if (!boxCollapsed)
@@ -633,16 +633,17 @@
         ReportQueryCatalogue.All.First(e => e.Report == "YOTO VNA Dashboard" && e.Subsection == subsection).Sql;
 
     // Hidden entirely (button and "Admin view" label both) unless CurrentUser.HasAllCountriesAccess --
-    // same Admin flag already gating the two footnotes further down this page. Pinned to the
-    // left edge of whatever positioned ancestor the call site provides (a table <th> needs its
-    // own position:relative; .yvd-header bars already have it). Left, not right, so it never
-    // collides with .yvd-header's own minimize toggle sitting at right:8px.
-    private RenderFragment AdminQueryButton(string subsection) => __builder =>
+    // same Admin flag already gating the two footnotes further down this page. Table <th> headers
+    // pin it to the left edge (need their own position:relative); .yvd-header bars instead place
+    // it inline right after the title text, since their title is centered across the full-width
+    // bar rather than confined to one table's own columns.
+    private RenderFragment AdminQueryButton(string subsection, bool inline = false) => __builder =>
     {
         if (CurrentUser.HasAllCountriesAccess)
         {
+            var positioning = inline ? "" : "position:absolute; left:8px; top:50%; transform:translateY(-50%); z-index:1;";
             <button type="button" class="aiwms-icon-btn" title="View query" @onclick="@(() => ShowQueryAsync(subsection))"
-                    style="position:absolute; left:8px; top:50%; transform:translateY(-50%); z-index:1;
+                    style="@positioning
                            display:inline-flex; align-items:center; gap:6px; white-space:nowrap;
                            font-size:9px; font-weight:400; font-family:inherit; text-transform:none; letter-spacing:normal; line-height:1;
                            color:#8FD9A8;">
