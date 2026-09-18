@@ -35,7 +35,7 @@
             <select @bind="_selectedPeriod" style="width:230px; height:36px; box-sizing:border-box; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;">
                 <option value="Monthly">Monthly</option>
                 <option value="WeeklyAgg">Weekly (all weeks of selected month)</option>
-                <option value="Range">Custom date range (max 31 days)</option>
+                <option value="Range">Custom date range (max 15 days)</option>
                 <optgroup label="Or pick a specific week">
                     @foreach (var w in Weeks)
                     {
@@ -97,7 +97,7 @@
     </div>
     @if (IsRange && !IsRangeValid)
     {
-        <div class="aiwms-alert error" style="margin-top:12px">Date range cannot exceed 31 days.</div>
+        <div class="aiwms-alert error" style="margin-top:12px">Date range cannot exceed 15 days.</div>
     }
 </div>
 
@@ -400,7 +400,8 @@
 
 @code {
     // "Monthly" | "WeeklyAgg" (all weeks of the selected month, as columns) | "Range" (one
-    // explicit From/To date range, max 31 days) | "W{n}" (one specific week only) -- one
+    // explicit From/To date range, max 15 days -- one column per day, so kept short to stay
+    // readable) | "W{n}" (one specific week only) -- one
     // unified dropdown instead of a separate VIEW + WEEK pair.
     private string _selectedPeriod = "Monthly";
     private int _selectedYear = DateTime.Now.Year;
@@ -436,7 +437,7 @@
 
     // Only the custom-range mode has a range to validate -- every other mode picks from
     // fixed weeks/months that are always valid by construction.
-    private bool IsRangeValid => !IsRange || (_rangeFrom <= _rangeTo && (_rangeTo - _rangeFrom).TotalDays <= 30);
+    private bool IsRangeValid => !IsRange || (_rangeFrom <= _rangeTo && (_rangeTo - _rangeFrom).TotalDays <= 14);
 
     private int SelectedWeekNum =>
         IsSpecificWeek && _selectedPeriod.Length > 1 && int.TryParse(_selectedPeriod[1..], out var n) ? n : 1;
