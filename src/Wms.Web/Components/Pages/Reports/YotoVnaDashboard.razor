@@ -116,7 +116,7 @@
                 {
                 <table class="aiwms-table aiwms-table-dense" style="text-align:center; width:100%;">
                     <thead>
-                        <tr><th colspan="4" style="text-align:center; position:relative;">Inbound Shipment Details — Completed offloading@AdminQueryButton("Offloading Shipment Summary — Completed offloading")</th></tr>
+                        <tr><th colspan="4" style="text-align:center; position:relative;">Inbound Shipment Details — Completed offloading @AdminQueryButton("Offloading Shipment Summary — Completed offloading")</th></tr>
                         <tr>
                             <th style="text-align:left">Type</th>
                             <th style="text-align:right">Containers</th>
@@ -150,7 +150,7 @@
                 {
                 <table class="aiwms-table aiwms-table-dense" style="text-align:center; width:100%;">
                     <thead>
-                        <tr><th colspan="6" style="text-align:center; position:relative;">Inbound Shipment Details — Completed offloading (Detailed, by container)@AdminQueryButton("Offloading Shipment Summary — Completed offloading (Detailed, by container)")</th></tr>
+                        <tr><th colspan="6" style="text-align:center; position:relative;">Inbound Shipment Details — Completed offloading (Detailed, by container) @AdminQueryButton("Offloading Shipment Summary — Completed offloading (Detailed, by container)")</th></tr>
                         <tr>
                             <th style="text-align:left">Container ID</th>
                             <th style="text-align:right">Sticker Printing Date</th>
@@ -188,7 +188,7 @@
                 {
                 <table class="aiwms-table aiwms-table-dense" style="text-align:center; width:100%;">
                     <thead>
-                        <tr><th colspan="3" style="text-align:center; position:relative;">Inbound Shipment Details — Pending for offloading (as of today, since @PendingFloorLabel)@AdminQueryButton("Offloading Shipment Summary — Pending for offloading")</th></tr>
+                        <tr><th colspan="3" style="text-align:center; position:relative;">Inbound Shipment Details — Pending for offloading (as of today, since @PendingFloorLabel) @AdminQueryButton("Offloading Shipment Summary — Pending for offloading")</th></tr>
                         <tr>
                             <th style="text-align:left">Type</th>
                             <th style="text-align:right">Containers</th>
@@ -218,7 +218,7 @@
                 {
                 <table class="aiwms-table aiwms-table-dense" style="text-align:center; width:100%;">
                     <thead>
-                        <tr><th colspan="4" style="text-align:center; position:relative;">Inbound Shipment Details — Pending for offloading (Detailed, since @PendingFloorLabel)@AdminQueryButton("Offloading Shipment Summary — Pending for offloading (Detailed, by container)")</th></tr>
+                        <tr><th colspan="4" style="text-align:center; position:relative;">Inbound Shipment Details — Pending for offloading (Detailed, since @PendingFloorLabel) @AdminQueryButton("Offloading Shipment Summary — Pending for offloading (Detailed, by container)")</th></tr>
                         <tr>
                             <th style="text-align:left">Container ID</th>
                             <th style="text-align:right">Receipt Date</th>
@@ -631,8 +631,14 @@
         if (CurrentUser.HasAllCountriesAccess)
         {
             <span style="position:absolute; right:8px; top:50%; transform:translateY(-50%); display:inline-flex; align-items:center; gap:4px;">
-                <button type="button" class="aiwms-icon-btn" title="View query" @onclick="@(() => ShowQueryAsync(subsection))">
-                    <span class="mi sm" style="font-size:14px">code</span>
+                <button type="button" class="aiwms-icon-btn" title="View query" @onclick="@(() => ShowQueryAsync(subsection))" style="display:inline-flex; align-items:center;">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                        <ellipse cx="9" cy="5" rx="6" ry="2.3" />
+                        <path d="M3 5v10c0 1.27 2.69 2.3 6 2.3s6-1.03 6-2.3V5" />
+                        <path d="M3 10.5c0 1.27 2.69 2.3 6 2.3s6-1.03 6-2.3" />
+                        <circle cx="17.5" cy="16.5" r="3.6" />
+                        <line x1="20" y1="19" x2="22.5" y2="21.5" />
+                    </svg>
                 </button>
                 <span style="font-size:9px; font-weight:400; text-transform:none; letter-spacing:0; opacity:0.7;">Admin view</span>
             </span>
