@@ -260,8 +260,8 @@
             <span>
                 Total Inbound Summary — Offload Containers
                 (@PeriodSuffixLabel)
-                @AdminQueryButton(TotalInboundQuerySubsection, inline: true)
             </span>
+            @AdminQueryButton(TotalInboundQuerySubsection)
             @MinimizeToggle(_totalInboundCollapsed, () => _totalInboundCollapsed = !_totalInboundCollapsed)
         </div>
         @if (!_totalInboundCollapsed)
@@ -336,8 +336,8 @@
                     }
                     @box.Label
                     (@PeriodSuffixLabel)
-                    @AdminQueryButton(InternalTransferQuerySubsection, inline: true)
                 </span>
+                @AdminQueryButton(InternalTransferQuerySubsection)
                 @MinimizeToggle(boxCollapsed, () => { if (!_internalTransferCollapsed.Add(box.Label)) _internalTransferCollapsed.Remove(box.Label); })
             </div>
             @if (!boxCollapsed)
@@ -633,20 +633,16 @@
         ReportQueryCatalogue.All.First(e => e.Report == "YOTO VNA Dashboard" && e.Subsection == subsection).Sql;
 
     // Hidden entirely (button and "Admin view" label both) unless CurrentUser.HasAllCountriesAccess --
-    // same Admin flag already gating the two footnotes further down this page. Table <th> headers
-    // pin it to the left edge (need their own position:relative); .yvd-header bars instead place
-    // it inline right after the title text, since their title is centered across the full-width
-    // bar rather than confined to one table's own columns.
-    private RenderFragment AdminQueryButton(string subsection, bool inline = false) => __builder =>
+    // same Admin flag already gating the two footnotes further down this page. Pinned to the left
+    // edge of whatever positioned ancestor the call site provides (a table <th> needs its own
+    // position:relative; .yvd-header bars already have it) -- confirmed clean, non-overlapping
+    // placement across every section, unlike the inline-after-title approach tried and reverted.
+    private RenderFragment AdminQueryButton(string subsection) => __builder =>
     {
         if (CurrentUser.HasAllCountriesAccess)
         {
-            // Nudged 100px left of its natural inline position so it clears .yvd-header's own
-            // minimize toggle at the bar's right edge -- these titles are short enough that the
-            // centered flex content (title + button together) would otherwise land right under it.
-            var positioning = inline ? "position:relative; left:-100px;" : "position:absolute; left:8px; top:50%; transform:translateY(-50%); z-index:1;";
             <button type="button" class="aiwms-icon-btn" title="View query" @onclick="@(() => ShowQueryAsync(subsection))"
-                    style="@positioning
+                    style="position:absolute; left:8px; top:50%; transform:translateY(-50%); z-index:1;
                            display:inline-flex; align-items:center; gap:6px; white-space:nowrap;
                            font-size:9px; font-weight:400; font-family:inherit; text-transform:none; letter-spacing:normal; line-height:1;
                            color:#8FD9A8;">
