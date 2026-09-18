@@ -641,9 +641,9 @@
     {
         if (CurrentUser.HasAllCountriesAccess)
         {
-            <span style="position:absolute; left:8px; top:50%; transform:translateY(-50%); display:inline-flex; align-items:center; gap:4px;">
-                <button type="button" class="aiwms-icon-btn" title="View query" @onclick="@(() => ShowQueryAsync(subsection))" style="display:inline-flex; align-items:center;">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <span style="position:absolute; left:8px; top:50%; transform:translateY(-50%); display:inline-flex; align-items:center; gap:6px; white-space:nowrap; font-size:9px; font-weight:400; font-family:inherit; text-transform:none; letter-spacing:normal; line-height:1; z-index:1; color:#8FD9A8;">
+                <button type="button" class="aiwms-icon-btn" title="View query" @onclick="@(() => ShowQueryAsync(subsection))" style="display:inline-flex; align-items:center; flex-shrink:0; color:#8FD9A8;">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;">
                         <ellipse cx="9" cy="5" rx="6" ry="2.3" />
                         <path d="M3 5v10c0 1.27 2.69 2.3 6 2.3s6-1.03 6-2.3V5" />
                         <path d="M3 10.5c0 1.27 2.69 2.3 6 2.3s6-1.03 6-2.3" />
@@ -651,7 +651,7 @@
                         <line x1="20" y1="19" x2="22.5" y2="21.5" />
                     </svg>
                 </button>
-                <span style="font-size:9px; font-weight:400; text-transform:none; letter-spacing:0; opacity:0.7;">Admin view</span>
+                <span style="flex-shrink:0; opacity:0.9;">Admin view</span>
             </span>
         }
     };
