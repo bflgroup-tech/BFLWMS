@@ -641,7 +641,10 @@
     {
         if (CurrentUser.HasAllCountriesAccess)
         {
-            var positioning = inline ? "" : "position:absolute; left:8px; top:50%; transform:translateY(-50%); z-index:1;";
+            // Nudged 100px left of its natural inline position so it clears .yvd-header's own
+            // minimize toggle at the bar's right edge -- these titles are short enough that the
+            // centered flex content (title + button together) would otherwise land right under it.
+            var positioning = inline ? "position:relative; left:-100px;" : "position:absolute; left:8px; top:50%; transform:translateY(-50%); z-index:1;";
             <button type="button" class="aiwms-icon-btn" title="View query" @onclick="@(() => ShowQueryAsync(subsection))"
                     style="@positioning
                            display:inline-flex; align-items:center; gap:6px; white-space:nowrap;
