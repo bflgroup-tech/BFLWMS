@@ -330,11 +330,7 @@
         <div class="aiwms-section" style="padding:0; overflow:hidden">
             <div class="yvd-header">
                 <span>
-                    @if (box.Warehouse is not null)
-                    {
-                        <span class="yvd-warehouse-badge">@box.Warehouse</span>
-                    }
-                    @box.Label
+                    @RenderBoxLabel(box)
                     (@(box.IsInbound ? "To" : "From") <span class="yvd-warehouse-badge">YOTO</span>)
                     (@PeriodSuffixLabel)
                 </span>
@@ -627,6 +623,25 @@
         </button>
     };
 
+    // Every partner-warehouse box's Label already spells out the warehouse name ("Inbound from
+    // JAFZA"), so a separate leading badge repeating it is redundant -- highlight it in place
+    // instead. Case-insensitive match since box.Warehouse is upper-cased ("TECHNO") but Label
+    // keeps its original casing ("Techno"); the badge shows Label's own casing, not Warehouse's.
+    private RenderFragment RenderBoxLabel(YotoInternalTransferBox box) => __builder =>
+    {
+        var idx = box.Warehouse is null ? -1 : box.Label.IndexOf(box.Warehouse, StringComparison.OrdinalIgnoreCase);
+        if (idx < 0)
+        {
+            @box.Label
+        }
+        else
+        {
+            @box.Label[..idx]
+            <span class="yvd-warehouse-badge">@box.Label.Substring(idx, box.Warehouse!.Length)</span>
+            @box.Label[(idx + box.Warehouse.Length)..]
+        }
+    };
+
     // ====================== Admin-only "view query" (Report Assistant's own catalogue -- no
     // duplicated SQL text to drift out of sync) ======================
 
@@ -796,7 +811,9 @@
 
     private int WriteInternalTransferBlock(IXLWorksheet ws, int row, YotoInternalTransferBox box)
     {
-        var title = box.Warehouse is not null ? $"{box.Warehouse} — {box.Label}" : box.Label;
+        // Label already spells out the warehouse name ("Inbound from JAFZA") -- same reasoning
+        // as RenderBoxLabel, no separate "{Warehouse} — " prefix needed here either.
+        var title = box.Label;
         var direction = box.IsInbound ? "To YOTO" : "From YOTO";
         row = WriteSectionTitle(ws, row,
             $"{title} ({direction}) ({PeriodSuffixLabel})");
