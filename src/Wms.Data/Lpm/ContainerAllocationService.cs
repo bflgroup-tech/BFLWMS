@@ -2245,16 +2245,31 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                             return c == 'Z' || (c >= 'A' && c <= 'H');
                         }
 
-                        // The top band, with Z sitting above A. A–E, not A–C: Bypass Pass 1b
-                        // is the option actually in use, so its coverage calculation and
-                        // Stage 1 top-up move with Pass 4 rather than being left behind on
-                        // a narrower set.
+                        // Two bands, kept separate on purpose.
                         //
-                        // The DB columns keep their ABC names (Pass1ByPass.ABCMax / ABCSOH /
-                        // ABCReqdStock) — renaming persisted columns to chase this would
-                        // break anything already reading them. The names now mean "the top
-                        // band", which is A–E.
+                        // IsTopGrade — Z, A, B, C. Drives Bypass Pass 1b: the coverage
+                        // calculation (ABCReqdStock / MinMinCoverPct) and the Stage 1
+                        // top-up. When the top band cannot cover the PO on its own, ONLY
+                        // the top band is topped up to tier; everyone else waits for the
+                        // Stage 2 one-unit sweep and Pass 2. The Pass1ByPass columns are
+                        // named ABCMax / ABCSOH / ABCReqdStock because that is literally
+                        // what they hold.
+                        //
+                        // IsPass4Grade — Z, A–E. Pass 4's proportional share reaches two
+                        // grades further down than Stage 1 does.
+                        //
+                        // #577 collapsed the two into one A–E predicate, which widened
+                        // Stage 1 to D and E stores: on AEINT8542 item DivCode 407 the
+                        // Stage 1 fill ran A → E and left nothing for the sweep. The A–E
+                        // instruction was for Pass 4, which runs in both bypass modes and
+                        // so already applied — nothing in Pass 1b needed to move.
                         static bool IsTopGrade(string? vg)
+                        {
+                            if (string.IsNullOrWhiteSpace(vg)) return false;
+                            var c = char.ToUpperInvariant(vg.Trim()[0]);
+                            return c is 'Z' or 'A' or 'B' or 'C';
+                        }
+                        static bool IsPass4Grade(string? vg)
                         {
                             if (string.IsNullOrWhiteSpace(vg)) return false;
                             var c = char.ToUpperInvariant(vg.Trim()[0]);
@@ -2541,7 +2556,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                                 // of grade). Ratio uses raw MinMax as the weight; each store's
                                 // share is take-as-is (no per-store cap).
                                 var top3 = eligible
-                                    .Where(r => IsTopGrade(r.VolumeGroup))   // Z, A–E by letter — decoupled from SortOrder config so an S=Special row cannot shove E out of the band
+                                    .Where(r => IsPass4Grade(r.VolumeGroup))   // Z, A–E by letter — decoupled from SortOrder config so an S=Special row cannot shove E out of the band
                                     .Where(r => LiveOtsPct(r) > 0)                                                // positive-OTS stores only
                                     .Select(r => (Row: r, MinMax: RawMinMaxFor(r)))
                                     .Where(x => x.MinMax > 0)
@@ -3298,6 +3313,99 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         return await c.ExecuteScalarAsync<long?>(new CommandDefinition(
             "SELECT CAST(ISNULL(SUM(orgqty),0) AS BIGINT) FROM usa.dbo.usaorgfile_LPM WITH (NOLOCK) WHERE ContNo = @c",
             new { c = contno }, commandTimeout: 60, cancellationToken: ct)) ?? 0;
+    }
+
+    /// <summary>
+    /// Per (PO number, division) PO qty for a container plus the configured PO-share
+    /// ceilings, for the Country x Division summary's Alloc % / Ceiling % / status
+    /// columns.
+    ///
+    /// Keyed per PO, matching the grain of the grid row. A container-wide division
+    /// total was tried first and read wrong on a multi-PO container — a PO that
+    /// allocated all 5,200 of its own 5,200 showed 23.2%, the other three POs having
+    /// been in the denominator.
+    ///
+    /// The PO qty is read from usaorgfile_LPM rather than summed off the allocation
+    /// rows on purpose. The allocation rows only cover items that actually won stock,
+    /// and the grid's own PO Qty column derives from them — so a percentage built on
+    /// that would silently exclude anything that allocated nothing, and always read
+    /// 100% for a PO whose allocated items all filled.
+    ///
+    /// Degrades to an empty context rather than throwing: these columns are
+    /// decoration on a report, and a missing ceiling table must not take the page
+    /// down with it.
+    /// </summary>
+    public async Task<DivisionCeilingContext> GetDivisionCeilingContextAsync(
+        string contno, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(contno)) return DivisionCeilingContext.Empty;
+        contno = contno.Trim();
+
+        var poQtyByPoDiv = new Dictionary<(string, int), int>();
+        var ceilings     = new Dictionary<(string, int), DivisionCeiling>();
+
+        await using var c = OpenOnPremBackup();
+
+        try
+        {
+            // vupc_subclass can carry more than one row per itemcode, so the division
+            // is collapsed BEFORE the join — a direct join would multiply the PO line
+            // across the duplicates and inflate the denominator. MIN rather than the
+            // engine's .First() only because a report wants the same answer twice;
+            // an item mapping to two DivIDs is a data fault either way.
+            var rows = await c.QueryAsync<(string OraPONo, int DivCode, int PoQty)>(
+                new CommandDefinition(@"
+                    ;WITH poLines AS (
+                        SELECT OraPONo = ISNULL(u.OraPONo, ''), u.ItemCode,
+                               Qty = CAST(ISNULL(u.orgqty, 0) AS INT)
+                          FROM usa.dbo.usaorgfile_LPM u WITH (NOLOCK)
+                         WHERE u.ContNo = @c
+                    ), itemDiv AS (
+                        SELECT v.itemcode, DivCode = MIN(v.DivID)
+                          FROM datareporting.dbo.vupc_subclass v WITH (NOLOCK)
+                         WHERE v.DivID IS NOT NULL
+                           AND v.itemcode IN (SELECT ItemCode FROM poLines)
+                         GROUP BY v.itemcode
+                    )
+                    SELECT l.OraPONo, d.DivCode, PoQty = SUM(l.Qty)
+                      FROM poLines l
+                      JOIN itemDiv d ON d.itemcode = l.ItemCode
+                     GROUP BY l.OraPONo, d.DivCode",
+                    new { c = contno },
+                    commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            foreach (var r in rows) poQtyByPoDiv[(r.OraPONo, r.DivCode)] = r.PoQty;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[ContainerAllocation] WARN: division PO qty lookup failed: {ex.Message}");
+        }
+
+        // StopAtCeiling is carried through rather than filtered on: the report shows
+        // every configured ceiling and says which of them the engine actually
+        // enforces. Filtering here would hide the advisory ones entirely, and an
+        // operator comparing this grid against the Division Ceiling page would find
+        // rows missing with no explanation.
+        try
+        {
+            var rows = await c.QueryAsync<(string Country, int DivCode, decimal Pct, bool Stop)>(
+                new CommandDefinition(@"
+                    SELECT Country, ISNULL(DivCode, 0) AS DivCode, POAllocationMaxPct,
+                           CAST(ISNULL(StopAtCeiling, 0) AS BIT) AS StopAtCeiling
+                      FROM LPMSIM.dbo.LPM_POAllocationMaxPct WITH (NOLOCK)
+                     WHERE Country IS NOT NULL AND POAllocationMaxPct > 0",
+                    commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            foreach (var r in rows)
+                ceilings[(r.Country.Trim().ToUpperInvariant(), r.DivCode)] =
+                    new DivisionCeiling(r.Pct, r.Stop);
+        }
+        catch (Exception ex)
+        {
+            // Table or StopAtCeiling column not deployed — every Ceiling % renders
+            // blank, which reads as "none configured" rather than as a cap of 0.
+            Console.Error.WriteLine($"[ContainerAllocation] WARN: ceiling lookup failed: {ex.Message}");
+        }
+
+        return new DivisionCeilingContext(poQtyByPoDiv, ceilings);
     }
 
     /// <summary>

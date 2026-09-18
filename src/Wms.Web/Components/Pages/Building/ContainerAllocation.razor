@@ -859,6 +859,10 @@
                         <th style="cursor:pointer" @onclick='() => Sort("Division")'>Division @SortArrow("Division")</th>
                         <th style="cursor:pointer; text-align:right" @onclick='() => Sort("PoQty")'>PO Qty @SortArrow("PoQty")</th>
                         <th style="cursor:pointer; text-align:right" @onclick='() => Sort("AllocQty")'>Allocated Qty @SortArrow("AllocQty")</th>
+                        <th style="cursor:pointer; text-align:right" @onclick='() => Sort("DivPoQty")' title="This PO's qty for this Division, read from usaorgfile_LPM. Unlike the 'PO Qty' column beside it — which is derived from the allocation rows — this includes items that allocated nothing, so PO Qty lower than Div PO Qty means part of the PO won no stock.">Div PO Qty @SortArrow("DivPoQty")</th>
+                        <th style="cursor:pointer; text-align:right" @onclick='() => Sort("AllocPct")' title="Allocated Qty / Div PO Qty, for this PO and Division. Blank when the PO qty could not be read. Note the Ceiling % beside it is applied by the engine per Division across the WHOLE container, so on a multi-PO container the two are not the same grain.">Alloc % @SortArrow("AllocPct")</th>
+                        <th style="cursor:pointer; text-align:right" @onclick='() => Sort("CeilingPct")' title="POAllocationMaxPct for this Country x Division from the PO Allocation (Division Ceiling) page, falling back to the country-wide default. Blank means no ceiling is configured — which is not the same as a ceiling of 0.">Ceiling % @SortArrow("CeilingPct")</th>
+                        <th style="cursor:pointer" @onclick='() => Sort("CeilingStatus")' title="OVER when Alloc % exceeds Ceiling %, WITHIN when it does not, blank when no ceiling is configured. 'Enforced' means Stop at ceiling is ticked, so the allocation engine actually caps at it; without it the percentage is advisory only and nothing stops allocation passing it.">Ceiling Status @SortArrow("CeilingStatus")</th>
                         <th style="cursor:pointer; text-align:right" @onclick='() => Sort("OtsQtyToday")' title="Highest OTS Qty Today across the country's stores for this Division">OTS Qty Today @SortArrow("OtsQtyToday")</th>
                         <th style="cursor:pointer" @onclick='() => Sort("LPMDt")'>LPM Dt @SortArrow("LPMDt")</th>
                     </tr>
@@ -873,6 +877,32 @@
                             <td>@g.Division</td>
                             <td style="text-align:right">@g.PoQty</td>
                             <td style="text-align:right">@g.AllocQty</td>
+                            <td style="text-align:right">@(g.DivPoQty > 0 ? g.DivPoQty.ToString("N0") : "")</td>
+                            <td style="text-align:right">@(g.AllocPct.HasValue ? $"{g.AllocPct.Value:0.0}%" : "")</td>
+                            <td style="text-align:right">@(g.CeilingPct.HasValue ? $"{g.CeilingPct.Value:0.#}%" : "")</td>
+                            <td>
+                                @if (g.IsOverCeiling is bool over)
+                                {
+                                    @* Advisory vs enforced are visually distinct on purpose. With
+                                       Stop at ceiling off, OVER is an observation — nothing capped
+                                       the allocation — and colouring it like a breach would send
+                                       operators looking for a fault that isn't there. *@
+                                    @* tier4 = red (danger), tier3 = amber (warning), tier1 = green. *@
+                                    <span class="aiwms-pill @(over ? (g.CeilingEnforced ? "tier4" : "tier3") : "tier1")"
+                                          title="@(over
+                                              ? (g.CeilingEnforced
+                                                  ? "Over the ceiling, and Stop at ceiling is ON — the engine caps allocation here."
+                                                  : "Over the configured ceiling, but Stop at ceiling is OFF — advisory only, nothing capped this allocation.")
+                                              : (g.CeilingEnforced
+                                                  ? "Within the ceiling (enforced)."
+                                                  : "Within the configured ceiling (advisory — Stop at ceiling is OFF)."))">
+                                        @(over ? "OVER" : "WITHIN")
+                                    </span>
+                                    <span style="font-size:10px; color:var(--text-secondary); margin-left:4px">
+                                        @(g.CeilingEnforced ? "enforced" : "advisory")
+                                    </span>
+                                }
+                            </td>
                             <td style="text-align:right">@g.OtsQtyToday</td>
                             <td>@g.LPMDt?.ToString("yyyy-MM-dd")</td>
                         </tr>
@@ -998,6 +1028,11 @@
         get { var n = DateTime.UtcNow.AddHours(4); return new DateTime(n.Year, n.Month, 1).AddMonths(2); }
     }
     private long _totalPoQty;
+    // Per-division PO qty + configured ceilings, for the Country x Div Summary's
+    // Alloc % / Ceiling % / status columns. Loaded next to _totalPoQty so the two
+    // always describe the same container. Empty until a container is loaded, which
+    // renders the columns blank rather than as zeroes.
+    private DivisionCeilingContext _divCeilings = DivisionCeilingContext.Empty;
     private List<BlockedItemRow> _blocked = new();
     private bool _showBlocked;
     private List<PlanningFlagRow> _planningFlags = new();
@@ -1253,7 +1288,17 @@
             _loadedBatch = info;
             _allocation = await Svc.LoadFinalByBatchAsync(info.BatchNo);
             _blocked    = await Svc.LoadBlockedByBatchAsync(info.BatchNo);
-            _totalPoQty = info.TotalQty ?? 0;
+            // Header.TotalQty is the run's ALLOCATED total, not the container's PO
+            // qty — reading the "Total PO Qty" card off it made that card and the
+            // "Total Allocated Qty" card beside it show the same number on every
+            // loaded batch, and disagree with the PO Qty column in the grid. Same
+            // source as the Process path now.
+            _totalPoQty = await Svc.GetTotalPoQtyAsync(info.ContNo);
+            // Div PO Qty / Alloc % / Ceiling % are keyed on the container, so they
+            // have to be loaded here too — this is the path the Processed Contnos
+            // dropdown uses, and without it those four columns render blank on every
+            // batch loaded rather than processed.
+            _divCeilings = await Svc.GetDivisionCeilingContextAsync(info.ContNo);
             ShowInfo($"Loaded {info.ContNo}#{info.BatchNo} — {_allocation.Count} rows, {_allocation.Sum(r => r.AllocQty)} pcs, {_blocked.Count} blocked.");
         }
         catch (Exception ex) { ShowError($"Load failed: {ex.Message}"); }
@@ -1413,6 +1458,7 @@
                 _allocation = await Svc.LoadFinalAsync(_country, _contno, ro);
                 _blocked    = await Svc.LoadBlockedAsync(_country, _contno, ro);
                 _totalPoQty = await Svc.GetTotalPoQtyAsync(_contno);
+                _divCeilings = await Svc.GetDivisionCeilingContextAsync(_contno);
                 _loadedBatch = await Svc.GetLatestBatchInfoAsync(_country, _contno, ro.ToString());
                 ShowInfo($"Loaded existing {_runOption} allocation — {_allocation.Count} rows, {_allocation.Sum(r => r.AllocQty)} pcs (in {FmtElapsed(totalSw.ElapsedMilliseconds)}).");
                 return;
@@ -1468,6 +1514,7 @@
                 await RefreshStatusAsync();
                 await RefreshProcessedContnosAsync();
                 _totalPoQty = await Svc.GetTotalPoQtyAsync(_contno);
+                _divCeilings = await Svc.GetDivisionCeilingContextAsync(_contno);
                 _loadedBatch = await Svc.GetLatestBatchInfoAsync(_country, _contno, ro.ToString());
                 ShowInfo(
                     $"Allocation computed and saved ({_runOption}): {_allocation.Count} rows, {_allocation.Sum(r => r.AllocQty)} pcs, {_blocked.Count} blocked. " +
@@ -1735,6 +1782,7 @@
             _showPlanningFlags = false;
             _loadedBatch = null;
             _totalPoQty = 0;
+            _divCeilings = DivisionCeilingContext.Empty;
             await RefreshStatusAsync();
             await RefreshProcessedContnosAsync();
             ShowInfo($"Deleted {n} {_runOption} rows for {_contno}.");
@@ -1795,6 +1843,7 @@
         _blocked = new();
         _loadedBatch = null;
         _totalPoQty = 0;
+        _divCeilings = DivisionCeilingContext.Empty;
     }
 
     /// <summary>
@@ -1961,7 +2010,29 @@
     // LPMDt on grouped views = earliest LPMDt within the group (Min, ignoring nulls).
     private record ItemSummaryRowVm(string OraPONo, string ItemCode, string? ItemName, string? Brand, string? Division, int PoQty, int TotalAlloc, int Stores, DateTime? LPMDt, int? PriorityRank, int? OtsQtyToday);
     private record StoreRowVm(string StoreID, string? StoreName, string Country, string VolumeGroup, int? OtsQtyToday, string? Division, string Brand, string OraPONo, int PoQtySum, int AllocSum, double? OTS, DateTime? LPMDt, int? PriorityRank);
-    private record CountryDivSummaryRowVm(string Country, int StoresCount, string OraPONo, string? Division, int PoQty, int AllocQty, DateTime? LPMDt, int? PriorityRank, int? OtsQtyToday);
+    private record CountryDivSummaryRowVm(string Country, int StoresCount, string OraPONo, string? Division, int PoQty, int AllocQty, DateTime? LPMDt, int? PriorityRank, int? OtsQtyToday,
+        // DivPoQty is this (PO No x Division)'s PO qty, matching the row's own grain.
+        // It differs from PoQty above, which is derived from the allocation rows and
+        // so omits any item that won no stock; this one is read from usaorgfile_LPM,
+        // so PoQty < DivPoQty is the visible signal that part of the PO allocated
+        // nothing.
+        int DivPoQty = 0,
+        decimal? CeilingPct = null,
+        bool CeilingEnforced = false)
+    {
+        /// <summary>Allocated as a share of this (PO No x Division)'s PO qty.
+        /// Null when the denominator is unknown (0), so the cell renders blank
+        /// instead of a meaningless 0%.</summary>
+        public decimal? AllocPct => DivPoQty > 0
+            ? Math.Round(AllocQty * 100m / DivPoQty, 1)
+            : null;
+
+        /// <summary>OVER / WITHIN / null (no ceiling configured). Mirrors
+        /// BulkPoAllocationReportCell.OverCeiling so the two reports agree.</summary>
+        public bool? IsOverCeiling => CeilingPct is > 0 && AllocPct.HasValue
+            ? AllocPct.Value > CeilingPct.Value
+            : (bool?)null;
+    }
     private record CountrySummaryRowVm(string Country, int StoresCount, string OraPONo, int PoQty, int AllocQty, DateTime? LPMDt, int? PriorityRank, int? OtsQtyToday);
     private record CountryContainerSummaryRowVm(string Country, int StoresCount, int PoQty, int AllocQty, decimal AllocPct);
 
@@ -2047,15 +2118,26 @@
 
             var rows = all
                 .GroupBy(r => new { r.Country, r.OraPONo, r.Division })
-                .Select(g => new CountryDivSummaryRowVm(
-                    g.Key.Country,
-                    storesPerCountry.TryGetValue(g.Key.Country, out var n) ? n : 0,
-                    g.Key.OraPONo, g.Key.Division,
-                    poDivTotals.TryGetValue((g.Key.OraPONo, g.Key.Division), out var t) ? t : 0,
-                    g.Sum(x => x.AllocQty),
-                    g.Where(x => x.LPMDt.HasValue).Min(x => x.LPMDt),
-                    g.Where(x => x.PriorityRank.HasValue).Select(x => (int?)x.PriorityRank!.Value).Min(),
-                    g.Where(x => x.OtsQtyToday.HasValue).Select(x => (int?)x.OtsQtyToday!.Value).Max()));
+                .Select(g =>
+                {
+                    // DivCode comes off the rows rather than being looked up by
+                    // Division name: the ceiling table is keyed on the code, and two
+                    // divisions can share a display name across countries.
+                    var divCode = g.Select(x => x.DivCode).FirstOrDefault();
+                    var ceiling = _divCeilings.For(g.Key.Country, divCode);
+                    return new CountryDivSummaryRowVm(
+                        g.Key.Country,
+                        storesPerCountry.TryGetValue(g.Key.Country, out var n) ? n : 0,
+                        g.Key.OraPONo, g.Key.Division,
+                        poDivTotals.TryGetValue((g.Key.OraPONo, g.Key.Division), out var t) ? t : 0,
+                        g.Sum(x => x.AllocQty),
+                        g.Where(x => x.LPMDt.HasValue).Min(x => x.LPMDt),
+                        g.Where(x => x.PriorityRank.HasValue).Select(x => (int?)x.PriorityRank!.Value).Min(),
+                        g.Where(x => x.OtsQtyToday.HasValue).Select(x => (int?)x.OtsQtyToday!.Value).Max(),
+                        DivPoQty: _divCeilings.PoQtyFor(g.Key.OraPONo, divCode),
+                        CeilingPct: ceiling?.Pct,
+                        CeilingEnforced: ceiling?.StopAtCeiling ?? false);
+                });
             if (_sortKey is null)
                 return rows.OrderBy(r => r.Country).ThenBy(r => r.OraPONo).ThenBy(r => r.Division);
             Func<CountryDivSummaryRowVm, object?> k = _sortKey switch {
@@ -2064,6 +2146,16 @@
                 "PoQty" => r => r.PoQty, "AllocQty" => r => r.AllocQty, "LPMDt" => r => r.LPMDt,
                 "PriorityRank" => r => r.PriorityRank ?? int.MaxValue,
                 "OtsQtyToday" => r => r.OtsQtyToday ?? int.MinValue,
+                "DivPoQty" => r => r.DivPoQty,
+                // Rows with no percentage sort last ascending rather than leading with
+                // a phantom 0 — blank means "not known", not "zero".
+                "AllocPct" => r => r.AllocPct ?? decimal.MinValue,
+                "CeilingPct" => r => r.CeilingPct ?? decimal.MinValue,
+                // Worst first when descending: over an enforced ceiling, then over an
+                // advisory one, then within, then no ceiling at all.
+                "CeilingStatus" => r => r.IsOverCeiling is null ? 0
+                                      : r.IsOverCeiling == false ? 1
+                                      : r.CeilingEnforced ? 3 : 2,
                 _ => r => r.Country,
             };
             return _sortAsc ? rows.OrderBy(k) : rows.OrderByDescending(k);

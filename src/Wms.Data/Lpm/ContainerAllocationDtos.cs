@@ -209,3 +209,57 @@ public sealed record ContainerAllocationCountries(
     bool         Restricted,
     string?      RawValue,     // AllocationCountry as written on the order, e.g. "UAE:ONLINE"
     List<string> Unmatched);   // tokens naming nothing in the SIM country list
+
+/// <summary>
+/// One configured PO-share ceiling from LPMSIM.dbo.LPM_POAllocationMaxPct.
+///
+/// <paramref name="StopAtCeiling"/> is the difference between a number that is
+/// merely configured and one the allocation engine actually enforces: only rows
+/// with the flag set are loaded into the run's allowance dictionary. A report
+/// that showed the percentage without it would imply an enforcement that is not
+/// happening.
+/// </summary>
+public sealed record DivisionCeiling(decimal Pct, bool StopAtCeiling);
+
+/// <summary>
+/// Everything the Country x Division summary needs to express a division's
+/// allocation as a share of its PO and judge it against the ceiling.
+///
+/// PoQtyByPoAndDiv is keyed per (PO number, DivCode) so it matches the grain of
+/// the grid row, which groups by (Country, PO No, Division). A container-wide
+/// division total was tried first and read wrong on a multi-PO container: a PO
+/// that allocated all 5,200 of its own 5,200 showed 23.2%, because the
+/// denominator was the other three POs as well.
+///
+/// The trade-off is deliberate and worth knowing: ProcessAllocationAsync applies
+/// its ceiling to the division across the WHOLE container, so on a multi-PO
+/// container a per-PO percentage and the ceiling are not the same grain.
+/// </summary>
+public sealed record DivisionCeilingContext(
+    IReadOnlyDictionary<(string OraPONo, int DivCode), int>             PoQtyByPoAndDiv,
+    IReadOnlyDictionary<(string Country, int DivCode), DivisionCeiling> Ceilings)
+{
+    public static DivisionCeilingContext Empty { get; } = new(
+        new Dictionary<(string, int), int>(),
+        new Dictionary<(string, int), DivisionCeiling>());
+
+    /// <summary>PO qty for one (PO No, Division). 0 when unknown, which renders
+    /// the cell blank rather than as a misleading zero.</summary>
+    public int PoQtyFor(string? oraPoNo, int divCode) =>
+        oraPoNo is not null && PoQtyByPoAndDiv.TryGetValue((oraPoNo, divCode), out var q) ? q : 0;
+
+    /// <summary>
+    /// Ceiling for a (Country, Division), resolved exactly as the engine does:
+    /// exact (country, div) first, then the (country, 0) country-wide default,
+    /// then nothing. Null means no ceiling is configured — which is NOT the same
+    /// as a ceiling of 0 and must render blank rather than as a number.
+    /// </summary>
+    public DivisionCeiling? For(string? country, int divCode)
+    {
+        if (string.IsNullOrWhiteSpace(country)) return null;
+        var key = country.Trim().ToUpperInvariant();
+        if (Ceilings.TryGetValue((key, divCode), out var exact)) return exact;
+        if (Ceilings.TryGetValue((key, 0), out var wide))        return wide;
+        return null;
+    }
+}
