@@ -8,11 +8,42 @@ public record YotoOffloadGroupRow(
     int    Boxes
 );
 
+/// <summary>
+/// One row per offloaded container -- the Detailed view of "Completed offloading",
+/// matching the legacy "Online Containers Offloaded" desktop screen. TrnDate is
+/// usa.dbo.UsaPallets.trndate (the legacy screen's "Sticker Printing Date"), the
+/// same column GetCompletedOffloadingAsync already filters/groups the Summary view
+/// by. PoNumbers is every distinct hodata.dbo.vUSAOrder.ORAPONo for that container,
+/// comma-joined -- a container can carry more than one PO (confirmed live), which
+/// the Summary/Group view has no room to show at all.
+/// </summary>
+public record YotoOffloadContainerRow(
+    string    Contno,
+    DateTime  TrnDate,
+    int       Pallets,
+    int       Boxes,
+    int       Qty,
+    string?   PoNumbers
+);
+
 /// <summary>One row per RefNo group for containers received but not yet offloaded.</summary>
 public record YotoPendingGroupRow(
     string Group,
     int    Containers,
     int    Qty // SUM() over vUSAOrder.Qty (an int column) stays int in SQL Server -- must match exactly for Dapper's record-constructor materialization
+);
+
+/// <summary>
+/// One row per pending (not yet offloaded) container -- the Detailed view of "Pending for
+/// offloading", same PoNumbers approach as YotoOffloadContainerRow. ReceiptDt is
+/// bfldata.dbo.ContReceipt.ReceiptDt (when the container was received) -- there is no
+/// "Sticker Printing Date" yet since offloading hasn't happened.
+/// </summary>
+public record YotoPendingContainerRow(
+    string    Contno,
+    DateTime  ReceiptDt,
+    int       Qty,
+    string?   PoNumbers
 );
 
 /// <summary>One row per period (month or in-month week) for the cumulative inbound summary.</summary>
@@ -42,11 +73,15 @@ public record YotoInternalTransferPeriodRow(
 /// ("NO. OF CONTAINERS" / "NO. OF TRAILERS" / "NO. OF GIN") even though Trips is
 /// always the same underlying COUNT(DISTINCT trailerno). Warehouse is the partner
 /// warehouse on the non-YOTO side ("JAFZA"/"TECHNO"/"ONLINE"), null for the two
-/// Total Inbound/Outbound boxes which aren't tied to one specific partner.
+/// Total Inbound/Outbound boxes which aren't tied to one specific partner. IsInbound
+/// (derived from InternalTransferDefs.To == "YOTO") drives the "(To YOTO)"/"(From
+/// YOTO)" badge the UI renders next to the heading -- kept as a bool rather than
+/// baked into Label so the UI can style the "YOTO" part as its own badge.
 /// </summary>
 public record YotoInternalTransferBox(
     string Label,
     string CountLabel,
     string? Warehouse,
+    bool IsInbound,
     List<YotoInternalTransferPeriodRow> Periods
 );
