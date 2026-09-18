@@ -331,7 +331,7 @@
             <div class="yvd-header">
                 <span>
                     @RenderBoxLabel(box)
-                    (@(box.IsInbound ? "To" : "From") <span class="yvd-warehouse-badge">YOTO</span>)
+                    @(box.IsInbound ? "To" : "From") <span class="yvd-warehouse-badge">YOTO</span>
                     (@PeriodSuffixLabel)
                 </span>
                 @AdminQueryButton(InternalTransferQuerySubsection)
@@ -583,16 +583,36 @@
             }
             else if (IsRange)
             {
-                // Same single-range service calls the specific-week branch below uses --
-                // one period column spanning the whole explicit From/To selection.
+                // One column per calendar day in the selected range (same widen-then-stitch
+                // pattern WeeklyAgg uses for weeks) -- the existing Total column in each table
+                // sums across periods automatically, so splitting by day here is enough.
                 var rangeStart = _rangeFrom.Date;
                 var rangeEnd = _rangeTo.Date.AddDays(1);
                 _completed = await Svc.GetCompletedOffloadingAsync(rangeStart, rangeEnd);
                 _containerDetails = IsOffloadingSummary ? new() : await Svc.GetCompletedOffloadingDetailAsync(rangeStart, rangeEnd);
                 _pending = await Svc.GetPendingOffloadingAsync();
                 _pendingDetails = IsOffloadingSummary ? new() : await Svc.GetPendingOffloadingDetailAsync();
-                _periodRows = new List<YotoInboundPeriodRow> { await Svc.GetInboundSummaryForRangeAsync(rangeStart, rangeEnd, SelectedPeriodLabel, 1) };
-                _internalTransfers = await Svc.GetInternalTransferForRangeAsync(rangeStart, rangeEnd, SelectedPeriodLabel, 1);
+
+                var daysInRange = (int)(rangeEnd - rangeStart).TotalDays;
+
+                var periodRows = new List<YotoInboundPeriodRow>();
+                var perDayTransfers = new List<List<YotoInternalTransferBox>>();
+                for (var i = 0; i < daysInRange; i++)
+                {
+                    var day = rangeStart.AddDays(i);
+                    var label = day.ToString("dd-MMM");
+                    periodRows.Add(await Svc.GetInboundSummaryForRangeAsync(day, day.AddDays(1), label, i + 1));
+                    perDayTransfers.Add(await Svc.GetInternalTransferForRangeAsync(day, day.AddDays(1), label, i + 1));
+                }
+                _periodRows = periodRows;
+
+                // Same per-box stitch WeeklyAgg uses -- each day's call returns all 8 boxes in
+                // the same order, so grouping by Label reassembles each box's day-by-day periods.
+                _internalTransfers = perDayTransfers
+                    .SelectMany(list => list)
+                    .GroupBy(b => b.Label)
+                    .Select(g => new YotoInternalTransferBox(g.First().Label, g.First().CountLabel, g.First().Warehouse, g.First().IsInbound, g.SelectMany(b => b.Periods).ToList()))
+                    .ToList();
             }
             else // specific week
             {
@@ -816,7 +836,7 @@
         var title = box.Label;
         var direction = box.IsInbound ? "To YOTO" : "From YOTO";
         row = WriteSectionTitle(ws, row,
-            $"{title} ({direction}) ({PeriodSuffixLabel})");
+            $"{title} {direction} ({PeriodSuffixLabel})");
 
         ws.Cell(row, 1).Value = "Inbound Details";
         var col = 2;
