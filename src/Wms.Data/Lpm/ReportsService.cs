@@ -167,6 +167,27 @@ public class ReportsService(IOnPremConnectionResolver resolver)
     }
 
     /// <summary>
+    /// Order Sheet Report — the raw order lines for one container straight from
+    /// usa.dbo.USAOrgFile, one row per line as the sheet was loaded. No grouping,
+    /// no joins: this is the "what did the order sheet say" view, so it must show
+    /// exactly what the table holds.
+    /// </summary>
+    public async Task<List<OrderSheetRow>> GetOrderSheetAsync(string contno, CancellationToken ct = default)
+    {
+        contno = (contno ?? "").Trim();
+        if (contno.Length == 0) return new();
+
+        await using var c = OpenOnPremBackup();
+        var rows = await c.QueryAsync<OrderSheetRow>(new CommandDefinition(@"
+            SELECT ContNo, PONO, BOLNO, Itemcode, ItemName, Division, Qty, Color, [Size]
+              FROM usa.dbo.USAOrgFile WITH (NOLOCK)
+             WHERE ContNo = @c
+             ORDER BY PONO, Itemcode, Color, [Size]",
+            new { c = contno }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        return rows.AsList();
+    }
+
+    /// <summary>
     /// Division list for the PO Counting Report's Division filter — every
     /// distinct Division in Datareporting.dbo.subclassmaster, excluding the
     /// "DATA MIGRATION -D" placeholder value.
