@@ -261,7 +261,7 @@
                 Total Inbound Summary — Offload Containers
                 (@PeriodSuffixLabel)
             </span>
-            @AdminQueryButton(TotalInboundQuerySubsection, 34)
+            @AdminQueryButton(TotalInboundQuerySubsection)
             @MinimizeToggle(_totalInboundCollapsed, () => _totalInboundCollapsed = !_totalInboundCollapsed)
         </div>
         @if (!_totalInboundCollapsed)
@@ -337,7 +337,7 @@
                     @box.Label
                     (@PeriodSuffixLabel)
                 </span>
-                @AdminQueryButton(InternalTransferQuerySubsection, 34)
+                @AdminQueryButton(InternalTransferQuerySubsection)
                 @MinimizeToggle(boxCollapsed, () => { if (!_internalTransferCollapsed.Add(box.Label)) _internalTransferCollapsed.Remove(box.Label); })
             </div>
             @if (!boxCollapsed)
@@ -634,14 +634,14 @@
 
     // Hidden entirely (button and "Admin view" label both) unless CurrentUser.HasAllCountriesAccess --
     // same Admin flag already gating the two footnotes further down this page. Pinned to the
-    // right edge of whatever positioned ancestor the call site provides (a table <th> needs its
-    // own position:relative; .yvd-header bars already have it, but reserve right:8px for their
-    // own minimize toggle, so those callers pass rightPx=34 to sit just left of it instead).
-    private RenderFragment AdminQueryButton(string subsection, int rightPx = 8) => __builder =>
+    // left edge of whatever positioned ancestor the call site provides (a table <th> needs its
+    // own position:relative; .yvd-header bars already have it). Left, not right, so it never
+    // collides with .yvd-header's own minimize toggle sitting at right:8px.
+    private RenderFragment AdminQueryButton(string subsection) => __builder =>
     {
         if (CurrentUser.HasAllCountriesAccess)
         {
-            <span style="position:absolute; right:@(rightPx)px; top:50%; transform:translateY(-50%); display:inline-flex; align-items:center; gap:4px;">
+            <span style="position:absolute; left:8px; top:50%; transform:translateY(-50%); display:inline-flex; align-items:center; gap:4px;">
                 <button type="button" class="aiwms-icon-btn" title="View query" @onclick="@(() => ShowQueryAsync(subsection))" style="display:inline-flex; align-items:center;">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
                         <ellipse cx="9" cy="5" rx="6" ry="2.3" />
