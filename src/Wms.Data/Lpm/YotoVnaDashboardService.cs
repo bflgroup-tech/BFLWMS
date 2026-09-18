@@ -289,14 +289,14 @@ public class YotoVnaDashboardService(IOnPremConnectionResolver resolver)
     // trailerno) across all partners is naturally <= the sum of per-partner counts).
     private static readonly (string Label, string CountLabel, string? From, string? To)[] InternalTransferDefs =
     {
-        ("Total Inbound (To Yoto)",       "NO. OF TRAILERS",   null,     "YOTO"),
-        ("Total Outbound (From Yoto)",    "NO. OF TRAILERS",   "YOTO",   null),
-        ("Inbound from JAFZA (To Yoto)",  "NO. OF TRAILERS",   "JAFZA",  "YOTO"),
-        ("Outbound to JAFZA (From Yoto)", "NO. OF TRAILERS",   "YOTO",   "JAFZA"),
-        ("Inbound from Techno (To Yoto)", "NO. OF TRAILERS",   "TECHNO", "YOTO"),
-        ("Outbound to Techno (From Yoto)", "NO. OF TRAILERS",  "YOTO",   "TECHNO"),
-        ("Inbound from Online (To Yoto)", "NO. OF TRAILERS",   "ONLINE", "YOTO"),
-        ("Outbound to Online (From Yoto)", "NO. OF GIN",       "YOTO",   "ONLINE"),
+        ("Total Inbound",       "NO. OF TRAILERS",   null,     "YOTO"),
+        ("Total Outbound",      "NO. OF TRAILERS",   "YOTO",   null),
+        ("Inbound from JAFZA",  "NO. OF TRAILERS",   "JAFZA",  "YOTO"),
+        ("Outbound to JAFZA",   "NO. OF TRAILERS",   "YOTO",   "JAFZA"),
+        ("Inbound from Techno", "NO. OF TRAILERS",   "TECHNO", "YOTO"),
+        ("Outbound to Techno",  "NO. OF TRAILERS",   "YOTO",   "TECHNO"),
+        ("Inbound from Online", "NO. OF TRAILERS",   "ONLINE", "YOTO"),
+        ("Outbound to Online",  "NO. OF GIN",         "YOTO",   "ONLINE"),
     };
 
     // The partner warehouse for a box's badge -- whichever of From/To isn't "YOTO".
@@ -333,7 +333,7 @@ public class YotoVnaDashboardService(IOnPremConnectionResolver resolver)
 
             var periods = rows.Select(r => new YotoInternalTransferPeriodRow(
                 new DateTime(2000, r.Mo, 1).ToString("MMM"), r.Mo, r.Trips, r.Pallets, r.Boxes, r.Quantity)).ToList();
-            boxes.Add(new YotoInternalTransferBox(d.Label, d.CountLabel, PartnerWarehouse(d), periods));
+            boxes.Add(new YotoInternalTransferBox(d.Label, d.CountLabel, PartnerWarehouse(d), d.To == Warehouse, periods));
         }
         return boxes;
     }
@@ -365,7 +365,7 @@ public class YotoVnaDashboardService(IOnPremConnectionResolver resolver)
             {
                 new(periodLabel, periodIndex, row.Trips, row.Pallets, row.Boxes, row.Quantity)
             };
-            boxes.Add(new YotoInternalTransferBox(d.Label, d.CountLabel, PartnerWarehouse(d), periods));
+            boxes.Add(new YotoInternalTransferBox(d.Label, d.CountLabel, PartnerWarehouse(d), d.To == Warehouse, periods));
         }
         return boxes;
     }

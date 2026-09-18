@@ -73,11 +73,15 @@ public record YotoInternalTransferPeriodRow(
 /// ("NO. OF CONTAINERS" / "NO. OF TRAILERS" / "NO. OF GIN") even though Trips is
 /// always the same underlying COUNT(DISTINCT trailerno). Warehouse is the partner
 /// warehouse on the non-YOTO side ("JAFZA"/"TECHNO"/"ONLINE"), null for the two
-/// Total Inbound/Outbound boxes which aren't tied to one specific partner.
+/// Total Inbound/Outbound boxes which aren't tied to one specific partner. IsInbound
+/// (derived from InternalTransferDefs.To == "YOTO") drives the "(To YOTO)"/"(From
+/// YOTO)" badge the UI renders next to the heading -- kept as a bool rather than
+/// baked into Label so the UI can style the "YOTO" part as its own badge.
 /// </summary>
 public record YotoInternalTransferBox(
     string Label,
     string CountLabel,
     string? Warehouse,
+    bool IsInbound,
     List<YotoInternalTransferPeriodRow> Periods
 );

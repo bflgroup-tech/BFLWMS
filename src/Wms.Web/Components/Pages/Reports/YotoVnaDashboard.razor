@@ -335,6 +335,7 @@
                         <span class="yvd-warehouse-badge">@box.Warehouse</span>
                     }
                     @box.Label
+                    (@(box.IsInbound ? "To" : "From") <span class="yvd-warehouse-badge">YOTO</span>)
                     (@PeriodSuffixLabel)
                 </span>
                 @AdminQueryButton(InternalTransferQuerySubsection)
@@ -581,7 +582,7 @@
                 _internalTransfers = perWeekTransfers
                     .SelectMany(list => list)
                     .GroupBy(b => b.Label)
-                    .Select(g => new YotoInternalTransferBox(g.First().Label, g.First().CountLabel, g.First().Warehouse, g.SelectMany(b => b.Periods).ToList()))
+                    .Select(g => new YotoInternalTransferBox(g.First().Label, g.First().CountLabel, g.First().Warehouse, g.First().IsInbound, g.SelectMany(b => b.Periods).ToList()))
                     .ToList();
             }
             else if (IsRange)
@@ -796,8 +797,9 @@
     private int WriteInternalTransferBlock(IXLWorksheet ws, int row, YotoInternalTransferBox box)
     {
         var title = box.Warehouse is not null ? $"{box.Warehouse} — {box.Label}" : box.Label;
+        var direction = box.IsInbound ? "To YOTO" : "From YOTO";
         row = WriteSectionTitle(ws, row,
-            $"{title} ({PeriodSuffixLabel})");
+            $"{title} ({direction}) ({PeriodSuffixLabel})");
 
         ws.Cell(row, 1).Value = "Inbound Details";
         var col = 2;
