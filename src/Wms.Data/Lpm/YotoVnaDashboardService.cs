@@ -282,38 +282,59 @@ public class YotoVnaDashboardService(IOnPremConnectionResolver resolver)
         return new YotoInboundPeriodRow(periodLabel, periodIndex, row.Containers, row.Pallets, row.Boxes, row.Pcs);
     }
 
-    // One definition per "box" on the Internal Transfer Summary section. FromWarehouse/
-    // ToWarehouse null = "any" (the Total Inbound/Outbound boxes only pin the YOTO side;
-    // confirmed live that these are NOT the sum of the per-partner boxes below -- a
-    // single trailer can serve more than one route in a day, so COUNT(DISTINCT
-    // trailerno) across all partners is naturally <= the sum of per-partner counts).
-    private static readonly (string Label, string CountLabel, string? From, string? To)[] InternalTransferDefs =
+    // The full set of warehouses this dashboard knows about -- ONLINE is a fulfillment channel,
+    // never a selectable pivot (the UAE WH dropdown only offers JAFZA/TECHNO/YOTO), but it's
+    // still a valid partner on either side of an internal transfer for any of the three.
+    private static readonly string[] AllWarehouses = { "JAFZA", "TECHNO", "YOTO", "ONLINE" };
+
+    // Display casing per warehouse in generated Label text -- JAFZA has always rendered in caps
+    // here (matches the literal warehouse code), Techno/Online/Yoto in title case for readability.
+    // Preserved exactly for pivot=YOTO so that case is pixel-identical to before this was
+    // generalized to other pivots.
+    private static readonly Dictionary<string, string> DisplayName = new(StringComparer.OrdinalIgnoreCase)
     {
-        ("Total Inbound",       "NO. OF TRAILERS",   null,     "YOTO"),
-        ("Total Outbound",      "NO. OF TRAILERS",   "YOTO",   null),
-        ("Inbound from JAFZA",  "NO. OF TRAILERS",   "JAFZA",  "YOTO"),
-        ("Outbound to JAFZA",   "NO. OF TRAILERS",   "YOTO",   "JAFZA"),
-        ("Inbound from Techno", "NO. OF TRAILERS",   "TECHNO", "YOTO"),
-        ("Outbound to Techno",  "NO. OF TRAILERS",   "YOTO",   "TECHNO"),
-        ("Inbound from Online", "NO. OF TRAILERS",   "ONLINE", "YOTO"),
-        ("Outbound to Online",  "NO. OF GIN",         "YOTO",   "ONLINE"),
+        ["JAFZA"] = "JAFZA", ["TECHNO"] = "Techno", ["YOTO"] = "Yoto", ["ONLINE"] = "Online",
     };
 
-    // The partner warehouse for a box's badge -- whichever of From/To isn't "YOTO".
-    // Both are null for the two Total boxes (one side is YOTO, the other is "any").
-    private static string? PartnerWarehouse((string Label, string CountLabel, string? From, string? To) d) =>
-        d.From == Warehouse ? d.To : d.To == Warehouse ? d.From : null;
+    // One definition per "box" on the Internal Transfer Summary section, generated per selected
+    // pivot warehouse. FromWarehouse/ToWarehouse null = "any" (the Total Inbound/Outbound boxes
+    // only pin the pivot side; confirmed live that these are NOT the sum of the per-partner boxes
+    // below -- a single trailer can serve more than one route in a day, so COUNT(DISTINCT
+    // trailerno) across all partners is naturally <= the sum of per-partner counts). "Outbound to
+    // Online" alone uses "NO. OF GIN" instead of "NO. OF TRAILERS" -- a quirk of the original
+    // (YOTO-only) definitions, preserved as-is rather than guessed at for the other pivots.
+    private static (string Label, string CountLabel, string? From, string? To)[] BuildInternalTransferDefs(string pivot)
+    {
+        var defs = new List<(string, string, string?, string?)>
+        {
+            ("Total Inbound",  "NO. OF TRAILERS", null, pivot),
+            ("Total Outbound", "NO. OF TRAILERS", pivot, null),
+        };
+        foreach (var partner in AllWarehouses.Where(w => w != pivot))
+        {
+            var name = DisplayName[partner];
+            defs.Add(($"Inbound from {name}", "NO. OF TRAILERS", partner, pivot));
+            defs.Add(($"Outbound to {name}", partner == "ONLINE" ? "NO. OF GIN" : "NO. OF TRAILERS", pivot, partner));
+        }
+        return defs.ToArray();
+    }
 
-    /// <summary>All 8 Internal Transfer Summary boxes, each spanning every month of the given year.</summary>
+    // The partner warehouse for a box's badge -- whichever of From/To isn't the pivot.
+    // Both are null for the two Total boxes (one side is the pivot, the other is "any").
+    private static string? PartnerWarehouse(string pivot, (string Label, string CountLabel, string? From, string? To) d) =>
+        d.From == pivot ? d.To : d.To == pivot ? d.From : null;
+
+    /// <summary>All 8 Internal Transfer Summary boxes for the given pivot warehouse, each spanning
+    /// every month of the given year.</summary>
     public async Task<List<YotoInternalTransferBox>> GetInternalTransferMonthlyAsync(
-        int year, CancellationToken ct = default)
+        string pivotWarehouse, int year, CancellationToken ct = default)
     {
         var yearStart = new DateTime(year, 1, 1);
         var yearEnd = yearStart.AddYears(1);
 
         await using var c = OpenOnPremBackup();
         var boxes = new List<YotoInternalTransferBox>();
-        foreach (var d in InternalTransferDefs)
+        foreach (var d in BuildInternalTransferDefs(pivotWarehouse))
         {
             var rows = await c.QueryAsync<(int Mo, int Trips, int Pallets, int Boxes, int Quantity)>(new CommandDefinition(@"
                 SELECT
@@ -333,20 +354,21 @@ public class YotoVnaDashboardService(IOnPremConnectionResolver resolver)
 
             var periods = rows.Select(r => new YotoInternalTransferPeriodRow(
                 new DateTime(2000, r.Mo, 1).ToString("MMM"), r.Mo, r.Trips, r.Pallets, r.Boxes, r.Quantity)).ToList();
-            boxes.Add(new YotoInternalTransferBox(d.Label, d.CountLabel, PartnerWarehouse(d), d.To == Warehouse, periods));
+            boxes.Add(new YotoInternalTransferBox(d.Label, d.CountLabel, PartnerWarehouse(pivotWarehouse, d), d.To == pivotWarehouse, periods));
         }
         return boxes;
     }
 
-    /// <summary>All 8 Internal Transfer Summary boxes for one explicit date range -- used for the
-    /// single selected week (matching Production Summary Report's Sun-Sat week picker) instead of
-    /// spanning multiple weeks the way the Monthly view spans multiple months.</summary>
+    /// <summary>All 8 Internal Transfer Summary boxes for the given pivot warehouse, for one
+    /// explicit date range -- used for the single selected week (matching Production Summary
+    /// Report's Sun-Sat week picker) instead of spanning multiple weeks the way the Monthly view
+    /// spans multiple months.</summary>
     public async Task<List<YotoInternalTransferBox>> GetInternalTransferForRangeAsync(
-        DateTime from, DateTime toExclusive, string periodLabel, int periodIndex, CancellationToken ct = default)
+        string pivotWarehouse, DateTime from, DateTime toExclusive, string periodLabel, int periodIndex, CancellationToken ct = default)
     {
         await using var c = OpenOnPremBackup();
         var boxes = new List<YotoInternalTransferBox>();
-        foreach (var d in InternalTransferDefs)
+        foreach (var d in BuildInternalTransferDefs(pivotWarehouse))
         {
             var row = await c.QuerySingleAsync<(int Trips, int Pallets, int Boxes, int Quantity)>(new CommandDefinition(@"
                 SELECT
@@ -365,7 +387,7 @@ public class YotoVnaDashboardService(IOnPremConnectionResolver resolver)
             {
                 new(periodLabel, periodIndex, row.Trips, row.Pallets, row.Boxes, row.Quantity)
             };
-            boxes.Add(new YotoInternalTransferBox(d.Label, d.CountLabel, PartnerWarehouse(d), d.To == Warehouse, periods));
+            boxes.Add(new YotoInternalTransferBox(d.Label, d.CountLabel, PartnerWarehouse(pivotWarehouse, d), d.To == pivotWarehouse, periods));
         }
         return boxes;
     }
