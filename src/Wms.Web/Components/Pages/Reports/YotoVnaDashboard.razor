@@ -358,7 +358,7 @@
             <div class="yvd-header">
                 <span>
                     @RenderBoxLabel(box)
-                    @(box.IsInbound ? "To" : "From") <span class="yvd-warehouse-badge">YOTO</span>
+                    @(box.IsInbound ? "To" : "From") <span class="yvd-warehouse-badge">@_selectedWarehouse</span>
                     (@PeriodSuffixLabel)
                 </span>
                 @AdminQueryButton(InternalTransferQuerySubsection)
