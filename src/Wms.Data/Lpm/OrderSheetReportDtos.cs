@@ -1,17 +1,23 @@
 namespace Wms.Data.Lpm;
 
 /// <summary>
-/// One order-sheet line for a container, read verbatim from usa.dbo.USAOrgFile.
-/// Property names match the table's column names so Dapper maps them without
-/// aliases — if a column is renamed at source, this is the one place to follow it.
+/// One order-sheet line for a container from usa.dbo.usaorgfile_LPM — the table
+/// the allocation engine actually reads its PO lines from, one row per UPC.
+///
+/// Two columns are looked up per item rather than read off the line:
+///   Division — datareporting.dbo.vupc_subclass (UPC-grained, so TOP 1 per item)
+///   ItemName — usa.dbo.USAOrgFile, which carries the name; usaorgfile_LPM does not
 /// </summary>
 public record OrderSheetRow(
-    string   ContNo,
-    string?  PONO,
-    string?  BOLNO,
-    string?  Itemcode,
-    string?  ItemName,
-    string?  Division,
-    int?     Qty,
-    string?  Color,
-    string?  Size);
+    string    ContNo,
+    string?   PONo,
+    string?   BOL,
+    string?   ItemCode,
+    string?   ItemName,
+    string?   Division,
+    double?   Qty,
+    string?   LPM,
+    DateTime? LPMDt,
+    string?   Style,
+    string?   UPC,
+    DateTime? CreatedAt);
