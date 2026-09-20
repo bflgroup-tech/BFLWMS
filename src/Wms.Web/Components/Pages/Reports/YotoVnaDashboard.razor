@@ -94,17 +94,20 @@
                 <input type="date" @bind="_rangeTo" style="width:150px; height:36px; box-sizing:border-box; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px;" />
             </div>
         }
-        <div>
-            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">OFFLOADING VIEW</label>
-            <div style="display:flex; gap:10px; align-items:center; height:36px;">
-                <label style="display:flex; align-items:center; gap:4px; cursor:pointer; font-size:13px;">
-                    <input type="radio" name="offloadingView" value="Summary" checked="@(_offloadingView == "Summary")" @onchange="@(() => SetOffloadingViewAsync("Summary"))" /> Summary
-                </label>
-                <label style="display:flex; align-items:center; gap:4px; cursor:pointer; font-size:13px;">
-                    <input type="radio" name="offloadingView" value="Detailed" checked="@(_offloadingView == "Detailed")" @onchange="@(() => SetOffloadingViewAsync("Detailed"))" /> Detailed
-                </label>
+        @if (IsYoto)
+        {
+            <div>
+                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">OFFLOADING VIEW (FOR YOTO ONLY)</label>
+                <div style="display:flex; gap:10px; align-items:center; height:36px;">
+                    <label style="display:flex; align-items:center; gap:4px; cursor:pointer; font-size:13px;">
+                        <input type="radio" name="offloadingView" value="Summary" checked="@(_offloadingView == "Summary")" @onchange="@(() => SetOffloadingViewAsync("Summary"))" /> Summary
+                    </label>
+                    <label style="display:flex; align-items:center; gap:4px; cursor:pointer; font-size:13px;">
+                        <input type="radio" name="offloadingView" value="Detailed" checked="@(_offloadingView == "Detailed")" @onchange="@(() => SetOffloadingViewAsync("Detailed"))" /> Detailed
+                    </label>
+                </div>
             </div>
-        </div>
+        }
         <button class="aiwms-btn aiwms-btn-primary" style="height:36px; box-sizing:border-box" @onclick="LoadAsync" disabled="@(_loading || !IsRangeValid)">@(_loading ? "Loading…" : "Load")</button>
         <button class="aiwms-btn yvd-export-btn" style="height:36px; box-sizing:border-box" title="Download all data (one sheet)" @onclick="ExportAllAsync" disabled="@(!_loadedOnce || _exporting)">
             <span class="mi sm" style="vertical-align:middle;">download</span> @(_exporting ? "Exporting..." : "Export Excel")
