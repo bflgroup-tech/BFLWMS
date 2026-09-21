@@ -27,9 +27,10 @@ public record IncreffItemLevelSohGcpRow(
 /// table from dbo.LPM_ECOM_INCREFF_SOH — deliberately parallel/validation
 /// only. The live ECOM Stock Variance Report (EcomStockVarianceReportService /
 /// IncreffMfcsSohCompareService) still reads dbo.LPM_ECOM_INCREFF_SOH, so this
-/// job cannot affect it. "Channel" in the source is used as Country directly
-/// (confirmed same convention as the old per-country split — UAE/KSA), no
-/// mapping needed.
+/// job cannot affect it. "Channel" in the source is NOT the Country code —
+/// observed values are 'BFL' (UAE) and 'BFL-KSA' (KSA), mapped in SourceQuery.
+/// An unrecognized Channel value passes through as-is (not silently dropped)
+/// so it stays visible for investigation rather than disappearing.
 ///
 /// Same "current-SOH snapshot, no history" refresh shape as
 /// IncreffSohFromGcpService: delete each country's existing rows, then
@@ -56,7 +57,11 @@ public class IncreffSohFromGcpNewService(
     // combination.
     private const string SourceQuery = @"
         SELECT
-            Channel,
+            CASE
+                WHEN Channel = 'BFL' THEN 'UAE'
+                WHEN Channel = 'BFL-KSA' THEN 'KSA'
+                ELSE Channel
+            END AS Country,
             CASE
                 WHEN IFNULL(Item_Code, '') = '' THEN `Client Sku ID`
                 ELSE Item_Code
@@ -116,7 +121,7 @@ public class IncreffSohFromGcpNewService(
         foreach (var row in result)
         {
             rows.Add(new IncreffItemLevelSohGcpRow(
-                Country: row["Channel"]?.ToString() ?? "",
+                Country: row["Country"]?.ToString() ?? "",
                 ItemCode: row["ItemCode"]?.ToString() ?? "",
                 ItemType: row["Item_Type"]?.ToString(),
                 BinStatus: row["BinStatus"]?.ToString(),
