@@ -13,6 +13,13 @@
 <div class="aiwms-page-header">
     <h2>Transfer / GIN / GRN History</h2>
     <p>Transfer records with Pallet (GI), GIN and GRN linkage per store and date range.</p>
+    <p style="font-size:12px; color:var(--text-secondary); margin-top:4px;">
+        <strong>Note:</strong> Transfer Count/Qty is based on the transfer's own date (Trf Date) within the selected
+        range. GIN Count/Qty is based on the GIN's own entry date within the selected range — the two can fall on
+        different days for the same transfer. When Without Pallet/GIN/GRN or Search is used, the summary cards, By
+        Store/By Country breakdown, and the Division/Department/GroupCode/Brand popup all scope to the same
+        filtered transfers as the Detailed view.
+    </p>
 </div>
 
 @if (_breakdownOpen)
@@ -46,6 +53,13 @@
                 @if (_breakdownResult.Warnings.Count > 0)
                 {
                     <div class="aiwms-alert error" style="margin-bottom:10px;">Some countries failed: @string.Join("; ", _breakdownResult.Warnings)</div>
+                }
+                @if (_breakdownKind == "GIN")
+                {
+                    <div style="font-size:11px; color:var(--text-secondary); margin-bottom:10px;">
+                        Qty here is the linked transfer's own item quantity — GIN itself has no item-level Group Code
+                        to break down by, so this may not exactly match the GIN Qty card above.
+                    </div>
                 }
                 <div style="overflow:auto; max-width:90vw;">
                 <table class="aiwms-table aiwms-table-dense" style="border-collapse:separate; border-spacing:0;">
@@ -112,11 +126,11 @@
         }
         <div style="flex:0 0 130px;">
             <label class="aiwms-filter-label">DATE FROM</label>
-            <input type="date" @bind="_dateFrom" @bind:format="yyyy-MM-dd" style="width:100%; padding:5px 7px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:12px; background:white" />
+            <input type="date" @bind="_dateFrom" @bind:format="yyyy-MM-dd" @bind:event="onchange" style="width:100%; padding:5px 7px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:12px; background:white" />
         </div>
         <div style="flex:0 0 130px;">
             <label class="aiwms-filter-label">DATE TO</label>
-            <input type="date" @bind="_dateTo" @bind:format="yyyy-MM-dd" style="width:100%; padding:5px 7px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:12px; background:white" />
+            <input type="date" @bind="_dateTo" @bind:format="yyyy-MM-dd" @bind:event="onchange" style="width:100%; padding:5px 7px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:12px; background:white" />
         </div>
         <div style="flex:0 0 200px;">
             <label class="aiwms-filter-label">VIEW</label>
@@ -132,9 +146,9 @@
         @if (_viewMode == "Detailed")
         {
             <div style="display:flex; gap:10px; align-self:flex-end; padding-bottom:3px; border-left:2px solid var(--border-default); padding-left:10px;">
-                <label style="display:flex; align-items:center; gap:4px; font-size:11px; cursor:pointer; white-space:nowrap;"><input type="checkbox" @bind="_withoutPallet" /> No Pallet</label>
-                <label style="display:flex; align-items:center; gap:4px; font-size:11px; cursor:pointer; white-space:nowrap;"><input type="checkbox" @bind="_withoutGin" /> No GIN</label>
-                <label style="display:flex; align-items:center; gap:4px; font-size:11px; cursor:pointer; white-space:nowrap;"><input type="checkbox" @bind="_withoutGrn" /> No GRN</label>
+                <label style="display:flex; align-items:center; gap:4px; font-size:11px; cursor:pointer; white-space:nowrap;"><input type="checkbox" @bind="_withoutPallet" /> Without Pallet</label>
+                <label style="display:flex; align-items:center; gap:4px; font-size:11px; cursor:pointer; white-space:nowrap;"><input type="checkbox" @bind="_withoutGin" /> Without GIN</label>
+                <label style="display:flex; align-items:center; gap:4px; font-size:11px; cursor:pointer; white-space:nowrap;"><input type="checkbox" @bind="_withoutGrn" /> Without GRN</label>
             </div>
             <div style="border-left:2px solid var(--border-default); padding-left:10px; display:flex; gap:8px; align-items:flex-end;">
                 <div style="flex:0 0 130px;">
@@ -319,14 +333,12 @@
     private bool   _isError;
 
     // ===================== Division/Department/GroupCode/Brand drill-down popup =====================
-    // The scope (countries/store/dates) that produced the on-screen totals — set
-    // in LoadAsync alongside _total, so a card click re-scopes the breakdown to
-    // exactly what's on screen rather than the raw filter inputs (which may have
-    // changed since the last Load).
-    private List<string>? _lastCountries;
-    private string?        _lastStore;
-    private DateTime       _lastDateFrom;
-    private DateTime       _lastDateTo;
+    // The exact filter (countries/store/dates/Without Pallet-GIN-GRN/Search)
+    // that produced the on-screen totals — set in LoadAsync alongside _total,
+    // so a card click re-scopes the breakdown to exactly what's on screen
+    // rather than the raw filter inputs (which may have changed since the
+    // last Load).
+    private TransferHistoryFilter? _lastFilter;
 
     private bool    _breakdownOpen;
     private bool    _breakdownLoading;
@@ -339,14 +351,14 @@
     {
         _breakdownKind  = "Transfer";
         _breakdownTitle = "Transfer — Division / Department / Group Code / Brand";
-        return LoadBreakdownAsync(() => Svc.GetTransferBreakdownAsync(_lastCountries, _lastStore, _lastDateFrom, _lastDateTo));
+        return LoadBreakdownAsync(() => Svc.GetTransferBreakdownAsync(_lastFilter!));
     }
 
     private Task OpenGinBreakdownAsync()
     {
         _breakdownKind  = "GIN";
         _breakdownTitle = "GIN — Division / Department / Group Code / Brand";
-        return LoadBreakdownAsync(() => Svc.GetGinBreakdownAsync(_lastCountries, _lastStore, _lastDateFrom, _lastDateTo));
+        return LoadBreakdownAsync(() => Svc.GetGinBreakdownAsync(_lastFilter!));
     }
 
     private async Task LoadBreakdownAsync(Func<Task<TransferGinBreakdownResult>> fetch)
@@ -411,9 +423,9 @@
     // BY COUNTRY table, but only rendered when BFL Group is actually selected
     // (a single country's own 1-item list isn't worth showing as a table).
     // Warnings are stashed into _totalWarnings for LoadAsync to merge in.
-    private async Task<TransferSummary?> GetAggregateTotalAsync(List<string>? countries)
+    private async Task<TransferSummary?> GetAggregateTotalAsync(TransferHistoryFilter f)
     {
-        var result = await Svc.GetTransferSummaryAsync(countries, _dateFrom, _dateTo);
+        var result = await Svc.GetTransferSummaryAsync(f);
         if (result.Warnings.Count > 0) _totalWarnings.AddRange(result.Warnings);
         _countrySummaries = result.Summaries;
         if (result.Summaries.Count == 0) return null;
@@ -456,11 +468,6 @@
             var singleCountry = countries?.Count == 1 ? countries[0] : null;
             var storeFilter   = singleCountry is not null && !string.IsNullOrWhiteSpace(_store) ? _store : null;
 
-            _lastCountries = countries;
-            _lastStore     = storeFilter;
-            _lastDateFrom  = _dateFrom;
-            _lastDateTo    = _dateTo;
-
             var filter = new TransferHistoryFilter(
                 Countries:     countries,
                 Store:         storeFilter,
@@ -471,6 +478,8 @@
                 WithoutGrn:    _withoutGrn,
                 SearchBy:      _searchBy,
                 SearchValue:   string.IsNullOrWhiteSpace(_searchValue) ? null : _searchValue.Trim());
+
+            _lastFilter = filter;
 
             // Summary view never shows the detail table — skip the expensive
             // per-shop, per-transfer query entirely rather than fetching rows
@@ -483,14 +492,14 @@
             // (BFL Group, or a country with "(All stores)") -> every country's
             // total summed into one grand total.
             var totalTask = storeFilter is not null && singleCountry is not null
-                ? Svc.GetStoreSummaryAsync(singleCountry, storeFilter, _dateFrom, _dateTo)
-                : GetAggregateTotalAsync(countries);
+                ? Svc.GetStoreSummaryAsync(filter)
+                : GetAggregateTotalAsync(filter);
 
             // Per-store breakdown table, only when a single country is picked
             // with "(All stores)" — not meaningful for BFL Group or a specific store.
             var singleCountryAllStores = storeFilter is null && singleCountry is not null;
             var storeSummariesTask = singleCountryAllStores
-                ? Svc.GetStoreSummariesAsync(singleCountry!, _dateFrom, _dateTo)
+                ? Svc.GetStoreSummariesAsync(filter)
                 : Task.FromResult(new List<TransferSummary>());
 
             await Task.WhenAll(resultTask, totalTask, storeSummariesTask);
@@ -542,7 +551,7 @@
 
         var b64      = Convert.ToBase64String(Encoding.UTF8.GetBytes(sb.ToString()));
         var country  = _country == BflGroupValue ? "BFLGroup" : (_canSelectMultiple ? _country : _lockedCountry);
-        var filename = $"TransferGinGrn_{_breakdownKind}Breakdown_{country}_{_lastDateFrom:yyyyMMdd}_{_lastDateTo:yyyyMMdd}.csv";
+        var filename = $"TransferGinGrn_{_breakdownKind}Breakdown_{country}_{_lastFilter!.DateFrom:yyyyMMdd}_{_lastFilter!.DateTo:yyyyMMdd}.csv";
         await JS.InvokeVoidAsync("eval",
             $"(function(){{var a=document.createElement('a');a.href='data:text/csv;base64,{b64}';" +
             $"a.download='{filename}';document.body.appendChild(a);a.click();document.body.removeChild(a);}})();");
