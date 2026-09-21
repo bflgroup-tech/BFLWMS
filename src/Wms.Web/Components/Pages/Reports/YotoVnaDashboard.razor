@@ -24,12 +24,27 @@
 </style>
 
 <div class="aiwms-page-header">
-    <h2>YOTO VNA Dashboard</h2>
-    <p>Inbound offloading progress at YOTO — Total Imports (AEINT) vs. Local Purchased (AELOC), sourced live from usa..UsaPallets/KNBBoxes (completed) and bfldata..ContReceipt (pending).</p>
+    <h2>UAE WH Inbound/Outbound Dashboard</h2>
+    @if (_selectedWarehouse == "YOTO")
+    {
+        <p>Inbound offloading progress at YOTO — Total Imports (AEINT) vs. Local Purchased (AELOC), sourced live from usa..UsaPallets/KNBBoxes (completed) and bfldata..ContReceipt (pending), plus internal transfers to/from every other warehouse.</p>
+    }
+    else
+    {
+        <p>Internal transfers to/from @_selectedWarehouse, sourced live from bfldata..vPLTDeliveryDetails. Offloading progress (Completed/Pending, Total Inbound Summary) is YOTO-only -- switch the warehouse below to YOTO to see it.</p>
+    }
 </div>
 
 <div class="aiwms-section">
     <div style="display:flex; gap:12px; align-items:end; flex-wrap:wrap;">
+        <div>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">WAREHOUSE</label>
+            <select @bind="_selectedWarehouse" style="width:130px; height:36px; box-sizing:border-box; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;">
+                <option value="JAFZA">JAFZA</option>
+                <option value="TECHNO">TECHNO</option>
+                <option value="YOTO">YOTO</option>
+            </select>
+        </div>
         <div>
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">VIEW / WEEK</label>
             <select @bind="_selectedPeriod" style="width:230px; height:36px; box-sizing:border-box; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;">
@@ -79,17 +94,20 @@
                 <input type="date" @bind="_rangeTo" style="width:150px; height:36px; box-sizing:border-box; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px;" />
             </div>
         }
-        <div>
-            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">OFFLOADING VIEW</label>
-            <div style="display:flex; gap:10px; align-items:center; height:36px;">
-                <label style="display:flex; align-items:center; gap:4px; cursor:pointer; font-size:13px;">
-                    <input type="radio" name="offloadingView" value="Summary" checked="@(_offloadingView == "Summary")" @onchange="@(() => SetOffloadingViewAsync("Summary"))" /> Summary
-                </label>
-                <label style="display:flex; align-items:center; gap:4px; cursor:pointer; font-size:13px;">
-                    <input type="radio" name="offloadingView" value="Detailed" checked="@(_offloadingView == "Detailed")" @onchange="@(() => SetOffloadingViewAsync("Detailed"))" /> Detailed
-                </label>
+        @if (IsYoto)
+        {
+            <div>
+                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">OFFLOADING VIEW (FOR YOTO ONLY)</label>
+                <div style="display:flex; gap:10px; align-items:center; height:36px;">
+                    <label style="display:flex; align-items:center; gap:4px; cursor:pointer; font-size:13px;">
+                        <input type="radio" name="offloadingView" value="Summary" checked="@(_offloadingView == "Summary")" @onchange="@(() => SetOffloadingViewAsync("Summary"))" /> Summary
+                    </label>
+                    <label style="display:flex; align-items:center; gap:4px; cursor:pointer; font-size:13px;">
+                        <input type="radio" name="offloadingView" value="Detailed" checked="@(_offloadingView == "Detailed")" @onchange="@(() => SetOffloadingViewAsync("Detailed"))" /> Detailed
+                    </label>
+                </div>
             </div>
-        </div>
+        }
         <button class="aiwms-btn aiwms-btn-primary" style="height:36px; box-sizing:border-box" @onclick="LoadAsync" disabled="@(_loading || !IsRangeValid)">@(_loading ? "Loading…" : "Load")</button>
         <button class="aiwms-btn yvd-export-btn" style="height:36px; box-sizing:border-box" title="Download all data (one sheet)" @onclick="ExportAllAsync" disabled="@(!_loadedOnce || _exporting)">
             <span class="mi sm" style="vertical-align:middle;">download</span> @(_exporting ? "Exporting..." : "Export Excel")
@@ -109,6 +127,8 @@
 
 @if (_loadedOnce)
 {
+    @if (IsYoto)
+    {
     <div class="aiwms-section" style="padding:0; overflow:hidden">
         <div class="yvd-header">
             <span>Offloading Shipment Summary — @SelectedPeriodLabel</span>
@@ -328,6 +348,7 @@
         "No of Pcs" is the order quantity (hodata..vUSAOrder.Qty, summed per container) for the containers offloaded in each period — there is no per-box piece count in the source tables.
     </p>
     }
+    }
 
     <div class="yvd-section-banner">Internal Transfer Summary</div>
     @foreach (var box in _internalTransfers)
@@ -337,7 +358,7 @@
             <div class="yvd-header">
                 <span>
                     @RenderBoxLabel(box)
-                    @(box.IsInbound ? "To" : "From") <span class="yvd-warehouse-badge">YOTO</span>
+                    @(box.IsInbound ? "To" : "From") <span class="yvd-warehouse-badge">@_selectedWarehouse</span>
                     (@PeriodSuffixLabel)
                 </span>
                 @AdminQueryButton(InternalTransferQuerySubsection)
@@ -409,6 +430,12 @@
     // explicit From/To date range, max 15 days -- one column per day, so kept short to stay
     // readable) | "W{n}" (one specific week only) -- one
     // unified dropdown instead of a separate VIEW + WEEK pair.
+    // Pivot warehouse for Internal Transfer Summary; also gates the two YOTO-only sections
+    // (Offloading Shipment Summary, Total Inbound Summary) -- those are specific to YOTO's VNA
+    // offloading process (usa.dbo.UsaPallets/KNBBoxes), which JAFZA/TECHNO don't have at all.
+    private string _selectedWarehouse = "YOTO";
+    private bool IsYoto => _selectedWarehouse == "YOTO";
+
     private string _selectedPeriod = "Monthly";
     private int _selectedYear = DateTime.Now.Year;
     private int _selectedMonth = DateTime.Now.Month;
@@ -549,39 +576,84 @@
             var monthStart = new DateTime(_selectedYear, _selectedMonth, 1);
             var monthEnd = monthStart.AddMonths(1);
 
+            if (IsYoto)
+            {
+                if (IsMonthly)
+                {
+                    // Unchanged from before -- Jan-Dec columns for the whole year.
+                    _completed = await Svc.GetCompletedOffloadingAsync(monthStart, monthEnd);
+                    _containerDetails = IsOffloadingSummary ? new() : await Svc.GetCompletedOffloadingDetailAsync(monthStart, monthEnd);
+                    _pending = await Svc.GetPendingOffloadingAsync();
+                    _pendingDetails = IsOffloadingSummary ? new() : await Svc.GetPendingOffloadingDetailAsync();
+                    _periodRows = await Svc.GetMonthlyInboundSummaryAsync(_selectedYear);
+                }
+                else if (IsWeeklyAgg)
+                {
+                    // Every calendar week (Sun-Sat) that overlaps the selected month, as columns --
+                    // reuses the same single-range service calls the specific-week branch below
+                    // uses, once per overlapping week, then stitches the results together.
+                    _completed = await Svc.GetCompletedOffloadingAsync(monthStart, monthEnd);
+                    _containerDetails = IsOffloadingSummary ? new() : await Svc.GetCompletedOffloadingDetailAsync(monthStart, monthEnd);
+                    _pending = await Svc.GetPendingOffloadingAsync();
+                    _pendingDetails = IsOffloadingSummary ? new() : await Svc.GetPendingOffloadingDetailAsync();
+
+                    var weeksInMonth = Weeks.Where(w => w.Start < monthEnd && w.End >= monthStart).ToList();
+                    var periodRows = new List<YotoInboundPeriodRow>();
+                    foreach (var w in weeksInMonth)
+                        periodRows.Add(await Svc.GetInboundSummaryForRangeAsync(w.Start, w.End.AddDays(1), $"W{w.Num}", w.Num));
+                    _periodRows = periodRows;
+                }
+                else if (IsRange)
+                {
+                    // One column per calendar day in the selected range -- the existing Total
+                    // column in the table sums across periods automatically.
+                    var rangeStart = _rangeFrom.Date;
+                    var rangeEnd = _rangeTo.Date.AddDays(1);
+                    _completed = await Svc.GetCompletedOffloadingAsync(rangeStart, rangeEnd);
+                    _containerDetails = IsOffloadingSummary ? new() : await Svc.GetCompletedOffloadingDetailAsync(rangeStart, rangeEnd);
+                    _pending = await Svc.GetPendingOffloadingAsync();
+                    _pendingDetails = IsOffloadingSummary ? new() : await Svc.GetPendingOffloadingDetailAsync();
+
+                    var daysInRange = (int)(rangeEnd - rangeStart).TotalDays;
+                    var periodRows = new List<YotoInboundPeriodRow>();
+                    for (var i = 0; i < daysInRange; i++)
+                    {
+                        var day = rangeStart.AddDays(i);
+                        periodRows.Add(await Svc.GetInboundSummaryForRangeAsync(day, day.AddDays(1), day.ToString("dd-MMM"), i + 1));
+                    }
+                    _periodRows = periodRows;
+                }
+                else // specific week
+                {
+                    var (weekStart, weekEndInclusive) = SelectedWeekRange;
+                    var weekEnd = weekEndInclusive.AddDays(1);
+                    _completed = await Svc.GetCompletedOffloadingAsync(weekStart, weekEnd);
+                    _containerDetails = IsOffloadingSummary ? new() : await Svc.GetCompletedOffloadingDetailAsync(weekStart, weekEnd);
+                    _pending = await Svc.GetPendingOffloadingAsync();
+                    _pendingDetails = IsOffloadingSummary ? new() : await Svc.GetPendingOffloadingDetailAsync();
+                    _periodRows = new List<YotoInboundPeriodRow> { await Svc.GetInboundSummaryForRangeAsync(weekStart, weekEnd, SelectedPeriodLabel, SelectedWeekNum) };
+                }
+            }
+            else
+            {
+                // Offloading Shipment Summary / Total Inbound Summary are YOTO-only (they read
+                // usa.dbo.UsaPallets/KNBBoxes, which don't exist for JAFZA/TECHNO) and are hidden
+                // in the markup for any other warehouse -- nothing to fetch for them here.
+                _completed = new(); _containerDetails = new(); _pending = new(); _pendingDetails = new();
+                _periodRows = new();
+            }
+
+            // Internal Transfer Summary always shows, pivoted on whichever warehouse is selected.
             if (IsMonthly)
             {
-                // Unchanged from before -- Jan-Dec columns for the whole year.
-                _completed = await Svc.GetCompletedOffloadingAsync(monthStart, monthEnd);
-                _containerDetails = IsOffloadingSummary ? new() : await Svc.GetCompletedOffloadingDetailAsync(monthStart, monthEnd);
-                _pending = await Svc.GetPendingOffloadingAsync();
-                _pendingDetails = IsOffloadingSummary ? new() : await Svc.GetPendingOffloadingDetailAsync();
-                _periodRows = await Svc.GetMonthlyInboundSummaryAsync(_selectedYear);
-                _internalTransfers = await Svc.GetInternalTransferMonthlyAsync(_selectedYear);
+                _internalTransfers = await Svc.GetInternalTransferMonthlyAsync(_selectedWarehouse, _selectedYear);
             }
             else if (IsWeeklyAgg)
             {
-                // Every calendar week (Sun-Sat) that overlaps the selected month, as columns --
-                // reuses the same single-range service calls the specific-week branch below
-                // uses, once per overlapping week, then stitches the results together.
-                _completed = await Svc.GetCompletedOffloadingAsync(monthStart, monthEnd);
-                _containerDetails = IsOffloadingSummary ? new() : await Svc.GetCompletedOffloadingDetailAsync(monthStart, monthEnd);
-                _pending = await Svc.GetPendingOffloadingAsync();
-                _pendingDetails = IsOffloadingSummary ? new() : await Svc.GetPendingOffloadingDetailAsync();
-
                 var weeksInMonth = Weeks.Where(w => w.Start < monthEnd && w.End >= monthStart).ToList();
-
-                var periodRows = new List<YotoInboundPeriodRow>();
                 var perWeekTransfers = new List<List<YotoInternalTransferBox>>();
                 foreach (var w in weeksInMonth)
-                {
-                    var wFrom = w.Start;
-                    var wTo = w.End.AddDays(1);
-                    var label = $"W{w.Num}";
-                    periodRows.Add(await Svc.GetInboundSummaryForRangeAsync(wFrom, wTo, label, w.Num));
-                    perWeekTransfers.Add(await Svc.GetInternalTransferForRangeAsync(wFrom, wTo, label, w.Num));
-                }
-                _periodRows = periodRows;
+                    perWeekTransfers.Add(await Svc.GetInternalTransferForRangeAsync(_selectedWarehouse, w.Start, w.End.AddDays(1), $"W{w.Num}", w.Num));
 
                 // Each week's call returns all 8 boxes with one period each, in the same
                 // (Total Inbound, Total Outbound, JAFZA in/out, ...) order every time --
@@ -595,28 +667,15 @@
             }
             else if (IsRange)
             {
-                // One column per calendar day in the selected range (same widen-then-stitch
-                // pattern WeeklyAgg uses for weeks) -- the existing Total column in each table
-                // sums across periods automatically, so splitting by day here is enough.
                 var rangeStart = _rangeFrom.Date;
                 var rangeEnd = _rangeTo.Date.AddDays(1);
-                _completed = await Svc.GetCompletedOffloadingAsync(rangeStart, rangeEnd);
-                _containerDetails = IsOffloadingSummary ? new() : await Svc.GetCompletedOffloadingDetailAsync(rangeStart, rangeEnd);
-                _pending = await Svc.GetPendingOffloadingAsync();
-                _pendingDetails = IsOffloadingSummary ? new() : await Svc.GetPendingOffloadingDetailAsync();
-
                 var daysInRange = (int)(rangeEnd - rangeStart).TotalDays;
-
-                var periodRows = new List<YotoInboundPeriodRow>();
                 var perDayTransfers = new List<List<YotoInternalTransferBox>>();
                 for (var i = 0; i < daysInRange; i++)
                 {
                     var day = rangeStart.AddDays(i);
-                    var label = day.ToString("dd-MMM");
-                    periodRows.Add(await Svc.GetInboundSummaryForRangeAsync(day, day.AddDays(1), label, i + 1));
-                    perDayTransfers.Add(await Svc.GetInternalTransferForRangeAsync(day, day.AddDays(1), label, i + 1));
+                    perDayTransfers.Add(await Svc.GetInternalTransferForRangeAsync(_selectedWarehouse, day, day.AddDays(1), day.ToString("dd-MMM"), i + 1));
                 }
-                _periodRows = periodRows;
 
                 // Same per-box stitch WeeklyAgg uses -- each day's call returns all 8 boxes in
                 // the same order, so grouping by Label reassembles each box's day-by-day periods.
@@ -630,12 +689,7 @@
             {
                 var (weekStart, weekEndInclusive) = SelectedWeekRange;
                 var weekEnd = weekEndInclusive.AddDays(1);
-                _completed = await Svc.GetCompletedOffloadingAsync(weekStart, weekEnd);
-                _containerDetails = IsOffloadingSummary ? new() : await Svc.GetCompletedOffloadingDetailAsync(weekStart, weekEnd);
-                _pending = await Svc.GetPendingOffloadingAsync();
-                _pendingDetails = IsOffloadingSummary ? new() : await Svc.GetPendingOffloadingDetailAsync();
-                _periodRows = new List<YotoInboundPeriodRow> { await Svc.GetInboundSummaryForRangeAsync(weekStart, weekEnd, SelectedPeriodLabel, SelectedWeekNum) };
-                _internalTransfers = await Svc.GetInternalTransferForRangeAsync(weekStart, weekEnd, SelectedPeriodLabel, SelectedWeekNum);
+                _internalTransfers = await Svc.GetInternalTransferForRangeAsync(_selectedWarehouse, weekStart, weekEnd, SelectedPeriodLabel, SelectedWeekNum);
             }
         }
         finally
@@ -726,11 +780,14 @@
         try
         {
             using var wb = new XLWorkbook();
-            var ws = wb.AddWorksheet("YOTO VNA Dashboard");
+            var ws = wb.AddWorksheet("UAE WH Dashboard");
             var row = 1;
 
-            row = WriteOffloadingBlock(ws, row);
-            row = WriteTotalInboundBlock(ws, row);
+            if (IsYoto)
+            {
+                row = WriteOffloadingBlock(ws, row);
+                row = WriteTotalInboundBlock(ws, row);
+            }
             foreach (var box in _internalTransfers)
                 row = WriteInternalTransferBlock(ws, row, box);
 
@@ -739,7 +796,7 @@
             using var ms = new MemoryStream();
             wb.SaveAs(ms);
             var b64 = Convert.ToBase64String(ms.ToArray());
-            var name = $"yoto-vna-dashboard-{DateTime.UtcNow.AddHours(4):yyyyMMdd-HHmm}.xlsx";
+            var name = $"uae-wh-dashboard-{_selectedWarehouse.ToLowerInvariant()}-{DateTime.UtcNow.AddHours(4):yyyyMMdd-HHmm}.xlsx";
             await JS.InvokeVoidAsync("downloadFileWithPicker", name, b64,
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
         }
