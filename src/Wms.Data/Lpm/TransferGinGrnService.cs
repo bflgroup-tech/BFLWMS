@@ -400,10 +400,11 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
         var wh = await WithOnPremAsync(conn =>
             ResolveWarehouseCodeAsync(conn, "BFLDATA.dbo.DataSettings", country, ct), ct);
 
-        // GIN correlates via TrfNo -> this DataName's OWN transferheader
-        // (same relationship the detail table's GIN join and
-        // GetOneStoreSummaryAsync use) — NOT vGoodsIssueplt.ShopIssue, which
-        // doesn't reliably equal ShopName outside UAE.
+        // GIN is scoped directly by its own EntryDate — no shop filter at this
+        // whole-country level (every shop sharing this DataName), no TrfNo
+        // correlation to transferheader needed at all. Confirmed via direct
+        // query: select count(distinct srno),sum(qty) from bfldata..vgoodsissueplt
+        // where entrydate = '19/09/2026' and ShopIssue = 'BFLFLAGSHIPDXB'.
         var perDataNameTask = Task.WhenAll(dataNames.Select(dn =>
         {
             // GIN lives in the central BFLDATA.dbo db for UAE, but in each
@@ -419,17 +420,10 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
                     new { from, to = toEnd, whCostCodeTo = wh.CostCodeTo, whLocCodeTo = wh.LocCodeTo },
                     commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
 
-                // Same TrfNo-set approach as GetOneStoreSummaryAsync: this
-                // DataName's transfers created in [from, to] first (cheap),
-                // then GIN activity for exactly that TrfNo set — no
-                // correlated per-row subquery.
                 var gin = await conn.QuerySingleAsync<GinCountQtyRow>(new CommandDefinition($@"
-                    SELECT COUNT(DISTINCT c.SrNo) AS GinCount, ISNULL(SUM(c.Qty),0) AS GinQty
-                      FROM {ginTable} c WITH (NOLOCK)
-                     WHERE c.TrfNo IN (
-                         SELECT TrfNo FROM [{dn}]..transferheader WITH (NOLOCK)
-                          WHERE TrfDate >= @from AND TrfDate <= @to
-                     )",
+                    SELECT COUNT(DISTINCT SrNo) AS GinCount, ISNULL(SUM(Qty),0) AS GinQty
+                      FROM {ginTable} WITH (NOLOCK)
+                     WHERE EntryDate >= @from AND EntryDate <= @to",
                     new { from, to = toEnd }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
 
                 return (transferRow, gin);
@@ -467,13 +461,11 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
         // vGoodsIssueplt lives in the country's own dataName db here (same as
         // transferheader/vTransferDetail), NOT the sibling BFLDATA db —
         // confirmed directly: bflksa..vGoodsIssuePlt, not BFLDATA..vgoodsissueplt.
+        // Scoped by its own EntryDate — no shop filter at this whole-country level.
         var gin = await conn.QuerySingleAsync<GinCountQtyRow>(new CommandDefinition(@"
             SELECT COUNT(DISTINCT SrNo) AS GinCount, ISNULL(SUM(Qty),0) AS GinQty
               FROM vgoodsissueplt WITH (NOLOCK)
-             WHERE TrfNo IN (
-                 SELECT TrfNo FROM transferheader WITH (NOLOCK)
-                  WHERE TrfDate >= @from AND TrfDate <= @to
-             )",
+             WHERE EntryDate >= @from AND EntryDate <= @to",
             new { from, to = toEnd }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
 
         return new TransferSummary(country, transferRow.TransferCount, transferRow.TransferQty ?? 0, gin.GinCount, gin.GinQty ?? 0);
@@ -490,12 +482,14 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
     // from/to: date-only: this does the end-of-day adjustment itself before
     // delegating, so every caller can just pass plain dates.
     //
-    // GIN is scoped by the underlying TRANSFER's own date+store (TrfDate,
-    // CostCodeTo/LocCodeTo on transferHeaderTable), not the GIN's own
-    // EntryDate — see the query below for why (avoids both a slow correlated
-    // subquery and TrfNo-reuse ambiguity between stores).
+    // GIN is scoped directly by its own EntryDate + ShopIssue — confirmed via
+    // direct query: select count(distinct srno),sum(qty) from bfldata..vgoodsissueplt
+    // where entrydate = '19/09/2026' and ShopIssue = 'BFLFLAGSHIPDXB'. Simpler and
+    // cheaper than correlating via transferheader's TrfNo/CostCodeTo/LocCodeTo
+    // (the earlier approach, kept only for Transfer Count/Qty below, which has
+    // no ShopIssue column to filter on).
     private static async Task<TransferSummary> GetOneStoreSummaryAsync(
-        SqlConnection conn, string shopName, string transferDetailTable, string transferHeaderTable, string ginTable,
+        SqlConnection conn, string shopName, string transferDetailTable, string ginTable,
         string costCodeTo, string locCodeTo, DateTime from, DateTime to, CancellationToken ct)
     {
         var toEnd = to.AddDays(1).AddSeconds(-1);
@@ -504,22 +498,12 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
             new { from, to = toEnd, costCodeTo, locCodeTo },
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
 
-        // Scoped by the TRANSFER's own date/store (TrfDate + CostCodeTo/LocCodeTo),
-        // not the GIN's own EntryDate: get this store's transfers created in
-        // [from, to] first (cheap — same filter as the transfer-count query
-        // above), then look up GIN activity for exactly that TrfNo set. No
-        // correlated per-row subquery, and no reuse ambiguity — the TrfNo set
-        // is already uniquely scoped to this store before vGoodsIssueplt is
-        // even touched.
         var gin = await conn.QuerySingleAsync<GinCountQtyRow>(new CommandDefinition($@"
-            SELECT COUNT(DISTINCT c.SrNo) AS GinCount, ISNULL(SUM(c.Qty),0) AS GinQty
-              FROM {ginTable} c WITH (NOLOCK)
-             WHERE c.TrfNo IN (
-                 SELECT TrfNo FROM {transferHeaderTable} WITH (NOLOCK)
-                  WHERE TrfDate >= @from AND TrfDate <= @to
-                    AND CostCodeTo = @costCodeTo AND LocCodeTo = @locCodeTo
-             )",
-            new { costCodeTo, locCodeTo, from, to = toEnd }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            SELECT COUNT(DISTINCT SrNo) AS GinCount, ISNULL(SUM(Qty),0) AS GinQty
+              FROM {ginTable} WITH (NOLOCK)
+             WHERE EntryDate >= @from AND EntryDate <= @to
+               AND ShopIssue = @shopName",
+            new { shopName, from, to = toEnd }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
 
         return new TransferSummary(shopName, transferRow.TransferCount, transferRow.TransferQty ?? 0, gin.GinCount, gin.GinQty ?? 0);
     }
@@ -532,7 +516,7 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
     {
         var ginTable = country == UaeCountry ? "BFLDATA.dbo.vGoodsIssueplt" : $"[{s.DataName}]..vGoodsIssueplt";
         return WithOnPremAsync(conn => GetOneStoreSummaryAsync(
-            conn, s.ShopName, $"[{s.DataName}]..vTransferDetail", $"[{s.DataName}]..transferheader", ginTable,
+            conn, s.ShopName, $"[{s.DataName}]..vTransferDetail", ginTable,
             s.CostCodeTo, s.LocCodeTo, from, to, ct), ct);
     }
 
@@ -546,7 +530,7 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
     {
         await using var conn = OpenCountryWithDataName(country, dataName);
         return await GetOneStoreSummaryAsync(
-            conn, s.ShopName, "vTransferDetail", "transferheader", "vgoodsissueplt",
+            conn, s.ShopName, "vTransferDetail", "vgoodsissueplt",
             s.CostCodeTo, s.LocCodeTo, from, to, ct);
     }
 
