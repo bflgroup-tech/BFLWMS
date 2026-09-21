@@ -2226,7 +2226,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                         // Pass 2 : top positive-OTS stores up from current alloc to their OTS-driven tier cap (- SOH).
                         // Pass 3 : negative-OTS stores get up to (MinMin - SOH). Conservative
                         //          — over-stocked stores get only the safety floor.
-                        // Pass 4 : if remaining < 10% of PoQty -> distribute across A/B/C
+                        // Pass 4 : if remaining < 10% of PoQty -> distribute across Z, A-E
                         //          stores with LiveOts > 0, proportional to raw MinMax
                         //          (share = MinMax / SUM(MinMax) * remaining, no per-store cap).
                         //          else -> flag the item in dbo.WmsPlanningFlag, drop remaining, move on.
@@ -2495,7 +2495,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                             }
                         }
 
-                        // ---------- Pass 4: <10% left -> proportional A/B/C by MinMax; else FLAG ----------
+                        // ---------- Pass 4: <10% left -> proportional Z/A-E by MinMax; else FLAG ----------
                         if (remaining > 0 && line.Qty > 0)
                         {
                             var pct = (double)remaining / line.Qty;
@@ -2582,7 +2582,8 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                                     //   floorShare(i) = FLOOR(RawSkuMax(i) * origRemaining / totalMinMax)
                                     //   leftover      = origRemaining - SUM(floorShare)      (always >= 0)
                                     //   +1 handed out to the first `leftover` stores in sort order
-                                    //   (i.e. highest LiveOts across A/B/C).
+                                    //   (i.e. highest LiveOts across Z, A-E — IsPass4Grade,
+                                    //   NOT Stage 1's narrower IsTopGrade).
                                     // Guarantees SUM(Take) == origRemaining exactly — never negative
                                     // remaining. RatioSkuMax records the pure ROUND for audit only.
                                     var origRemaining = remaining;
