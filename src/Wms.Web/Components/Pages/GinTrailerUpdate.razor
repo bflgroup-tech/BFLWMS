@@ -13,13 +13,14 @@
     <h2>GIN Trailer Update</h2>
     <p>
         Pick a Trailer No. and enter a GIN — the trailer is stamped onto that GIN as
-        "Trailer No. - HH:MM" and the submission is logged.
+        "TrailerNo-HH:MM" (e.g. 8888-17:40) and the submission is logged.
     </p>
     <AuthorizeView Roles="Admin">
         <p>
-            Trailer No. options come from <code>BFLDATA..GINTrailerLog</code> (no manual entry).
+            Trailer No. options come from <code>BFLDATA..WHTrailers</code> (no manual entry).
             Updates <code>bfldata.dbo.TEST_PLT.Trailorno</code> (keyed by <code>Srno</code>) and logs
-            every submission back to <code>BFLDATA..GINTrailerLog</code>.
+            the GIN, old and new Trailer No., who made the change and when to
+            <code>BFLDATA..GINTrailerLog</code>.
         </p>
     </AuthorizeView>
 </div>
