@@ -1,0 +1,99 @@
+@page "/operations/gin-trailer-update"
+@rendermode RenderMode.InteractiveServer
+@using Wms.Core
+@using Wms.Data.Lpm
+@attribute [Authorize(Policy = MenuKeys.GIN_TRAILER_UPDATE)]
+@inject GinTrailerUpdateService Svc
+@inject ICurrentUser Me
+@inject Microsoft.JSInterop.IJSRuntime JS
+
+<PageTitle>WMS — GIN Trailer Update</PageTitle>
+
+<div class="aiwms-page-header">
+    <h2>GIN Trailer Update</h2>
+    <p>
+        Pick a Trailer No. and enter a GIN — the trailer is stamped onto that GIN as
+        "Trailer No. - HH:MM" and the submission is logged.
+    </p>
+    <AuthorizeView Roles="Admin">
+        <p>
+            Trailer No. options come from <code>BFLDATA..GINTrailerLog</code> (no manual entry).
+            Updates <code>bfldata.dbo.TEST_PLT.Trailorno</code> (keyed by <code>Srno</code>) and logs
+            every submission back to <code>BFLDATA..GINTrailerLog</code>.
+        </p>
+    </AuthorizeView>
+</div>
+
+@if (!string.IsNullOrEmpty(_message))
+{
+    <div class="aiwms-alert @(_isError ? "error" : "info")">@_message</div>
+}
+
+<div class="aiwms-section">
+    <div style="display:flex; gap:20px; flex-wrap:wrap; align-items:end">
+        <div>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">TRAILER NO *</label>
+            <select @bind="_trailerNo"
+                    style="min-width:180px; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); background:white; font-size:13px"
+                    disabled="@_busy">
+                <option value="">(pick a trailer)</option>
+                @foreach (var t in _trailerNos) { <option value="@t">@t</option> }
+            </select>
+        </div>
+        <div>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">GIN *</label>
+            <input @bind="_gin" @bind:event="oninput" placeholder="e.g. 67572" disabled="@_busy"
+                   style="min-width:180px; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); background:white; font-size:13px; font-family:Consolas, monospace" />
+        </div>
+        <div>
+            <button class="aiwms-btn aiwms-btn-primary" @onclick="SubmitAsync"
+                    disabled="@(_busy || string.IsNullOrWhiteSpace(_trailerNo) || string.IsNullOrWhiteSpace(_gin))">
+                @(_busy ? "Submitting..." : "Submit")
+            </button>
+        </div>
+    </div>
+</div>
+
+@code {
+    private List<string> _trailerNos = new();
+    private string _trailerNo = "";
+    private string _gin = "";
+    private bool _busy;
+    private string _message = "";
+    private bool _isError;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await Me.EnsureLoadedAsync();
+        try { _trailerNos = await Svc.GetTrailerNosAsync(); }
+        catch (Exception ex) { ShowError($"Failed to load trailer numbers: {ex.Message}"); }
+    }
+
+    private async Task SubmitAsync()
+    {
+        var confirm = await JS.InvokeAsync<bool>("confirm", $"Update GIN {_gin} to trailer {_trailerNo}?");
+        if (!confirm) return;
+
+        _busy = true; _message = "";
+        StateHasChanged();
+        try
+        {
+            var result = await Svc.UpdateTrailerAsync(_gin, _trailerNo, Me.Name);
+            if (result.Ok)
+            {
+                ShowInfo($"GIN {_gin} updated to trailer {_trailerNo}.");
+                _gin = "";
+                _trailerNo = "";
+            }
+            else
+            {
+                ShowError(result.Error ?? "Update failed.");
+            }
+        }
+        catch (Exception ex) { ShowError($"Update failed: {ex.Message}"); }
+        finally { _busy = false; }
+    }
+
+    private void ShowError(string m) { _message = m; _isError = true; }
+    private void ShowInfo(string m)  { _message = m; _isError = false; }
+}
