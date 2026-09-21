@@ -13,6 +13,11 @@
 <div class="aiwms-page-header">
     <h2>Transfer / GIN / GRN History</h2>
     <p>Transfer records with Pallet (GI), GIN and GRN linkage per store and date range.</p>
+    <p style="font-size:12px; color:var(--text-secondary); margin-top:4px;">
+        <strong>Note:</strong> Transfer Count/Qty is based on the transfer's own date (Trf Date) within the selected
+        range. GIN Count/Qty is based on the GIN's own entry date within the selected range — the two can fall on
+        different days for the same transfer.
+    </p>
 </div>
 
 @if (_breakdownOpen)
@@ -46,6 +51,13 @@
                 @if (_breakdownResult.Warnings.Count > 0)
                 {
                     <div class="aiwms-alert error" style="margin-bottom:10px;">Some countries failed: @string.Join("; ", _breakdownResult.Warnings)</div>
+                }
+                @if (_breakdownKind == "GIN")
+                {
+                    <div style="font-size:11px; color:var(--text-secondary); margin-bottom:10px;">
+                        Qty here is the linked transfer's own item quantity — GIN itself has no item-level Group Code
+                        to break down by, so this may not exactly match the GIN Qty card above.
+                    </div>
                 }
                 <div style="overflow:auto; max-width:90vw;">
                 <table class="aiwms-table aiwms-table-dense" style="border-collapse:separate; border-spacing:0;">

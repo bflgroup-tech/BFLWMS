@@ -754,12 +754,12 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
         var ginTable = country == UaeCountry ? "BFLDATA.dbo.vGoodsIssueplt" : $"[{s.DataName}]..vGoodsIssueplt";
         var toEnd = to.AddDays(1).AddSeconds(-1);
         var sql = byGin
-            ? StoreGinGroupCodeSql($"[{s.DataName}]..vTransferDetail", $"[{s.DataName}]..transferheader", ginTable)
+            ? StoreGinGroupCodeSql($"[{s.DataName}]..vTransferDetail", ginTable)
             : StoreTransferGroupCodeSql($"[{s.DataName}]..vTransferDetail");
         return WithOnPremAsync(async conn =>
         {
             var rows = await conn.QueryAsync<GroupCodeChunkRow>(new CommandDefinition(
-                sql, new { from, to = toEnd, costCodeTo = s.CostCodeTo, locCodeTo = s.LocCodeTo },
+                sql, new { from, to = toEnd, costCodeTo = s.CostCodeTo, locCodeTo = s.LocCodeTo, shopName = s.ShopName },
                 commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
             return rows.AsList();
         }, ct);
@@ -778,10 +778,10 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
         var toEnd = today.AddDays(1).AddSeconds(-1);
         await using var conn = OpenCountryWithDataName(country, dataName);
         var sql = byGin
-            ? StoreGinGroupCodeSql("vTransferDetail", "transferheader", "vgoodsissueplt")
+            ? StoreGinGroupCodeSql("vTransferDetail", "vgoodsissueplt")
             : StoreTransferGroupCodeSql("vTransferDetail");
         var rows = await conn.QueryAsync<GroupCodeChunkRow>(new CommandDefinition(
-            sql, new { from = today, to = toEnd, costCodeTo = s.CostCodeTo, locCodeTo = s.LocCodeTo },
+            sql, new { from = today, to = toEnd, costCodeTo = s.CostCodeTo, locCodeTo = s.LocCodeTo, shopName = s.ShopName },
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         return rows.AsList();
     }
@@ -810,7 +810,7 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
         {
             var ginTable = country == UaeCountry ? "BFLDATA.dbo.vGoodsIssueplt" : $"[{dn}]..vGoodsIssueplt";
             var sql = byGin
-                ? GinGroupCodeSql($"[{dn}]..vTransferDetail", $"[{dn}]..transferheader", ginTable)
+                ? GinGroupCodeSql($"[{dn}]..vTransferDetail", ginTable)
                 : TransferGroupCodeSql($"[{dn}]..vTransferDetail");
             return WithOnPremAsync(async conn =>
             {
@@ -839,7 +839,7 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
         var toEnd = to.AddDays(1).AddSeconds(-1);
 
         var sql = byGin
-            ? GinGroupCodeSql("vTransferDetail", "transferheader", "vgoodsissueplt")
+            ? GinGroupCodeSql("vTransferDetail", "vgoodsissueplt")
             : TransferGroupCodeSql("vTransferDetail");
         var rows = await conn.QueryAsync<GroupCodeChunkRow>(new CommandDefinition(
             sql, new { from, to = toEnd, whCostCodeTo = wh.CostCodeTo, whLocCodeTo = wh.LocCodeTo },
@@ -862,31 +862,32 @@ public class TransferGinGrnService(IOnPremConnectionResolver resolver)
            AND vtd.CostCodeTo = @costCodeTo AND vtd.LocCodeTo = @locCodeTo
          GROUP BY vtd.groupcode";
 
-    // GIN has no line-item GroupCode of its own — scoped to the TrfNo set that
-    // has at least one linked GIN (same TrfNo-set approach the GIN Count/Qty
-    // cards themselves use), then rolled up via that transfer's own vTransferDetail
-    // lines. Same approximation ShipmentStatusService's GIN-flow Division rollup
-    // already uses.
-    private static string GinGroupCodeSql(string transferDetailTable, string transferHeaderTable, string ginTable) => $@"
+    // GIN has no line-item GroupCode of its own — the TrfNo set is now derived
+    // from the GIN's own EntryDate (+ ShopIssue for the store-scoped variant),
+    // matching GetCountrySummaryOnPremAsync/GetOneStoreSummaryAsync's GIN
+    // Count/Qty definition — then rolled up via that transfer's own
+    // vTransferDetail lines (still an approximation, since a transfer's total
+    // Quantity need not exactly equal what was actually GIN'd — same
+    // approximation ShipmentStatusService's GIN-flow Division rollup already
+    // uses; keeping the TrfNo set aligned with the stat cards at least keeps
+    // this breakdown's Grand Total consistent with the GIN Count/Qty cards'
+    // scope of transfers).
+    private static string GinGroupCodeSql(string transferDetailTable, string ginTable) => $@"
         SELECT vtd.groupcode AS GroupCode, ISNULL(SUM(vtd.Quantity),0) AS Qty
           FROM {transferDetailTable} vtd WITH (NOLOCK)
          WHERE vtd.TrfNo IN (
-             SELECT th.TrfNo FROM {transferHeaderTable} th WITH (NOLOCK)
-              WHERE th.TrfDate >= @from AND th.TrfDate <= @to
-                AND (@whCostCodeTo IS NULL OR th.CostCodeTo <> @whCostCodeTo)
-                AND (@whLocCodeTo  IS NULL OR th.LocCodeTo  <> @whLocCodeTo)
-                AND EXISTS (SELECT 1 FROM {ginTable} g WHERE g.TrfNo = th.TrfNo)
+             SELECT DISTINCT TrfNo FROM {ginTable} WITH (NOLOCK)
+              WHERE EntryDate >= @from AND EntryDate <= @to
          )
          GROUP BY vtd.groupcode";
 
-    private static string StoreGinGroupCodeSql(string transferDetailTable, string transferHeaderTable, string ginTable) => $@"
+    private static string StoreGinGroupCodeSql(string transferDetailTable, string ginTable) => $@"
         SELECT vtd.groupcode AS GroupCode, ISNULL(SUM(vtd.Quantity),0) AS Qty
           FROM {transferDetailTable} vtd WITH (NOLOCK)
          WHERE vtd.TrfNo IN (
-             SELECT th.TrfNo FROM {transferHeaderTable} th WITH (NOLOCK)
-              WHERE th.TrfDate >= @from AND th.TrfDate <= @to
-                AND th.CostCodeTo = @costCodeTo AND th.LocCodeTo = @locCodeTo
-                AND EXISTS (SELECT 1 FROM {ginTable} g WHERE g.TrfNo = th.TrfNo)
+             SELECT DISTINCT TrfNo FROM {ginTable} WITH (NOLOCK)
+              WHERE EntryDate >= @from AND EntryDate <= @to
+                AND ShopIssue = @shopName
          )
          GROUP BY vtd.groupcode";
 
