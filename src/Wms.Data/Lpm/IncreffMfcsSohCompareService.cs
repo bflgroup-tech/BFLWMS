@@ -42,6 +42,12 @@ namespace Wms.Data.Lpm;
 /// SUM(INTRANSIT_QTY)) and fixed here. Not part of the Variance formula —
 /// informational columns only.
 ///
+/// SOR -> dbo.LPM_ECOM_INCREFF_SOH_NEW (SUM(Quantity) WHERE ItemType = 'SOR'),
+/// the ItemType IncreffSOH itself excludes. Grouped by (Country, Itemcode) —
+/// unlike GS/GW/InTransit, this source already carries its own Country column,
+/// so no hardcoded/per-column country scoping is needed. Informational only,
+/// same as InTransitUAE/InTransitKSA — NOT part of the Variance formula.
+///
 /// Variance (= MFCS_SOH - (IncreffSOH + GateKeeperRejectedSummer +
 /// GateKeeperRejectedWinter), signed — negative when the right side is bigger)
 /// is a PERSISTED computed column on the table itself, not written here — it
@@ -156,6 +162,12 @@ public class IncreffMfcsSohCompareService(IOnPremConnectionResolver resolver)
              WHERE MFCS_TOLOCID = 20002
              GROUP BY ITEMCODE
         ),
+        SorStock AS (
+            SELECT Country, Itemcode, SUM(Quantity) AS Qty
+              FROM dbo.LPM_ECOM_INCREFF_SOH_NEW
+             WHERE ItemType = 'SOR'
+             GROUP BY Country, Itemcode
+        ),
         Spine AS (
             SELECT Country, Itemcode FROM Increff
             UNION
@@ -168,6 +180,8 @@ public class IncreffMfcsSohCompareService(IOnPremConnectionResolver resolver)
             SELECT 'UAE', Itemcode FROM InTransitUae
             UNION
             SELECT 'KSA', Itemcode FROM InTransitKsa
+            UNION
+            SELECT Country, Itemcode FROM SorStock
         ),
         Subclass AS (
             SELECT Itemcode, Division, Department, class AS Class, subclass AS Subclass, Family,
@@ -181,7 +195,7 @@ public class IncreffMfcsSohCompareService(IOnPremConnectionResolver resolver)
         )
         INSERT INTO dbo.LPM_ECOM_SOH_COMPARISON
             (Country, Itemcode, IncreffSOH, MFCS_SOH, GateKeeperRejectedSummer, GateKeeperRejectedWinter,
-             InTransitUAE, InTransitKSA, CreateTS, Division, Department, Class, Subclass, Family, Brand)
+             InTransitUAE, InTransitKSA, SOR, CreateTS, Division, Department, Class, Subclass, Family, Brand)
         SELECT
             sp.Country,
             sp.Itemcode,
@@ -191,6 +205,7 @@ public class IncreffMfcsSohCompareService(IOnPremConnectionResolver resolver)
             ISNULL(gw.Qty, 0)                AS GateKeeperRejectedWinter,
             ISNULL(iu.Qty, 0)                AS InTransitUAE,
             ISNULL(ik.Qty, 0)                AS InTransitKSA,
+            ISNULL(sor.Qty, 0)               AS SOR,
             DATEADD(hour, 4, SYSUTCDATETIME()) AS CreateTS,
             s.Division, s.Department, s.Class, s.Subclass, s.Family,
             v.Vendor AS Brand
@@ -201,6 +216,7 @@ public class IncreffMfcsSohCompareService(IOnPremConnectionResolver resolver)
           LEFT JOIN GwRejected gw ON gw.Country = sp.Country AND gw.Itemcode = sp.Itemcode
           LEFT JOIN InTransitUae iu ON iu.Itemcode = sp.Itemcode AND sp.Country = 'UAE'
           LEFT JOIN InTransitKsa ik ON ik.Itemcode = sp.Itemcode AND sp.Country = 'KSA'
+          LEFT JOIN SorStock sor ON sor.Country = sp.Country AND sor.Itemcode = sp.Itemcode
           LEFT JOIN Subclass s   ON s.Itemcode = sp.Itemcode AND s.rn = 1
           LEFT JOIN Vendor v     ON v.Itemcode = sp.Itemcode AND v.rn = 1;";
 
