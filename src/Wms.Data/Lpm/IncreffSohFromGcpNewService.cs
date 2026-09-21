@@ -32,9 +32,10 @@ public record IncreffItemLevelSohGcpRow(
 /// An unrecognized Channel value passes through as-is (not silently dropped)
 /// so it stays visible for investigation rather than disappearing.
 ///
-/// Same "current-SOH snapshot, no history" refresh shape as
-/// IncreffSohFromGcpService: delete each country's existing rows, then
-/// bulk-insert the fresh set, all inside one transaction.
+/// Refresh is TRUNCATE + bulk-insert of the WHOLE table every run (unlike
+/// IncreffSohFromGcpService's per-country delete — this table has no country
+/// split to preserve, per user request), all inside one transaction so a
+/// mid-run failure leaves the prior snapshot intact.
 ///
 /// Fires daily via IncreffSohFromGcpNewBatchService (Hosting/), same pattern
 /// as IncreffSohFromGcpBatchService but offset to 08:05 GST so it doesn't
@@ -131,11 +132,9 @@ public class IncreffSohFromGcpNewService(
         return rows;
     }
 
-    // ====================== Refresh LPM_ECOM_INCREFF_SOH_NEW (latest wins) ======================
-    // No PK/unique index on this table (matching dbo.LPM_ECOM_INCREFF_SOH's own
-    // heap shape), so "latest wins" is enforced in code: delete each country's
-    // existing rows, then bulk-insert the fresh set, all inside one transaction
-    // so a mid-run failure leaves the prior data intact.
+    // ====================== Refresh LPM_ECOM_INCREFF_SOH_NEW (full snapshot) ======================
+    // TRUNCATE + bulk-insert of the WHOLE table every run, all inside one
+    // transaction so a mid-run failure leaves the prior snapshot intact.
 
     private static DataTable ToTable(IReadOnlyList<IncreffItemLevelSohGcpRow> rows, DateTime createTs)
     {
@@ -163,12 +162,9 @@ public class IncreffSohFromGcpNewService(
         await using var tx = (SqlTransaction)await c.BeginTransactionAsync(ct);
         try
         {
-            foreach (var country in rows.Select(r => r.Country).Distinct())
-            {
-                await c.ExecuteAsync(new CommandDefinition(
-                    "DELETE FROM dbo.LPM_ECOM_INCREFF_SOH_NEW WHERE Country = @country;",
-                    new { country }, transaction: tx, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-            }
+            await c.ExecuteAsync(new CommandDefinition(
+                "TRUNCATE TABLE dbo.LPM_ECOM_INCREFF_SOH_NEW;",
+                transaction: tx, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
 
             using (var bulk = new SqlBulkCopy(c, SqlBulkCopyOptions.Default, tx)
             {
