@@ -131,6 +131,12 @@ public class Program
         // into LPMSIM's dbo.LPM_ECOM_INCREFF_SOH. No timer yet — Refresh Now only.
         builder.Services.AddScoped<IncreffSohFromGcpService>();
 
+        // Parallel/validation pull from a newer BigQuery source
+        // (mvp-data-bi.Ecom_Silver.Increff_Item_Level_SOH) into LPMSIM's
+        // dbo.LPM_ECOM_INCREFF_SOH_NEW — a separate table, so this cannot affect
+        // the live ECOM Stock Variance Report while the new source is validated.
+        builder.Services.AddScoped<IncreffSohFromGcpNewService>();
+
         // On-demand comparison of that INCREFF feed against RACKS.dbo.lpm_locstock
         // (MFCS online-store stock) into dbo.LPM_ECOM_SOH_COMPARISON. No timer yet.
         builder.Services.AddScoped<IncreffMfcsSohCompareService>();
@@ -169,6 +175,11 @@ public class Program
         // IncreffMfcsSohCompareBatchService for the readiness-check/defer behavior).
         builder.Services.AddHostedService<Wms.Web.Hosting.IncreffSohFromGcpBatchService>();
         builder.Services.AddHostedService<Wms.Web.Hosting.IncreffMfcsSohCompareBatchService>();
+
+        // Daily 08:05 GST: parallel/validation pull from the newer Silver-tier
+        // BigQuery source, offset 5 minutes after the existing 08:00 pull so the
+        // two independent BigQuery queries don't contend.
+        builder.Services.AddHostedService<Wms.Web.Hosting.IncreffSohFromGcpNewBatchService>();
 
         // WMS DbContext — Azure SQL via AAD (Managed Identity in App Service,
         // AAD Default locally via `az login`). NO password in code.
