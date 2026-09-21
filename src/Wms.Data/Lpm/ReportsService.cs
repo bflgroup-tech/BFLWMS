@@ -173,8 +173,9 @@ public class ReportsService(IOnPremConnectionResolver resolver)
     ///
     /// Division and ItemName are per-item lookups (OUTER APPLY TOP 1) rather than
     /// joins: vupc_subclass is UPC-grained and USAOrgFile is colour/size-grained,
-    /// so a plain join would multiply the LPM rows. EDI is a per-container lookup
-    /// (BFLDATA.dbo.ContColorHeader) -- same value repeats on every line.
+    /// so a plain join would multiply the LPM rows. EDI (BFLDATA.dbo.ContColorHeader)
+    /// is looked up once into a @edi variable instead, since it's the same value for
+    /// every line -- an OUTER APPLY would needlessly re-run that lookup per row.
     /// </summary>
     public async Task<List<OrderSheetRow>> GetOrderSheetAsync(string contno, CancellationToken ct = default)
     {
@@ -182,7 +183,14 @@ public class ReportsService(IOnPremConnectionResolver resolver)
         if (contno.Length == 0) return new();
 
         await using var c = OpenOnPremBackup();
+        // EDI is looked up once into a variable, not via OUTER APPLY -- it's the same
+        // value for every line of the container (same ContNo throughout, per the WHERE
+        // below), so a per-row correlated lookup would re-run the identical
+        // ContColorHeader query once per PO/item/UPC line for no reason.
         var rows = await c.QueryAsync<OrderSheetRow>(new CommandDefinition(@"
+            DECLARE @edi varchar(10);
+            SELECT TOP 1 @edi = h.EDI FROM BFLDATA.dbo.ContColorHeader h WITH (NOLOCK) WHERE h.ContNo = @c;
+
             SELECT l.ContNo,
                    PONo      = l.OraPONo,
                    l.BOL,
@@ -195,7 +203,7 @@ public class ReportsService(IOnPremConnectionResolver resolver)
                    l.Style,
                    l.UPC,
                    CreatedAt = l.Created_At,
-                   EDI       = e.EDI
+                   EDI       = @edi
               FROM usa.dbo.usaorgfile_LPM l WITH (NOLOCK)
               OUTER APPLY (SELECT TOP 1 v.Division
                              FROM datareporting.dbo.vupc_subclass v WITH (NOLOCK)
@@ -205,9 +213,6 @@ public class ReportsService(IOnPremConnectionResolver resolver)
                              FROM usa.dbo.USAOrgFile o WITH (NOLOCK)
                             WHERE o.ContNo = l.ContNo AND o.Itemcode = l.ItemCode
                               AND o.ItemName IS NOT NULL) n
-              OUTER APPLY (SELECT TOP 1 h.EDI
-                             FROM BFLDATA.dbo.ContColorHeader h WITH (NOLOCK)
-                            WHERE h.ContNo = l.ContNo) e
              WHERE l.ContNo = @c
              ORDER BY l.OraPONo, l.ItemCode, l.UPC",
             new { c = contno }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
