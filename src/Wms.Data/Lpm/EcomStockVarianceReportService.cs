@@ -7,18 +7,18 @@ namespace Wms.Data.Lpm;
 public record EcomStockVarianceRow(
     string Country, string Itemcode, int IncreffSOH, int MFCS_SOH,
     int GateKeeperRejectedSummer, int GateKeeperRejectedWinter, int Variance,
-    int InTransitUAE, int InTransitKSA, DateTime CreateTS,
+    int InTransitUAE, int InTransitKSA, int SOR, DateTime CreateTS,
     string? Division, string? Department, string? Class, string? Subclass, string? Family, string? Brand);
 
 public record EcomStockVarianceTotals(
     int RowCount, long IncreffSOH, long MFCS_SOH,
     long GateKeeperRejectedSummer, long GateKeeperRejectedWinter, long Variance,
-    long InTransitUAE, long InTransitKSA);
+    long InTransitUAE, long InTransitKSA, long SOR);
 
 public record EcomStockVarianceDivisionSummaryRow(
     string Country, string? Division, int ItemCount, long IncreffSOH, long MFCS_SOH,
     long GateKeeperRejectedSummer, long GateKeeperRejectedWinter, long Variance,
-    long InTransitUAE, long InTransitKSA);
+    long InTransitUAE, long InTransitKSA, long SOR);
 
 /// <summary>Whole-table KPI snapshot for the Dashboard tab — deliberately unfiltered
 /// (no Country/Division/Department/Brand), a fixed top-level view independent of
@@ -202,7 +202,8 @@ public class EcomStockVarianceReportService(IOnPremConnectionResolver resolver)
                    ISNULL(SUM(CAST(GateKeeperRejectedWinter AS BIGINT)), 0) AS GateKeeperRejectedWinter,
                    ISNULL(SUM(CAST(Variance AS BIGINT)), 0)   AS Variance,
                    ISNULL(SUM(CAST(InTransitUAE AS BIGINT)), 0) AS InTransitUAE,
-                   ISNULL(SUM(CAST(InTransitKSA AS BIGINT)), 0) AS InTransitKSA
+                   ISNULL(SUM(CAST(InTransitKSA AS BIGINT)), 0) AS InTransitKSA,
+                   ISNULL(SUM(CAST(SOR AS BIGINT)), 0) AS SOR
               FROM dbo.LPM_ECOM_SOH_COMPARISON
             {FilterWhereSql};",
             BuildFilterParams(countries, divisions, departments, brandSearch, itemcodeSearch, varianceOnly),
@@ -220,7 +221,7 @@ public class EcomStockVarianceReportService(IOnPremConnectionResolver resolver)
         var rows = await c.QueryAsync<EcomStockVarianceRow>(new CommandDefinition($@"
             SELECT Country, Itemcode, IncreffSOH, MFCS_SOH,
                    GateKeeperRejectedSummer, GateKeeperRejectedWinter, Variance,
-                   InTransitUAE, InTransitKSA, CreateTS,
+                   InTransitUAE, InTransitKSA, SOR, CreateTS,
                    {ClassificationSelectSql}, Brand
               FROM dbo.LPM_ECOM_SOH_COMPARISON
             {FilterWhereSql}
@@ -255,7 +256,7 @@ public class EcomStockVarianceReportService(IOnPremConnectionResolver resolver)
         var rows = await c.QueryAsync<EcomStockVarianceRow>(new CommandDefinition($@"
             SELECT Country, Itemcode, IncreffSOH, MFCS_SOH,
                    GateKeeperRejectedSummer, GateKeeperRejectedWinter, Variance,
-                   InTransitUAE, InTransitKSA, CreateTS,
+                   InTransitUAE, InTransitKSA, SOR, CreateTS,
                    {ClassificationSelectSql}, Brand
               FROM dbo.LPM_ECOM_SOH_COMPARISON
             {FilterWhereSql}
@@ -283,7 +284,8 @@ public class EcomStockVarianceReportService(IOnPremConnectionResolver resolver)
                    ISNULL(SUM(CAST(GateKeeperRejectedWinter AS BIGINT)), 0) AS GateKeeperRejectedWinter,
                    ISNULL(SUM(CAST(Variance AS BIGINT)), 0)   AS Variance,
                    ISNULL(SUM(CAST(InTransitUAE AS BIGINT)), 0) AS InTransitUAE,
-                   ISNULL(SUM(CAST(InTransitKSA AS BIGINT)), 0) AS InTransitKSA
+                   ISNULL(SUM(CAST(InTransitKSA AS BIGINT)), 0) AS InTransitKSA,
+                   ISNULL(SUM(CAST(SOR AS BIGINT)), 0) AS SOR
               FROM dbo.LPM_ECOM_SOH_COMPARISON
             {FilterWhereSql}
              GROUP BY Country, CASE WHEN Division IN @excludedDivisions THEN NULL ELSE Division END

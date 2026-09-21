@@ -159,6 +159,7 @@ else
                     <th style="text-align:right">Variance (MFCS_SOH - (INCREFF_SOH + GS + GW))</th>
                     <th style="text-align:right">InTransit UAE</th>
                     <th style="text-align:right">InTransit KSA</th>
+                    <th style="text-align:right">SOR</th>
                     <th>Division</th>
                     <th>Department</th>
                     <th>Class</th>
@@ -177,6 +178,7 @@ else
                     <td style="text-align:right">@_totals!.Variance.ToString("N0")</td>
                     <td style="text-align:right">@_totals!.InTransitUAE.ToString("N0")</td>
                     <td style="text-align:right">@_totals!.InTransitKSA.ToString("N0")</td>
+                    <td style="text-align:right">@_totals!.SOR.ToString("N0")</td>
                     <td colspan="6"></td>
                 </tr>
                 @foreach (var r in _rows)
@@ -191,6 +193,7 @@ else
                         <td style="text-align:right; font-weight:@(r.Variance == 0 ? "400" : "700")">@r.Variance.ToString("N0")</td>
                         <td style="text-align:right">@r.InTransitUAE.ToString("N0")</td>
                         <td style="text-align:right">@r.InTransitKSA.ToString("N0")</td>
+                        <td style="text-align:right">@r.SOR.ToString("N0")</td>
                         <td style="word-break:break-word">@r.Division</td>
                         <td style="word-break:break-word">@r.Department</td>
                         <td style="word-break:break-word">@r.Class</td>
@@ -201,7 +204,7 @@ else
                 }
                 @if (_rows.Count == 0)
                 {
-                    <tr><td colspan="15" style="color:var(--text-secondary)">No rows for the selected filters.</td></tr>
+                    <tr><td colspan="16" style="color:var(--text-secondary)">No rows for the selected filters.</td></tr>
                 }
             </tbody>
         </table>
@@ -227,6 +230,7 @@ else
                     <th style="text-align:right">Variance (MFCS_SOH - (INCREFF_SOH + GS + GW))</th>
                     <th style="text-align:right">InTransit UAE</th>
                     <th style="text-align:right">InTransit KSA</th>
+                    <th style="text-align:right">SOR</th>
                 </tr>
             </thead>
             <tbody>
@@ -240,6 +244,7 @@ else
                     <td style="text-align:right">@_summaryRows.Sum(r => r.Variance).ToString("N0")</td>
                     <td style="text-align:right">@_summaryRows.Sum(r => r.InTransitUAE).ToString("N0")</td>
                     <td style="text-align:right">@_summaryRows.Sum(r => r.InTransitKSA).ToString("N0")</td>
+                    <td style="text-align:right">@_summaryRows.Sum(r => r.SOR).ToString("N0")</td>
                 </tr>
                 @foreach (var r in _summaryRows)
                 {
@@ -254,11 +259,12 @@ else
                         <td style="text-align:right; font-weight:@(r.Variance == 0 ? "400" : "700")">@r.Variance.ToString("N0")</td>
                         <td style="text-align:right">@r.InTransitUAE.ToString("N0")</td>
                         <td style="text-align:right">@r.InTransitKSA.ToString("N0")</td>
+                        <td style="text-align:right">@r.SOR.ToString("N0")</td>
                     </tr>
                 }
                 @if (_summaryRows.Count == 0)
                 {
-                    <tr><td colspan="10" style="color:var(--text-secondary)">No rows for the selected filters.</td></tr>
+                    <tr><td colspan="11" style="color:var(--text-secondary)">No rows for the selected filters.</td></tr>
                 }
             </tbody>
         </table>
@@ -446,7 +452,7 @@ else
             {
                 "Country", "Itemcode", "MFCS_SOH (After GRN)", "INCREFF_SOH", "GS Summer Pallet", "GW Winter Pallet",
                 "Variance (MFCS_SOH - (INCREFF_SOH + GS + GW))",
-                "InTransit UAE", "InTransit KSA", "Division", "Department", "Class", "Subclass", "Family", "Brand", "Last Refreshed"
+                "InTransit UAE", "InTransit KSA", "SOR", "Division", "Department", "Class", "Subclass", "Family", "Brand", "Last Refreshed"
             };
             for (int i = 0; i < headers.Length; i++) ws.Cell(1, i + 1).Value = headers[i];
             ws.Row(1).Style.Font.Bold = true;
@@ -463,13 +469,14 @@ else
                 ws.Cell(row, 7).Value  = r.Variance;
                 ws.Cell(row, 8).Value  = r.InTransitUAE;
                 ws.Cell(row, 9).Value  = r.InTransitKSA;
-                ws.Cell(row, 10).Value = r.Division;
-                ws.Cell(row, 11).Value = r.Department;
-                ws.Cell(row, 12).Value = r.Class;
-                ws.Cell(row, 13).Value = r.Subclass;
-                ws.Cell(row, 14).Value = r.Family;
-                ws.Cell(row, 15).Value = r.Brand;
-                ws.Cell(row, 16).Value = r.CreateTS.ToString("dd-MMM-yyyy HH:mm");
+                ws.Cell(row, 10).Value = r.SOR;
+                ws.Cell(row, 11).Value = r.Division;
+                ws.Cell(row, 12).Value = r.Department;
+                ws.Cell(row, 13).Value = r.Class;
+                ws.Cell(row, 14).Value = r.Subclass;
+                ws.Cell(row, 15).Value = r.Family;
+                ws.Cell(row, 16).Value = r.Brand;
+                ws.Cell(row, 17).Value = r.CreateTS.ToString("dd-MMM-yyyy HH:mm");
                 row++;
             }
             ws.Columns().AdjustToContents();
@@ -495,7 +502,7 @@ else
             string[] headers =
             {
                 "Country", "Division", "Items", "MFCS_SOH (After GRN)", "INCREFF_SOH", "GS Summer Pallet", "GW Winter Pallet",
-                "Variance (MFCS_SOH - (INCREFF_SOH + GS + GW))", "InTransit UAE", "InTransit KSA"
+                "Variance (MFCS_SOH - (INCREFF_SOH + GS + GW))", "InTransit UAE", "InTransit KSA", "SOR"
             };
             for (int i = 0; i < headers.Length; i++) ws.Cell(1, i + 1).Value = headers[i];
             ws.Row(1).Style.Font.Bold = true;
@@ -513,6 +520,7 @@ else
                 ws.Cell(row, 8).Value = r.Variance;
                 ws.Cell(row, 9).Value = r.InTransitUAE;
                 ws.Cell(row, 10).Value = r.InTransitKSA;
+                ws.Cell(row, 11).Value = r.SOR;
                 row++;
             }
             ws.Columns().AdjustToContents();
