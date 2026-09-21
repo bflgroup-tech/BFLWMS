@@ -7,18 +7,18 @@ namespace Wms.Data.Lpm;
 public record EcomStockVarianceRow(
     string Country, string Itemcode, int IncreffSOH, int MFCS_SOH,
     int GateKeeperRejectedSummer, int GateKeeperRejectedWinter, int Variance,
-    int InTransitUAE, int InTransitKSA, DateTime CreateTS,
+    int InTransitUAE, int InTransitKSA, int SOR, DateTime CreateTS,
     string? Division, string? Department, string? Class, string? Subclass, string? Family, string? Brand);
 
 public record EcomStockVarianceTotals(
     int RowCount, long IncreffSOH, long MFCS_SOH,
     long GateKeeperRejectedSummer, long GateKeeperRejectedWinter, long Variance,
-    long InTransitUAE, long InTransitKSA);
+    long InTransitUAE, long InTransitKSA, long SOR);
 
 public record EcomStockVarianceDivisionSummaryRow(
     string Country, string? Division, int ItemCount, long IncreffSOH, long MFCS_SOH,
     long GateKeeperRejectedSummer, long GateKeeperRejectedWinter, long Variance,
-    long InTransitUAE, long InTransitKSA);
+    long InTransitUAE, long InTransitKSA, long SOR);
 
 /// <summary>Whole-table KPI snapshot for the Dashboard tab — deliberately unfiltered
 /// (no Country/Division/Department/Brand), a fixed top-level view independent of
@@ -28,10 +28,14 @@ public record EcomStockVarianceDivisionSummaryRow(
 /// bucket table's IncreffSoh, so NetVariance/IncreffSoh (and NetVariancePercent)
 /// stay consistent with the persisted Variance column everywhere in this report.
 /// NetVariancePercent and ExactMatchSkuPercent are computed here (not in SQL)
-/// since both are simple ratios of values already fetched.</summary>
+/// since both are simple ratios of values already fetched. Sor is a plain
+/// SUM(SOR) — informational only, not folded into IncreffSoh/NetVariance/
+/// GrossGap, same as InTransitUAE/InTransitKSA are informational-only
+/// elsewhere in this report.</summary>
 public record EcomStockVarianceDashboardSummary(
     long MfcsSoh, long IncreffSoh, long NetVariance, long GrossGap,
-    int VarianceSkuCount, int PositiveStockSkuCount, int ExactMatchPositiveStockSkuCount, int RowsReviewed)
+    int VarianceSkuCount, int PositiveStockSkuCount, int ExactMatchPositiveStockSkuCount, int RowsReviewed,
+    long Sor)
 {
     public double NetVariancePercent => IncreffSoh == 0 ? 0 : NetVariance * 100.0 / IncreffSoh;
     public double ExactMatchSkuPercent =>
@@ -202,7 +206,8 @@ public class EcomStockVarianceReportService(IOnPremConnectionResolver resolver)
                    ISNULL(SUM(CAST(GateKeeperRejectedWinter AS BIGINT)), 0) AS GateKeeperRejectedWinter,
                    ISNULL(SUM(CAST(Variance AS BIGINT)), 0)   AS Variance,
                    ISNULL(SUM(CAST(InTransitUAE AS BIGINT)), 0) AS InTransitUAE,
-                   ISNULL(SUM(CAST(InTransitKSA AS BIGINT)), 0) AS InTransitKSA
+                   ISNULL(SUM(CAST(InTransitKSA AS BIGINT)), 0) AS InTransitKSA,
+                   ISNULL(SUM(CAST(SOR AS BIGINT)), 0) AS SOR
               FROM dbo.LPM_ECOM_SOH_COMPARISON
             {FilterWhereSql};",
             BuildFilterParams(countries, divisions, departments, brandSearch, itemcodeSearch, varianceOnly),
@@ -220,7 +225,7 @@ public class EcomStockVarianceReportService(IOnPremConnectionResolver resolver)
         var rows = await c.QueryAsync<EcomStockVarianceRow>(new CommandDefinition($@"
             SELECT Country, Itemcode, IncreffSOH, MFCS_SOH,
                    GateKeeperRejectedSummer, GateKeeperRejectedWinter, Variance,
-                   InTransitUAE, InTransitKSA, CreateTS,
+                   InTransitUAE, InTransitKSA, SOR, CreateTS,
                    {ClassificationSelectSql}, Brand
               FROM dbo.LPM_ECOM_SOH_COMPARISON
             {FilterWhereSql}
@@ -255,7 +260,7 @@ public class EcomStockVarianceReportService(IOnPremConnectionResolver resolver)
         var rows = await c.QueryAsync<EcomStockVarianceRow>(new CommandDefinition($@"
             SELECT Country, Itemcode, IncreffSOH, MFCS_SOH,
                    GateKeeperRejectedSummer, GateKeeperRejectedWinter, Variance,
-                   InTransitUAE, InTransitKSA, CreateTS,
+                   InTransitUAE, InTransitKSA, SOR, CreateTS,
                    {ClassificationSelectSql}, Brand
               FROM dbo.LPM_ECOM_SOH_COMPARISON
             {FilterWhereSql}
@@ -283,7 +288,8 @@ public class EcomStockVarianceReportService(IOnPremConnectionResolver resolver)
                    ISNULL(SUM(CAST(GateKeeperRejectedWinter AS BIGINT)), 0) AS GateKeeperRejectedWinter,
                    ISNULL(SUM(CAST(Variance AS BIGINT)), 0)   AS Variance,
                    ISNULL(SUM(CAST(InTransitUAE AS BIGINT)), 0) AS InTransitUAE,
-                   ISNULL(SUM(CAST(InTransitKSA AS BIGINT)), 0) AS InTransitKSA
+                   ISNULL(SUM(CAST(InTransitKSA AS BIGINT)), 0) AS InTransitKSA,
+                   ISNULL(SUM(CAST(SOR AS BIGINT)), 0) AS SOR
               FROM dbo.LPM_ECOM_SOH_COMPARISON
             {FilterWhereSql}
              GROUP BY Country, CASE WHEN Division IN @excludedDivisions THEN NULL ELSE Division END
@@ -310,7 +316,8 @@ public class EcomStockVarianceReportService(IOnPremConnectionResolver resolver)
                 SUM(CASE WHEN Variance <> 0 THEN 1 ELSE 0 END) AS VarianceSkuCount,
                 SUM(CASE WHEN MFCS_SOH > 0 THEN 1 ELSE 0 END)  AS PositiveStockSkuCount,
                 SUM(CASE WHEN MFCS_SOH > 0 AND Variance = 0 THEN 1 ELSE 0 END) AS ExactMatchPositiveStockSkuCount,
-                COUNT(*) AS RowsReviewed
+                COUNT(*) AS RowsReviewed,
+                ISNULL(SUM(CAST(SOR AS BIGINT)), 0) AS Sor
               FROM dbo.LPM_ECOM_SOH_COMPARISON
              WHERE @country IS NULL OR Country = @country;",
             new { country }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));

@@ -99,6 +99,48 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         return c;
     }
 
+    // ===================== Find container by PO =====================
+    /// <summary>
+    /// Resolves a PO number to the container(s) carrying it, for the "find by PO"
+    /// lookup beside Container No.
+    ///
+    /// Reads usaorgfile_LPM — the same table Load PO Data reads — so anything this
+    /// finds is a container this page can actually run, including ones that have
+    /// not reached counting yet. (The PO Counting Report can also go PO -> container,
+    /// but only for containers already counted, since it is built on
+    /// BuildingCompletionSumm.)
+    ///
+    /// Exact match on OraPONo, not LIKE: a PO number is an exact identifier, and a
+    /// leading-wildcard scan of this table is not something to put behind a button.
+    ///
+    /// ReceiptDt is a correlated subquery rather than a join to Contreceipt — a join
+    /// would multiply the PO's lines if a container ever had more than one receipt
+    /// row, silently inflating Qty.
+    /// </summary>
+    public async Task<List<PoContainerMatch>> FindContainersByPoAsync(string poNo, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(poNo)) return new();
+        poNo = poNo.Trim();
+
+        await using var c = OpenOnPremBackup();
+        var rows = await c.QueryAsync<PoContainerMatch>(new CommandDefinition(@"
+            SELECT
+                ContNo    = u.ContNo,
+                OraPONo   = u.OraPONo,
+                Lines     = COUNT(*),
+                Qty       = CAST(ISNULL(SUM(u.orgqty), 0) AS INT),
+                LpmDt     = MIN(u.LPMDt),
+                ReceiptDt = (SELECT MAX(cr.ReceiptDt)
+                               FROM bfldata.dbo.Contreceipt cr WITH (NOLOCK)
+                              WHERE cr.TCMNo = u.ContNo)
+              FROM usa.dbo.usaorgfile_LPM u WITH (NOLOCK)
+             WHERE u.OraPONo = @po
+             GROUP BY u.ContNo, u.OraPONo
+             ORDER BY ContNo",
+            new { po = poNo }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        return rows.AsList();
+    }
+
     // ===================== Load PO Data =====================
     public async Task<List<PoDataRow>> LoadPoDataAsync(string contno, CancellationToken ct = default)
     {
@@ -2226,7 +2268,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                         // Pass 2 : top positive-OTS stores up from current alloc to their OTS-driven tier cap (- SOH).
                         // Pass 3 : negative-OTS stores get up to (MinMin - SOH). Conservative
                         //          — over-stocked stores get only the safety floor.
-                        // Pass 4 : if remaining < 10% of PoQty -> distribute across A/B/C
+                        // Pass 4 : if remaining < 10% of PoQty -> distribute across Z, A-E
                         //          stores with LiveOts > 0, proportional to raw MinMax
                         //          (share = MinMax / SUM(MinMax) * remaining, no per-store cap).
                         //          else -> flag the item in dbo.WmsPlanningFlag, drop remaining, move on.
@@ -2495,7 +2537,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                             }
                         }
 
-                        // ---------- Pass 4: <10% left -> proportional A/B/C by MinMax; else FLAG ----------
+                        // ---------- Pass 4: <10% left -> proportional Z/A-E by MinMax; else FLAG ----------
                         if (remaining > 0 && line.Qty > 0)
                         {
                             var pct = (double)remaining / line.Qty;
@@ -2582,7 +2624,8 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                                     //   floorShare(i) = FLOOR(RawSkuMax(i) * origRemaining / totalMinMax)
                                     //   leftover      = origRemaining - SUM(floorShare)      (always >= 0)
                                     //   +1 handed out to the first `leftover` stores in sort order
-                                    //   (i.e. highest LiveOts across A/B/C).
+                                    //   (i.e. highest LiveOts across Z, A-E — IsPass4Grade,
+                                    //   NOT Stage 1's narrower IsTopGrade).
                                     // Guarantees SUM(Take) == origRemaining exactly — never negative
                                     // remaining. RatioSkuMax records the pure ROUND for audit only.
                                     var origRemaining = remaining;

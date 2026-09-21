@@ -1,0 +1,179 @@
+@page "/reports/order-sheet"
+@rendermode RenderMode.InteractiveServer
+@using Wms.Core
+@using Wms.Data.Lpm
+@using ClosedXML.Excel
+@attribute [Authorize(Policy = MenuKeys.RPT_ORDER_SHEET)]
+@inject ReportsService Svc
+@inject IJSRuntime JS
+
+<PageTitle>WMS - Order Sheet Report</PageTitle>
+
+<div class="aiwms-page-header">
+    <h2>Order Sheet Report</h2>
+    <p>The order-sheet lines for one container, exactly as loaded — one row per PO / item / UPC.</p>
+    <AuthorizeView Roles="Admin">
+        <p>Reads <code>usa.dbo.usaorgfile_LPM</code> — the table the allocation engine takes its PO lines from — with Division looked up per item from <code>datareporting.dbo.vupc_subclass</code> and Item Name from <code>usa.dbo.USAOrgFile</code>.</p>
+    </AuthorizeView>
+</div>
+
+@if (!string.IsNullOrEmpty(_message))
+{
+    <div class="aiwms-alert @(_isError ? "error" : "info")">@_message</div>
+}
+
+<div class="aiwms-section">
+    <div style="display:flex; gap:14px; align-items:end; flex-wrap:wrap">
+        <div style="min-width:220px">
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">CONTAINER NO *</label>
+            <input @bind="_contno" @bind:event="oninput" @onkeydown="OnKeyDown"
+                   placeholder="e.g. AEINT7297" disabled="@_loading"
+                   style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white; font-family:Consolas, monospace" />
+        </div>
+        <button class="aiwms-btn aiwms-btn-primary" @onclick="LoadAsync" disabled="@(_loading || string.IsNullOrWhiteSpace(_contno))">
+            @(_loading ? "Loading..." : "Load")
+        </button>
+        <button class="aiwms-btn aiwms-btn-secondary" @onclick="ExportExcelAsync" disabled="@(_exporting || _rows.Count == 0)">
+            @(_exporting ? "Exporting..." : "Export Excel")
+        </button>
+    </div>
+</div>
+
+@if (_loaded)
+{
+    <div class="aiwms-section">
+        <div class="aiwms-card-header" style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px">
+            <span>@_loadedContno — @_rows.Count.ToString("N0") line(s), @_rows.Sum(r => r.Qty ?? 0).ToString("N0") pcs</span>
+            @if (_rows.Count > 0)
+            {
+                <span style="font-size:11px; color:var(--text-secondary)">
+                    @_rows.Select(r => r.PONo).Distinct().Count() PO(s) ·
+                    @_rows.Select(r => r.ItemCode).Distinct(StringComparer.OrdinalIgnoreCase).Count() item(s)
+                </span>
+            }
+        </div>
+        @if (_rows.Count == 0)
+        {
+            <p style="color:var(--text-secondary); font-size:13px; padding:14px">No order-sheet lines found for @_loadedContno.</p>
+        }
+        else
+        {
+            <div style="max-height:640px; overflow:auto">
+                <table class="aiwms-table aiwms-table-dense" style="font-size:12px">
+                    <thead style="position:sticky; top:0; background:white; z-index:1">
+                        <tr>
+                            <th>Cont No</th>
+                            <th>PO No</th>
+                            <th>BOL</th>
+                            <th>Item Code</th>
+                            <th>Item Name</th>
+                            <th>Division</th>
+                            <th style="text-align:right">Qty</th>
+                            <th>LPM</th>
+                            <th>LPM Dt</th>
+                            <th>Style</th>
+                            <th>UPC</th>
+                            <th>Created At</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var r in _rows)
+                        {
+                            <tr>
+                                <td>@r.ContNo</td>
+                                <td>@r.PONo</td>
+                                <td>@r.BOL</td>
+                                <td style="font-family:Consolas, monospace">@r.ItemCode</td>
+                                <td>@r.ItemName</td>
+                                <td>@r.Division</td>
+                                <td style="text-align:right">@(r.Qty?.ToString("N0") ?? "")</td>
+                                <td>@r.LPM</td>
+                                <td>@(r.LPMDt?.ToString("dd-MMM-yyyy") ?? "")</td>
+                                <td>@r.Style</td>
+                                <td style="font-family:Consolas, monospace">@r.UPC</td>
+                                <td>@(r.CreatedAt?.ToString("dd-MMM-yyyy HH:mm") ?? "")</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </div>
+}
+
+@code {
+    private string _contno = "";
+    private string _loadedContno = "";
+    private bool _loading, _exporting, _loaded;
+    private string _message = "";
+    private bool _isError;
+    private List<OrderSheetRow> _rows = new();
+
+    private async Task OnKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter" && !_loading && !string.IsNullOrWhiteSpace(_contno))
+            await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        var c = (_contno ?? "").Trim().ToUpperInvariant();
+        if (c.Length == 0 || _loading) return;
+
+        _loading = true; _message = ""; _isError = false; _loaded = false; _rows = new();
+        StateHasChanged();
+        try
+        {
+            _rows = await Svc.GetOrderSheetAsync(c);
+            _loadedContno = c;
+            _loaded = true;
+        }
+        catch (Exception ex) { _message = $"Load failed: {ex.Message}"; _isError = true; }
+        finally { _loading = false; }
+    }
+
+    private async Task ExportExcelAsync()
+    {
+        if (_rows.Count == 0) return;
+        _exporting = true;
+        try
+        {
+            using var wb = new XLWorkbook();
+            var ws = wb.AddWorksheet("Order Sheet");
+            string[] headers = { "Cont No", "PO No", "BOL", "Item Code", "Item Name", "Division", "Qty", "LPM", "LPM Dt", "Style", "UPC", "Created At" };
+            for (int i = 0; i < headers.Length; i++) ws.Cell(1, i + 1).Value = headers[i];
+            ws.Row(1).Style.Font.Bold = true;
+
+            int row = 2;
+            foreach (var r in _rows)
+            {
+                ws.Cell(row, 1).Value  = r.ContNo;
+                ws.Cell(row, 2).Value  = r.PONo;
+                ws.Cell(row, 3).Value  = r.BOL;
+                ws.Cell(row, 4).Value  = r.ItemCode;
+                ws.Cell(row, 5).Value  = r.ItemName;
+                ws.Cell(row, 6).Value  = r.Division;
+                ws.Cell(row, 7).Value  = r.Qty;
+                ws.Cell(row, 8).Value  = r.LPM;
+                ws.Cell(row, 9).Value  = r.LPMDt;
+                ws.Cell(row, 10).Value = r.Style;
+                ws.Cell(row, 11).Value = r.UPC;
+                ws.Cell(row, 12).Value = r.CreatedAt;
+                row++;
+            }
+            // Item codes and UPCs are long digit strings — text, or Excel turns them into 1.23E+12.
+            ws.Column(4).Style.NumberFormat.Format  = "@";
+            ws.Column(11).Style.NumberFormat.Format = "@";
+            ws.Column(9).Style.DateFormat.Format    = "dd-mmm-yyyy";
+            ws.Column(12).Style.DateFormat.Format   = "dd-mmm-yyyy hh:mm";
+            ws.Columns().AdjustToContents();
+
+            using var ms = new MemoryStream();
+            wb.SaveAs(ms);
+            var b64 = Convert.ToBase64String(ms.ToArray());
+            await JS.InvokeVoidAsync("downloadFileWithPicker", $"order-sheet-{_loadedContno}.xlsx", b64,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        }
+        finally { _exporting = false; }
+    }
+}

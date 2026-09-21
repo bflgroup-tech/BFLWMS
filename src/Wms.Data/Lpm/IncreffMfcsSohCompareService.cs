@@ -8,9 +8,13 @@ namespace Wms.Data.Lpm;
 /// Compares two ECOM SOH sources into dbo.LPM_ECOM_SOH_COMPARISON, one row per
 /// (Country, Itemcode) present in ANY of the four sources below (missing side(s)
 /// written as 0):
-///   IncreffSOH -> dbo.LPM_ECOM_INCREFF_SOH  (BigQuery INCREFF feed, populated
-///                 by IncreffSohFromGcpService — run that first for a fresh
-///                 compare)
+///   IncreffSOH -> dbo.LPM_ECOM_INCREFF_SOH_NEW (BigQuery INCREFF feed from the
+///                 newer Silver-tier source, populated by
+///                 IncreffSohFromGcpNewService — run that first for a fresh
+///                 compare), summed over ItemType = 'BFL_REGULAR' rows only —
+///                 the other observed ItemType ('SOR') is excluded. Switched
+///                 from the old dbo.LPM_ECOM_INCREFF_SOH (IncreffSohFromGcpService)
+///                 after that new source was validated in parallel.
 ///   MFCS_SOH   -> RACKS.dbo.lpm_locstock.MFCS_SOH (MFCS online-store stock;
 ///                 StoreID = 'ONLINE' for UAE, 'ONLINEKSA' for KSA), summed over
 ///                 rows where the table's separate SOH column is non-zero — SOH
@@ -37,6 +41,12 @@ namespace Wms.Data.Lpm;
 /// row) — caught in production (report totals were exactly double the raw
 /// SUM(INTRANSIT_QTY)) and fixed here. Not part of the Variance formula —
 /// informational columns only.
+///
+/// SOR -> dbo.LPM_ECOM_INCREFF_SOH_NEW (SUM(Quantity) WHERE ItemType = 'SOR'),
+/// the ItemType IncreffSOH itself excludes. Grouped by (Country, Itemcode) —
+/// unlike GS/GW/InTransit, this source already carries its own Country column,
+/// so no hardcoded/per-column country scoping is needed. Informational only,
+/// same as InTransitUAE/InTransitKSA — NOT part of the Variance formula.
 ///
 /// Variance (= MFCS_SOH - (IncreffSOH + GateKeeperRejectedSummer +
 /// GateKeeperRejectedWinter), signed — negative when the right side is bigger)
@@ -112,9 +122,9 @@ public class IncreffMfcsSohCompareService(IOnPremConnectionResolver resolver)
 
     private const string InsertSql = @"
         ;WITH Increff AS (
-            SELECT Country, Itemcode, SUM(SOH) AS SOH
-              FROM dbo.LPM_ECOM_INCREFF_SOH
-             WHERE SOH <> 0
+            SELECT Country, Itemcode, SUM(Quantity) AS SOH
+              FROM dbo.LPM_ECOM_INCREFF_SOH_NEW
+             WHERE ItemType = 'BFL_REGULAR'
              GROUP BY Country, Itemcode
         ),
         Mfcs AS (
@@ -152,6 +162,12 @@ public class IncreffMfcsSohCompareService(IOnPremConnectionResolver resolver)
              WHERE MFCS_TOLOCID = 20002
              GROUP BY ITEMCODE
         ),
+        SorStock AS (
+            SELECT Country, Itemcode, SUM(Quantity) AS Qty
+              FROM dbo.LPM_ECOM_INCREFF_SOH_NEW
+             WHERE ItemType = 'SOR'
+             GROUP BY Country, Itemcode
+        ),
         Spine AS (
             SELECT Country, Itemcode FROM Increff
             UNION
@@ -164,6 +180,8 @@ public class IncreffMfcsSohCompareService(IOnPremConnectionResolver resolver)
             SELECT 'UAE', Itemcode FROM InTransitUae
             UNION
             SELECT 'KSA', Itemcode FROM InTransitKsa
+            UNION
+            SELECT Country, Itemcode FROM SorStock
         ),
         Subclass AS (
             SELECT Itemcode, Division, Department, class AS Class, subclass AS Subclass, Family,
@@ -177,7 +195,7 @@ public class IncreffMfcsSohCompareService(IOnPremConnectionResolver resolver)
         )
         INSERT INTO dbo.LPM_ECOM_SOH_COMPARISON
             (Country, Itemcode, IncreffSOH, MFCS_SOH, GateKeeperRejectedSummer, GateKeeperRejectedWinter,
-             InTransitUAE, InTransitKSA, CreateTS, Division, Department, Class, Subclass, Family, Brand)
+             InTransitUAE, InTransitKSA, SOR, CreateTS, Division, Department, Class, Subclass, Family, Brand)
         SELECT
             sp.Country,
             sp.Itemcode,
@@ -187,6 +205,7 @@ public class IncreffMfcsSohCompareService(IOnPremConnectionResolver resolver)
             ISNULL(gw.Qty, 0)                AS GateKeeperRejectedWinter,
             ISNULL(iu.Qty, 0)                AS InTransitUAE,
             ISNULL(ik.Qty, 0)                AS InTransitKSA,
+            ISNULL(sor.Qty, 0)               AS SOR,
             DATEADD(hour, 4, SYSUTCDATETIME()) AS CreateTS,
             s.Division, s.Department, s.Class, s.Subclass, s.Family,
             v.Vendor AS Brand
@@ -197,11 +216,12 @@ public class IncreffMfcsSohCompareService(IOnPremConnectionResolver resolver)
           LEFT JOIN GwRejected gw ON gw.Country = sp.Country AND gw.Itemcode = sp.Itemcode
           LEFT JOIN InTransitUae iu ON iu.Itemcode = sp.Itemcode AND sp.Country = 'UAE'
           LEFT JOIN InTransitKsa ik ON ik.Itemcode = sp.Itemcode AND sp.Country = 'KSA'
+          LEFT JOIN SorStock sor ON sor.Country = sp.Country AND sor.Itemcode = sp.Itemcode
           LEFT JOIN Subclass s   ON s.Itemcode = sp.Itemcode AND s.rn = 1
           LEFT JOIN Vendor v     ON v.Itemcode = sp.Itemcode AND v.rn = 1;";
 
     /// <summary>On-demand "Refresh Now" — rebuilds dbo.LPM_ECOM_SOH_COMPARISON from
-    /// scratch. Run IncreffSohFromGcpService.RefreshAsync first for a fresh compare.</summary>
+    /// scratch. Run IncreffSohFromGcpNewService.RefreshAsync first for a fresh compare.</summary>
     public async Task<int> RefreshAsync(CancellationToken ct = default)
     {
         await using var c = OpenOnPremBackup();

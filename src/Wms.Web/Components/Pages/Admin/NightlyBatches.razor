@@ -12,6 +12,7 @@
 @inject OtsWeeklyService OtsJob
 @inject ScheduledJobService Jobs
 @inject IncreffSohFromGcpService IncreffSoh
+@inject IncreffSohFromGcpNewService IncreffSohNew
 @inject IncreffMfcsSohCompareService IncreffCompare
 @inject GenerateEan13Service Ean13
 @inject OtsPoAllocationService Ots
@@ -301,6 +302,8 @@
             }
 
             // 8. IncreffSohFromGCP — daily 08:00 GST (Wms.Web.Hosting.IncreffSohFromGcpBatchService).
+            //    No longer feeds IncreffMfcsSohCompare (see 8a) — kept as a reference/fallback
+            //    source, still writing dbo.LPM_ECOM_INCREFF_SOH.
             var increff = await Jobs.GetSingleRowAsync(IncreffSohFromGcpService.JobName);
             list.Add(new JobVm(
                 IncreffSohFromGcpService.JobName, "Daily 08:00", null,
@@ -309,8 +312,19 @@
                 active => ToggleSingleAsync(IncreffSohFromGcpService.JobName, active),
                 new() { ("Refresh Now", EventCallback.Factory.Create(this, RefreshIncreffNowAsync)) }));
 
-            // 9. IncreffMfcsSohCompare — daily 08:15 GST, a fixed 15-minute offset after
-            //    IncreffSohFromGCP (not a wait-chain — Wms.Web.Hosting.IncreffMfcsSohCompareBatchService
+            // 8a. IncreffSohFromGCP_New — daily 08:05 GST, pulls from the newer BigQuery
+            //     source into dbo.LPM_ECOM_INCREFF_SOH_NEW, which IncreffMfcsSohCompare (9)
+            //     now reads for IncreffSOH. See Wms.Web.Hosting.IncreffSohFromGcpNewBatchService.
+            var increffNew = await Jobs.GetSingleRowAsync(IncreffSohFromGcpNewService.JobName);
+            list.Add(new JobVm(
+                IncreffSohFromGcpNewService.JobName, "Daily 08:05", null,
+                increffNew.IsActive, increffNew.UpdatedTS, increffNew.UpdatedBy,
+                increffNew.IsActive ? NextDailyFireGst(new(8, 5, 0)) : null,
+                active => ToggleSingleAsync(IncreffSohFromGcpNewService.JobName, active),
+                new() { ("Refresh Now", EventCallback.Factory.Create(this, RefreshIncreffNewNowAsync)) }));
+
+            // 9. IncreffMfcsSohCompare — daily 08:15 GST, a fixed offset after
+            //    IncreffSohFromGCP_New (not a wait-chain — Wms.Web.Hosting.IncreffMfcsSohCompareBatchService
             //    defers and retries hourly if that job hasn't succeeded yet today).
             var compare = await Jobs.GetSingleRowAsync(IncreffMfcsSohCompareService.JobName);
             list.Add(new JobVm(
@@ -557,6 +571,24 @@
             var rows = await IncreffSoh.RefreshAsync();
             await Jobs.FinishRunAsync(runId, "Success", rows, null);
             Show($"IncreffSohFromGCP done — {rows} rows.", false);
+        }
+        catch (Exception ex)
+        {
+            await Jobs.FinishRunAsync(runId, "Failed", null, ex.Message);
+            Show($"Refresh failed: {ex.Message}", true);
+        }
+        finally { _busy = false; await RefreshLogAsync(); }
+    }
+
+    private async Task RefreshIncreffNewNowAsync()
+    {
+        _busy = true; Show("Refreshing ECOM INCREFF SOH (new source) from BigQuery…", false); await InvokeAsync(StateHasChanged);
+        var runId = await Jobs.StartRunAsync(IncreffSohFromGcpNewService.JobName, "OnDemand", null, CurrentUser.Name ?? "");
+        try
+        {
+            var rows = await IncreffSohNew.RefreshAsync();
+            await Jobs.FinishRunAsync(runId, "Success", rows, null);
+            Show($"IncreffSohFromGCP_New done — {rows} rows.", false);
         }
         catch (Exception ex)
         {

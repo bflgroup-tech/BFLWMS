@@ -167,6 +167,49 @@ public class ReportsService(IOnPremConnectionResolver resolver)
     }
 
     /// <summary>
+    /// Order Sheet Report — the order lines for one container from
+    /// usa.dbo.usaorgfile_LPM, the table the allocation engine reads its PO lines
+    /// from, one row per UPC exactly as loaded. No grouping of the lines themselves.
+    ///
+    /// Division and ItemName are per-item lookups (OUTER APPLY TOP 1) rather than
+    /// joins: vupc_subclass is UPC-grained and USAOrgFile is colour/size-grained,
+    /// so a plain join would multiply the LPM rows.
+    /// </summary>
+    public async Task<List<OrderSheetRow>> GetOrderSheetAsync(string contno, CancellationToken ct = default)
+    {
+        contno = (contno ?? "").Trim();
+        if (contno.Length == 0) return new();
+
+        await using var c = OpenOnPremBackup();
+        var rows = await c.QueryAsync<OrderSheetRow>(new CommandDefinition(@"
+            SELECT l.ContNo,
+                   PONo      = l.OraPONo,
+                   l.BOL,
+                   l.ItemCode,
+                   ItemName  = n.ItemName,
+                   Division  = d.Division,
+                   Qty       = l.orgqty,
+                   l.LPM,
+                   l.LPMDt,
+                   l.Style,
+                   l.UPC,
+                   CreatedAt = l.Created_At
+              FROM usa.dbo.usaorgfile_LPM l WITH (NOLOCK)
+              OUTER APPLY (SELECT TOP 1 v.Division
+                             FROM datareporting.dbo.vupc_subclass v WITH (NOLOCK)
+                            WHERE v.itemcode = l.ItemCode AND v.Division IS NOT NULL
+                            ORDER BY v.DivID) d
+              OUTER APPLY (SELECT TOP 1 o.ItemName
+                             FROM usa.dbo.USAOrgFile o WITH (NOLOCK)
+                            WHERE o.ContNo = l.ContNo AND o.Itemcode = l.ItemCode
+                              AND o.ItemName IS NOT NULL) n
+             WHERE l.ContNo = @c
+             ORDER BY l.OraPONo, l.ItemCode, l.UPC",
+            new { c = contno }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        return rows.AsList();
+    }
+
+    /// <summary>
     /// Division list for the PO Counting Report's Division filter — every
     /// distinct Division in Datareporting.dbo.subclassmaster, excluding the
     /// "DATA MIGRATION -D" placeholder value.
