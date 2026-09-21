@@ -563,13 +563,22 @@ DROP TABLE #Scans, #BatchKind, #ItemDiv;"),
 
         // ============================== Transfer/GIN/GRN History ==============================
         new QueryEntry("Transfer/GIN/GRN History", "Detail Rows", "transferheader, vTransferDetail, vGoodsIssue(plt), GRNHeaderRF, TransferReverse -- TransferGinGrnService.BuildSqlOnPrem (OnPremBackup, UAE/historical) + BuildSqlCountry (regional, today-only, non-UAE)", @"
+-- PalletNo and BuildDate come from the SAME resolved row (OUTER APPLY,
+-- filtered by EntryDate >= a.TrfDate before picking TOP 1 ORDER BY PalletNo
+-- DESC) -- fixes a bug where they used to come from two independent lookups
+-- (a correctly-date-filtered scalar subquery for PalletNo, and a separately
+-- joined windowed subquery for BuildDate whose ROW_NUMBER() ranking ignored
+-- the date filter until after the join), which could show a PalletNo with a
+-- blank BuildDate when the globally-highest-PalletNo row for a TrfNo didn't
+-- itself satisfy EntryDate >= a.TrfDate.
+
 -- Variant A: BuildSqlOnPrem (OnPremBackup path -- UAE always, other countries' historical/before-today portion)
 SELECT ROW_NUMBER() OVER (ORDER BY a.TrfDate, a.TrfNo, c.SrNo) SrNo,
        @shopName ShopName,
        a.TrfNo,
        a.TrfDate,
        Quantity  = CAST(ISNULL((SELECT SUM(Quantity) FROM [{s.DataName}]..vTransferDetail WHERE TrfNo = a.TrfNo), 0) AS INT),
-       PalletNo  = (SELECT TOP 1 PalletNo FROM {buildTable} WHERE TrfNo = a.TrfNo AND EntryDate >= a.TrfDate ORDER BY PalletNo DESC),
+       b.PalletNo,
        b.EntryDate BuildDate,
        CAST(c.SrNo AS nvarchar(50)) GINNo,
        c.EntryDate GINDate,
@@ -577,11 +586,12 @@ SELECT ROW_NUMBER() OVER (ORDER BY a.TrfDate, a.TrfNo, c.SrNo) SrNo,
        d.EntryDate  GRNDate,
        ISNULL(f.Remarks, '') Remarks
   FROM [{s.DataName}]..transferheader           a
-  LEFT JOIN (
-      SELECT TrfNo, PalletNo, EntryDate,
-             ROW_NUMBER() OVER (PARTITION BY TrfNo ORDER BY PalletNo DESC) rn
+  OUTER APPLY (
+      SELECT TOP 1 PalletNo, EntryDate
         FROM {buildTable}
-  )                                            b  ON b.TrfNo = a.TrfNo AND b.rn = 1 AND b.EntryDate >= a.TrfDate
+       WHERE TrfNo = a.TrfNo AND EntryDate >= a.TrfDate
+       ORDER BY PalletNo DESC
+  )                                            b
   LEFT JOIN {ginTable}                         c  ON c.TrfNo = a.TrfNo AND c.EntryDate >= a.TrfDate
   LEFT JOIN [{s.DataName}]..GRNHeaderRF          d  ON d.TrfNo = a.TrfNo AND d.EntryDate >= a.TrfDate
   LEFT JOIN [{s.DataName}]..TransferReverse      f  ON f.TrfNo = a.TrfNo
@@ -596,7 +606,7 @@ SELECT ROW_NUMBER() OVER (ORDER BY a.TrfNo, c.SrNo) SrNo,
        a.TrfNo,
        a.TrfDate,
        Quantity  = CAST(ISNULL((SELECT SUM(Quantity) FROM vTransferDetail WHERE TrfNo = a.TrfNo), 0) AS INT),
-       PalletNo  = (SELECT TOP 1 PalletNo FROM vGoodsIssue WHERE TrfNo = a.TrfNo AND EntryDate >= a.TrfDate ORDER BY PalletNo DESC),
+       b.PalletNo,
        b.EntryDate BuildDate,
        CAST(c.SrNo AS nvarchar(50)) GINNo,
        c.EntryDate GINDate,
@@ -604,11 +614,12 @@ SELECT ROW_NUMBER() OVER (ORDER BY a.TrfNo, c.SrNo) SrNo,
        d.EntryDate  GRNDate,
        ISNULL(f.Remarks, '') Remarks
   FROM transferheader              a
-  LEFT JOIN (
-      SELECT TrfNo, PalletNo, EntryDate,
-             ROW_NUMBER() OVER (PARTITION BY TrfNo ORDER BY PalletNo DESC) rn
+  OUTER APPLY (
+      SELECT TOP 1 PalletNo, EntryDate
         FROM vGoodsIssue
-  )                                b  ON b.TrfNo = a.TrfNo AND b.rn = 1 AND b.EntryDate >= a.TrfDate
+       WHERE TrfNo = a.TrfNo AND EntryDate >= a.TrfDate
+       ORDER BY PalletNo DESC
+  )                                b
   LEFT JOIN vGoodsIssueplt          c  ON c.TrfNo = a.TrfNo AND c.EntryDate >= a.TrfDate
   LEFT JOIN GRNHeaderRF             d  ON d.TrfNo = a.TrfNo AND d.EntryDate >= a.TrfDate
   JOIN  BFLDATA..DataSettings       e  ON a.CostCodeTo = e.CostCodeTo
@@ -620,7 +631,9 @@ SELECT ROW_NUMBER() OVER (ORDER BY a.TrfNo, c.SrNo) SrNo,
    -- + AppendCommonFilters (Store / WithoutPallet / WithoutGin / WithoutGrn / Search), then:
  ORDER BY a.TrfDate, a.TrfNo;"),
 
-        new QueryEntry("Transfer/GIN/GRN History", "Summary Cards (Totals)", "vTransferDetail, vGoodsIssueplt, transferheader -- TransferGinGrnService.GetCountrySummaryOnPremAsync / GetCountrySummaryRegionalAsync (TransferSummarySql + GIN query)", @"
+        new QueryEntry("Transfer/GIN/GRN History", "Summary Cards (Totals)", "vTransferDetail, vGoodsIssueplt, transferheader, vGoodsIssue, GRNHeaderRF -- TransferGinGrnService.GetCountrySummaryOnPremAsync / GetCountrySummaryRegionalAsync (TransferSummarySql + GIN query when no Without Pallet/GIN/GRN/Search filter is active; FilteredSummarySql via an Eligible-TrfNo CTE when one is)", @"
+-- No Without Pallet/GIN/GRN/Search filter active (the default/fast path):
+
 -- Transfer stats (TransferSummarySql; {transferDetailTable} = [{dn}]..vTransferDetail on OnPremBackup, or plain vTransferDetail on the regional server for today)
 SELECT COUNT(DISTINCT TrfNo) AS TransferCount, ISNULL(SUM(Quantity),0) AS TransferQty
   FROM {transferDetailTable} WITH (NOLOCK)
@@ -628,51 +641,111 @@ SELECT COUNT(DISTINCT TrfNo) AS TransferCount, ISNULL(SUM(Quantity),0) AS Transf
    AND (@whCostCodeTo IS NULL OR CostCodeTo <> @whCostCodeTo)
    AND (@whLocCodeTo  IS NULL OR LocCodeTo  <> @whLocCodeTo);
 
--- GIN stats, OnPremBackup historical path (looped per DataName; {ginTable} = BFLDATA.dbo.vGoodsIssueplt for UAE, else [{dn}]..vGoodsIssueplt)
-SELECT COUNT(DISTINCT c.SrNo) AS GinCount, ISNULL(SUM(c.Qty),0) AS GinQty
-  FROM {ginTable} c WITH (NOLOCK)
- WHERE c.TrfNo IN (
-     SELECT TrfNo FROM [{dn}]..transferheader WITH (NOLOCK)
-      WHERE TrfDate >= @from AND TrfDate <= @to
- );
-
--- GIN stats, regional today-only path (GetCountrySummaryRegionalAsync; non-UAE)
+-- GIN stats, scoped directly by its own EntryDate -- no shop filter or TrfNo
+-- correlation at this whole-country level. Confirmed directly:
+-- select count(distinct srno),sum(qty) from bfldata..vgoodsissueplt
+-- where entrydate = '19/09/2026' and ShopIssue = 'BFLFLAGSHIPDXB'.
 SELECT COUNT(DISTINCT SrNo) AS GinCount, ISNULL(SUM(Qty),0) AS GinQty
-  FROM vgoodsissueplt WITH (NOLOCK)
- WHERE TrfNo IN (
-     SELECT TrfNo FROM transferheader WITH (NOLOCK)
-      WHERE TrfDate >= @from AND TrfDate <= @to
- );"),
+  FROM {ginTable} WITH (NOLOCK)
+ WHERE EntryDate >= @from AND EntryDate <= @to;
 
-        new QueryEntry("Transfer/GIN/GRN History", "By Country Breakdown", "vTransferDetail, vGoodsIssueplt, transferheader -- TransferGinGrnService.GetTransferSummaryAsync -> GetSummaryForCountryAsync (per-country loop of the same Summary Cards query pair, kept as separate rows instead of summed into one total)", @"
-SELECT COUNT(DISTINCT TrfNo) AS TransferCount, ISNULL(SUM(Quantity),0) AS TransferQty
-  FROM {transferDetailTable} WITH (NOLOCK)
- WHERE TrfDate >= @from AND TrfDate <= @to
-   AND (@whCostCodeTo IS NULL OR CostCodeTo <> @whCostCodeTo)
-   AND (@whLocCodeTo  IS NULL OR LocCodeTo  <> @whLocCodeTo);
+-- Any of Without Pallet/GIN/GRN/Search is active -- both metrics come from ONE
+-- Eligible-TrfNo CTE (same header/join/filter shape as the Detail Rows query
+-- above, via AppendCommonFilters), so the cards match the Detailed view exactly.
+-- GinSrNo/GinQty are carried straight through from the CTE's own correlated
+-- join (c.TrfNo = a.TrfNo AND c.EntryDate >= a.TrfDate) rather than re-derived
+-- via a bare 'TrfNo IN (...)' against {ginTable} afterward -- TrfNo values get
+-- reused over time, so an un-correlated re-query could pick up an unrelated
+-- GIN from a different occurrence of the same TrfNo (a real bug caught here:
+-- GIN Count/Qty stayed non-zero even with Without GIN checked, for exactly
+-- that reason):
+;WITH Eligible AS (
+    SELECT a.TrfNo, c.SrNo AS GinSrNo, c.Qty AS GinQty
+      FROM {transferHeaderTable} a WITH (NOLOCK)
+      LEFT JOIN {ginTable}                                        c ON c.TrfNo = a.TrfNo AND c.EntryDate >= a.TrfDate
+      LEFT JOIN {grnTable}                                        d ON d.TrfNo = a.TrfNo AND d.EntryDate >= a.TrfDate
+     WHERE a.TrfNo NOT LIKE 'FN%'
+       AND a.TrfDate >= @from AND a.TrfDate <= @to    -- dropped entirely when Search is active
+       AND (@costCodeTo   IS NULL OR a.CostCodeTo = @costCodeTo)    -- store-scoped
+       AND (@locCodeTo    IS NULL OR a.LocCodeTo  = @locCodeTo)
+       AND (@whCostCodeTo IS NULL OR a.CostCodeTo <> @whCostCodeTo) -- whole-country, warehouse-excluded
+       AND (@whLocCodeTo  IS NULL OR a.LocCodeTo  <> @whLocCodeTo)
+       -- + Without Pallet/GIN/GRN/Search filters (AppendCommonFilters)
+       -- (not deduped to DISTINCT TrfNo -- a transfer can fan out to several
+       -- GIN rows, same shape the Detail Rows query already returns)
+)
+SELECT
+    (SELECT COUNT(DISTINCT TrfNo) FROM Eligible) AS TransferCount,
+    ISNULL((SELECT SUM(Quantity) FROM {transferDetailTable} WITH (NOLOCK) WHERE TrfNo IN (SELECT DISTINCT TrfNo FROM Eligible)), 0) AS TransferQty,
+    (SELECT COUNT(DISTINCT GinSrNo) FROM Eligible WHERE GinSrNo IS NOT NULL) AS GinCount,
+    ISNULL((SELECT SUM(GinQty) FROM (SELECT DISTINCT GinSrNo, GinQty FROM Eligible WHERE GinSrNo IS NOT NULL) x), 0) AS GinQty;"),
 
-SELECT COUNT(DISTINCT c.SrNo) AS GinCount, ISNULL(SUM(c.Qty),0) AS GinQty
-  FROM {ginTable} c WITH (NOLOCK)
- WHERE c.TrfNo IN (
-     SELECT TrfNo FROM [{dn}]..transferheader WITH (NOLOCK)
-      WHERE TrfDate >= @from AND TrfDate <= @to
- );"),
+        new QueryEntry("Transfer/GIN/GRN History", "By Country Breakdown", "vTransferDetail, vGoodsIssueplt, transferheader, vGoodsIssue, GRNHeaderRF -- TransferGinGrnService.GetTransferSummaryAsync -> GetSummaryForCountryAsync (per-country loop of the same Summary Cards query pair above, kept as separate rows instead of summed into one total)", @"
+-- Same query pair as the Summary Cards (Totals) entry above, run once per
+-- country instead of summed into one grand total. See that entry for the full
+-- SQL, including the Eligible-TrfNo CTE used when Without Pallet/GIN/GRN/Search
+-- is active."),
 
-        new QueryEntry("Transfer/GIN/GRN History", "By Store Breakdown", "vTransferDetail, vGoodsIssueplt, transferheader -- TransferGinGrnService.GetStoreSummariesAsync / GetStoreSummaryAsync -> GetOneStoreSummaryAsync (StoreTransferSummarySql + GIN query)", @"
+        new QueryEntry("Transfer/GIN/GRN History", "By Store Breakdown", "vTransferDetail, vGoodsIssueplt, transferheader, vGoodsIssue, GRNHeaderRF -- TransferGinGrnService.GetStoreSummariesAsync / GetStoreSummaryAsync -> GetOneStoreSummaryAsync (StoreTransferSummarySql + GIN query when no filter is active; FilteredSummarySql via an Eligible-TrfNo CTE when one is)", @"
+-- No Without Pallet/GIN/GRN/Search filter active (the default/fast path):
+
 -- Transfer stats (StoreTransferSummarySql; {transferDetailTable} = [{s.DataName}]..vTransferDetail on OnPremBackup, or plain vTransferDetail on the regional server for today)
 SELECT COUNT(DISTINCT TrfNo) AS TransferCount, ISNULL(SUM(Quantity),0) AS TransferQty
   FROM {transferDetailTable} WITH (NOLOCK)
  WHERE TrfDate >= @from AND TrfDate <= @to
    AND CostCodeTo = @costCodeTo AND LocCodeTo = @locCodeTo;
 
--- GIN stats, scoped by the underlying transfer's own date + store (not the GIN's own EntryDate)
-SELECT COUNT(DISTINCT c.SrNo) AS GinCount, ISNULL(SUM(c.Qty),0) AS GinQty
-  FROM {ginTable} c WITH (NOLOCK)
- WHERE c.TrfNo IN (
-     SELECT TrfNo FROM {transferHeaderTable} WITH (NOLOCK)
-      WHERE TrfDate >= @from AND TrfDate <= @to
-        AND CostCodeTo = @costCodeTo AND LocCodeTo = @locCodeTo
- );"),
+-- GIN stats, scoped directly by its own EntryDate + ShopIssue -- confirmed
+-- directly: select count(distinct srno),sum(qty) from bfldata..vgoodsissueplt
+-- where entrydate = '19/09/2026' and ShopIssue = 'BFLFLAGSHIPDXB'.
+SELECT COUNT(DISTINCT SrNo) AS GinCount, ISNULL(SUM(Qty),0) AS GinQty
+  FROM {ginTable} WITH (NOLOCK)
+ WHERE EntryDate >= @from AND EntryDate <= @to
+   AND ShopIssue = @shopName;
+
+-- Any of Without Pallet/GIN/GRN/Search is active: same Eligible-TrfNo CTE
+-- approach as Summary Cards (Totals) above, store-scoped via @costCodeTo/@locCodeTo."),
+
+        new QueryEntry("Transfer/GIN/GRN History", "Division/Department/GroupCode/Brand Breakdown", "vTransferDetail, vGoodsIssueplt, transferheader, usa.dbo.USAPriority -- TransferGinGrnService.GetTransferBreakdownAsync / GetGinBreakdownAsync (TransferGroupCodeSql / GinGroupCodeSql, or FilteredGroupCodeSql via the same Eligible-TrfNo CTE when a filter is active) + one extra usa.dbo.USAPriority lookup", @"
+-- Popup shown when a summary stat card is clicked. Every chunk source returns
+-- plain (GroupCode, Qty) rows -- usa.dbo.USAPriority only exists on
+-- OnPremBackup, so it's joined in C# afterward for the merged, deduplicated
+-- set of codes actually seen, not per-query.
+
+-- Transfer breakdown, no filter active (TransferGroupCodeSql -- whole country, warehouse-excluded):
+SELECT vtd.groupcode AS GroupCode, ISNULL(SUM(vtd.Quantity),0) AS Qty
+  FROM {transferDetailTable} vtd WITH (NOLOCK)
+ WHERE vtd.TrfDate >= @from AND vtd.TrfDate <= @to
+   AND (@whCostCodeTo IS NULL OR vtd.CostCodeTo <> @whCostCodeTo)
+   AND (@whLocCodeTo  IS NULL OR vtd.LocCodeTo  <> @whLocCodeTo)
+ GROUP BY vtd.groupcode;
+
+-- GIN breakdown, no filter active (GinGroupCodeSql) -- GIN has no item-level
+-- GroupCode of its own, so this rolls up via the TrfNo set that has a GIN
+-- entered in [from,to], then that transfer's own vTransferDetail lines (an
+-- approximation -- same one ShipmentStatusService's own GIN-flow Division
+-- rollup already uses):
+SELECT vtd.groupcode AS GroupCode, ISNULL(SUM(vtd.Quantity),0) AS Qty
+  FROM {transferDetailTable} vtd WITH (NOLOCK)
+ WHERE vtd.TrfNo IN (
+     SELECT DISTINCT TrfNo FROM {ginTable} WITH (NOLOCK)
+      WHERE EntryDate >= @from AND EntryDate <= @to
+ )
+ GROUP BY vtd.groupcode;
+
+-- Any of Without Pallet/GIN/GRN/Search is active: same Eligible-TrfNo CTE as
+-- Summary Cards (Totals) (requiring c.SrNo IS NOT NULL too for the GIN
+-- breakdown specifically, so it doesn't include items from transfers with no
+-- GIN at all), then:
+SELECT vtd.groupcode AS GroupCode, ISNULL(SUM(vtd.Quantity),0) AS Qty
+  FROM {transferDetailTable} vtd WITH (NOLOCK)
+ WHERE vtd.TrfNo IN (SELECT DISTINCT TrfNo FROM Eligible)
+ GROUP BY vtd.groupcode;
+
+-- GroupCode -> Division/Department/Brand lookup, once for the merged set of codes:
+SELECT groupCode AS GroupCode, DivisionY AS Division, Department, Brand
+  FROM usa.dbo.USAPriority WITH (NOLOCK)
+ WHERE groupCode IN @codes;"),
 
         // ============================== Counting Completion Report ==============================
         new QueryEntry("Counting Completion Report", "Summary", "BFLDATA.dbo.BuildingCompletionSumm/Det, USA.dbo.UsaPurchase, Online.dbo.Photochecking -- ReportsService.GetCountingCompletionSummaryAsync", @"
