@@ -13,7 +13,7 @@
     <h2>Order Sheet Report</h2>
     <p>The order-sheet lines for one container, exactly as loaded — one row per PO / item / UPC.</p>
     <AuthorizeView Roles="Admin">
-        <p>Reads <code>usa.dbo.usaorgfile_LPM</code> — the table the allocation engine takes its PO lines from — with Division looked up per item from <code>datareporting.dbo.vupc_subclass</code> and Item Name from <code>usa.dbo.USAOrgFile</code>.</p>
+        <p>Reads <code>usa.dbo.usaorgfile_LPM</code> — the table the allocation engine takes its PO lines from — with Division looked up per item from <code>datareporting.dbo.vupc_subclass</code>, Item Name from <code>usa.dbo.USAOrgFile</code>, and EDI per container from <code>BFLDATA.dbo.ContColorHeader</code>.</p>
     </AuthorizeView>
 </div>
 
@@ -74,6 +74,7 @@
                             <th>Style</th>
                             <th>UPC</th>
                             <th>Created At</th>
+                            <th>EDI</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -92,6 +93,7 @@
                                 <td>@r.Style</td>
                                 <td style="font-family:Consolas, monospace">@r.UPC</td>
                                 <td>@(r.CreatedAt?.ToString("dd-MMM-yyyy HH:mm") ?? "")</td>
+                                <td style="@(string.Equals(r.EDI, "Y", StringComparison.OrdinalIgnoreCase) ? "background:#dcfce7; color:#14532d; font-weight:700;" : "")">@r.EDI</td>
                             </tr>
                         }
                     </tbody>
@@ -140,7 +142,7 @@
         {
             using var wb = new XLWorkbook();
             var ws = wb.AddWorksheet("Order Sheet");
-            string[] headers = { "Cont No", "PO No", "BOL", "Item Code", "Item Name", "Division", "Qty", "LPM", "LPM Dt", "Style", "UPC", "Created At" };
+            string[] headers = { "Cont No", "PO No", "BOL", "Item Code", "Item Name", "Division", "Qty", "LPM", "LPM Dt", "Style", "UPC", "Created At", "EDI" };
             for (int i = 0; i < headers.Length; i++) ws.Cell(1, i + 1).Value = headers[i];
             ws.Row(1).Style.Font.Bold = true;
 
@@ -159,6 +161,13 @@
                 ws.Cell(row, 10).Value = r.Style;
                 ws.Cell(row, 11).Value = r.UPC;
                 ws.Cell(row, 12).Value = r.CreatedAt;
+                ws.Cell(row, 13).Value = r.EDI;
+                if (string.Equals(r.EDI, "Y", StringComparison.OrdinalIgnoreCase))
+                {
+                    ws.Cell(row, 13).Style.Fill.BackgroundColor = XLColor.FromHtml("#DCFCE7");
+                    ws.Cell(row, 13).Style.Font.FontColor = XLColor.FromHtml("#14532D");
+                    ws.Cell(row, 13).Style.Font.Bold = true;
+                }
                 row++;
             }
             // Item codes and UPCs are long digit strings — text, or Excel turns them into 1.23E+12.

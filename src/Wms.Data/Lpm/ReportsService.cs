@@ -173,7 +173,8 @@ public class ReportsService(IOnPremConnectionResolver resolver)
     ///
     /// Division and ItemName are per-item lookups (OUTER APPLY TOP 1) rather than
     /// joins: vupc_subclass is UPC-grained and USAOrgFile is colour/size-grained,
-    /// so a plain join would multiply the LPM rows.
+    /// so a plain join would multiply the LPM rows. EDI is a per-container lookup
+    /// (BFLDATA.dbo.ContColorHeader) -- same value repeats on every line.
     /// </summary>
     public async Task<List<OrderSheetRow>> GetOrderSheetAsync(string contno, CancellationToken ct = default)
     {
@@ -193,7 +194,8 @@ public class ReportsService(IOnPremConnectionResolver resolver)
                    l.LPMDt,
                    l.Style,
                    l.UPC,
-                   CreatedAt = l.Created_At
+                   CreatedAt = l.Created_At,
+                   EDI       = e.EDI
               FROM usa.dbo.usaorgfile_LPM l WITH (NOLOCK)
               OUTER APPLY (SELECT TOP 1 v.Division
                              FROM datareporting.dbo.vupc_subclass v WITH (NOLOCK)
@@ -203,6 +205,9 @@ public class ReportsService(IOnPremConnectionResolver resolver)
                              FROM usa.dbo.USAOrgFile o WITH (NOLOCK)
                             WHERE o.ContNo = l.ContNo AND o.Itemcode = l.ItemCode
                               AND o.ItemName IS NOT NULL) n
+              OUTER APPLY (SELECT TOP 1 h.EDI
+                             FROM BFLDATA.dbo.ContColorHeader h WITH (NOLOCK)
+                            WHERE h.ContNo = l.ContNo) e
              WHERE l.ContNo = @c
              ORDER BY l.OraPONo, l.ItemCode, l.UPC",
             new { c = contno }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
