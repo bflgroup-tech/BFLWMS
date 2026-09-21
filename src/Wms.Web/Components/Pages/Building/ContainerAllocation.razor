@@ -42,7 +42,14 @@
             </select>
         </div>
         <div>
-            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">CONTAINER NO *</label>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">
+                CONTAINER NO *
+                <button type="button" @onclick="TogglePoLookup" disabled="@_busy"
+                        title="Don't know the container? Look it up from a PO number."
+                        style="float:right; background:none; border:none; padding:0; font-size:11px; font-weight:700; color:var(--text-link); cursor:pointer; text-decoration:underline">
+                    @(_showPoLookup ? "hide" : "find by PO")
+                </button>
+            </label>
             <input @bind="_contno" @bind:after="OnContnoChangedAsync" placeholder="e.g. AEINT6255" style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-family:var(--font-mono); font-size:13px; background:white;" />
         </div>
         <button class="aiwms-btn aiwms-btn-secondary" @onclick="LoadPoDataAsync" disabled="@(_busy || !CanLoad)">Load PO Data</button>
@@ -55,6 +62,67 @@
             <button class="aiwms-btn aiwms-btn-primary" disabled style="opacity:.5; cursor:not-allowed" title="Approved batch — locked">Process</button>
         }
     </div>
+
+    <!-- Row 1b: PO -> container lookup. Collapsed by default so it costs nothing
+         visually; opened from the "find by PO" link on the Container No label. -->
+    @if (_showPoLookup)
+    {
+        <div style="margin-top:12px; padding:12px; background:var(--bfl-grey-50); border:1px solid var(--border-default); border-radius:var(--r-sm)">
+            <div style="display:flex; gap:10px; align-items:end; flex-wrap:wrap">
+                <div style="min-width:200px">
+                    <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">PO NO</label>
+                    <input @bind="_poLookupInput" @bind:event="oninput" @onkeydown="OnPoLookupKeyDown"
+                           placeholder="e.g. 487522" disabled="@_poLookupBusy"
+                           style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-family:var(--font-mono); font-size:13px; background:white;" />
+                </div>
+                <button class="aiwms-btn aiwms-btn-secondary" @onclick="FindContainersByPoAsync"
+                        disabled="@(_poLookupBusy || string.IsNullOrWhiteSpace(_poLookupInput))">
+                    @(_poLookupBusy ? "Searching..." : "Find Container")
+                </button>
+                <span style="font-size:11px; color:var(--text-secondary); max-width:520px">
+                    Exact PO match against <code>usa.dbo.usaorgfile_LPM</code> — the same source Load PO Data reads,
+                    so it finds containers that have not been counted yet.
+                </span>
+            </div>
+
+            @if (!string.IsNullOrEmpty(_poLookupMessage))
+            {
+                <div style="margin-top:10px; font-size:12px; color:@(_poLookupIsError ? "var(--s-low)" : "var(--text-secondary)")">@_poLookupMessage</div>
+            }
+
+            @if (_poMatches.Count > 0)
+            {
+                <table class="aiwms-table aiwms-table-dense" style="margin-top:10px; font-size:12px; width:auto; min-width:520px">
+                    <thead>
+                        <tr>
+                            <th>Cont No</th>
+                            <th style="text-align:right">Lines</th>
+                            <th style="text-align:right">PO Qty</th>
+                            <th>LPM Dt</th>
+                            <th>Receipt Dt</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var m in _poMatches)
+                        {
+                            <tr>
+                                <td style="font-family:var(--font-mono)">@m.ContNo</td>
+                                <td style="text-align:right">@m.Lines.ToString("N0")</td>
+                                <td style="text-align:right">@m.Qty.ToString("N0")</td>
+                                <td>@(m.LpmDt?.ToString("dd/MM/yyyy") ?? "")</td>
+                                <td>@(m.ReceiptDt?.ToString("dd/MM/yyyy") ?? "")</td>
+                                <td>
+                                    <button class="aiwms-btn aiwms-btn-primary" style="padding:4px 10px; font-size:11px"
+                                            @onclick="() => UsePoMatchAsync(m)" disabled="@_busy">Use</button>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+        </div>
+    }
 
     <!-- Row 2: Allocation Countries (multi-select) + Processed Contnos dropdown -->
     <div style="display:grid; grid-template-columns: 2fr 1fr 200px; gap:12px; align-items:end; margin-top:12px">
@@ -1001,6 +1069,14 @@
     private string _warehouse = "";
     private string _contno = "";
     private string _runOption = "FillMinMinPlusOthers";
+
+    // PO -> container lookup (the "find by PO" panel beside Container No)
+    private bool _showPoLookup;
+    private bool _poLookupBusy;
+    private bool _poLookupIsError;
+    private string _poLookupInput = "";
+    private string _poLookupMessage = "";
+    private List<PoContainerMatch> _poMatches = new();
     // All four options default ON — this is how the container run is actually
     // done day to day, and having to re-tick three of them on every page load
     // was a reliable way to process a container with the wrong settings.
@@ -1312,6 +1388,72 @@
         // order's AllocationCountry.
         await ApplyContainerAllocCountriesAsync();
         await RefreshStatusAsync();
+    }
+
+    // ---------- PO -> container lookup ----------
+    private void TogglePoLookup()
+    {
+        _showPoLookup = !_showPoLookup;
+        if (!_showPoLookup) ClearPoLookup();
+    }
+
+    private void ClearPoLookup()
+    {
+        _poMatches = new();
+        _poLookupMessage = "";
+        _poLookupIsError = false;
+    }
+
+    private async Task OnPoLookupKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter" && !_poLookupBusy && !string.IsNullOrWhiteSpace(_poLookupInput))
+            await FindContainersByPoAsync();
+    }
+
+    private async Task FindContainersByPoAsync()
+    {
+        _poLookupBusy = true;
+        ClearPoLookup();
+        await InvokeAsync(StateHasChanged);
+        try
+        {
+            var po = _poLookupInput.Trim();
+            _poMatches = await Svc.FindContainersByPoAsync(po);
+
+            if (_poMatches.Count == 0)
+            {
+                _poLookupIsError = true;
+                _poLookupMessage = $"No container in usaorgfile_LPM carries PO {po}.";
+            }
+            else if (_poMatches.Count == 1)
+            {
+                // The overwhelmingly common case — don't make the user click "Use"
+                // on a single row just to confirm what the query already decided.
+                await UsePoMatchAsync(_poMatches[0]);
+            }
+            else
+            {
+                _poLookupMessage = $"PO {po} spans {_poMatches.Count} containers — pick one.";
+            }
+        }
+        catch (Exception ex)
+        {
+            _poLookupIsError = true;
+            _poLookupMessage = $"Lookup failed: {ex.Message}";
+        }
+        finally { _poLookupBusy = false; }
+    }
+
+    private async Task UsePoMatchAsync(PoContainerMatch m)
+    {
+        _contno = m.ContNo;
+        // Same follow-up work as typing the container by hand: narrow the
+        // Allocation Countries to the order's AllocationCountry and refresh the
+        // processed/approved status badge.
+        await OnContnoChangedAsync();
+        _showPoLookup = false;
+        ClearPoLookup();
+        ShowInfo($"Container {m.ContNo} selected from PO {m.OraPONo} ({m.Qty:N0} pcs on {m.Lines:N0} line(s)).");
     }
 
     private async Task RefreshStatusAsync()

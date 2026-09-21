@@ -13,6 +13,20 @@ public record PoDataRow(
     string?   DestCountry);
 
 /// <summary>
+/// One container carrying a given PO — the result of the "find by PO" lookup on
+/// the Container Allocation page. A PO almost always sits on exactly one
+/// container, but nothing in usaorgfile_LPM enforces that, so the lookup returns
+/// every match and lets the user pick.
+/// </summary>
+public record PoContainerMatch(
+    string    ContNo,
+    string?   OraPONo,
+    int       Lines,
+    int       Qty,
+    DateTime? LpmDt,
+    DateTime? ReceiptDt);
+
+/// <summary>
 /// Outcome of the Phase-1 validation. Each check that ran produces a step
 /// entry. Ok = true means every step passed; Phase-2 process can then start.
 /// </summary>
