@@ -10,6 +10,7 @@
 @using Wms.Core
 @inject IDbContextFactory<WmsDbContext> DbFactory
 @inject BuildingService Build
+@inject TransferGinGrnService TransferGinGrnSvc
 @inject ICurrentUser Me
 @inject ISnackbar Snack
 @inject IMemoryCache Cache
@@ -175,7 +176,7 @@
         <div style="overflow-x:auto">
         <table class="aiwms-table aiwms-table-dense">
             <thead>
-                <tr><th style="width:200px">Username</th><th style="width:160px">Roles</th><th>Menu Access</th><th>Country Access</th><th>Section Access</th></tr>
+                <tr><th style="width:200px">Username</th><th style="width:160px">Roles</th><th>Menu Access</th><th>Country Access</th><th>Section Access</th><th>Store Access</th></tr>
             </thead>
             <tbody>
                 @foreach (var u in FilteredAccessUsers())
@@ -186,6 +187,7 @@
                         <td style="word-break:break-word; font-size:12px">@(_allMenuGrants.TryGetValue(u.Username, out var mk) && mk.Count > 0 ? string.Join(", ", mk) : "(none)")</td>
                         <td style="word-break:break-word; font-size:12px">@(_allCountryGrants.TryGetValue(u.Username, out var cg) && cg.Count > 0 ? string.Join(", ", cg) : "(none)")</td>
                         <td style="word-break:break-word; font-size:12px">@(_allSectionGrants.TryGetValue(u.Username, out var sk) && sk.Count > 0 ? string.Join(", ", sk) : "(none)")</td>
+                        <td style="word-break:break-word; font-size:12px">@(_allStoreGrants.TryGetValue(u.Username, out var stg) && stg.Count > 0 ? string.Join(", ", stg) : "(unrestricted)")</td>
                     </tr>
                 }
             </tbody>
@@ -196,7 +198,7 @@
 </div>
 
 <div class="aiwms-section" style="background:#FFF9E6; border:1px solid #F0E0A0;">
-    <div class="aiwms-card-header">Copy Access — replaces the target user's Menu + Country + Section Access with the source user's</div>
+    <div class="aiwms-card-header">Copy Access — replaces the target user's Menu + Country + Section + Store Access with the source user's</div>
     <div style="display:flex; gap:10px; align-items:end; flex-wrap:wrap">
         <div>
             <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COPY FROM</label>
@@ -371,6 +373,63 @@
     }
 </div>
 
+<div class="aiwms-section" style="background:#E6F0FF; border:1px solid #A9C6F0;">
+    <div class="aiwms-card-header">Store Access — restricts the STORE dropdown on Transfer/GIN/GRN History to just these stores. Leave empty for no restriction (sees every store their Country Access already allows). Admin role bypasses this list.</div>
+    <div style="display:flex; gap:10px; align-items:end; margin-bottom:12px; flex-wrap:wrap">
+        <div>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">USER</label>
+            <select @bind="_storeUser" @bind:after="LoadStoreGrantsAsync" style="padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white; min-width:280px">
+                <option value="">-- Select user --</option>
+                @foreach (var u in _users) { <option value="@u.Username">@u.Username</option> }
+            </select>
+        </div>
+        @if (!string.IsNullOrEmpty(_storeUser))
+        {
+            <div>
+                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">COUNTRY</label>
+                <select @bind="_storeCountry" @bind:after="LoadStoresForCountryAsync" style="padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white; min-width:200px">
+                    <option value="">-- Select country --</option>
+                    @foreach (var c in _storeCountries) { <option value="@c">@c</option> }
+                </select>
+            </div>
+            <button class="aiwms-btn aiwms-btn-primary" @onclick="SaveStoreGrantsAsync">Save Store Access</button>
+            <span style="font-size:12px; color:var(--text-secondary)">@_storeGrants.Count store(s) granted (all countries)</span>
+        }
+    </div>
+
+    @if (!string.IsNullOrEmpty(_storeUser) && !string.IsNullOrEmpty(_storeCountry))
+    {
+        var allOnS = _storesForCountry.Count > 0 && _storesForCountry.All(s => _storeGrants.Contains(s));
+        <div style="border:1px solid var(--border-default); border-radius:var(--r-sm); padding:10px 14px; margin-bottom:10px">
+            <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px">
+                <strong style="font-size:13px">Stores in @_storeCountry</strong>
+                @if (_storesForCountry.Count > 0)
+                {
+                    <label style="display:flex; align-items:center; gap:6px; font-size:12px; cursor:pointer">
+                        <input type="checkbox" checked="@allOnS" @onchange="@(e => ToggleAllStoresForCountry((bool)e.Value!))" /> Select all
+                    </label>
+                }
+            </div>
+            @if (_storesForCountry.Count == 0)
+            {
+                <div style="font-size:12px; color:var(--text-secondary);">No stores found for @_storeCountry.</div>
+            }
+            else
+            {
+                <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:6px 14px">
+                    @foreach (var s in _storesForCountry)
+                    {
+                        <label style="display:flex; align-items:center; gap:6px; font-size:13px; cursor:pointer">
+                            <input type="checkbox" checked="@_storeGrants.Contains(s)" @onchange="@(e => ToggleStore(s, (bool)e.Value!))" />
+                            <span>@s</span>
+                        </label>
+                    }
+                </div>
+            }
+        </div>
+    }
+</div>
+
 @code {
     // Small icon button for section headers — glyph reflects the action the click performs
     // (− to minimize, a checklist icon to expand), hover shows "Minimize"/"Expand" via the
@@ -416,6 +475,7 @@
     private List<WmsRole> _roles = new();
     private List<WmsWHMaster> _whs = new();
     private List<string> _countries = new();
+    private List<string> _storeCountries = new();
     private string _newUser = "", _newRole = "WHAssociate", _newCountry = "", _newWarehouse = "";
     private string? _err;
 
@@ -427,6 +487,11 @@
         _whs   = await db.WHMasters.AsNoTracking().Where(w => w.Active).OrderBy(w => w.Country).ThenBy(w => w.Warehouse).ToListAsync();
         try { _countries = await Build.GetAllSimCountriesAsync(); }
         catch { _countries = _whs.Select(w => w.Country).Distinct().OrderBy(c => c).ToList(); }
+
+        // Store Access needs real SIM countries only (TransferGinGrnSvc.GetStoresAsync has
+        // no stores for the BFLGroup/Online pseudo-countries inserted below) — snapshot
+        // before those inserts mutate _countries.
+        _storeCountries = new List<string>(_countries);
 
         // BFLGroup is the "all countries at once" pseudo-country used by OTS for PO
         // Allocation — it has no bfldata.DataSettings row, so the SIM list never
@@ -529,6 +594,8 @@
         db.UserMenuAccess.RemoveRange(db.UserMenuAccess.Where(a => a.Username == username));
         try { db.UserSectionAccess.RemoveRange(db.UserSectionAccess.Where(a => a.Username == username)); }
         catch { /* dbo.Wms_UserSectionAccess not migrated on this environment yet */ }
+        try { db.UserStoreAccess.RemoveRange(db.UserStoreAccess.Where(a => a.Username == username)); }
+        catch { /* dbo.Wms_UserStoreAccess not migrated on this environment yet */ }
         await db.SaveChangesAsync();
 
         db.Users.Remove(u);
@@ -536,10 +603,12 @@
         Cache.Remove(AuthStateCurrentUser.ProfileCacheKey(username));
         Cache.Remove(AuthStateCurrentUser.CountryAccessCacheKey(username));
         Cache.Remove(AuthStateCurrentUser.SectionAccessCacheKey(username));
+        Cache.Remove(AuthStateCurrentUser.StoreAccessCacheKey(username));
 
         _menuSelectedUsers.Remove(username);
         if (_countryUser == username) { _countryUser = ""; _countryGrants.Clear(); }
         if (_sectionUser == username) { _sectionUser = ""; _sectionGrants.Clear(); }
+        if (_storeUser == username) { _storeUser = ""; _storeCountry = ""; _storesForCountry.Clear(); _storeGrants.Clear(); }
         if (_showAllAccess) await RefreshAllAccessSnapshotAsync();
 
         Snack.Add($"{username} removed.", Severity.Success);
@@ -605,9 +674,10 @@
     private Dictionary<string, List<string>> _allMenuGrants = new(StringComparer.OrdinalIgnoreCase);
     private Dictionary<string, List<string>> _allCountryGrants = new(StringComparer.OrdinalIgnoreCase);
     private Dictionary<string, List<string>> _allSectionGrants = new(StringComparer.OrdinalIgnoreCase);
+    private Dictionary<string, List<string>> _allStoreGrants = new(StringComparer.OrdinalIgnoreCase);
 
-    // Matches username, role, or any granted menu/country/section name — so typing e.g.
-    // a report's display name surfaces every user who currently has it granted.
+    // Matches username, role, or any granted menu/country/section/store name — so typing
+    // e.g. a report's display name surfaces every user who currently has it granted.
     private List<WmsUser> FilteredAccessUsers()
     {
         var term = _accessSearch.Trim();
@@ -617,7 +687,8 @@
             u.UserRoles.Any(r => Matches(r.RoleCode, term)) ||
             (_allMenuGrants.TryGetValue(u.Username, out var mk) && mk.Any(k => Matches(k, term))) ||
             (_allCountryGrants.TryGetValue(u.Username, out var cg) && cg.Any(c => Matches(c, term))) ||
-            (_allSectionGrants.TryGetValue(u.Username, out var sk) && sk.Any(s => Matches(s, term)))
+            (_allSectionGrants.TryGetValue(u.Username, out var sk) && sk.Any(s => Matches(s, term))) ||
+            (_allStoreGrants.TryGetValue(u.Username, out var stg) && stg.Any(s => Matches(s, term)))
         ).ToList();
     }
 
@@ -664,6 +735,13 @@
                     StringComparer.OrdinalIgnoreCase);
         }
         catch { /* dbo.Wms_UserSectionAccess not migrated yet — leave the overview column blank rather than failing the whole snapshot */ }
+        try
+        {
+            var storeRows = await db.UserStoreAccess.AsNoTracking().ToListAsync();
+            _allStoreGrants = storeRows.GroupBy(g => g.Username, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(g => g.Key, g => g.Select(x => x.StoreName).OrderBy(x => x).ToList(), StringComparer.OrdinalIgnoreCase);
+        }
+        catch { /* dbo.Wms_UserStoreAccess not migrated yet — leave the overview column blank rather than failing the whole snapshot */ }
     }
 
     // ---------------- Copy access ----------------
@@ -719,14 +797,33 @@
         }
         catch { sourceSectionSet.Clear(); }
 
+        // Same isolation as Section above — dbo.Wms_UserStoreAccess may not be migrated
+        // yet on every environment.
+        try
+        {
+            var sourceStores = await db.UserStoreAccess.AsNoTracking()
+                .Where(a => a.Username == _copyFromUser).Select(a => a.StoreName).ToListAsync();
+            var sourceStoreSet = sourceStores.ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var targetStoreRows = await db.UserStoreAccess.Where(a => a.Username == _copyToUser).ToListAsync();
+            var targetStores = targetStoreRows.Select(a => a.StoreName).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            foreach (var s in sourceStoreSet.Where(s => !targetStores.Contains(s)))
+                db.UserStoreAccess.Add(new WmsUserStoreAccess {
+                    Username = _copyToUser, StoreName = s, GrantedTS = DateTime.Now, GrantedBy = Me.Name });
+            foreach (var row in targetStoreRows.Where(r => !sourceStoreSet.Contains(r.StoreName)))
+                db.UserStoreAccess.Remove(row);
+        }
+        catch { /* dbo.Wms_UserStoreAccess not migrated yet — skip the store copy only */ }
+
         await db.SaveChangesAsync();
         Cache.Remove(AuthStateCurrentUser.ProfileCacheKey(_copyToUser));
         Cache.Remove(AuthStateCurrentUser.CountryAccessCacheKey(_copyToUser));
         Cache.Remove(AuthStateCurrentUser.SectionAccessCacheKey(_copyToUser));
+        Cache.Remove(AuthStateCurrentUser.StoreAccessCacheKey(_copyToUser));
 
         // Keep any currently-open per-user panels in sync with what was just copied.
         if (_countryUser == _copyToUser) await LoadCountryGrantsAsync();
         if (_sectionUser == _copyToUser) await LoadSectionGrantsAsync();
+        if (_storeUser == _copyToUser) await LoadStoreGrantsAsync();
         if (_showAllAccess) await RefreshAllAccessSnapshotAsync();
 
         Snack.Add($"Copied access from {_copyFromUser} to {_copyToUser} ({sourceMenuSet.Count} menu grants, {sourceCountrySet.Count} countries, {sourceSectionSet.Count} sections).", Severity.Success);
@@ -900,6 +997,86 @@
             // db/install_wms_user_section_access.sql. Show it as a Snackbar instead of
             // crashing the whole Blazor circuit.
             Snack.Add($"Couldn't save section access — has db/install_wms_user_section_access.sql been run? ({ex.Message})", Severity.Error);
+        }
+    }
+
+    // ---------------- Store access ----------------
+    // Grants span every country (accumulated in _storeGrants across country switches,
+    // not reset when _storeCountry changes), only reloaded fresh when _storeUser changes.
+    private string _storeUser = "";
+    private string _storeCountry = "";
+    private List<string> _storesForCountry = new();
+    private HashSet<string> _storeGrants = new(StringComparer.OrdinalIgnoreCase);
+
+    private async Task LoadStoreGrantsAsync()
+    {
+        _storeCountry = ""; _storesForCountry = new();
+        _storeGrants = new(StringComparer.OrdinalIgnoreCase);
+        if (string.IsNullOrEmpty(_storeUser)) return;
+        try
+        {
+            await using var db = await DbFactory.CreateDbContextAsync();
+            var stores = await db.UserStoreAccess.AsNoTracking()
+                .Where(a => a.Username == _storeUser)
+                .Select(a => a.StoreName).ToListAsync();
+            _storeGrants = new HashSet<string>(stores, StringComparer.OrdinalIgnoreCase);
+        }
+        catch (Exception ex)
+        {
+            // Most likely dbo.Wms_UserStoreAccess hasn't been created yet — see
+            // db/install_wms_user_store_access.sql. Show it as a Snackbar instead of
+            // crashing the whole Blazor circuit.
+            Snack.Add($"Couldn't load store access — has db/install_wms_user_store_access.sql been run? ({ex.Message})", Severity.Error);
+        }
+    }
+
+    private async Task LoadStoresForCountryAsync()
+    {
+        _storesForCountry = new();
+        if (string.IsNullOrEmpty(_storeCountry)) return;
+        try { _storesForCountry = await TransferGinGrnSvc.GetStoresAsync(_storeCountry); }
+        catch (Exception ex) { Snack.Add($"Failed to load stores for {_storeCountry}: {ex.Message}", Severity.Error); }
+    }
+
+    private void ToggleStore(string store, bool on)
+    {
+        if (on) _storeGrants.Add(store); else _storeGrants.Remove(store);
+    }
+
+    // Scoped to the CURRENTLY SHOWN country's stores only — doesn't touch grants for
+    // other countries the admin already set before switching the country dropdown.
+    private void ToggleAllStoresForCountry(bool on)
+    {
+        foreach (var s in _storesForCountry)
+        {
+            if (on) _storeGrants.Add(s); else _storeGrants.Remove(s);
+        }
+    }
+
+    private async Task SaveStoreGrantsAsync()
+    {
+        if (string.IsNullOrEmpty(_storeUser)) return;
+        try
+        {
+            await using var db = await DbFactory.CreateDbContextAsync();
+            var existing = await db.UserStoreAccess.Where(a => a.Username == _storeUser).ToListAsync();
+            var existingStores = existing.Select(e => e.StoreName).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            foreach (var s in _storeGrants.Where(s => !existingStores.Contains(s)))
+                db.UserStoreAccess.Add(new WmsUserStoreAccess {
+                    Username = _storeUser, StoreName = s,
+                    GrantedTS = DateTime.Now, GrantedBy = Me.Name });
+            foreach (var e in existing.Where(e => !_storeGrants.Contains(e.StoreName)))
+                db.UserStoreAccess.Remove(e);
+            await db.SaveChangesAsync();
+            // Cache-based (not claims-based), so this takes effect on the user's next page
+            // load — no re-login needed.
+            Cache.Remove(AuthStateCurrentUser.StoreAccessCacheKey(_storeUser));
+            if (_showAllAccess) await RefreshAllAccessSnapshotAsync();
+            Snack.Add($"Store access saved for {_storeUser} ({_storeGrants.Count} stores).", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snack.Add($"Couldn't save store access — has db/install_wms_user_store_access.sql been run? ({ex.Message})", Severity.Error);
         }
     }
 }
