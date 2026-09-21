@@ -4,14 +4,17 @@ namespace Wms.Web.Hosting;
 
 /// <summary>
 /// Fires EVERY DAY at 08:15 GST (Arabian Standard Time = UTC+04:00) — a fixed
-/// 15-minute offset after IncreffSohFromGcpBatchService, so the compare reads a
-/// freshly-refreshed dbo.LPM_ECOM_INCREFF_SOH rather than yesterday's data.
+/// offset after IncreffSohFromGcpNewBatchService's 08:05 GST fire, so the
+/// compare reads a freshly-refreshed dbo.LPM_ECOM_INCREFF_SOH_NEW rather than
+/// yesterday's data. (Depended on IncreffSohFromGcpBatchService's 08:00 GST
+/// pull into dbo.LPM_ECOM_INCREFF_SOH before the compare switched to the newer
+/// Silver-tier source.)
 ///
 /// The offset is deliberate, not a wait-chain: this service does not wait on the
 /// INCREFF pull. It checks readiness before firing instead, because the catch-up
 /// path (an app restart later in the day) makes the offset meaningless — every
 /// batch's "crossed my fire time and haven't run today" branch would otherwise
-/// trigger in the same second, racing IncreffSohFromGCP rather than following it.
+/// trigger in the same second, racing IncreffSohFromGCP_New rather than following it.
 /// When that job hasn't succeeded today the fire is DEFERRED (lastFireGstDate is
 /// left unset) and retried on the next wake, at most an hour later. Same deferral
 /// applies if IsSourceDataHealthyAsync finds RACKS/USA source tables anomalously
@@ -38,7 +41,7 @@ public class IncreffMfcsSohCompareBatchService(IServiceProvider sp, ILogger<Incr
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        log.LogInformation("IncreffMfcsSohCompareBatchService started. Fire: daily 08:15 GST (after IncreffSohFromGCP).");
+        log.LogInformation("IncreffMfcsSohCompareBatchService started. Fire: daily 08:15 GST (after IncreffSohFromGCP_New).");
         DateTime? lastFireGstDate = null;
 
         while (!stoppingToken.IsCancellationRequested)
@@ -93,9 +96,9 @@ public class IncreffMfcsSohCompareBatchService(IServiceProvider sp, ILogger<Incr
             return true;
         }
 
-        if (!await jobs.HasSuccessfulRunTodayAsync(IncreffSohFromGcpService.JobName, ct))
+        if (!await jobs.HasSuccessfulRunTodayAsync(IncreffSohFromGcpNewService.JobName, ct))
         {
-            log.LogWarning("IncreffMfcsSohCompareBatchService: IncreffSohFromGCP has not succeeded today yet — deferring, will retry on the next wake.");
+            log.LogWarning("IncreffMfcsSohCompareBatchService: IncreffSohFromGCP_New has not succeeded today yet — deferring, will retry on the next wake.");
             return false;
         }
 

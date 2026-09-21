@@ -302,6 +302,8 @@
             }
 
             // 8. IncreffSohFromGCP — daily 08:00 GST (Wms.Web.Hosting.IncreffSohFromGcpBatchService).
+            //    No longer feeds IncreffMfcsSohCompare (see 8a) — kept as a reference/fallback
+            //    source, still writing dbo.LPM_ECOM_INCREFF_SOH.
             var increff = await Jobs.GetSingleRowAsync(IncreffSohFromGcpService.JobName);
             list.Add(new JobVm(
                 IncreffSohFromGcpService.JobName, "Daily 08:00", null,
@@ -310,8 +312,19 @@
                 active => ToggleSingleAsync(IncreffSohFromGcpService.JobName, active),
                 new() { ("Refresh Now", EventCallback.Factory.Create(this, RefreshIncreffNowAsync)) }));
 
-            // 9. IncreffMfcsSohCompare — daily 08:15 GST, a fixed 15-minute offset after
-            //    IncreffSohFromGCP (not a wait-chain — Wms.Web.Hosting.IncreffMfcsSohCompareBatchService
+            // 8a. IncreffSohFromGCP_New — daily 08:05 GST, pulls from the newer BigQuery
+            //     source into dbo.LPM_ECOM_INCREFF_SOH_NEW, which IncreffMfcsSohCompare (9)
+            //     now reads for IncreffSOH. See Wms.Web.Hosting.IncreffSohFromGcpNewBatchService.
+            var increffNew = await Jobs.GetSingleRowAsync(IncreffSohFromGcpNewService.JobName);
+            list.Add(new JobVm(
+                IncreffSohFromGcpNewService.JobName, "Daily 08:05", null,
+                increffNew.IsActive, increffNew.UpdatedTS, increffNew.UpdatedBy,
+                increffNew.IsActive ? NextDailyFireGst(new(8, 5, 0)) : null,
+                active => ToggleSingleAsync(IncreffSohFromGcpNewService.JobName, active),
+                new() { ("Refresh Now", EventCallback.Factory.Create(this, RefreshIncreffNewNowAsync)) }));
+
+            // 9. IncreffMfcsSohCompare — daily 08:15 GST, a fixed offset after
+            //    IncreffSohFromGCP_New (not a wait-chain — Wms.Web.Hosting.IncreffMfcsSohCompareBatchService
             //    defers and retries hourly if that job hasn't succeeded yet today).
             var compare = await Jobs.GetSingleRowAsync(IncreffMfcsSohCompareService.JobName);
             list.Add(new JobVm(
@@ -320,18 +333,6 @@
                 compare.IsActive ? NextDailyFireGst(new(8, 15, 0)) : null,
                 active => ToggleSingleAsync(IncreffMfcsSohCompareService.JobName, active),
                 new() { ("Refresh Now", EventCallback.Factory.Create(this, RefreshIncreffCompareNowAsync)) }));
-
-            // 9a. IncreffSohFromGCP_New — daily 08:05 GST, parallel/validation pull from a
-            //     newer BigQuery source into dbo.LPM_ECOM_INCREFF_SOH_NEW (a separate table —
-            //     doesn't feed IncreffMfcsSohCompare or the live report). See
-            //     Wms.Web.Hosting.IncreffSohFromGcpNewBatchService.
-            var increffNew = await Jobs.GetSingleRowAsync(IncreffSohFromGcpNewService.JobName);
-            list.Add(new JobVm(
-                IncreffSohFromGcpNewService.JobName, "Daily 08:05", null,
-                increffNew.IsActive, increffNew.UpdatedTS, increffNew.UpdatedBy,
-                increffNew.IsActive ? NextDailyFireGst(new(8, 5, 0)) : null,
-                active => ToggleSingleAsync(IncreffSohFromGcpNewService.JobName, active),
-                new() { ("Refresh Now", EventCallback.Factory.Create(this, RefreshIncreffNewNowAsync)) }));
 
             // 10. GenerateEAN13 — hourly (see Wms.Web.Hosting.GenerateEan13BatchService).
             //     Backfills DATAREPORTING.dbo.UPC_SUBCLASS.EAN13 for rows with an

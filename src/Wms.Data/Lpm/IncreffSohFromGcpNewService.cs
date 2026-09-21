@@ -24,23 +24,26 @@ public record IncreffItemLevelSohGcpRow(
 /// BinStatus) rather than collapsing straight to a single SOH per item.
 ///
 /// Writes to dbo.LPM_ECOM_INCREFF_SOH_NEW on LPMSIM (on-prem), a SEPARATE
-/// table from dbo.LPM_ECOM_INCREFF_SOH — deliberately parallel/validation
-/// only. The live ECOM Stock Variance Report (EcomStockVarianceReportService /
-/// IncreffMfcsSohCompareService) still reads dbo.LPM_ECOM_INCREFF_SOH, so this
-/// job cannot affect it. "Channel" in the source is NOT the Country code —
-/// observed values are 'BFL' (UAE) and 'BFL-KSA' (KSA), mapped in SourceQuery.
-/// An unrecognized Channel value passes through as-is (not silently dropped)
-/// so it stays visible for investigation rather than disappearing.
+/// table from the older dbo.LPM_ECOM_INCREFF_SOH (still populated by
+/// IncreffSohFromGcpService, kept as a reference/fallback). This was
+/// originally a parallel/validation-only job; after validating against the
+/// old source, IncreffMfcsSohCompareService's Increff CTE now reads FROM
+/// THIS table (filtered to ItemType = 'BFL_REGULAR'), so this job's daily run
+/// feeds the live ECOM Stock Variance Report. "Channel" in the source is NOT
+/// the Country code — observed values are 'BFL' (UAE) and 'BFL-KSA' (KSA),
+/// mapped in SourceQuery. An unrecognized Channel value passes through as-is
+/// (not silently dropped) so it stays visible for investigation rather than
+/// disappearing.
 ///
 /// Refresh is TRUNCATE + bulk-insert of the WHOLE table every run (unlike
 /// IncreffSohFromGcpService's per-country delete — this table has no country
 /// split to preserve, per user request), all inside one transaction so a
 /// mid-run failure leaves the prior snapshot intact.
 ///
-/// Fires daily via IncreffSohFromGcpNewBatchService (Hosting/), same pattern
-/// as IncreffSohFromGcpBatchService but offset to 08:05 GST so it doesn't
-/// contend with the existing 08:00/08:15 GST pipeline while still pulling a
-/// comparable "yesterday GST" snapshot for validation against it.
+/// Fires daily via IncreffSohFromGcpNewBatchService (Hosting/) at 08:05 GST —
+/// IncreffMfcsSohCompareBatchService follows at 08:15 GST and depends on this
+/// run having succeeded today, same relationship IncreffSohFromGcpBatchService
+/// used to have with it.
 /// </summary>
 public class IncreffSohFromGcpNewService(
     IOnPremConnectionResolver resolver, IOptions<GcpBigQueryOptions> gcpOpts, IConfiguration configuration)
