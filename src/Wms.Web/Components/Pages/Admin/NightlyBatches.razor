@@ -12,6 +12,7 @@
 @inject OtsWeeklyService OtsJob
 @inject ScheduledJobService Jobs
 @inject IncreffSohFromGcpService IncreffSoh
+@inject IncreffSohFromGcpNewService IncreffSohNew
 @inject IncreffMfcsSohCompareService IncreffCompare
 @inject GenerateEan13Service Ean13
 @inject OtsPoAllocationService Ots
@@ -320,6 +321,18 @@
                 active => ToggleSingleAsync(IncreffMfcsSohCompareService.JobName, active),
                 new() { ("Refresh Now", EventCallback.Factory.Create(this, RefreshIncreffCompareNowAsync)) }));
 
+            // 9a. IncreffSohFromGCP_New — daily 08:05 GST, parallel/validation pull from a
+            //     newer BigQuery source into dbo.LPM_ECOM_INCREFF_SOH_NEW (a separate table —
+            //     doesn't feed IncreffMfcsSohCompare or the live report). See
+            //     Wms.Web.Hosting.IncreffSohFromGcpNewBatchService.
+            var increffNew = await Jobs.GetSingleRowAsync(IncreffSohFromGcpNewService.JobName);
+            list.Add(new JobVm(
+                IncreffSohFromGcpNewService.JobName, "Daily 08:05", null,
+                increffNew.IsActive, increffNew.UpdatedTS, increffNew.UpdatedBy,
+                increffNew.IsActive ? NextDailyFireGst(new(8, 5, 0)) : null,
+                active => ToggleSingleAsync(IncreffSohFromGcpNewService.JobName, active),
+                new() { ("Refresh Now", EventCallback.Factory.Create(this, RefreshIncreffNewNowAsync)) }));
+
             // 10. GenerateEAN13 — hourly (see Wms.Web.Hosting.GenerateEan13BatchService).
             //     Backfills DATAREPORTING.dbo.UPC_SUBCLASS.EAN13 for rows with an
             //     ORACLE_SKU but no EAN13 yet.
@@ -557,6 +570,24 @@
             var rows = await IncreffSoh.RefreshAsync();
             await Jobs.FinishRunAsync(runId, "Success", rows, null);
             Show($"IncreffSohFromGCP done — {rows} rows.", false);
+        }
+        catch (Exception ex)
+        {
+            await Jobs.FinishRunAsync(runId, "Failed", null, ex.Message);
+            Show($"Refresh failed: {ex.Message}", true);
+        }
+        finally { _busy = false; await RefreshLogAsync(); }
+    }
+
+    private async Task RefreshIncreffNewNowAsync()
+    {
+        _busy = true; Show("Refreshing ECOM INCREFF SOH (new source) from BigQuery…", false); await InvokeAsync(StateHasChanged);
+        var runId = await Jobs.StartRunAsync(IncreffSohFromGcpNewService.JobName, "OnDemand", null, CurrentUser.Name ?? "");
+        try
+        {
+            var rows = await IncreffSohNew.RefreshAsync();
+            await Jobs.FinishRunAsync(runId, "Success", rows, null);
+            Show($"IncreffSohFromGCP_New done — {rows} rows.", false);
         }
         catch (Exception ex)
         {
