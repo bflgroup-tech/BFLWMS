@@ -8,9 +8,13 @@ namespace Wms.Data.Lpm;
 /// Compares two ECOM SOH sources into dbo.LPM_ECOM_SOH_COMPARISON, one row per
 /// (Country, Itemcode) present in ANY of the four sources below (missing side(s)
 /// written as 0):
-///   IncreffSOH -> dbo.LPM_ECOM_INCREFF_SOH  (BigQuery INCREFF feed, populated
-///                 by IncreffSohFromGcpService — run that first for a fresh
-///                 compare)
+///   IncreffSOH -> dbo.LPM_ECOM_INCREFF_SOH_NEW (BigQuery INCREFF feed from the
+///                 newer Silver-tier source, populated by
+///                 IncreffSohFromGcpNewService — run that first for a fresh
+///                 compare), summed over ItemType = 'BFL_REGULAR' rows only —
+///                 the other observed ItemType ('SOR') is excluded. Switched
+///                 from the old dbo.LPM_ECOM_INCREFF_SOH (IncreffSohFromGcpService)
+///                 after that new source was validated in parallel.
 ///   MFCS_SOH   -> RACKS.dbo.lpm_locstock.MFCS_SOH (MFCS online-store stock;
 ///                 StoreID = 'ONLINE' for UAE, 'ONLINEKSA' for KSA), summed over
 ///                 rows where the table's separate SOH column is non-zero — SOH
@@ -112,9 +116,9 @@ public class IncreffMfcsSohCompareService(IOnPremConnectionResolver resolver)
 
     private const string InsertSql = @"
         ;WITH Increff AS (
-            SELECT Country, Itemcode, SUM(SOH) AS SOH
-              FROM dbo.LPM_ECOM_INCREFF_SOH
-             WHERE SOH <> 0
+            SELECT Country, Itemcode, SUM(Quantity) AS SOH
+              FROM dbo.LPM_ECOM_INCREFF_SOH_NEW
+             WHERE ItemType = 'BFL_REGULAR'
              GROUP BY Country, Itemcode
         ),
         Mfcs AS (
@@ -201,7 +205,7 @@ public class IncreffMfcsSohCompareService(IOnPremConnectionResolver resolver)
           LEFT JOIN Vendor v     ON v.Itemcode = sp.Itemcode AND v.rn = 1;";
 
     /// <summary>On-demand "Refresh Now" — rebuilds dbo.LPM_ECOM_SOH_COMPARISON from
-    /// scratch. Run IncreffSohFromGcpService.RefreshAsync first for a fresh compare.</summary>
+    /// scratch. Run IncreffSohFromGcpNewService.RefreshAsync first for a fresh compare.</summary>
     public async Task<int> RefreshAsync(CancellationToken ct = default)
     {
         await using var c = OpenOnPremBackup();
