@@ -245,11 +245,15 @@
                                                         <div style="font-size:16px; font-weight:700; color:#222222; margin-top:2px; white-space:nowrap;">@t.IntransitQty.ToString("N0")</div>
                                                     </div>
                                                 }
-                                                @if (t.IntransitTrfCount.HasValue)
+                                                @if (t.Type == "JAFZA" && _exportTransfers.TryGetValue(cts.Country, out var jafzaExport))
                                                 {
-                                                    <div>
+                                                    <div title="racks..InTransit_ExportShipment, Intransit='Y'">
                                                         <div style="font-size:11px; color:var(--text-secondary); white-space:nowrap;">Trf Count</div>
-                                                        <div style="font-size:16px; font-weight:700; color:#222222; margin-top:2px; white-space:nowrap;">@t.IntransitTrfCount.Value.ToString("N0")</div>
+                                                        <div style="font-size:16px; font-weight:700; color:#222222; margin-top:2px; white-space:nowrap;">@jafzaExport.IntransitCount.ToString("N0")</div>
+                                                    </div>
+                                                    <div title="racks..InTransit_ExportShipment, Intransit='Y'">
+                                                        <div style="font-size:11px; color:var(--text-secondary); white-space:nowrap;">Trf Qty</div>
+                                                        <div style="font-size:16px; font-weight:700; color:#222222; margin-top:2px; white-space:nowrap;">@jafzaExport.IntransitQty.ToString("N0")</div>
                                                     </div>
                                                 }
                                             </div>
@@ -257,20 +261,20 @@
                                     </div>
                                 </div>
                             }
-                            @if (_reserved.TryGetValue(cts.Country, out var reserved))
+                            @if (_exportTransfers.TryGetValue(cts.Country, out var reserved))
                             {
                                 <div style="background:#f2f2f2; border-radius:8px; padding:10px 12px; flex:1 1 0; min-width:0;">
-                                    <div style="text-align:center; font-size:13px; font-weight:700; color:#333333; text-transform:uppercase; letter-spacing:0.02em; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="Transfer exists but has no GIN yet (so no receipt yet either)">
+                                    <div style="text-align:center; font-size:13px; font-weight:700; color:#333333; text-transform:uppercase; letter-spacing:0.02em; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="racks..InTransit_ExportShipment, Intransit='C' — transfer exists but has no GIN yet (so no receipt yet either)">
                                         Reserved
                                     </div>
                                     <div style="display:flex; justify-content:center; gap:8px; margin-top:8px;">
                                         <div>
                                             <div style="font-size:11px; color:var(--text-secondary); white-space:nowrap;">Trf Count</div>
-                                            <div style="font-size:16px; font-weight:700; color:#222222; margin-top:2px; white-space:nowrap;">@reserved.Count.ToString("N0")</div>
+                                            <div style="font-size:16px; font-weight:700; color:#222222; margin-top:2px; white-space:nowrap;">@reserved.ReservedCount.ToString("N0")</div>
                                         </div>
                                         <div>
                                             <div style="font-size:11px; color:var(--text-secondary); white-space:nowrap;">Quantity</div>
-                                            <div style="font-size:16px; font-weight:700; color:#222222; margin-top:2px; white-space:nowrap;">@reserved.Qty.ToString("N0")</div>
+                                            <div style="font-size:16px; font-weight:700; color:#222222; margin-top:2px; white-space:nowrap;">@reserved.ReservedQty.ToString("N0")</div>
                                         </div>
                                     </div>
                                 </div>
@@ -487,7 +491,7 @@ else if (_rows.Count > 0 && !_isBflGroupView)
 
 @code {
     private List<ShipmentStatusRow> _rows = new();
-    private Dictionary<string, ReservedSummary> _reserved = new(StringComparer.OrdinalIgnoreCase);
+    private Dictionary<string, ExportTransferSummary> _exportTransfers = new(StringComparer.OrdinalIgnoreCase);
     private List<string> _countries = new();
 
     // Bumped on every Load — the Country/Week <details> dropdowns key off this, so
@@ -579,7 +583,7 @@ else if (_rows.Count > 0 && !_isBflGroupView)
     // read. Rendered for any country selection (not just "BFL Group"), scoped to
     // whichever country(ies) are actually in FilteredRows.
     private record TypeSummary(
-        string Type, string Title, int DeliveredCount, int DeliveredQty, int IntransitCount, int IntransitQty, int? IntransitTrfCount);
+        string Type, string Title, int DeliveredCount, int DeliveredQty, int IntransitCount, int IntransitQty);
 
     private static readonly (string Type, string Title)[] TypeCardOrder =
     [
@@ -597,25 +601,16 @@ else if (_rows.Count > 0 && !_isBflGroupView)
                     var rows      = FilteredRows.Where(r => r.Country == country && r.Type == tc.Type).ToList();
                     var delivered = rows.Where(r => r.Status == "Delivered").ToList();
                     var intransit = rows.Where(r => r.Status == "InTransit").ToList();
-                    // TrfCount is null for LOCAL (no GIN/transfer concept there) — only
-                    // sum it when every intransit row actually has a value, otherwise
-                    // leave the card's Trf Count blank instead of showing a false partial sum.
-                    var intransitTrfCount = intransit.Count > 0 && intransit.All(r => r.TrfCount.HasValue)
-                        ? intransit.Sum(r => r.TrfCount!.Value) : (int?)null;
                     return new TypeSummary(
                         tc.Type, tc.Title,
                         delivered.Count, delivered.Sum(r => r.TotalQty),
-                        intransit.Count, intransit.Sum(r => r.TotalQty),
-                        intransitTrfCount);
+                        intransit.Count, intransit.Sum(r => r.TotalQty));
                 }).ToList();
 
-                var totalIntransitTrfCount = types.Any(t => t.IntransitTrfCount.HasValue)
-                    ? types.Sum(t => t.IntransitTrfCount ?? 0) : (int?)null;
                 types.Add(new TypeSummary(
                     "TOTAL", "Total",
                     types.Sum(t => t.DeliveredCount), types.Sum(t => t.DeliveredQty),
-                    types.Sum(t => t.IntransitCount),  types.Sum(t => t.IntransitQty),
-                    totalIntransitTrfCount));
+                    types.Sum(t => t.IntransitCount),  types.Sum(t => t.IntransitQty)));
 
                 return (country, types);
             })
@@ -965,7 +960,7 @@ else if (_rows.Count > 0 && !_isBflGroupView)
 
             var result = await Svc.GetShipmentStatusAsync(filter);
             _rows = result.Rows;
-            _reserved = result.Reserved.ToDictionary(r => r.Country, StringComparer.OrdinalIgnoreCase);
+            _exportTransfers = result.ExportTransfers.ToDictionary(r => r.Country, StringComparer.OrdinalIgnoreCase);
 
             if (result.Warnings.Count > 0)
                 ShowError($"Loaded {_rows.Count} rows. Some countries failed: {string.Join("; ", result.Warnings)}");

@@ -1453,25 +1453,12 @@ SELECT groupCode AS GroupCode, DivisionY AS Division, Department, Brand
                 WHERE uo.ContNo IN ({BuildInClause(contNos)})
                 GROUP BY uo.ContNo, up.DivisionY, up.Department, up.Brand"),
 
-        new QueryEntry("Shipment Status", "Reserved - Shop List", "bfldata.dbo.DataSettings -- ShipmentStatusService.GetReservedForCountryAsync (every shop in the country, run per shop below)", @"
-            SELECT DISTINCT DataName, CostCodeTo, LocCodeTo
-              FROM bfldata.dbo.DataSettings WITH (NOLOCK)
-             WHERE Country = @country
-               AND DataName IS NOT NULL AND DataName <> ''
-               AND CostCodeTo IS NOT NULL AND CostCodeTo <> ''
-               AND LocCodeTo IS NOT NULL AND LocCodeTo <> ''"),
-
-        new QueryEntry("Shipment Status", "Reserved - Count/Qty per Shop", "[DataName]..transferheader, [DataName]..vTransferDetail, [DataName]..vGoodsIssueplt -- ShipmentStatusService.RunReservedShopQueryAsync (transfers with no GIN yet, so no receipt either; no Type since ShipNo doesn't exist pre-GIN)", @"
-            SELECT COUNT(*) AS Count, ISNULL(SUM(v.Qty), 0) AS Qty
-              FROM [{dataName}]..transferheader a WITH (NOLOCK)
-              OUTER APPLY (
-                  SELECT SUM(Quantity) AS Qty FROM [{dataName}]..vTransferDetail WITH (NOLOCK) WHERE TrfNo = a.TrfNo
-              ) v
-              LEFT JOIN [{dataName}]..vGoodsIssueplt c WITH (NOLOCK) ON c.TrfNo = a.TrfNo AND c.EntryDate >= a.TrfDate
-             WHERE a.TrfNo NOT LIKE 'FN%'
-               AND a.CostCodeTo = @costCodeTo AND a.LocCodeTo = @locCodeTo
-               AND a.TrfDate >= @from AND a.TrfDate <= @to
-               AND c.SrNo IS NULL"),
+        new QueryEntry("Shipment Status", "Export Transfer Intransit/Reserved", "racks..InTransit_ExportShipment, P2EXPORT..vTransferDetail -- ShipmentStatusService.GetExportTransferSummaryAsync (single shared catalog, same precedent as OtsPoAllocationService's LeadIntransit; Intransit='Y' shown on the JAFZA card, Intransit='C' shown as Reserved — neither has a Type since the source table only carries Country + TrfNo)", @"
+            SELECT a.Intransit AS Intransit, COUNT(DISTINCT a.TrfNo) AS TrfCount, ISNULL(SUM(b.Quantity), 0) AS Qty
+              FROM racks..InTransit_ExportShipment a WITH (NOLOCK)
+              JOIN P2EXPORT..vTransferDetail b WITH (NOLOCK) ON b.TrfNo = a.TrfNo
+             WHERE a.Country = @country
+             GROUP BY a.Intransit"),
 
         // ============================== Warehouse SOH Summary ==============================
         new QueryEntry("Warehouse SOH Summary", "Stock On Hand (UAE — TECHNO/JAFZA/YOTO)", "RACKS.dbo.WHBoxItems -- WarehouseSohSummaryService.GetStockOnHandExcludingBlackboxAsync", @"

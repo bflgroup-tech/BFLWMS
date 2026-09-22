@@ -12,7 +12,6 @@ public record ShipmentStatusRow(
     DateTime? Eta,
     int       TotalQty,
     int?      BoxCount,         // TransferCount; null for LOCAL/International
-    int?      TrfCount,         // distinct TrfNo count from vGoodsIssueplt; null for LOCAL/International
     DateTime? ReceiptDt,        // null while InTransit
     int?      SlaReceiptDays,   // ReleasedOn -> ReceiptDt
     int?      ReceivedBoxes,    // null for LOCAL/International
@@ -30,15 +29,18 @@ public record ShipmentStatusFilter(
 );
 
 public record ShipmentStatusResult(
-    List<ShipmentStatusRow> Rows,
-    List<string>            Warnings,   // one entry per country/shop that failed during a "BFL Group" fan-out
-    List<ReservedSummary>   Reserved    // one entry per country — transfers with no GIN yet (so no receipt either)
+    List<ShipmentStatusRow>        Rows,
+    List<string>                   Warnings,        // one entry per country that failed during a "BFL Group" fan-out
+    List<ExportTransferSummary>    ExportTransfers  // one entry per country — from racks..InTransit_ExportShipment
 );
 
-// Count/Qty of transferheader rows with no matching vGoodsIssueplt row (no GIN yet),
-// across every DataSettings shop in that country. Has no Type (JAFZA/LOCAL/International)
-// because Type is derived from ShipNo, which doesn't exist until a GIN creates one.
-public record ReservedSummary(string Country, int Count, int Qty);
+// Distinct TrfNo count + Quantity from racks..InTransit_ExportShipment (JOIN
+// P2EXPORT..vTransferDetail for Quantity), split by its own Intransit flag:
+// 'Y' = still in transit (shown on the JAFZA card, since this table is scoped to
+// the export-from-UAE/GIN flow specifically), 'C' = Reserved (transfer exists, no
+// GIN yet, so no receipt either). Neither half has a JAFZA/LOCAL/International
+// split of its own — the source table only carries Country + TrfNo.
+public record ExportTransferSummary(string Country, int IntransitCount, int IntransitQty, int ReservedCount, int ReservedQty);
 
 // Division x Month (by vTransferDetail.LpmDt) drill-down pivot, shown as a popup when
 // an Intransit number or a GIN No. is clicked. MonthQty on each row is index-aligned
