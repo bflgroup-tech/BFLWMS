@@ -53,6 +53,15 @@
                 @foreach (var t in _trailerNos) { <option value="@t">@t</option> }
             </select>
         </div>
+        @if (!string.IsNullOrWhiteSpace(_trailerNo))
+        {
+            <div>
+                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">WILL BE SET TO</label>
+                <div style="padding:8px 10px; font-size:13px; font-family:Consolas, monospace; font-weight:700; color:#16a34a;">
+                    @($"{_trailerNo}-{NowGst:HH:mm}")
+                </div>
+            </div>
+        }
         <div>
             <button class="aiwms-btn aiwms-btn-primary" @onclick="SubmitAsync"
                     disabled="@(_busy || _validRows.Count == 0 || string.IsNullOrWhiteSpace(_trailerNo))">
@@ -102,6 +111,8 @@
     private bool _busy;
     private string _message = "";
     private bool _isError;
+
+    private static DateTime NowGst => DateTime.UtcNow.AddHours(4);
 
     protected override async Task OnInitializedAsync()
     {
