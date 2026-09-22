@@ -1453,6 +1453,26 @@ SELECT groupCode AS GroupCode, DivisionY AS Division, Department, Brand
                 WHERE uo.ContNo IN ({BuildInClause(contNos)})
                 GROUP BY uo.ContNo, up.DivisionY, up.Department, up.Brand"),
 
+        new QueryEntry("Shipment Status", "Reserved - Shop List", "bfldata.dbo.DataSettings -- ShipmentStatusService.GetReservedForCountryAsync (every shop in the country, run per shop below)", @"
+            SELECT DISTINCT DataName, CostCodeTo, LocCodeTo
+              FROM bfldata.dbo.DataSettings WITH (NOLOCK)
+             WHERE Country = @country
+               AND DataName IS NOT NULL AND DataName <> ''
+               AND CostCodeTo IS NOT NULL AND CostCodeTo <> ''
+               AND LocCodeTo IS NOT NULL AND LocCodeTo <> ''"),
+
+        new QueryEntry("Shipment Status", "Reserved - Count/Qty per Shop", "[DataName]..transferheader, [DataName]..vTransferDetail, [DataName]..vGoodsIssueplt -- ShipmentStatusService.RunReservedShopQueryAsync (transfers with no GIN yet, so no receipt either; no Type since ShipNo doesn't exist pre-GIN)", @"
+            SELECT COUNT(*) AS Count, ISNULL(SUM(v.Qty), 0) AS Qty
+              FROM [{dataName}]..transferheader a WITH (NOLOCK)
+              OUTER APPLY (
+                  SELECT SUM(Quantity) AS Qty FROM [{dataName}]..vTransferDetail WITH (NOLOCK) WHERE TrfNo = a.TrfNo
+              ) v
+              LEFT JOIN [{dataName}]..vGoodsIssueplt c WITH (NOLOCK) ON c.TrfNo = a.TrfNo AND c.EntryDate >= a.TrfDate
+             WHERE a.TrfNo NOT LIKE 'FN%'
+               AND a.CostCodeTo = @costCodeTo AND a.LocCodeTo = @locCodeTo
+               AND a.TrfDate >= @from AND a.TrfDate <= @to
+               AND c.SrNo IS NULL"),
+
         // ============================== Warehouse SOH Summary ==============================
         new QueryEntry("Warehouse SOH Summary", "Stock On Hand (UAE — TECHNO/JAFZA/YOTO)", "RACKS.dbo.WHBoxItems -- WarehouseSohSummaryService.GetStockOnHandExcludingBlackboxAsync", @"
             SELECT

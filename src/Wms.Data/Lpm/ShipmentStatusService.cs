@@ -94,7 +94,7 @@ public class ShipmentStatusService(IOnPremConnectionResolver resolver)
         // Kuwait) blew past the 120s command timeout. Capping total concurrency across
         // the whole request fixes that without slowing any single-country load.
         using var throttle = new SemaphoreSlim(MaxConcurrentChunkQueries);
-        var tasks = countries.Select(async country =>
+        var rowTasks = countries.Select(async country =>
         {
             try
             {
@@ -106,12 +106,84 @@ public class ShipmentStatusService(IOnPremConnectionResolver resolver)
                 return new List<ShipmentStatusRow>();
             }
         });
+        var reservedTasks = countries.Select(async country =>
+        {
+            try
+            {
+                return await GetReservedForCountryAsync(country, from, to, throttle, ct);
+            }
+            catch (Exception ex)
+            {
+                lock (warnings) warnings.Add($"{country} (reserved): {ex.Message}");
+                return new ReservedSummary(country, 0, 0);
+            }
+        });
 
-        var perCountry = await Task.WhenAll(tasks);
+        var perCountry = await Task.WhenAll(rowTasks);
+        var reserved = (await Task.WhenAll(reservedTasks)).ToList();
         var allRows = perCountry.SelectMany(r => r)
             .OrderBy(r => r.ReceiptDt ?? r.ReleasedOn ?? DateTime.MaxValue)
             .ToList();
-        return new ShipmentStatusResult(allRows, warnings);
+        return new ShipmentStatusResult(allRows, warnings, reserved);
+    }
+
+    // ===================== "Reserved" — transfer exists, no GIN yet =====================
+    // A transfer (TrfNo) originates in transferheader independent of any GIN; once
+    // released it gets a matching vGoodsIssueplt row (same join used by the "Without
+    // GIN" filter elsewhere in this codebase). No GIN also means no contreceiptExport
+    // row, since receipt is keyed off the GIN — so "no GIN yet" already implies "no
+    // receipt yet" too. Summed across every DataSettings shop for the country, since
+    // Type (JAFZA/LOCAL/International) doesn't exist pre-GIN — there's no ShipNo yet
+    // to derive it from.
+
+    private record ShopKey(string DataName, string CostCodeTo, string LocCodeTo);
+    private record ReservedCountRow(int Count, int Qty);
+
+    private async Task<ReservedSummary> GetReservedForCountryAsync(
+        string country, DateTime from, DateTime to, SemaphoreSlim throttle, CancellationToken ct)
+    {
+        List<ShopKey> shops;
+        await using (var conn = OpenOnPremBackup())
+        {
+            shops = (await conn.QueryAsync<ShopKey>(new CommandDefinition(@"
+                SELECT DISTINCT DataName, CostCodeTo, LocCodeTo
+                  FROM bfldata.dbo.DataSettings WITH (NOLOCK)
+                 WHERE Country = @country
+                   AND DataName IS NOT NULL AND DataName <> ''
+                   AND CostCodeTo IS NOT NULL AND CostCodeTo <> ''
+                   AND LocCodeTo IS NOT NULL AND LocCodeTo <> ''",
+                new { country }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).AsList();
+        }
+
+        if (shops.Count == 0) return new ReservedSummary(country, 0, 0);
+
+        var tasks = shops.Select(shop => RunReservedShopQueryAsync(shop, from, to, throttle, ct));
+        var results = await Task.WhenAll(tasks);
+        return new ReservedSummary(country, results.Sum(r => r.Count), results.Sum(r => r.Qty));
+    }
+
+    private async Task<ReservedCountRow> RunReservedShopQueryAsync(
+        ShopKey shop, DateTime from, DateTime to, SemaphoreSlim throttle, CancellationToken ct)
+    {
+        await throttle.WaitAsync(ct);
+        try
+        {
+            await using var conn = OpenOnPremBackup();
+            return await conn.QuerySingleAsync<ReservedCountRow>(new CommandDefinition($@"
+                SELECT COUNT(*) AS Count, ISNULL(SUM(v.Qty), 0) AS Qty
+                  FROM [{shop.DataName}]..transferheader a WITH (NOLOCK)
+                  OUTER APPLY (
+                      SELECT SUM(Quantity) AS Qty FROM [{shop.DataName}]..vTransferDetail WITH (NOLOCK) WHERE TrfNo = a.TrfNo
+                  ) v
+                  LEFT JOIN [{shop.DataName}]..vGoodsIssueplt c WITH (NOLOCK) ON c.TrfNo = a.TrfNo AND c.EntryDate >= a.TrfDate
+                 WHERE a.TrfNo NOT LIKE 'FN%'
+                   AND a.CostCodeTo = @costCodeTo AND a.LocCodeTo = @locCodeTo
+                   AND a.TrfDate >= @from AND a.TrfDate <= @to
+                   AND c.SrNo IS NULL",
+                new { costCodeTo = shop.CostCodeTo, locCodeTo = shop.LocCodeTo, from, to },
+                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        }
+        finally { throttle.Release(); }
     }
 
     private async Task<List<ShipmentStatusRow>> GetForCountryAsync(

@@ -31,8 +31,14 @@ public record ShipmentStatusFilter(
 
 public record ShipmentStatusResult(
     List<ShipmentStatusRow> Rows,
-    List<string>            Warnings   // one entry per country that failed during a "BFL Group" fan-out
+    List<string>            Warnings,   // one entry per country/shop that failed during a "BFL Group" fan-out
+    List<ReservedSummary>   Reserved    // one entry per country — transfers with no GIN yet (so no receipt either)
 );
+
+// Count/Qty of transferheader rows with no matching vGoodsIssueplt row (no GIN yet),
+// across every DataSettings shop in that country. Has no Type (JAFZA/LOCAL/International)
+// because Type is derived from ShipNo, which doesn't exist until a GIN creates one.
+public record ReservedSummary(string Country, int Count, int Qty);
 
 // Division x Month (by vTransferDetail.LpmDt) drill-down pivot, shown as a popup when
 // an Intransit number or a GIN No. is clicked. MonthQty on each row is index-aligned

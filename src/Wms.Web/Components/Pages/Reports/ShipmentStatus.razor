@@ -257,6 +257,24 @@
                                     </div>
                                 </div>
                             }
+                            @if (_reserved.TryGetValue(cts.Country, out var reserved))
+                            {
+                                <div style="background:#f2f2f2; border-radius:8px; padding:10px 12px; flex:1 1 0; min-width:0;">
+                                    <div style="text-align:center; font-size:13px; font-weight:700; color:#333333; text-transform:uppercase; letter-spacing:0.02em; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="Transfer exists but has no GIN yet (so no receipt yet either)">
+                                        Reserved
+                                    </div>
+                                    <div style="display:flex; justify-content:center; gap:8px; margin-top:8px;">
+                                        <div>
+                                            <div style="font-size:11px; color:var(--text-secondary); white-space:nowrap;">Trf Count</div>
+                                            <div style="font-size:16px; font-weight:700; color:#222222; margin-top:2px; white-space:nowrap;">@reserved.Count.ToString("N0")</div>
+                                        </div>
+                                        <div>
+                                            <div style="font-size:11px; color:var(--text-secondary); white-space:nowrap;">Quantity</div>
+                                            <div style="font-size:16px; font-weight:700; color:#222222; margin-top:2px; white-space:nowrap;">@reserved.Qty.ToString("N0")</div>
+                                        </div>
+                                    </div>
+                                </div>
+                            }
                         </div>
                     </div>
                 }
@@ -469,6 +487,7 @@ else if (_rows.Count > 0 && !_isBflGroupView)
 
 @code {
     private List<ShipmentStatusRow> _rows = new();
+    private Dictionary<string, ReservedSummary> _reserved = new(StringComparer.OrdinalIgnoreCase);
     private List<string> _countries = new();
 
     // Bumped on every Load — the Country/Week <details> dropdowns key off this, so
@@ -940,6 +959,7 @@ else if (_rows.Count > 0 && !_isBflGroupView)
 
             var result = await Svc.GetShipmentStatusAsync(filter);
             _rows = result.Rows;
+            _reserved = result.Reserved.ToDictionary(r => r.Country, StringComparer.OrdinalIgnoreCase);
 
             if (result.Warnings.Count > 0)
                 ShowError($"Loaded {_rows.Count} rows. Some countries failed: {string.Join("; ", result.Warnings)}");
