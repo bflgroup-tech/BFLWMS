@@ -106,7 +106,7 @@
     <div class="aiwms-card-header">Daily sequence</div>
     <p style="font-size:12px; color:var(--text-secondary); margin:0 0 4px 0">
         Daily: <strong>06:00</strong> Volume Group refresh (all countries) + Missing/Excess snapshot → <strong>07:00</strong> OTS generate.
-        Weekly sales from BigQuery stays weekly — Sunday <strong>01:00</strong>.
+        Weekly sales from BigQuery stays weekly — Sunday <strong>22:00</strong>.
         OTS needs Volume Group to have run for <strong>BFLGROUP</strong> the same day. If it has not, the 07:00 run defers and retries hourly rather than computing from a stale snapshot.
     </p>
 </div>
@@ -223,13 +223,13 @@
                     }));
             }
 
-            // 2. WeeklySalesFromGCP — single row keyed by "", Sunday 01:00.
+            // 2. WeeklySalesFromGCP — single row keyed by "", Sunday 22:00.
             var gcp = (await Gcp.GetCountryConfigAsync()).FirstOrDefault(c => c.Country == "")
                       ?? new RptCountryConfigRow("", false, default, "");
             list.Add(new JobVm(
-                WeeklySalesFromGcpService.JobName, "Sun 01:00", null,
+                WeeklySalesFromGcpService.JobName, "Sun 22:00", null,
                 gcp.IsActive, gcp.UpdatedTS, gcp.UpdatedBy,
-                gcp.IsActive ? NextWeeklyFireGst(new(1, 0, 0), DayOfWeek.Sunday) : null,
+                gcp.IsActive ? NextWeeklyFireGst(new(22, 0, 0), DayOfWeek.Sunday) : null,
                 active => ToggleAndReloadAsync(() => Gcp.SetCountryActiveAsync("", active), WeeklySalesFromGcpService.JobName, active),
                 new() { ("Refresh Now", EventCallback.Factory.Create(this, RefreshGcpNowAsync)) }));
 
