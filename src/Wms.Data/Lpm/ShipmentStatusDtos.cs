@@ -12,6 +12,7 @@ public record ShipmentStatusRow(
     DateTime? Eta,
     int       TotalQty,
     int?      BoxCount,         // TransferCount; null for LOCAL/International
+    int?      TrfCount,         // distinct TrfNo count from vGoodsIssueplt; null for LOCAL/International
     DateTime? ReceiptDt,        // null while InTransit
     int?      SlaReceiptDays,   // ReleasedOn -> ReceiptDt
     int?      ReceivedBoxes,    // null for LOCAL/International

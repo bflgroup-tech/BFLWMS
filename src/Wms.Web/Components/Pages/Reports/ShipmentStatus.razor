@@ -245,6 +245,13 @@
                                                         <div style="font-size:16px; font-weight:700; color:#222222; margin-top:2px; white-space:nowrap;">@t.IntransitQty.ToString("N0")</div>
                                                     </div>
                                                 }
+                                                @if (t.IntransitTrfCount.HasValue)
+                                                {
+                                                    <div>
+                                                        <div style="font-size:11px; color:var(--text-secondary); white-space:nowrap;">Trf Count</div>
+                                                        <div style="font-size:16px; font-weight:700; color:#222222; margin-top:2px; white-space:nowrap;">@t.IntransitTrfCount.Value.ToString("N0")</div>
+                                                    </div>
+                                                }
                                             </div>
                                         </div>
                                     </div>
@@ -553,7 +560,7 @@ else if (_rows.Count > 0 && !_isBflGroupView)
     // read. Rendered for any country selection (not just "BFL Group"), scoped to
     // whichever country(ies) are actually in FilteredRows.
     private record TypeSummary(
-        string Type, string Title, int DeliveredCount, int DeliveredQty, int IntransitCount, int IntransitQty);
+        string Type, string Title, int DeliveredCount, int DeliveredQty, int IntransitCount, int IntransitQty, int? IntransitTrfCount);
 
     private static readonly (string Type, string Title)[] TypeCardOrder =
     [
@@ -571,16 +578,25 @@ else if (_rows.Count > 0 && !_isBflGroupView)
                     var rows      = FilteredRows.Where(r => r.Country == country && r.Type == tc.Type).ToList();
                     var delivered = rows.Where(r => r.Status == "Delivered").ToList();
                     var intransit = rows.Where(r => r.Status == "InTransit").ToList();
+                    // TrfCount is null for LOCAL (no GIN/transfer concept there) — only
+                    // sum it when every intransit row actually has a value, otherwise
+                    // leave the card's Trf Count blank instead of showing a false partial sum.
+                    var intransitTrfCount = intransit.Count > 0 && intransit.All(r => r.TrfCount.HasValue)
+                        ? intransit.Sum(r => r.TrfCount!.Value) : (int?)null;
                     return new TypeSummary(
                         tc.Type, tc.Title,
                         delivered.Count, delivered.Sum(r => r.TotalQty),
-                        intransit.Count, intransit.Sum(r => r.TotalQty));
+                        intransit.Count, intransit.Sum(r => r.TotalQty),
+                        intransitTrfCount);
                 }).ToList();
 
+                var totalIntransitTrfCount = types.Any(t => t.IntransitTrfCount.HasValue)
+                    ? types.Sum(t => t.IntransitTrfCount ?? 0) : (int?)null;
                 types.Add(new TypeSummary(
                     "TOTAL", "Total",
                     types.Sum(t => t.DeliveredCount), types.Sum(t => t.DeliveredQty),
-                    types.Sum(t => t.IntransitCount),  types.Sum(t => t.IntransitQty)));
+                    types.Sum(t => t.IntransitCount),  types.Sum(t => t.IntransitQty),
+                    totalIntransitTrfCount));
 
                 return (country, types);
             })
