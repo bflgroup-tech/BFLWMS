@@ -141,6 +141,69 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         return rows.AsList();
     }
 
+    // ===================== Weekly sales freshness =====================
+
+    /// <summary>
+    /// Is last week's sales in LPM_Weekly_SalesAmt? Volume Group grading averages
+    /// the twelve weeks BEFORE the OTS anchor week, so the newest week it can use is
+    /// anchor − 1. If that week has not arrived, every grade is one week staler than
+    /// it looks and every OTS-based allocation inherits it — invisibly, because the
+    /// OTS-generated-today gate still passes.
+    ///
+    /// "Current week" is the OTS anchor: the (year, wk) of the latest OTSDate in
+    /// LPM_OTS_Output, which is what grading itself anchors on. LPM_Weekly_SalesAmt
+    /// uses the same week numbering (the grading code compares the two directly).
+    /// Week 1 rolls back to the previous year's last week as LPM_OTS_Output knows it.
+    ///
+    /// Shown on the Container Allocation page and enforced as a validation step for
+    /// the OTS-based run options.
+    /// </summary>
+    public async Task<WeeklySalesStatus> GetWeeklySalesStatusAsync(CancellationToken ct = default)
+    {
+        await using var c = OpenOnPremBackup();
+
+        var anchor = await c.QueryFirstOrDefaultAsync<(int Y, int W)>(new CommandDefinition(@"
+            SELECT TOP 1 YEAR(OTSDate) AS Y, wk AS W
+              FROM dbo.LPM_OTS_Output WITH (NOLOCK)
+             WHERE wk IS NOT NULL
+             ORDER BY OTSDate DESC",
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+
+        if (anchor.Y == 0)
+            return new WeeklySalesStatus(0, 0, 0, 0, null, null, null, false,
+                "Cannot determine the current week: dbo.LPM_OTS_Output has no rows.");
+
+        int expY = anchor.Y, expW = anchor.W - 1;
+        if (expW < 1)
+        {
+            expY = anchor.Y - 1;
+            expW = await c.ExecuteScalarAsync<int?>(new CommandDefinition(
+                "SELECT MAX(wk) FROM dbo.LPM_OTS_Output WITH (NOLOCK) WHERE YEAR(OTSDate) = @y",
+                new { y = expY }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)) ?? 52;
+        }
+
+        var latest = await c.QueryFirstOrDefaultAsync<(int? Y, int? W, DateTime? Ts)>(new CommandDefinition(@"
+            SELECT TOP 1 Year1 AS Y, Week AS W,
+                   MAX(COALESCE(UpdatedTS, CreateTS)) AS Ts
+              FROM dbo.LPM_Weekly_SalesAmt WITH (NOLOCK)
+             GROUP BY Year1, Week
+             ORDER BY Year1 DESC, Week DESC",
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+
+        var expectedPresent = await c.ExecuteScalarAsync<int>(new CommandDefinition(
+            "SELECT COUNT(1) FROM dbo.LPM_Weekly_SalesAmt WITH (NOLOCK) WHERE Year1 = @y AND Week = @w",
+            new { y = expY, w = expW }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)) > 0;
+
+        var latestLabel = latest.Y is null ? "none"
+            : $"{latest.Y}-W{latest.W:00}" + (latest.Ts is null ? "" : $" received {latest.Ts:dd-MMM-yyyy HH:mm}");
+
+        var summary = expectedPresent
+            ? $"Weekly sales up to date — last week ({expY}-W{expW:00}) is loaded; latest {latestLabel}; current week {anchor.Y}-W{anchor.W:00}."
+            : $"Weekly sales are STALE — last week ({expY}-W{expW:00}) has not been received; latest in LPM_Weekly_SalesAmt is {latestLabel}; current week {anchor.Y}-W{anchor.W:00}.";
+
+        return new WeeklySalesStatus(anchor.Y, anchor.W, expY, expW, latest.Y, latest.W, latest.Ts, expectedPresent, summary);
+    }
+
     // ===================== Load PO Data =====================
     public async Task<List<PoDataRow>> LoadPoDataAsync(string contno, CancellationToken ct = default)
     {
@@ -356,6 +419,18 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                         ? null
                         : $"OTS for PO Allocation has not been Generated today ({todayGst:dd/MM/yyyy} GST). Go to OTS for PO Allocation → Generate first, then re-run Process."));
                 if (!otsToday_ok) return new ContainerAllocationValidationResult(false, steps);
+
+                // 9b. Weekly sales freshness — last week's sales must be in
+                //     LPM_Weekly_SalesAmt. Grading averages the twelve weeks before
+                //     the anchor week, so a missing anchor−1 leaves every Volume
+                //     Group one week stale while the OTS gate above still passes.
+                progress?.Report(new AllocationProgress(8, TOTAL, "Validating: weekly sales received"));
+                var sales = await GetWeeklySalesStatusAsync(ct);
+                steps.Add(new ValidationStep(
+                    $"Weekly sales received for last week ({sales.ExpectedYear}-W{sales.ExpectedWeek:00})",
+                    sales.Ok,
+                    sales.Ok ? null : sales.Summary + " Run the WeeklySalesFromGCP batch (Admin → Nightly Batches), regenerate Volume Group and OTS, then re-run Process."));
+                if (!sales.Ok) return new ContainerAllocationValidationResult(false, steps);
             }
 
             // 10. SKU Max band coverage — every (Division, Volume Group, PO line qty)

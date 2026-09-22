@@ -277,3 +277,20 @@ public sealed record DivisionCeilingContext(
         return null;
     }
 }
+
+/// <summary>
+/// Freshness of the weekly sales feed behind Volume Group grading, checked
+/// against the OTS anchor week. The rule: sales for the week BEFORE the current
+/// fiscal week must be present in LPM_Weekly_SalesAmt, otherwise grades — and
+/// therefore every OTS-based allocation — ride on stale sales.
+/// </summary>
+public record WeeklySalesStatus(
+    int       AnchorYear,
+    int       AnchorWeek,
+    int       ExpectedYear,
+    int       ExpectedWeek,
+    int?      LatestYear,
+    int?      LatestWeek,
+    DateTime? LatestReceivedTS,
+    bool      Ok,
+    string    Summary);
