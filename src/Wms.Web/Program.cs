@@ -155,6 +155,11 @@ public class Program
         // only ("Generate Now" on the Nightly Batches admin page) — no timer.
         builder.Services.AddScoped<GenerateEan13Service>();
 
+        // Step 1 of pushing GIN-linked shop-issue transfers to the external
+        // store-inbounds API: enqueues eligible GINs into bfldata.dbo.APICallGIN.
+        // On-demand only ("Enqueue Now") — no timer yet, API-call step not built.
+        builder.Services.AddScoped<ApiGinIntegrationService>();
+
         // Robotics chute-mapping/status APIs used by the Chute Mapping page.
         builder.Services.Configure<Wms.Data.Robotic.RoboticApiOptions>(
             builder.Configuration.GetSection(Wms.Data.Robotic.RoboticApiOptions.SectionName));

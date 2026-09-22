@@ -415,7 +415,10 @@
 
     private void OnContainerNoChanged(ChangeEventArgs e)
     {
-        _globalContainerNo = e.Value?.ToString() ?? "";
+        // Trimmed here (not just on submit) so a stray trailing/leading space typed or
+        // pasted into the box never silently reaches stp_LoadShopNames as part of the
+        // container number and turns a real container into a no-match.
+        _globalContainerNo = e.Value?.ToString()?.Trim() ?? "";
         _containerLoaded = false;
     }
 
