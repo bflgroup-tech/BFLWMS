@@ -30,9 +30,9 @@ public class GinTrailerUpdateService(IOnPremConnectionResolver resolver)
     private const int CommandTimeoutSeconds = 60;
     private const int MaxEntryAgeDays = 2;
 
-    private SqlConnection OpenOnPremBackup()
+    private SqlConnection OpenWmsProduction()
     {
-        var c = new SqlConnection(resolver.GetOnPremBackupConnectionString());
+        var c = new SqlConnection(resolver.GetWmsProductionDbConnectionString());
         c.Open();
         return c;
     }
@@ -41,7 +41,7 @@ public class GinTrailerUpdateService(IOnPremConnectionResolver resolver)
     /// BFLDATA..WHTrailers. No free-text entry anywhere in the UI.</summary>
     public async Task<List<string>> GetTrailerNosAsync(CancellationToken ct = default)
     {
-        await using var c = OpenOnPremBackup();
+        await using var c = OpenWmsProduction();
         var rows = await c.QueryAsync<string>(new CommandDefinition(@"
             SELECT TrailerNo = PlateNo
               FROM BFLDATA.dbo.WHTrailers WITH (NOLOCK)
@@ -59,7 +59,7 @@ public class GinTrailerUpdateService(IOnPremConnectionResolver resolver)
         var wanted = ginNos.Distinct().ToList();
         if (wanted.Count == 0) return new(new(), new(), new());
 
-        await using var c = OpenOnPremBackup();
+        await using var c = OpenWmsProduction();
         var rows = (await c.QueryAsync<GinTrailerRow>(new CommandDefinition(@"
             SELECT GinNo = SRNo, EntryDate, TrailerNo, Remarks, WarehouseFrom, WarehouseTo
               FROM bfldata.dbo.TEST_PLT WITH (NOLOCK)
@@ -92,7 +92,7 @@ public class GinTrailerUpdateService(IOnPremConnectionResolver resolver)
         var stamped = $"{trailerNo}-{nowGst:HH:mm}";
         var today = nowGst.Date;
 
-        await using var c = OpenOnPremBackup();
+        await using var c = OpenWmsProduction();
         await using var tx = (SqlTransaction)await c.BeginTransactionAsync(ct);
         try
         {
