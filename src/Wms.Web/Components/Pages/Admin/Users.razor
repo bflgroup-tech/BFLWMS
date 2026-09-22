@@ -225,23 +225,51 @@
 
 <div class="aiwms-section" style="background:#FFFCF0; border:1px solid #EDE0B8;">
     <div class="aiwms-card-header">Menu Access — exact whitelist; a user with no grants sees nothing (Admin role bypasses this list)</div>
-    <div style="display:flex; gap:10px; align-items:end; margin-bottom:12px">
+    <div style="display:flex; gap:16px; align-items:start; margin-bottom:12px; flex-wrap:wrap">
         <div>
-            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">USER</label>
-            <select @bind="_menuUser" @bind:after="LoadMenuGrantsAsync" style="padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white; min-width:280px">
-                <option value="">-- Select user --</option>
-                @foreach (var u in _users) { <option value="@u.Username">@u.Username</option> }
-            </select>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">USERS (type to filter by email, check to select)</label>
+            <input @bind="_menuUserFilter" @bind:event="oninput" placeholder="type email..."
+                   style="padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white; min-width:280px; display:block" />
+            <div style="max-height:160px; overflow:auto; border:1px solid var(--border-default); border-radius:var(--r-sm); margin-top:4px; min-width:280px; background:white">
+                @foreach (var u in FilteredMenuUsers())
+                {
+                    <label style="display:flex; align-items:center; gap:6px; font-size:12px; padding:4px 8px; cursor:pointer">
+                        <input type="checkbox" checked="@_menuSelectedUsers.Contains(u.Username)"
+                               @onchange="@(e => ToggleMenuUser(u.Username, (bool)e.Value!))" />
+                        <span>@u.Username</span>
+                    </label>
+                }
+                @if (FilteredMenuUsers().Count == 0)
+                {
+                    <div style="padding:6px 8px; font-size:12px; color:var(--text-secondary)">No matching users.</div>
+                }
+            </div>
         </div>
-        @if (!string.IsNullOrEmpty(_menuUser))
+        @if (_menuSelectedUsers.Count > 0)
         {
-            <button class="aiwms-btn aiwms-btn-primary" @onclick="SaveMenuGrantsAsync">Save Menu Access</button>
-            <span style="font-size:12px; color:var(--text-secondary)">@_menuGrants.Count grants</span>
+            <div style="min-width:220px; max-width:360px">
+                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">SELECTED (@_menuSelectedUsers.Count)</label>
+                <div style="display:flex; flex-wrap:wrap; gap:4px">
+                    @foreach (var u in _menuSelectedUsers.OrderBy(x => x))
+                    {
+                        <span style="display:inline-flex; align-items:center; gap:4px; background:white; border:1px solid var(--border-default); border-radius:999px; padding:2px 8px; font-size:11px">
+                            @u
+                            <button type="button" @onclick="@(() => ToggleMenuUser(u, false))" style="border:none; background:none; cursor:pointer; font-weight:700; color:var(--text-secondary); padding:0">×</button>
+                        </span>
+                    }
+                </div>
+            </div>
         }
     </div>
 
-    @if (!string.IsNullOrEmpty(_menuUser))
+    @if (_menuSelectedUsers.Count > 0)
     {
+        <div style="display:flex; gap:10px; align-items:center; margin-bottom:12px; flex-wrap:wrap">
+            <button class="aiwms-btn aiwms-btn-primary" @onclick="GrantMenuAccessAsync" disabled="@(_menuGrants.Count == 0)">Grant Selected Access</button>
+            <button class="aiwms-btn aiwms-btn-secondary" @onclick="RevokeMenuAccessAsync" disabled="@(_menuGrants.Count == 0)">Revoke Selected Access</button>
+            <span style="font-size:12px; color:var(--text-secondary)">@_menuGrants.Count menu item(s) checked below — applies to all @_menuSelectedUsers.Count selected user(s)</span>
+        </div>
+
         @foreach (var grp in MenuKeys.All.GroupBy(m => m.Group))
         {
             var groupKeys = grp.Select(m => m.Key).ToList();
@@ -509,7 +537,7 @@
         Cache.Remove(AuthStateCurrentUser.CountryAccessCacheKey(username));
         Cache.Remove(AuthStateCurrentUser.SectionAccessCacheKey(username));
 
-        if (_menuUser == username) { _menuUser = ""; _menuGrants.Clear(); }
+        _menuSelectedUsers.Remove(username);
         if (_countryUser == username) { _countryUser = ""; _countryGrants.Clear(); }
         if (_sectionUser == username) { _sectionUser = ""; _sectionGrants.Clear(); }
         if (_showAllAccess) await RefreshAllAccessSnapshotAsync();
@@ -697,7 +725,6 @@
         Cache.Remove(AuthStateCurrentUser.SectionAccessCacheKey(_copyToUser));
 
         // Keep any currently-open per-user panels in sync with what was just copied.
-        if (_menuUser == _copyToUser) await LoadMenuGrantsAsync();
         if (_countryUser == _copyToUser) await LoadCountryGrantsAsync();
         if (_sectionUser == _copyToUser) await LoadSectionGrantsAsync();
         if (_showAllAccess) await RefreshAllAccessSnapshotAsync();
@@ -706,18 +733,23 @@
     }
 
     // ---------------- Menu access ----------------
-    private string _menuUser = "";
-    private HashSet<string> _menuGrants = new();
+    // Multi-user, additive/subtractive: checking a menu item and clicking Grant/Revoke
+    // only touches that item for the selected users, never wipes out anything else they
+    // have — safe to apply to several users at once, unlike an exact-sync save would be.
+    private string _menuUserFilter = "";
+    private HashSet<string> _menuSelectedUsers = new(StringComparer.OrdinalIgnoreCase);
+    private HashSet<string> _menuGrants = new(StringComparer.OrdinalIgnoreCase);
 
-    private async Task LoadMenuGrantsAsync()
+    private List<WmsUser> FilteredMenuUsers()
     {
-        _menuGrants = new();
-        if (string.IsNullOrEmpty(_menuUser)) return;
-        await using var db = await DbFactory.CreateDbContextAsync();
-        var keys = await db.UserMenuAccess.AsNoTracking()
-            .Where(g => g.Username == _menuUser)
-            .Select(g => g.MenuKey).ToListAsync();
-        _menuGrants = keys.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var term = _menuUserFilter.Trim();
+        if (term.Length == 0) return _users;
+        return _users.Where(u => Matches(u.Username, term)).ToList();
+    }
+
+    private void ToggleMenuUser(string username, bool on)
+    {
+        if (on) _menuSelectedUsers.Add(username); else _menuSelectedUsers.Remove(username);
     }
 
     private void ToggleMenu(string key, bool on)
@@ -731,24 +763,40 @@
         else    foreach (var k in keys) _menuGrants.Remove(k);
     }
 
-    private async Task SaveMenuGrantsAsync()
+    private async Task GrantMenuAccessAsync()
     {
-        if (string.IsNullOrEmpty(_menuUser)) return;
+        if (_menuSelectedUsers.Count == 0 || _menuGrants.Count == 0) return;
         await using var db = await DbFactory.CreateDbContextAsync();
-        var existing = await db.UserMenuAccess.Where(g => g.Username == _menuUser).ToListAsync();
-        var existingKeys = existing.Select(e => e.MenuKey).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        // Add new grants
-        foreach (var k in _menuGrants.Where(k => !existingKeys.Contains(k)))
-            db.UserMenuAccess.Add(new WmsUserMenuAccess {
-                Username = _menuUser, MenuKey = k,
-                GrantedTS = DateTime.Now, GrantedBy = Me.Name });
-        // Remove revoked grants
-        foreach (var e in existing.Where(e => !_menuGrants.Contains(e.MenuKey)))
-            db.UserMenuAccess.Remove(e);
+        var existing = await db.UserMenuAccess.AsNoTracking()
+            .Where(g => _menuSelectedUsers.Contains(g.Username))
+            .Select(g => new { g.Username, g.MenuKey }).ToListAsync();
+        var existingSet = existing.Select(e => (e.Username, e.MenuKey)).ToHashSet();
+
+        foreach (var username in _menuSelectedUsers)
+            foreach (var key in _menuGrants)
+                if (!existingSet.Contains((username, key)))
+                    db.UserMenuAccess.Add(new WmsUserMenuAccess {
+                        Username = username, MenuKey = key,
+                        GrantedTS = DateTime.Now, GrantedBy = Me.Name });
+
         await db.SaveChangesAsync();
-        Cache.Remove(AuthStateCurrentUser.ProfileCacheKey(_menuUser));
+        foreach (var username in _menuSelectedUsers) Cache.Remove(AuthStateCurrentUser.ProfileCacheKey(username));
         if (_showAllAccess) await RefreshAllAccessSnapshotAsync();
-        Snack.Add($"Menu access saved for {_menuUser} ({_menuGrants.Count} grants).", Severity.Success);
+        Snack.Add($"Granted {_menuGrants.Count} menu item(s) to {_menuSelectedUsers.Count} user(s).", Severity.Success);
+    }
+
+    private async Task RevokeMenuAccessAsync()
+    {
+        if (_menuSelectedUsers.Count == 0 || _menuGrants.Count == 0) return;
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var toRemove = await db.UserMenuAccess
+            .Where(g => _menuSelectedUsers.Contains(g.Username) && _menuGrants.Contains(g.MenuKey))
+            .ToListAsync();
+        db.UserMenuAccess.RemoveRange(toRemove);
+        await db.SaveChangesAsync();
+        foreach (var username in _menuSelectedUsers) Cache.Remove(AuthStateCurrentUser.ProfileCacheKey(username));
+        if (_showAllAccess) await RefreshAllAccessSnapshotAsync();
+        Snack.Add($"Revoked {_menuGrants.Count} menu item(s) from {_menuSelectedUsers.Count} user(s).", Severity.Success);
     }
 
     // ---------------- Country access ----------------
