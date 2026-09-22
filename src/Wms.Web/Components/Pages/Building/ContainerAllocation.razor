@@ -245,6 +245,23 @@
         </button>
     </div>
 
+    @if (_weeklySales is not null)
+    {
+        <div style="margin-top:12px; padding:8px 12px; border-radius:var(--r-sm); font-size:12px; display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+                    @(_weeklySales.Ok
+                        ? "background:#ecfdf5; border:1px solid #10b981; color:#065f46"
+                        : "background:#fee2e2; border:1px solid #f87171; color:#991b1b")">
+            <span style="font-weight:700; text-transform:uppercase; letter-spacing:1px; font-size:11px">Weekly sales</span>
+            <span>
+                Last received: <b>@(_weeklySales.LatestYear is null ? "none" : $"{_weeklySales.LatestYear}-W{_weeklySales.LatestWeek:00}")</b>
+                @if (_weeklySales.LatestReceivedTS is not null) { <span>on <b>@_weeklySales.LatestReceivedTS.Value.ToString("dd-MMM-yyyy HH:mm")</b></span> }
+                · current week <b>@_weeklySales.AnchorYear-W@(_weeklySales.AnchorWeek.ToString("00"))</b>
+                · needs <b>@_weeklySales.ExpectedYear-W@(_weeklySales.ExpectedWeek.ToString("00"))</b>
+                @(_weeklySales.Ok ? "— OK" : "— MISSING, Process is blocked for OTS-based options")
+            </span>
+        </div>
+    }
+
     @if (_progressTotal > 0 || _busy)
     {
         <div style="margin-top:14px; padding:12px 14px; background:var(--bfl-yellow-lite); border:1px solid var(--bfl-yellow); border-radius:var(--r-sm)">
@@ -1064,6 +1081,7 @@
     private List<AllocationRow> _allocation = new();
     private AllocationStatus? _status;
     private ContainerAllocationValidationResult? _validation;
+    private WeeklySalesStatus? _weeklySales;
 
     private string _country = "";
     private string _warehouse = "";
@@ -1283,6 +1301,12 @@
         try { _simCountries = await Svc.GetSimCountriesAsync(); }
         catch { _simCountries = new(); }
         _simCountries = CurrentUser.FilterCountries(_simCountries).ToList();
+
+        // Weekly sales freshness banner. Informational here; the same check is a
+        // hard validation step inside Process, so a stale feed is visible before
+        // anyone clicks and enforced when they do.
+        try { _weeklySales = await Svc.GetWeeklySalesStatusAsync(); }
+        catch { _weeklySales = null; }
 
         // Default Country + Warehouse from the logged-in user's WmsUser row.
         // Case-insensitive match so a WmsUser.Country of "UAE" still resolves
