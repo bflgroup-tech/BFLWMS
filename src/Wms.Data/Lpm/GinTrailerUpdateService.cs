@@ -21,6 +21,9 @@ public record GinTrailerLoadResult(List<GinTrailerRow> Valid, List<int> NotFound
 /// old and new Trailer No., who made the change and when — all in one transaction.
 /// Rejected if the chosen Trailer No. was already used (any GIN) earlier the same day.
 ///
+/// GINTrailerLog columns: SRNo (the GIN), OldTrailerNo, NewTrailerNo, UpdateUSER (the
+/// updating user's email), UpdatedTS.
+///
 /// FromWarehouse-based restriction (only a user from the GIN's own warehouse may
 /// update it) is not yet implemented — pending confirmation of how a GIN's warehouse
 /// should be compared to the user's own warehouse.
@@ -133,7 +136,7 @@ public class GinTrailerUpdateService(IOnPremConnectionResolver resolver)
                 }
 
                 await c.ExecuteAsync(new CommandDefinition(@"
-                    INSERT INTO BFLDATA.dbo.GINTrailerLog (GIN, OldTrailerNo, NewTrailerNo, UpdatedBy, UpdatedTS)
+                    INSERT INTO BFLDATA.dbo.GINTrailerLog (SRNo, OldTrailerNo, NewTrailerNo, UpdateUSER, UpdatedTS)
                     VALUES (@ginNo, @oldTrailerNo, @stamped, @username, @nowGst)",
                     new { ginNo, oldTrailerNo, stamped, username, nowGst }, tx, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
             }
