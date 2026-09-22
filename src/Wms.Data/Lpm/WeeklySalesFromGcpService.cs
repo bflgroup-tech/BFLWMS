@@ -14,11 +14,14 @@ namespace Wms.Data.Lpm;
 public record WeeklySalesGcpRow(string StoreId, int DivCode, int Year1, int Month1, int Week, int? SalesQty, decimal? SalesAmt, decimal? Turns);
 
 /// <summary>
-/// Pulls the full weekly sales feed from BigQuery (mvp-data-bi.cdm_silver.it_sales_qty)
-/// and MERGE-upserts it into dbo.LPM_Weekly_SalesAmt — the same table
-/// OtsPoAllocationService's "Generate Volume Group" reads for weighted monthly sales.
-/// The source has no country column, so the same BigQuery result set is written for
-/// every active country.
+/// Pulls only the current + last week of the sales feed from BigQuery
+/// (mvp-data-bi.cdm_silver.it_sales_qty — the two most recent distinct
+/// (CalendarYear, CalendarWeek) pairs in that table) and replaces those two weeks'
+/// worth of rows in dbo.LPM_Weekly_SalesAmt — the same table OtsPoAllocationService's
+/// "Generate Volume Group" reads for weighted monthly sales. Older weeks are never
+/// re-touched once written, since only the trailing two weeks in the source actually
+/// change. The source has no country column, so the same BigQuery result set is
+/// written for every active country.
 ///
 /// Writes go through the OnPremBackup connection (same one MissingExcessSnapshotService
 /// uses) rather than a per-country connection string — no per-country
@@ -35,9 +38,20 @@ public class WeeklySalesFromGcpService(IOnPremConnectionResolver resolver, IOpti
     private const int CommandTimeoutSeconds = 600;
     public const string JobName = "WeeklySalesFromGCP";
 
+    // Only the current + last week actually change once published, so pull just the
+    // two most recent distinct (CalendarYear, CalendarWeek) pairs rather than the
+    // full 300K+ row history.
     private const string SourceQuery = @"
-        SELECT storeid, DivCode, CalendarYear, CalendarMonth, CalendarWeek, Soldqty, NetSalesExVAT, Turns
-          FROM cdm_silver.it_sales_qty";
+        WITH recent_weeks AS (
+          SELECT DISTINCT CalendarYear, CalendarWeek
+            FROM cdm_silver.it_sales_qty
+           ORDER BY CalendarYear DESC, CalendarWeek DESC
+           LIMIT 2
+        )
+        SELECT s.storeid, s.DivCode, s.CalendarYear, s.CalendarMonth, s.CalendarWeek, s.Soldqty, s.NetSalesExVAT, s.Turns
+          FROM cdm_silver.it_sales_qty s
+          JOIN recent_weeks w
+            ON s.CalendarYear = w.CalendarYear AND s.CalendarWeek = w.CalendarWeek";
 
     private static string WithConnectTimeout(string cs)
     {
@@ -206,7 +220,7 @@ public class WeeklySalesFromGcpService(IOnPremConnectionResolver resolver, IOpti
 
         // The source can carry more than one row per (StoreId, DivCode, Year1, Month1,
         // Week) — that's LPM_Weekly_SalesAmt's primary key, so a duplicate there throws
-        // a PK violation on the MERGE. Sum duplicates into one row per key rather than
+        // a PK violation on the INSERT. Sum duplicates into one row per key rather than
         // arbitrarily dropping one.
         return rows
             .GroupBy(r => (r.StoreId, r.DivCode, r.Year1, r.Month1, r.Week))
@@ -218,10 +232,12 @@ public class WeeklySalesFromGcpService(IOnPremConnectionResolver resolver, IOpti
             .ToList();
     }
 
-    // ====================== Upsert into one country's on-prem LPM_Weekly_SalesAmt ======================
-    // Bulk-copies the full feed (300K+ rows) into a session-scoped #Staging temp table,
-    // then a single set-based MERGE — row-by-row Dapper execution here would mean one
-    // round trip per row, which is minutes-to-hours slow at this volume.
+    // ====================== Replace current + last week in one country's on-prem LPM_Weekly_SalesAmt ======================
+    // Bulk-copies the fetched rows (already scoped to the 2 most recent weeks) into a
+    // session-scoped #Staging temp table, deletes any existing rows for those same
+    // (Year1, Week) pairs, then inserts the staged rows fresh — guarantees no stale
+    // row survives even if BigQuery dropped a (StoreID, DivCode) combo that used to
+    // report for that week, which a MERGE (matched-key only) would silently leave behind.
 
     private const string CreateStagingSql = @"
         CREATE TABLE #Staging (
@@ -235,15 +251,16 @@ public class WeeklySalesFromGcpService(IOnPremConnectionResolver resolver, IOpti
             Turns    DECIMAL(18,2) NULL
         );";
 
-    private const string MergeFromStagingSql = @"
-        MERGE dbo.LPM_Weekly_SalesAmt AS t
-        USING #Staging AS s
-          ON t.StoreID = s.StoreID AND t.DivCode = s.DivCode AND t.Year1 = s.Year1 AND t.Month1 = s.Month1 AND t.Week = s.Week
-        WHEN MATCHED THEN
-          UPDATE SET SalesQty = s.SalesQty, SalesAmt = s.SalesAmt, Turns = s.Turns, UpdatedTS = DATEADD(hour, 4, SYSUTCDATETIME())
-        WHEN NOT MATCHED THEN
-          INSERT (StoreID, DivCode, Year1, Month1, Week, SalesQty, SalesAmt, CreateTS, Turns)
-          VALUES (s.StoreID, s.DivCode, s.Year1, s.Month1, s.Week, s.SalesQty, s.SalesAmt, DATEADD(hour, 4, SYSUTCDATETIME()), s.Turns);";
+    private const string DeleteRecentWeeksSql = @"
+        DELETE t
+          FROM dbo.LPM_Weekly_SalesAmt AS t
+          JOIN (SELECT DISTINCT Year1, Week FROM #Staging) AS w
+            ON t.Year1 = w.Year1 AND t.Week = w.Week;";
+
+    private const string InsertFromStagingSql = @"
+        INSERT INTO dbo.LPM_Weekly_SalesAmt (StoreID, DivCode, Year1, Month1, Week, SalesQty, SalesAmt, CreateTS, Turns)
+        SELECT StoreID, DivCode, Year1, Month1, Week, SalesQty, SalesAmt, DATEADD(hour, 4, SYSUTCDATETIME()), Turns
+          FROM #Staging;";
 
     private static DataTable ToStagingTable(IReadOnlyList<WeeklySalesGcpRow> rows)
     {
@@ -284,7 +301,9 @@ public class WeeklySalesFromGcpService(IOnPremConnectionResolver resolver, IOpti
             }
 
             await c.ExecuteAsync(new CommandDefinition(
-                MergeFromStagingSql, transaction: tx, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+                DeleteRecentWeeksSql, transaction: tx, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            await c.ExecuteAsync(new CommandDefinition(
+                InsertFromStagingSql, transaction: tx, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
 
             await tx.CommitAsync(ct);
             return rows.Count;
@@ -292,8 +311,8 @@ public class WeeklySalesFromGcpService(IOnPremConnectionResolver resolver, IOpti
         catch { await tx.RollbackAsync(ct); throw; }
     }
 
-    /// <summary>On-demand "Refresh Now" — fetches the full BigQuery feed and upserts it
-    /// into the given country's on-prem DB.</summary>
+    /// <summary>On-demand "Refresh Now" — fetches the current + last week of the
+    /// BigQuery feed and replaces those weeks in the given country's on-prem DB.</summary>
     public async Task<int> RefreshCountryAsync(string country, CancellationToken ct = default)
     {
         var rows = await FetchFromBigQueryAsync(ct);
