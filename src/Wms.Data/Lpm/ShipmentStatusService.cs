@@ -137,7 +137,9 @@ public class ShipmentStatusService(IOnPremConnectionResolver resolver)
     // Neither half has its own JAFZA/LOCAL/International split, since the source table only
     // carries Country + TrfNo — no ShipNo to derive Type from.
 
-    private record IntransitExportRow(string Intransit, int TrfCount, int Qty);
+    // vTransferDetail.Quantity is decimal, not int — SUM(b.Quantity) materializes as
+    // decimal (this is what broke Dapper's constructor match before: "9746.000000").
+    private record IntransitExportRow(string Intransit, int TrfCount, decimal Qty);
 
     private async Task<ExportTransferSummary> GetExportTransferSummaryAsync(string country, CancellationToken ct)
     {
@@ -153,8 +155,8 @@ public class ShipmentStatusService(IOnPremConnectionResolver resolver)
         var intransit = rows.FirstOrDefault(r => string.Equals(r.Intransit, "Y", StringComparison.OrdinalIgnoreCase));
         var reserved  = rows.FirstOrDefault(r => string.Equals(r.Intransit, "C", StringComparison.OrdinalIgnoreCase));
         return new ExportTransferSummary(country,
-            intransit?.TrfCount ?? 0, intransit?.Qty ?? 0,
-            reserved?.TrfCount ?? 0, reserved?.Qty ?? 0);
+            intransit?.TrfCount ?? 0, (int)(intransit?.Qty ?? 0),
+            reserved?.TrfCount ?? 0, (int)(reserved?.Qty ?? 0));
     }
 
     private async Task<List<ShipmentStatusRow>> GetForCountryAsync(
