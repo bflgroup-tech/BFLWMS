@@ -176,6 +176,13 @@ public class Program
         builder.Services.AddScoped<Wms.Web.Hosting.PendingGoodsReceiptEmailSender>();
         builder.Services.AddScoped<Wms.Data.Notifications.PendingGoodsReceiptEmailService>();
 
+        // Weekly RD (RTV) / RS (MC HOLD) ageing mail — same shape as above, but
+        // fires on a configured day + GST time instead of an interval.
+        builder.Services.AddHostedService<Wms.Web.Hosting.RdRsAgeingEmailScheduledService>();
+        builder.Services.AddScoped<Wms.Web.Hosting.RdRsAgeingEmailSender>();
+        builder.Services.AddScoped<Wms.Data.Notifications.RdRsAgeingEmailService>();
+        builder.Services.AddScoped<RdRsAgeingService>();
+
         // Daily 08:00 GST: pull ECOM SOH from BigQuery. Daily 08:15 GST: compare it
         // against MFCS stock — a fixed offset after the pull, not a wait-chain (see
         // IncreffMfcsSohCompareBatchService for the readiness-check/defer behavior).
