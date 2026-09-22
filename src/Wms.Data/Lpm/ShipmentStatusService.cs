@@ -395,7 +395,7 @@ public class ShipmentStatusService(IOnPremConnectionResolver resolver)
         FROM USA.dbo.ExportPass ep WITH (NOLOCK)
         JOIN bfldata..vGoodsIssueplt gi WITH (NOLOCK) ON gi.SrNo = ep.GINNo
         JOIN bfldata.dbo.DataSettings ds WITH (NOLOCK) ON ds.ShopName = gi.ShopIssue
-        LEFT JOIN bfldata..contreceiptExport cre WITH (NOLOCK) ON cre.GINNO = ep.GINNo
+        LEFT JOIN bfldata..contreceiptExport cre WITH (NOLOCK) ON TRIM(cre.GINNO) = TRIM(ep.GINNo)
         WHERE (@country IS NULL OR ds.Country = @country)
           AND (
                 (cre.ReceiptDt IS NOT NULL AND cre.ReceiptDt >= @from AND cre.ReceiptDt <= @to)
@@ -417,7 +417,7 @@ public class ShipmentStatusService(IOnPremConnectionResolver resolver)
         FROM USA.dbo.ExportPass ep WITH (NOLOCK)
         JOIN bfldata..vGoodsIssueplt gi WITH (NOLOCK) ON gi.SrNo = ep.GINNo
         JOIN bfldata.dbo.DataSettings ds WITH (NOLOCK) ON ds.ShopName = gi.ShopIssue
-        LEFT JOIN bfldata..contreceiptExport cre WITH (NOLOCK) ON cre.GINNO = ep.GINNo
+        LEFT JOIN bfldata..contreceiptExport cre WITH (NOLOCK) ON TRIM(cre.GINNO) = TRIM(ep.GINNo)
         WHERE (@country IS NULL OR ds.Country = @country)
           AND (
                 (cre.ReceiptDt IS NOT NULL AND cre.ReceiptDt >= @from AND cre.ReceiptDt <= @to)
@@ -604,7 +604,7 @@ public class ShipmentStatusService(IOnPremConnectionResolver resolver)
             FROM USA.dbo.ExportPass ep WITH (NOLOCK)
             JOIN bfldata..vGoodsIssueplt gi WITH (NOLOCK) ON gi.SrNo = ep.GINNo
             JOIN bfldata.dbo.DataSettings ds WITH (NOLOCK) ON ds.ShopName = gi.ShopIssue
-            LEFT JOIN bfldata..contreceiptExport cre WITH (NOLOCK) ON cre.GINNO = ep.GINNo
+            LEFT JOIN bfldata..contreceiptExport cre WITH (NOLOCK) ON TRIM(cre.GINNO) = TRIM(ep.GINNo)
             WHERE (@country IS NULL OR ds.Country = @country)
               AND cre.ReceiptDt IS NULL
               AND ep.Trndate <= @to AND ep.Trndate >= @inTransitFloor",
