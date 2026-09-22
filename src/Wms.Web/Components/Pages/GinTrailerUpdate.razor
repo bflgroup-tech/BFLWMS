@@ -14,10 +14,11 @@
     <p>
         Enter one or more GINs (comma-separated) and click Load GINs, pick a Trailer No.,
         then Submit — the trailer is stamped onto every loaded GIN as "TrailerNo-HH:MM"
-        (e.g. 8888-17:40) and each change is logged. A GIN older than 2 days can't be
-        loaded, and a Trailer No. already used today can't be reused.
+        (e.g. 8888-17:40) and each change is logged.
     </p>
+    <p>* A GIN older than 2 days can't be loaded.</p>
     <AuthorizeView Roles="Admin">
+        <p>* A Trailer No. already used today can't be reused.</p>
         <p>
             Trailer No. options come from <code>BFLDATA..WHTrailers</code> (no manual entry).
             Loads/updates <code>bfldata.dbo.TEST_PLT</code> (keyed by <code>SRNo</code>) and logs
