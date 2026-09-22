@@ -133,7 +133,7 @@
             <select @bind="_statusFilter" style="width:100%; padding:5px 7px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:12px; background:white">
                 <option value="">All</option>
                 <option value="InTransit">InTransit</option>
-                <option value="Delivered">Delivered</option>
+                <option value="Delivered">Received</option>
             </select>
         </div>
         <div style="flex:0 0 150px;">
@@ -208,7 +208,7 @@
                                     </div>
                                     <div style="display:flex; align-items:stretch; margin-top:8px;">
                                         <div style="flex:1; text-align:center; min-width:0;">
-                                            <div style="font-size:12px; color:var(--text-secondary);">Delivered</div>
+                                            <div style="font-size:12px; color:var(--text-secondary);">Received</div>
                                             <div style="display:flex; justify-content:center; gap:8px; margin-top:5px;">
                                                 <div>
                                                     <div style="font-size:11px; color:var(--text-secondary); white-space:nowrap;">Ship Count</div>
@@ -283,7 +283,7 @@
             {
                 <div style="flex:0 0 260px; text-align:center;">
                     <div style="font-size:11px; font-weight:700; color:var(--text-secondary); text-transform:uppercase; margin-bottom:6px;">
-                        Quantity by Country (Delivered / Intransit)
+                        Quantity by Country (Received / Intransit)
                     </div>
                     <svg viewBox="0 0 200 200" width="220" height="220">
                         @if (CountryPieSlices.Count == 1)
@@ -348,7 +348,7 @@
                     <tr>
                         <td>@s.Type</td>
                         <td>@s.Country</td>
-                        <td>@s.Status</td>
+                        <td>@DisplayStatus(s.Status)</td>
                         <td style="text-align:right;">@s.ShipmentCount.ToString("N0")</td>
                         <td style="text-align:right;">@s.Quantity.ToString("N0")</td>
                         <td style="text-align:right;">@(s.BoxCount?.ToString("N0") ?? "")</td>
@@ -431,7 +431,7 @@ else if (_rows.Count > 0 && !_isBflGroupView)
                         <td>@r.Type</td>
                         <td>@r.Country</td>
                         <td style="text-align:right;">@r.ShipNo</td>
-                        <td>@r.Status</td>
+                        <td>@DisplayStatus(r.Status)</td>
                         <td>
                             @if (!string.IsNullOrWhiteSpace(r.GinNo))
                             {
@@ -622,6 +622,12 @@ else if (_rows.Count > 0 && !_isBflGroupView)
             .ToList();
 
     // Consistent color per Source Location across every country's card row.
+    // "Delivered" is the underlying Status value everywhere else in this file
+    // (filter, DB comparisons, CSV export) — this only relabels it for on-screen
+    // display, so it reads "Received" without touching any data matching logic.
+    private static string DisplayStatus(string? status) =>
+        string.Equals(status, "Delivered", StringComparison.OrdinalIgnoreCase) ? "Received" : status ?? "";
+
     private static (string Bg, string Text) TypeColor(string type) => type switch
     {
         "JAFZA"         => ("#fde8f0", "#b3195c"),
@@ -654,7 +660,7 @@ else if (_rows.Count > 0 && !_isBflGroupView)
                     var color = PieColors[i % PieColors.Length];
                     return new[]
                     {
-                        (cts.Country, Status: "Delivered", Qty: (decimal)total.DeliveredQty, Color: color),
+                        (cts.Country, Status: "Received", Qty: (decimal)total.DeliveredQty, Color: color),
                         (cts.Country, Status: "Intransit", Qty: (decimal)total.IntransitQty, Color: Lighten(color, 0.5)),
                     };
                 })
