@@ -5,11 +5,13 @@ namespace Wms.Web.Hosting;
 /// <summary>
 /// Fires once a week, Sunday 22:00 GST (Arabian Standard Time = UTC+04:00).
 /// For each ACTIVE country in WmsRptCountryConfig (scoped to JobName
-/// 'WeeklySalesFromGCP'), pulls the full weekly-sales feed from BigQuery once
-/// and MERGE-upserts it into that country's on-prem LPM_Weekly_SalesAmt, logging
-/// each run into WmsRptJobRun. On success, chains LpmSalesTurnsRefreshService to
-/// rebuild dbo.LPM_SalesTurns for the current + previous GST month. Lives
-/// in-process; relies on App Service Always On to be present at fire time.
+/// 'WeeklySalesFromGCP'), pulls the current + last week of the sales feed from
+/// BigQuery once and replaces those two weeks' rows in that country's on-prem
+/// LPM_Weekly_SalesAmt (delete-then-insert, scoped to the weeks BigQuery just
+/// returned), logging each run into WmsRptJobRun. On success, chains
+/// LpmSalesTurnsRefreshService to rebuild dbo.LPM_SalesTurns for the current +
+/// previous GST month. Lives in-process; relies on App Service Always On to be
+/// present at fire time.
 /// </summary>
 public class WeeklySalesBatchService(IServiceProvider sp, ILogger<WeeklySalesBatchService> log)
     : BackgroundService
