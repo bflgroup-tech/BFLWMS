@@ -182,9 +182,13 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                 new { y = expY }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)) ?? 52;
         }
 
+        // CreateTS, never UpdatedTS: Volume Group generation re-stamps UpdatedTS on
+        // EVERY row when it refreshes MonthlyWeightage, so UpdatedTS is "when VG last
+        // ran", not "when this week's sales arrived". CreateTS is set once, by the
+        // feed, when the row is first inserted — the only honest arrival time.
         var latest = await c.QueryFirstOrDefaultAsync<(int? Y, int? W, DateTime? Ts)>(new CommandDefinition(@"
             SELECT TOP 1 Year1 AS Y, Week AS W,
-                   MAX(COALESCE(UpdatedTS, CreateTS)) AS Ts
+                   MAX(CreateTS) AS Ts
               FROM dbo.LPM_Weekly_SalesAmt WITH (NOLOCK)
              GROUP BY Year1, Week
              ORDER BY Year1 DESC, Week DESC",
