@@ -36,6 +36,12 @@
         <button class="aiwms-btn aiwms-btn-secondary" @onclick="ExportExcelAsync" disabled="@(_exporting || _rows.Count == 0)">
             @(_exporting ? "Exporting..." : "Export Excel")
         </button>
+        @if (_loaded && _rows.Count > 0)
+        {
+            <span style="font-size:13px; font-weight:700; @(IsEdi ? "color:#16a34a;" : "color:#000;")">
+                @(IsEdi ? "EDI Enabled" : "Non EDI")
+            </span>
+        }
     </div>
 </div>
 
@@ -74,7 +80,6 @@
                             <th>Style</th>
                             <th>UPC</th>
                             <th>Created At</th>
-                            <th>EDI</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -93,7 +98,6 @@
                                 <td>@r.Style</td>
                                 <td style="font-family:Consolas, monospace">@r.UPC</td>
                                 <td>@(r.CreatedAt?.ToString("dd-MMM-yyyy HH:mm") ?? "")</td>
-                                <td style="@(string.Equals(r.EDI, "Y", StringComparison.OrdinalIgnoreCase) ? "background:#dcfce7; color:#14532d; font-weight:700;" : "")">@r.EDI</td>
                             </tr>
                         }
                     </tbody>
@@ -110,6 +114,8 @@
     private string _message = "";
     private bool _isError;
     private List<OrderSheetRow> _rows = new();
+
+    private bool IsEdi => _rows.Count > 0 && string.Equals(_rows[0].EDI, "Y", StringComparison.OrdinalIgnoreCase);
 
     private async Task OnKeyDown(KeyboardEventArgs e)
     {
@@ -142,11 +148,16 @@
         {
             using var wb = new XLWorkbook();
             var ws = wb.AddWorksheet("Order Sheet");
-            string[] headers = { "Cont No", "PO No", "BOL", "Item Code", "Item Name", "Division", "Qty", "LPM", "LPM Dt", "Style", "UPC", "Created At", "EDI" };
-            for (int i = 0; i < headers.Length; i++) ws.Cell(1, i + 1).Value = headers[i];
-            ws.Row(1).Style.Font.Bold = true;
 
-            int row = 2;
+            ws.Cell(1, 1).Value = IsEdi ? "EDI Enabled" : "Non EDI";
+            ws.Cell(1, 1).Style.Font.Bold = true;
+            ws.Cell(1, 1).Style.Font.FontColor = IsEdi ? XLColor.FromHtml("#16A34A") : XLColor.Black;
+
+            string[] headers = { "Cont No", "PO No", "BOL", "Item Code", "Item Name", "Division", "Qty", "LPM", "LPM Dt", "Style", "UPC", "Created At" };
+            for (int i = 0; i < headers.Length; i++) ws.Cell(2, i + 1).Value = headers[i];
+            ws.Row(2).Style.Font.Bold = true;
+
+            int row = 3;
             foreach (var r in _rows)
             {
                 ws.Cell(row, 1).Value  = r.ContNo;
@@ -161,13 +172,6 @@
                 ws.Cell(row, 10).Value = r.Style;
                 ws.Cell(row, 11).Value = r.UPC;
                 ws.Cell(row, 12).Value = r.CreatedAt;
-                ws.Cell(row, 13).Value = r.EDI;
-                if (string.Equals(r.EDI, "Y", StringComparison.OrdinalIgnoreCase))
-                {
-                    ws.Cell(row, 13).Style.Fill.BackgroundColor = XLColor.FromHtml("#DCFCE7");
-                    ws.Cell(row, 13).Style.Font.FontColor = XLColor.FromHtml("#14532D");
-                    ws.Cell(row, 13).Style.Font.Bold = true;
-                }
                 row++;
             }
             // Item codes and UPCs are long digit strings — text, or Excel turns them into 1.23E+12.
