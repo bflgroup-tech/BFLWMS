@@ -1,0 +1,201 @@
+@page "/operations/gin-trailer-update"
+@rendermode RenderMode.InteractiveServer
+@using Wms.Core
+@using Wms.Data.Lpm
+@attribute [Authorize(Policy = MenuKeys.GIN_TRAILER_UPDATE)]
+@inject GinTrailerUpdateService Svc
+@inject ICurrentUser Me
+@inject Microsoft.JSInterop.IJSRuntime JS
+
+<PageTitle>WMS — GIN Trailer Update</PageTitle>
+
+<div class="aiwms-page-header">
+    <h2>GIN Trailer Update</h2>
+    <p>
+        Enter one or more GINs (comma-separated) and click Load GINs, pick a Trailer No.,
+        then Submit — the trailer is stamped onto every loaded GIN as "TrailerNo-HH:MM"
+        (e.g. 8888-17:40) and each change is logged.
+    </p>
+    <p>* A GIN older than 2 days can't be loaded.</p>
+    <AuthorizeView Roles="Admin">
+        <p>* A Trailer No. already used today can't be reused.</p>
+        <p>
+            Trailer No. options come from <code>BFLDATA..WHTrailers</code> (no manual entry).
+            Loads/updates <code>bfldata.dbo.TEST_PLT</code> (keyed by <code>SRNo</code>) and logs
+            the GIN, old and new Trailer No., who made the change and when to
+            <code>BFLDATA..GINTrailerLog</code>.
+        </p>
+    </AuthorizeView>
+</div>
+
+@if (!string.IsNullOrEmpty(_message))
+{
+    <div class="aiwms-alert @(_isError ? "error" : "info")">@_message</div>
+}
+
+<div class="aiwms-section">
+    <div style="display:flex; gap:20px; flex-wrap:wrap; align-items:end">
+        <div>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">GIN(S) — COMMA-SEPARATED *</label>
+            <input @bind="_ginInput" @bind:event="oninput" placeholder="e.g. 67569, 67570" disabled="@_busy"
+                   style="min-width:260px; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); background:white; font-size:13px; font-family:Consolas, monospace" />
+        </div>
+        <div>
+            <button class="aiwms-btn aiwms-btn-secondary" @onclick="LoadGinsAsync" disabled="@(_busy || string.IsNullOrWhiteSpace(_ginInput))">
+                @(_busy ? "Working..." : "Load GINs")
+            </button>
+        </div>
+        <div>
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">TRAILER NO *</label>
+            <select @bind="_trailerNo"
+                    style="min-width:180px; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); background:white; font-size:13px"
+                    disabled="@_busy">
+                <option value="">(pick a trailer)</option>
+                @foreach (var t in _trailerNos) { <option value="@t">@t</option> }
+            </select>
+        </div>
+        @if (!string.IsNullOrWhiteSpace(_trailerNo))
+        {
+            <div>
+                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">WILL BE SET TO</label>
+                <div style="padding:8px 10px; font-size:13px; font-family:Consolas, monospace; font-weight:700; color:#16a34a;">
+                    @($"{_trailerNo}-{NowGst:HH:mm}")
+                </div>
+            </div>
+        }
+        <div>
+            <button class="aiwms-btn aiwms-btn-primary" @onclick="SubmitAsync"
+                    disabled="@(_busy || _validRows.Count == 0 || string.IsNullOrWhiteSpace(_trailerNo))">
+                @(_busy ? "Submitting..." : "Submit")
+            </button>
+        </div>
+    </div>
+</div>
+
+@if (_validRows.Count > 0)
+{
+    <div class="aiwms-section">
+        <div class="aiwms-card-header">@_validRows.Count GIN(s) loaded</div>
+        <table class="aiwms-table aiwms-table-dense" style="font-size:12px">
+            <thead>
+                <tr>
+                    <th>GIN No</th>
+                    <th>Entry Date</th>
+                    <th>Trailer No</th>
+                    <th>Remarks</th>
+                    <th>Warehouse From</th>
+                    <th>Warehouse To</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var r in _validRows)
+                {
+                    <tr>
+                        <td>@r.GinNo</td>
+                        <td>@(r.EntryDate?.ToString("dd-MMM-yyyy") ?? "")</td>
+                        <td>@r.TrailerNo</td>
+                        <td>@r.Remarks</td>
+                        <td>@r.WarehouseFrom</td>
+                        <td>@r.WarehouseTo</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+@code {
+    private string _ginInput = "";
+    private string _trailerNo = "";
+    private List<string> _trailerNos = new();
+    private List<GinTrailerRow> _validRows = new();
+    private bool _busy;
+    private string _message = "";
+    private bool _isError;
+
+    private static DateTime NowGst => DateTime.UtcNow.AddHours(4);
+
+    protected override async Task OnInitializedAsync()
+    {
+        await Me.EnsureLoadedAsync();
+        try { _trailerNos = await Svc.GetTrailerNosAsync(); }
+        catch (Exception ex) { ShowError($"Failed to load trailer numbers: {ex.Message}"); }
+    }
+
+    private static List<int> ParseGins(string input) =>
+        (input ?? "")
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(s => int.TryParse(s, out var n) ? n : (int?)null)
+            .Where(n => n.HasValue)
+            .Select(n => n!.Value)
+            .Distinct()
+            .ToList();
+
+    private async Task LoadGinsAsync()
+    {
+        var ginNos = ParseGins(_ginInput);
+        if (ginNos.Count == 0) { ShowError("Enter at least one valid GIN."); return; }
+
+        _busy = true; _message = ""; _validRows = new();
+        StateHasChanged();
+        try
+        {
+            var result = await Svc.LoadGinsAsync(ginNos);
+            _validRows = result.Valid;
+
+            var problems = new List<string>();
+            if (result.NotFound.Count > 0)
+                problems.Add($"GIN(s) not found: {string.Join(", ", result.NotFound)}");
+            if (result.TooOld.Count > 0)
+                problems.Add($"GIN(s) older than 2 days — not allowed: {string.Join(", ", result.TooOld)}");
+
+            if (problems.Count > 0)
+                await JS.InvokeVoidAsync("alert", string.Join("\n", problems));
+
+            if (_validRows.Count == 0) ShowError("No valid GINs to display.");
+            else if (problems.Count == 0) ShowInfo($"{_validRows.Count} GIN(s) loaded.");
+            else _message = "";
+        }
+        catch (Exception ex) { ShowError($"Load failed: {ex.Message}"); }
+        finally { _busy = false; }
+    }
+
+    private async Task SubmitAsync()
+    {
+        if (_validRows.Count == 0 || string.IsNullOrWhiteSpace(_trailerNo)) return;
+
+        var distinctFrom = _validRows.Select(r => r.WarehouseFrom).Distinct().Count();
+        var distinctTo = _validRows.Select(r => r.WarehouseTo).Distinct().Count();
+        if (distinctFrom > 1 || distinctTo > 1)
+        {
+            await JS.InvokeVoidAsync("alert", "Trailer number cannot be changed — the selected GINs have different Warehouse From/To.");
+            return;
+        }
+
+        var confirmed = await JS.InvokeAsync<bool>("confirm", "Please confirm if you want to change trailer number for these GINS?");
+        if (!confirmed) return;
+
+        _busy = true; _message = "";
+        StateHasChanged();
+        try
+        {
+            var ginNos = _validRows.Select(r => r.GinNo).ToList();
+            var result = await Svc.UpdateManyAsync(ginNos, _trailerNo, Me.Email ?? Me.Name);
+            if (result.Ok)
+            {
+                var refreshed = await Svc.LoadGinsAsync(ginNos);
+                _validRows = refreshed.Valid;
+                ShowInfo($"Trailer updated for {ginNos.Count} GIN(s).");
+            }
+            else
+            {
+                ShowError(result.Error ?? "Update failed.");
+            }
+        }
+        catch (Exception ex) { ShowError($"Update failed: {ex.Message}"); }
+        finally { _busy = false; }
+    }
+
+    private void ShowError(string m) { _message = m; _isError = true; }
+    private void ShowInfo(string m)  { _message = m; _isError = false; }
+}

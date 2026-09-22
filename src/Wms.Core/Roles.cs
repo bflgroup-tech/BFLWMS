@@ -25,6 +25,7 @@ public interface ICurrentUser
     string? ClientPcName { get; }
     string? Warehouse { get; }
     string? Country { get; }
+    string? Email { get; }
     /// <summary>true when the user has role 'Admin' — bypasses per-user country access.</summary>
     bool HasAllCountriesAccess { get; }
     /// <summary>Explicit country access rows from dbo.WmsUserCountryAccess. Ignored when

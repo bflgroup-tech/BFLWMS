@@ -25,6 +25,7 @@ public static class MenuKeys
     public const string ITEM_ENCODING             = "ITEM_ENCODING";
     public const string MAX_CAP_UPLOAD            = "MAX_CAP_UPLOAD";
     public const string DIV_STORES_TURNS          = "DIV_STORES_TURNS";
+    public const string GIN_TRAILER_UPDATE        = "GIN_TRAILER_UPDATE";
     public const string LPM_PRODUCTION            = "LPM_PRODUCTION";
 
     public const string RPT_PENDING_PURCHASE      = "RPT_PENDING_PURCHASE";
@@ -103,6 +104,8 @@ public static class MenuKeys
         new MenuEntry(MAX_CAP_UPLOAD,         "Operations",          "Warehouse Min/Max Cap Upload", "capacity/max-cap-upload", new[] { Roles.Admin, Roles.WHManager }),
 
         new MenuEntry(DIV_STORES_TURNS,       "Operations",          "Div Stores Turns Upload",   "lpm/div-stores-turns",      new[] { Roles.Admin, Roles.WHManager }),
+
+        new MenuEntry(GIN_TRAILER_UPDATE,     "Operations",          "GIN Trailer Update",        "operations/gin-trailer-update", new[] { Roles.Admin, Roles.WHManager }),
 
         new MenuEntry(LPM_PRODUCTION,        "Production to Stores","LPM Production",            "production/lpm",            new[] { Roles.Admin, Roles.WHAssociate, Roles.WHSupervisor, Roles.WHManager }),
 
