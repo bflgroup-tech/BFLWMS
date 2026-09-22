@@ -32,11 +32,13 @@ public class GinTrailerUpdateService(IOnPremConnectionResolver resolver)
 
     private SqlConnection OpenConnection()
     {
-        // Temporarily back on OnPremBackupDB_ConnectionString — WmsProductionDb isn't
-        // configured in local dev secrets yet. Switch back once that's set up; the
-        // earlier UPDATE-denied error on TEST_PLT via this connection still needs
-        // resolving on the DB side.
-        var c = new SqlConnection(resolver.GetOnPremBackupConnectionString());
+        // WmsProductionDb, not OnPremBackupDB — the latter's login was denied UPDATE
+        // on BFLDATA.dbo.TEST_PLT even after a GRANT was applied. WmsProductionDb isn't
+        // configured in local dev secrets (add ConnectionStrings:WmsProductionDb to
+        // user-secrets to test locally), but is already used in production by several
+        // other BFLDATA-writing features (GenerateEan13Service, JafzaExportCheckingService,
+        // ContainerAllocationDataSyncService, TechnoBuildingService).
+        var c = new SqlConnection(resolver.GetWmsProductionDbConnectionString());
         c.Open();
         return c;
     }
