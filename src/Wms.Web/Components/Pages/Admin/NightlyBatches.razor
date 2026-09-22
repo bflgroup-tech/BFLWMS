@@ -15,6 +15,7 @@
 @inject IncreffSohFromGcpNewService IncreffSohNew
 @inject IncreffMfcsSohCompareService IncreffCompare
 @inject GenerateEan13Service Ean13
+@inject ApiGinIntegrationService ApiGin
 @inject OtsPoAllocationService Ots
 @inject ContainerAllocationDataSyncService Sync
 @inject PendingGoodsReceiptEmailService Pgr
@@ -30,7 +31,20 @@
 </div>
 
 <div class="aiwms-section">
-    <div class="aiwms-card-header">Scheduled Jobs</div>
+    <div class="aiwms-card-header" style="display:flex; align-items:center; justify-content:space-between; gap:10px">
+        <span>Scheduled Jobs</span>
+        <div style="display:flex; align-items:center; gap:8px">
+            <label style="font-size:11px; font-weight:700; color:var(--text-secondary)">PROCESS</label>
+            <select @bind="_jobFilter" @bind:after="RefreshLogAsync" style="padding:6px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;">
+                <option value="">All</option>
+                @foreach (var job in JobNames)
+                {
+                    <option value="@job">@job</option>
+                }
+            </select>
+            <button class="aiwms-btn aiwms-btn-secondary" @onclick="RefreshLogAsync" disabled="@_busy">Reload</button>
+        </div>
+    </div>
     <table class="aiwms-table aiwms-table-dense">
         <thead>
             <tr>
@@ -45,7 +59,7 @@
             </tr>
         </thead>
         <tbody>
-            @foreach (var j in _jobs)
+            @foreach (var j in FilteredJobs)
             {
                 <tr>
                     <td style="white-space:nowrap"><strong>@j.JobName</strong></td>
@@ -71,9 +85,9 @@
                     </td>
                 </tr>
             }
-            @if (_jobs.Count == 0)
+            @if (FilteredJobs.Count == 0)
             {
-                <tr><td colspan="8" style="font-style:italic; color:var(--text-secondary)">No jobs configured yet. Add a country with the form below.</td></tr>
+                <tr><td colspan="8" style="font-style:italic; color:var(--text-secondary)">@(_jobFilter == "" ? "No jobs configured yet. Add a country with the form below." : "No jobs for this process.")</td></tr>
             }
         </tbody>
     </table>
@@ -112,20 +126,7 @@
 </div>
 
 <div class="aiwms-section">
-    <div class="aiwms-card-header" style="display:flex; align-items:center; justify-content:space-between; gap:10px">
-        <span>Recent runs — showing @FilteredRuns.Count of @_runs.Count</span>
-        <div style="display:flex; align-items:center; gap:8px">
-            <label style="font-size:11px; font-weight:700; color:var(--text-secondary)">PROCESS</label>
-            <select @bind="_jobFilter" style="padding:6px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;">
-                <option value="">All</option>
-                @foreach (var job in JobNames)
-                {
-                    <option value="@job">@job</option>
-                }
-            </select>
-            <button class="aiwms-btn aiwms-btn-secondary" @onclick="RefreshLogAsync" disabled="@_busy">Reload</button>
-        </div>
-    </div>
+    <div class="aiwms-card-header">Recent runs — showing @FilteredRuns.Count of @_runs.Count</div>
     <table class="aiwms-table aiwms-table-dense">
         <thead>
             <tr>
@@ -192,6 +193,9 @@
 
     private List<RptJobRunRow> FilteredRuns =>
         string.IsNullOrEmpty(_jobFilter) ? _runs : _runs.Where(r => r.JobName == _jobFilter).ToList();
+
+    private List<JobVm> FilteredJobs =>
+        string.IsNullOrEmpty(_jobFilter) ? _jobs : _jobs.Where(j => j.JobName == _jobFilter).ToList();
 
     protected override async Task OnInitializedAsync()
     {
@@ -344,6 +348,17 @@
                 ean13.IsActive ? NextHourGst() : null,
                 active => ToggleSingleAsync(GenerateEan13Service.JobName, active),
                 new() { ("Generate Now", EventCallback.Factory.Create(this, GenerateEan13NowAsync)) }));
+
+            // 11. APIGinIntegration — on-demand only, no timer yet. Step 1 only: enqueues
+            //     eligible GINs into bfldata.dbo.APICallGIN. No activation state to
+            //     toggle, so the checkbox is disabled.
+            list.Add(new JobVm(
+                ApiGinIntegrationService.JobName, "On-demand", null,
+                true, default, "",
+                null,
+                active => Task.CompletedTask,
+                new() { ("Enqueue Now", EventCallback.Factory.Create(this, EnqueueApiGinNowAsync)) },
+                "on-demand only"));
         }
         catch (Exception ex) { Show($"Failed to load jobs: {ex.Message}", true); }
 
@@ -352,7 +367,7 @@
 
     private async Task RefreshLogAsync()
     {
-        try { _runs = await Snap.GetRecentRunsAsync(50); }
+        try { _runs = await Snap.GetRecentRunsAsync(50, string.IsNullOrEmpty(_jobFilter) ? null : _jobFilter); }
         catch (Exception ex) { Show($"Failed to load runs: {ex.Message}", true); }
     }
 
@@ -466,6 +481,18 @@
             var (rows, err) = await Ean13.RunOnceAsync("OnDemand", CurrentUser.Name ?? "");
             if (err is null) Show($"GenerateEAN13 done — {rows:N0} rows updated.", false);
             else             Show($"GenerateEAN13 failed: {err}", true);
+        }
+        finally { _busy = false; await RefreshLogAsync(); }
+    }
+
+    private async Task EnqueueApiGinNowAsync()
+    {
+        _busy = true; Show("Enqueuing eligible GINs…", false); await InvokeAsync(StateHasChanged);
+        try
+        {
+            var (rows, err) = await ApiGin.EnqueuePendingGinsAsync("OnDemand", CurrentUser.Name ?? "");
+            if (err is null) Show($"APIGinIntegration enqueue done — {rows:N0} GINs queued.", false);
+            else             Show($"APIGinIntegration enqueue failed: {err}", true);
         }
         finally { _busy = false; await RefreshLogAsync(); }
     }

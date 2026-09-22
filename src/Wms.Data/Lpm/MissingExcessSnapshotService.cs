@@ -119,15 +119,23 @@ public class MissingExcessSnapshotService(IOnPremConnectionResolver resolver, IC
         return lastStart is not null && lastStart.Value.Date == todayGst.Date;
     }
 
-    public async Task<List<RptJobRunRow>> GetRecentRunsAsync(int top = 50, CancellationToken ct = default)
+    /// <summary>
+    /// Most recent runs, optionally scoped to one JobName. Scoping happens in the
+    /// query itself rather than client-side — a job that fires far less often than
+    /// others (e.g. weekly vs. hourly) can easily fall entirely outside an unscoped
+    /// "top 50 across every job" window, making a client-side filter show zero runs
+    /// even though the job has real history further back.
+    /// </summary>
+    public async Task<List<RptJobRunRow>> GetRecentRunsAsync(int top = 50, string? jobName = null, CancellationToken ct = default)
     {
         await using var c = OpenWms();
         var rows = await c.QueryAsync<RptJobRunRow>(new CommandDefinition($@"
             SELECT TOP ({top}) RunId, JobName, Country, Mode, StartTS, EndTS,
                    Status, RowsProcessed, DatesProcessed, ErrorMessage, TriggeredBy
               FROM dbo.WmsRptJobRun
+             WHERE (@jobName IS NULL OR JobName = @jobName)
              ORDER BY StartTS DESC",
-            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            new { jobName }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         return rows.AsList();
     }
 
