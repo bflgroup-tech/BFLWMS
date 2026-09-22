@@ -180,7 +180,7 @@
         try
         {
             var ginNos = _validRows.Select(r => r.GinNo).ToList();
-            var result = await Svc.UpdateManyAsync(ginNos, _trailerNo, Me.Name);
+            var result = await Svc.UpdateManyAsync(ginNos, _trailerNo, Me.Email ?? Me.Name);
             if (result.Ok)
             {
                 var refreshed = await Svc.LoadGinsAsync(ginNos);

@@ -17,6 +17,7 @@ public class AuthStateCurrentUser(
     private string? _name;
     private string? _warehouse;
     private string? _country;
+    private string? _email;
     private bool _hasAllCountriesAccess;
     private IReadOnlyCollection<string> _allowedCountries = Array.Empty<string>();
     private IReadOnlyCollection<string> _allowedSections = Array.Empty<string>();
@@ -48,12 +49,12 @@ public class AuthStateCurrentUser(
             return;
         }
 
-        // 2) Load Country / Warehouse with cache + 5s timeout.
+        // 2) Load Country / Warehouse / Email with cache + 5s timeout.
         var key = ProfileCacheKey(_name);
-        if (cache.TryGetValue<(string?, string?)>(key, out var cached) &&
-            (cached.Item1 is not null || cached.Item2 is not null))
+        if (cache.TryGetValue<(string?, string?, string?)>(key, out var cached) &&
+            (cached.Item1 is not null || cached.Item2 is not null || cached.Item3 is not null))
         {
-            _warehouse = cached.Item1; _country = cached.Item2;
+            _warehouse = cached.Item1; _country = cached.Item2; _email = cached.Item3;
         }
         else
         {
@@ -64,17 +65,18 @@ public class AuthStateCurrentUser(
                 await using var db = await dbFactory.CreateDbContextAsync(cts.Token);
                 var row = await db.Users.AsNoTracking()
                     .Where(u => u.Username == _name)
-                    .Select(u => new { u.Warehouse, u.Country })
+                    .Select(u => new { u.Warehouse, u.Country, u.Email })
                     .FirstOrDefaultAsync(cts.Token);
                 _warehouse = row?.Warehouse;
                 _country   = row?.Country;
+                _email     = row?.Email;
             }
             catch { /* leave nulls */ }
 
-            var ttl = (_warehouse is null && _country is null)
+            var ttl = (_warehouse is null && _country is null && _email is null)
                 ? TimeSpan.FromSeconds(5)
                 : TimeSpan.FromMinutes(2);
-            cache.Set(key, (_warehouse, _country), ttl);
+            cache.Set(key, (_warehouse, _country, _email), ttl);
         }
 
         // Country access + admin bypass — cached separately so the shorter TTL on
@@ -206,6 +208,7 @@ public class AuthStateCurrentUser(
 
     public string? Warehouse => _warehouse;
     public string? Country   => _country;
+    public string? Email     => _email;
     public bool HasAllCountriesAccess => _hasAllCountriesAccess;
     public IReadOnlyCollection<string> AllowedCountries => _allowedCountries;
     public IEnumerable<string> FilterCountries(IEnumerable<string> all)
