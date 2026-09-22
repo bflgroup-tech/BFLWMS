@@ -10,11 +10,13 @@ public record GinTrailerRow(int GinNo, DateTime? EntryDate, string? TrailerNo, s
 
 public record GinTrailerLoadResult(List<GinTrailerRow> Valid, List<int> NotFound, List<int> TooOld);
 
+public record GinTrailerLogEntry(int GinNo, string? OldTrailerNo, string? NewTrailerNo, string? UpdatedUser, DateTime? UpdatedTS);
+
 /// <summary>
 /// GIN Trailer Update — a user enters one or more GINs (comma-separated) and picks a
 /// Trailer No. (dropdown only, sourced from BFLDATA..WHTrailers, no manual entry).
 /// Loading the GINs shows each one's current EntryDate/TrailerNo/Remarks/WarehouseFrom/
-/// WarehouseTo from bfldata.dbo.TEST_PLT (keyed by SRNo) and splits them into "too old"
+/// WarehouseTo from bfldata.dbo.PLTDeliveryHead (keyed by SRNo) and splits them into "too old"
 /// (EntryDate more than 2 days in the past — not allowed) and valid rows. On submit, the
 /// trailer is stamped onto every valid GIN's TrailerNo column as "{TrailerNo}-HH:mm"
 /// (UAE local time, UTC+4), and GINTrailerLog gets one audit row per GIN recording the
@@ -36,10 +38,12 @@ public class GinTrailerUpdateService(IOnPremConnectionResolver resolver)
     private SqlConnection OpenConnection()
     {
         // WmsProductionDb, not OnPremBackupDB — the latter's login was denied UPDATE
-        // on BFLDATA.dbo.TEST_PLT even after a GRANT was applied. WmsProductionDb isn't
-        // configured in local dev secrets (add ConnectionStrings:WmsProductionDb to
-        // user-secrets to test locally), but is already used in production by several
-        // other BFLDATA-writing features (GenerateEan13Service, JafzaExportCheckingService,
+        // on BFLDATA.dbo.TEST_PLT (the placeholder table this feature was verified
+        // against before switching to the real bfldata.dbo.PLTDeliveryHead) even after
+        // a GRANT was applied. WmsProductionDb isn't configured in local dev secrets
+        // (add ConnectionStrings:WmsProductionDb to user-secrets to test locally), but
+        // is already used in production by several other BFLDATA-writing features
+        // (GenerateEan13Service, JafzaExportCheckingService,
         // ContainerAllocationDataSyncService, TechnoBuildingService).
         var c = new SqlConnection(resolver.GetWmsProductionDbConnectionString());
         c.Open();
@@ -60,7 +64,7 @@ public class GinTrailerUpdateService(IOnPremConnectionResolver resolver)
         return rows.AsList();
     }
 
-    /// <summary>Loads the given GINs from bfldata.dbo.TEST_PLT and splits them into: not
+    /// <summary>Loads the given GINs from bfldata.dbo.PLTDeliveryHead and splits them into: not
     /// found, too old (EntryDate more than <see cref="MaxEntryAgeDays"/> days in the
     /// past), and valid.</summary>
     public async Task<GinTrailerLoadResult> LoadGinsAsync(IEnumerable<int> ginNos, CancellationToken ct = default)
@@ -71,7 +75,7 @@ public class GinTrailerUpdateService(IOnPremConnectionResolver resolver)
         await using var c = OpenConnection();
         var rows = (await c.QueryAsync<GinTrailerRow>(new CommandDefinition(@"
             SELECT GinNo = SRNo, EntryDate, TrailerNo, Remarks, WarehouseFrom, WarehouseTo
-              FROM bfldata.dbo.TEST_PLT WITH (NOLOCK)
+              FROM bfldata.dbo.PLTDeliveryHead WITH (NOLOCK)
              WHERE SRNo IN @wanted",
             new { wanted }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).AsList();
 
@@ -84,6 +88,23 @@ public class GinTrailerUpdateService(IOnPremConnectionResolver resolver)
         var valid = rows.Where(r => !tooOldGins.Contains(r.GinNo)).ToList();
 
         return new(valid, notFound, tooOldGins.ToList());
+    }
+
+    /// <summary>Past trailer updates for the given GINs from BFLDATA..GINTrailerLog,
+    /// newest first.</summary>
+    public async Task<List<GinTrailerLogEntry>> GetLogHistoryAsync(IEnumerable<int> ginNos, CancellationToken ct = default)
+    {
+        var wanted = ginNos.Distinct().ToList();
+        if (wanted.Count == 0) return new();
+
+        await using var c = OpenConnection();
+        var rows = await c.QueryAsync<GinTrailerLogEntry>(new CommandDefinition(@"
+            SELECT GinNo = SRNo, OldTrailerNo, NewTrailerNo, UpdatedUser, UpdatedTS
+              FROM BFLDATA.dbo.GINTrailerLog WITH (NOLOCK)
+             WHERE SRNo IN @wanted
+             ORDER BY UpdatedTS DESC",
+            new { wanted }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        return rows.AsList();
     }
 
     /// <summary>Stamps the chosen Trailer No. onto every given GIN's TrailerNo column and
@@ -120,11 +141,11 @@ public class GinTrailerUpdateService(IOnPremConnectionResolver resolver)
             foreach (var ginNo in gins)
             {
                 var oldTrailerNo = await c.QuerySingleOrDefaultAsync<string?>(new CommandDefinition(@"
-                    SELECT TrailerNo FROM bfldata.dbo.TEST_PLT WHERE SRNo = @ginNo",
+                    SELECT TrailerNo FROM bfldata.dbo.PLTDeliveryHead WHERE SRNo = @ginNo",
                     new { ginNo }, tx, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
 
                 var updated = await c.ExecuteAsync(new CommandDefinition(@"
-                    UPDATE bfldata.dbo.TEST_PLT
+                    UPDATE bfldata.dbo.PLTDeliveryHead
                        SET TrailerNo = @stamped
                      WHERE SRNo = @ginNo",
                     new { stamped, ginNo }, tx, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
