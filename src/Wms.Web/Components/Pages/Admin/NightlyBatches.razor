@@ -350,15 +350,16 @@
                 active => ToggleSingleAsync(GenerateEan13Service.JobName, active),
                 new() { ("Generate Now", EventCallback.Factory.Create(this, GenerateEan13NowAsync)) }));
 
-            // 11. APIGinIntegration — on-demand only, no timer yet. Step 1 only: enqueues
-            //     eligible GINs into bfldata.dbo.APICallGIN. No activation state to
-            //     toggle, so the checkbox is disabled.
+            // 11. APIGinIntegration — on-demand only, no timer yet. One button runs
+            //     both external pushes in order (products, then GINs) from
+            //     LPMSIM.dbo.APICallGIN — see ApiGinIntegrationService.SendPendingAsync.
+            //     No activation state to toggle, so the checkbox is disabled.
             list.Add(new JobVm(
                 ApiGinIntegrationService.JobName, "On-demand", null,
                 true, default, "",
                 null,
                 active => Task.CompletedTask,
-                new() { ("Enqueue Now", EventCallback.Factory.Create(this, EnqueueApiGinNowAsync)) },
+                new() { ("Send Now", EventCallback.Factory.Create(this, SendApiGinNowAsync)) },
                 "on-demand only"));
 
             // 12. APIEpcIntegration — on-demand only, no timer yet. The source query
@@ -498,14 +499,14 @@
         finally { _busy = false; await RefreshLogAsync(); }
     }
 
-    private async Task EnqueueApiGinNowAsync()
+    private async Task SendApiGinNowAsync()
     {
-        _busy = true; Show("Enqueuing eligible GINs…", false); await InvokeAsync(StateHasChanged);
+        _busy = true; Show("Sending queued GINs — products first, then inbounds…", false); await InvokeAsync(StateHasChanged);
         try
         {
-            var (rows, err) = await ApiGin.EnqueuePendingGinsAsync("OnDemand", CurrentUser.Name ?? "");
-            if (err is null) Show($"APIGinIntegration enqueue done — {rows:N0} GINs queued.", false);
-            else             Show($"APIGinIntegration enqueue failed: {err}", true);
+            var (sent, failed, err) = await ApiGin.SendPendingAsync("OnDemand", CurrentUser.Name ?? "");
+            if (failed == 0) Show($"APIGinIntegration send done — {sent:N0} sent.", false);
+            else             Show($"APIGinIntegration send: {sent:N0} sent, {failed:N0} failed. {err}", true);
         }
         finally { _busy = false; await RefreshLogAsync(); }
     }
