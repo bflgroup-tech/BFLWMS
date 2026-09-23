@@ -127,11 +127,17 @@ public class ShipmentStatusService(IOnPremConnectionResolver resolver)
         return new ShipmentStatusResult(allRows, warnings, reserved);
     }
 
-    // ===================== "Reserved" — goods issued, never GIN'd or received =====================
-    // bfldata..vGoodsIssueplt rows (goods physically picked/issued) whose SrNo never made
-    // it into a GIN (USA.dbo.ExportPass) or a receipt (contreceiptExport). No JAFZA/LOCAL/
-    // International split — Type is derived from ShipNo, which only exists once a GIN is
-    // created. Shown inside the JAFZA card since it precedes that flow specifically.
+    // ===================== "Reserved" — transfer not fully through the GIN flow yet =====================
+    // Starts from every transfer in P2EXPORT..vTransferDetail for the country's shops
+    // (CostCodeTo/LocCodeTo), not just ones already issued:
+    //   - Never reached bfldata..vGoodsIssueplt at all (not yet physically picked/issued)
+    //     -> Reserved unconditionally.
+    //   - Reached vGoodsIssueplt (issued) but its SrNo never made it into a GIN
+    //     (USA.dbo.ExportPass) or a receipt (contreceiptExport) -> also Reserved.
+    // No JAFZA/LOCAL/International split — Type is derived from ShipNo, which only
+    // exists once a GIN is created. Shown inside the JAFZA card since it precedes that
+    // flow specifically. Aggregated via EXISTS/NOT EXISTS rather than a join, so a TrfNo
+    // with more than one vGoodsIssueplt row can't double-count its Quantity.
     //
     // ExportPass.Country and contreceiptExport.Country use a different, BFL-prefixed
     // convention from DataSettings.Country/SIMCountry used everywhere else in this file
@@ -151,7 +157,9 @@ public class ShipmentStatusService(IOnPremConnectionResolver resolver)
         ["Oman"]     = "BFLOMAN",
     };
 
-    private record ReservedRow(int TrfCount, int Qty);
+    // vTransferDetail.Quantity is decimal (same as elsewhere in this file); vGoodsIssueplt
+    // isn't the source table here so its int Qty column doesn't apply to this query.
+    private record ReservedRow(int TrfCount, decimal Qty);
 
     private async Task<ReservedSummary> GetReservedForCountryAsync(string country, DateTime from, CancellationToken ct)
     {
@@ -160,14 +168,31 @@ public class ShipmentStatusService(IOnPremConnectionResolver resolver)
 
         await using var conn = OpenOnPremBackup();
         var row = await conn.QuerySingleAsync<ReservedRow>(new CommandDefinition(@"
-            SELECT COUNT(DISTINCT gi.TrfNo) AS TrfCount, ISNULL(SUM(gi.Qty), 0) AS Qty
-              FROM bfldata..vGoodsIssueplt gi WITH (NOLOCK)
-             WHERE gi.EntryDate >= @from
-               AND gi.ShopIssue IN (SELECT ShopName FROM bfldata.dbo.DataSettings WITH (NOLOCK) WHERE Country = @country)
-               AND gi.SrNo NOT IN (SELECT GINNo FROM USA.dbo.ExportPass WITH (NOLOCK) WHERE GINNo IS NOT NULL AND Country = @bflCode)
-               AND gi.SrNo NOT IN (SELECT GINNO FROM bfldata..contreceiptExport WITH (NOLOCK) WHERE GINNO IS NOT NULL AND Country = @bflCode)",
-            new { from, country, bflCode }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-        return new ReservedSummary(country, row.TrfCount, row.Qty);
+            ;WITH Shops AS (
+                SELECT DISTINCT CostCodeTo, LocCodeTo
+                  FROM bfldata.dbo.DataSettings WITH (NOLOCK)
+                 WHERE Country = @country
+                   AND CostCodeTo IS NOT NULL AND CostCodeTo <> ''
+                   AND LocCodeTo IS NOT NULL AND LocCodeTo <> ''
+            ),
+            Transfers AS (
+                SELECT vtd.TrfNo, SUM(vtd.Quantity) AS Qty
+                  FROM P2EXPORT..vTransferDetail vtd WITH (NOLOCK)
+                  JOIN Shops s ON s.CostCodeTo = vtd.CostCodeTo AND s.LocCodeTo = vtd.LocCodeTo
+                 WHERE vtd.LpmDt >= @from
+                 GROUP BY vtd.TrfNo
+            )
+            SELECT COUNT(DISTINCT t.TrfNo) AS TrfCount, ISNULL(SUM(t.Qty), 0) AS Qty
+              FROM Transfers t
+             WHERE NOT EXISTS (SELECT 1 FROM bfldata..vGoodsIssueplt gi WITH (NOLOCK) WHERE gi.TrfNo = t.TrfNo)
+                OR EXISTS (
+                     SELECT 1 FROM bfldata..vGoodsIssueplt gi WITH (NOLOCK)
+                      WHERE gi.TrfNo = t.TrfNo
+                        AND gi.SrNo NOT IN (SELECT GINNo FROM USA.dbo.ExportPass WITH (NOLOCK) WHERE GINNo IS NOT NULL AND Country = @bflCode)
+                        AND gi.SrNo NOT IN (SELECT GINNO FROM bfldata..contreceiptExport WITH (NOLOCK) WHERE GINNO IS NOT NULL AND Country = @bflCode)
+                   )",
+            new { country, from, bflCode }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        return new ReservedSummary(country, row.TrfCount, (int)row.Qty);
     }
 
     private async Task<List<ShipmentStatusRow>> GetForCountryAsync(
