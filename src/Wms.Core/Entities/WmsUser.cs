@@ -65,3 +65,18 @@ public class WmsUserSectionAccess
     public DateTime GrantedTS  { get; set; }
     public string   GrantedBy  { get; set; } = "";
 }
+
+/// <summary>Per-user grant of specific stores within the Transfer/GIN/GRN History
+/// report's STORE dropdown. Admin role bypasses this table. Unlike
+/// WmsUserCountryAccess/WmsUserSectionAccess, this is opt-in, not restrict-by-default:
+/// a user with NO rows here sees every store their country access already allows
+/// (unchanged from before this table existed) — only a user who has at least one row
+/// is narrowed down to just those stores. A restrict-by-default table would have
+/// silently hidden every store from every existing user the moment it was introduced.</summary>
+public class WmsUserStoreAccess
+{
+    public string   Username  { get; set; } = "";
+    public string   StoreName { get; set; } = "";
+    public DateTime GrantedTS { get; set; }
+    public string   GrantedBy { get; set; } = "";
+}

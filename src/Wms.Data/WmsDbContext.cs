@@ -18,6 +18,7 @@ public class WmsDbContext(DbContextOptions<WmsDbContext> options) : DbContext(op
     public DbSet<WmsUserMenuAccess> UserMenuAccess => Set<WmsUserMenuAccess>();
     public DbSet<WmsUserCountryAccess> UserCountryAccess => Set<WmsUserCountryAccess>();
     public DbSet<WmsUserSectionAccess> UserSectionAccess => Set<WmsUserSectionAccess>();
+    public DbSet<WmsUserStoreAccess> UserStoreAccess => Set<WmsUserStoreAccess>();
 
     protected override void OnModelCreating(ModelBuilder mb)
     {
@@ -159,6 +160,16 @@ public class WmsDbContext(DbContextOptions<WmsDbContext> options) : DbContext(op
             e.HasKey(x => new { x.Username, x.SectionKey });
             e.Property(x => x.Username).HasMaxLength(100);
             e.Property(x => x.SectionKey).HasMaxLength(50);
+            e.Property(x => x.GrantedBy).HasMaxLength(100);
+            e.Property(x => x.GrantedTS).HasColumnType("datetime2(0)");
+        });
+
+        mb.Entity<WmsUserStoreAccess>(e =>
+        {
+            e.ToTable("Wms_UserStoreAccess");
+            e.HasKey(x => new { x.Username, x.StoreName });
+            e.Property(x => x.Username).HasMaxLength(100);
+            e.Property(x => x.StoreName).HasMaxLength(100);
             e.Property(x => x.GrantedBy).HasMaxLength(100);
             e.Property(x => x.GrantedTS).HasColumnType("datetime2(0)");
         });
