@@ -6,11 +6,68 @@
 
 <div class="aiwms-page-header">
     <h2>API</h2>
-    <p>API endpoints and integrations exposed by WMS.</p>
+    <p>REST API exposed by WMS for machine-to-machine integrations. Manage credentials under <a href="/admin/api/client-apps">Client Apps</a>.</p>
 </div>
 
-<div class="aiwms-section">
-    <p>Base URL: <code>https://bflwms.bflgroup.ae/api/v1</code></p>
-    <p>Auth: OAuth2 client-credentials — exchange a client ID/secret at <code>POST /api/v1/oauth/token</code> for a bearer token, then call endpoints with <code>Authorization: Bearer &lt;token&gt;</code>. Manage client apps under <a href="/admin/api/client-apps">Client Apps</a>.</p>
-    <p>Sample endpoints: <code>GET /api/v1/ping</code> (requires a bearer token) and <code>GET /api/v1/ping/anonymous</code> (no auth, for connectivity testing).</p>
+<div class="aiwms-card">
+    <div class="aiwms-card-header">Base URL</div>
+    <table class="aiwms-table">
+        <thead><tr><th>Environment</th><th>URL</th></tr></thead>
+        <tbody>
+            <tr><td>Production</td><td style="font-family:Consolas,monospace">https://bflwms.bflgroup.ae/api/v1</td></tr>
+            <tr><td>Local dev</td><td style="font-family:Consolas,monospace">http://localhost:5217/api/v1</td></tr>
+        </tbody>
+    </table>
+    <p style="margin:12px 0 0;font-size:12px;color:var(--text-secondary)">The <code>v1</code> segment is a versioned path — a future breaking change ships as <code>/api/v2</code> alongside it, rather than breaking existing clients.</p>
+</div>
+
+<div class="aiwms-card">
+    <div class="aiwms-card-header">Authentication — OAuth2 client-credentials grant</div>
+    <p>Every client app (created under <a href="/admin/api/client-apps">Client Apps</a>) gets a <code>client_id</code> and a <code>client_secret</code>, shown once at creation. Exchange them for a short-lived bearer token, then send that token on every call.</p>
+
+    <p style="margin-top:16px"><strong>1. Request a token</strong> — form-encoded POST, no auth required:</p>
+    <pre style="background:var(--bfl-grey-900);color:#e4e4e0;padding:14px 16px;border-radius:var(--r-sm);font-family:Consolas,monospace;font-size:12px;overflow-x:auto">POST /api/v1/oauth/token
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=client_credentials&amp;client_id=&lt;id&gt;&amp;client_secret=&lt;secret&gt;</pre>
+
+    <p style="margin-top:12px"><strong>Response:</strong></p>
+    <pre style="background:var(--bfl-grey-900);color:#e4e4e0;padding:14px 16px;border-radius:var(--r-sm);font-family:Consolas,monospace;font-size:12px;overflow-x:auto">{
+  "access_token": "eyJhbGciOi...",
+  "token_type": "Bearer",
+  "expires_in": 3600
+}</pre>
+
+    <p style="margin-top:16px"><strong>2. Call a protected endpoint</strong> — send the token as a bearer header:</p>
+    <pre style="background:var(--bfl-grey-900);color:#e4e4e0;padding:14px 16px;border-radius:var(--r-sm);font-family:Consolas,monospace;font-size:12px;overflow-x:auto">GET /api/v1/ping
+Authorization: Bearer &lt;access_token&gt;</pre>
+
+    <p style="margin-top:12px;font-size:12px;color:var(--text-secondary)">Tokens expire after 1 hour by default. Revoking a client app in <a href="/admin/api/client-apps">Client Apps</a> immediately stops new tokens from being issued for it (existing tokens remain valid until they expire).</p>
+</div>
+
+<div class="aiwms-card">
+    <div class="aiwms-card-header">Endpoints</div>
+    <table class="aiwms-table">
+        <thead><tr><th>Method</th><th>Path</th><th>Auth</th><th>Description</th></tr></thead>
+        <tbody>
+            <tr>
+                <td><span class="aiwms-pill tier2">POST</span></td>
+                <td style="font-family:Consolas,monospace">/api/v1/oauth/token</td>
+                <td>None</td>
+                <td>Exchange a client_id/client_secret for a bearer token (client-credentials grant).</td>
+            </tr>
+            <tr>
+                <td><span class="aiwms-pill tier1">GET</span></td>
+                <td style="font-family:Consolas,monospace">/api/v1/ping</td>
+                <td><span class="aiwms-pill tier3">Bearer token</span></td>
+                <td>Sample protected endpoint — returns the calling client_id and server time.</td>
+            </tr>
+            <tr>
+                <td><span class="aiwms-pill tier1">GET</span></td>
+                <td style="font-family:Consolas,monospace">/api/v1/ping/anonymous</td>
+                <td>None</td>
+                <td>Sample open endpoint — for connectivity testing without credentials.</td>
+            </tr>
+        </tbody>
+    </table>
 </div>
