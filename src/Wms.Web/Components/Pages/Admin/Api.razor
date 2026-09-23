@@ -12,5 +12,5 @@
 <div class="aiwms-section">
     <p>Base URL: <code>https://bflwms.bflgroup.ae/api/v1</code></p>
     <p>Auth: OAuth2 client-credentials — exchange a client ID/secret at <code>POST /api/v1/oauth/token</code> for a bearer token, then call endpoints with <code>Authorization: Bearer &lt;token&gt;</code>. Manage client apps under <a href="/admin/api/client-apps">Client Apps</a>.</p>
-    <p>Sample endpoint: <code>GET /api/v1/ping</code>.</p>
+    <p>Sample endpoints: <code>GET /api/v1/ping</code> (requires a bearer token) and <code>GET /api/v1/ping/anonymous</code> (no auth, for connectivity testing).</p>
 </div>
