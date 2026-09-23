@@ -212,6 +212,7 @@ public class Pass5FlaggedAllocationService(IOnPremConnectionResolver resolver, I
         var mnw     = await LoadMerchNeedAsync(conn, ct);
         var simBlk  = await LoadSimSkuMaxBlockedAsync(conn, itemCodesCsv, ct);
         var brandBy = await LoadBrandAsync(conn, contno, ct);
+        var brandPo = await LoadBrandPoBlocksAsync(conn, ct);
         var lpmBy   = await LoadLpmAsync(conn, contno, ct);
 
         var alreadyStoreItem = (await conn.QueryAsync<(string StoreID, string Itemcode, int Qty)>(
@@ -271,7 +272,18 @@ public class Pass5FlaggedAllocationService(IOnPremConnectionResolver resolver, I
                 noStoreItems++; totalUnplaced += placeable; continue;
             }
 
-            var usable = divStores.Where(s => !simBlk.Contains((s.StoreID.ToUpperInvariant(), item))).ToList();
+            // Brand x PO block applies here too. Without it the planner could place
+            // by hand exactly what Process refuses to place automatically, which
+            // would make the block look unreliable rather than absent.
+            var poU    = (f.PONo ?? "").Trim().ToUpperInvariant();
+            var brandU = (brandBy.GetValueOrDefault(item) ?? "").Trim().ToUpperInvariant();
+            var brandPoCheckable = brandPo.Count > 0 && poU.Length > 0 && brandU.Length > 0;
+
+            var usable = divStores
+                .Where(s => !simBlk.Contains((s.StoreID.ToUpperInvariant(), item)))
+                .Where(s => !brandPoCheckable
+                            || !brandPo.Contains((s.StoreID.Trim().ToUpperInvariant(), poU, brandU)))
+                .ToList();
             if (usable.Count == 0) { noStoreItems++; totalUnplaced += placeable; continue; }
 
             // Avg Turns across the SELECTED stores of this division, then keep the
@@ -668,6 +680,39 @@ public class Pass5FlaggedAllocationService(IOnPremConnectionResolver resolver, I
         var d = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
         foreach (var r in rows) d[r.ItemCode.Trim().ToUpperInvariant()] = r.LPM;
         return d;
+    }
+
+    /// <summary>
+    /// Brand x PO blocks (LPM_StoreBrandAccessPO, IsActive = 0), keyed
+    /// (StoreID, PONo, Brand) with all three upper-cased and trimmed — the table is
+    /// hand-keyed through LpmSim's screen and Brand is free text from
+    /// usa.dbo.USAOrgFile.vendor, so a case-sensitive key would silently miss.
+    /// Mirrors LoadBrandPoBlocks in ContainerAllocationService; both must agree or
+    /// Process and Pass 5 would disagree about what is blocked.
+    /// </summary>
+    private static async Task<HashSet<(string, string, string)>> LoadBrandPoBlocksAsync(
+        SqlConnection c, CancellationToken ct)
+    {
+        try
+        {
+            return (await c.QueryAsync<(string StoreID, string PONo, string Brand)>(new CommandDefinition(@"
+                SELECT StoreID, PONo, Brand
+                  FROM dbo.LPM_StoreBrandAccessPO WITH (NOLOCK)
+                 WHERE IsActive = 0
+                   AND StoreID IS NOT NULL AND PONo IS NOT NULL AND Brand IS NOT NULL",
+                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
+                .Select(r => (
+                    (r.StoreID ?? "").Trim().ToUpperInvariant(),
+                    (r.PONo    ?? "").Trim().ToUpperInvariant(),
+                    (r.Brand   ?? "").Trim().ToUpperInvariant()))
+                .Where(r => r.Item1.Length > 0 && r.Item2.Length > 0 && r.Item3.Length > 0)
+                .ToHashSet();
+        }
+        catch
+        {
+            // Table not deployed -> no Brand x PO blocks.
+            return new HashSet<(string, string, string)>();
+        }
     }
 
     private static async Task<HashSet<(string, string)>> LoadSimSkuMaxBlockedAsync(
