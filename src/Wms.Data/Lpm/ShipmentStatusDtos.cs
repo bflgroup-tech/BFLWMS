@@ -12,6 +12,7 @@ public record ShipmentStatusRow(
     DateTime? Eta,
     int       TotalQty,
     int?      BoxCount,         // TransferCount; null for LOCAL/International
+    int?      TrfCount,         // distinct TrfNo count from vGoodsIssueplt; null for LOCAL/International
     DateTime? ReceiptDt,        // null while InTransit
     int?      SlaReceiptDays,   // ReleasedOn -> ReceiptDt
     int?      ReceivedBoxes,    // null for LOCAL/International
@@ -29,18 +30,17 @@ public record ShipmentStatusFilter(
 );
 
 public record ShipmentStatusResult(
-    List<ShipmentStatusRow>        Rows,
-    List<string>                   Warnings,        // one entry per country that failed during a "BFL Group" fan-out
-    List<ExportTransferSummary>    ExportTransfers  // one entry per country — from racks..InTransit_ExportShipment
+    List<ShipmentStatusRow> Rows,
+    List<string>            Warnings,   // one entry per country that failed during a "BFL Group" fan-out
+    List<ReservedSummary>   Reserved    // one entry per country — goods issued but never GIN'd or received
 );
 
-// Distinct TrfNo count + Quantity from racks..InTransit_ExportShipment (JOIN
-// P2EXPORT..vTransferDetail for Quantity), split by its own Intransit flag:
-// 'Y' = still in transit (shown on the JAFZA card, since this table is scoped to
-// the export-from-UAE/GIN flow specifically), 'C' = Reserved (transfer exists, no
-// GIN yet, so no receipt either). Neither half has a JAFZA/LOCAL/International
-// split of its own — the source table only carries Country + TrfNo.
-public record ExportTransferSummary(string Country, int IntransitCount, int IntransitQty, int ReservedCount, int ReservedQty);
+// Distinct TrfNo count + Quantity from bfldata..vGoodsIssueplt rows whose SrNo
+// never made it into a GIN (USA.dbo.ExportPass) or a receipt (contreceiptExport) —
+// goods physically issued (picked/loaded) but stuck before GIN creation. Shown
+// inside the JAFZA card; has no JAFZA/LOCAL/International split of its own since a
+// row here has no ShipNo yet (that only exists once a GIN is created).
+public record ReservedSummary(string Country, int TrfCount, int Qty);
 
 // Division x Month (by vTransferDetail.LpmDt) drill-down pivot, shown as a popup when
 // an Intransit number or a GIN No. is clicked. MonthQty on each row is index-aligned

@@ -1453,12 +1453,13 @@ SELECT groupCode AS GroupCode, DivisionY AS Division, Department, Brand
                 WHERE uo.ContNo IN ({BuildInClause(contNos)})
                 GROUP BY uo.ContNo, up.DivisionY, up.Department, up.Brand"),
 
-        new QueryEntry("Shipment Status", "Export Transfer Intransit/Reserved", "racks..InTransit_ExportShipment, P2EXPORT..vTransferDetail -- ShipmentStatusService.GetExportTransferSummaryAsync (single shared catalog, same precedent as OtsPoAllocationService's LeadIntransit; Intransit='Y' shown on the JAFZA card, Intransit='C' shown as Reserved — neither has a Type since the source table only carries Country + TrfNo)", @"
-            SELECT a.Intransit AS Intransit, COUNT(DISTINCT a.TrfNo) AS TrfCount, ISNULL(SUM(b.Quantity), 0) AS Qty
-              FROM racks..InTransit_ExportShipment a WITH (NOLOCK)
-              JOIN P2EXPORT..vTransferDetail b WITH (NOLOCK) ON b.TrfNo = a.TrfNo
-             WHERE a.Country = @country
-             GROUP BY a.Intransit"),
+        new QueryEntry("Shipment Status", "Reserved (goods issued, never GIN'd or received)", "bfldata..vGoodsIssueplt, USA.dbo.ExportPass, bfldata..contreceiptExport, bfldata.dbo.DataSettings -- ShipmentStatusService.GetReservedForCountryAsync (shown inside the JAFZA card; no Type since ShipNo doesn't exist pre-GIN; @bflCode is the BFL-prefixed country code used by ExportPass.Country/contreceiptExport.Country, e.g. 'BFLKSA' for KSA)", @"
+            SELECT COUNT(DISTINCT gi.TrfNo) AS TrfCount, ISNULL(SUM(gi.Qty), 0) AS Qty
+              FROM bfldata..vGoodsIssueplt gi WITH (NOLOCK)
+             WHERE gi.EntryDate >= @from
+               AND gi.ShopIssue IN (SELECT ShopName FROM bfldata.dbo.DataSettings WITH (NOLOCK) WHERE Country = @country)
+               AND gi.SrNo NOT IN (SELECT GINNo FROM USA.dbo.ExportPass WITH (NOLOCK) WHERE GINNo IS NOT NULL AND Country = @bflCode)
+               AND gi.SrNo NOT IN (SELECT GINNO FROM bfldata..contreceiptExport WITH (NOLOCK) WHERE GINNO IS NOT NULL AND Country = @bflCode)"),
 
         // ============================== Warehouse SOH Summary ==============================
         new QueryEntry("Warehouse SOH Summary", "Stock On Hand (UAE — TECHNO/JAFZA/YOTO)", "RACKS.dbo.WHBoxItems -- WarehouseSohSummaryService.GetStockOnHandExcludingBlackboxAsync", @"
