@@ -1,0 +1,16 @@
+@page "/admin/api"
+@rendermode RenderMode.InteractiveServer
+@attribute [Authorize(Policy = Wms.Core.MenuKeys.ADMIN_API)]
+
+<PageTitle>WMS — API</PageTitle>
+
+<div class="aiwms-page-header">
+    <h2>API</h2>
+    <p>API endpoints and integrations exposed by WMS.</p>
+</div>
+
+<div class="aiwms-section">
+    <p>Base URL: <code>https://bflwms.bflgroup.ae/api/v1</code></p>
+    <p>Auth: OAuth2 client-credentials — exchange a client ID/secret at <code>POST /api/v1/oauth/token</code> for a bearer token, then call endpoints with <code>Authorization: Bearer &lt;token&gt;</code>. Manage client apps under <a href="/admin/api/client-apps">Client Apps</a>.</p>
+    <p>Sample endpoints: <code>GET /api/v1/ping</code> (requires a bearer token) and <code>GET /api/v1/ping/anonymous</code> (no auth, for connectivity testing).</p>
+</div>

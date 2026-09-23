@@ -1,0 +1,99 @@
+@page "/admin/api/client-apps"
+@rendermode RenderMode.InteractiveServer
+@attribute [Authorize(Policy = Wms.Core.MenuKeys.ADMIN_API_CLIENT_APPS)]
+@using Wms.Core.Entities
+@using Wms.Data.Api
+@inject ApiClientAppService ClientApps
+
+<PageTitle>WMS — Client Apps</PageTitle>
+
+<div class="aiwms-page-header">
+    <h2>Client Apps</h2>
+    <p>Registered machine-to-machine clients for the WMS API (OAuth2 client-credentials grant against /api/v1/oauth/token).</p>
+</div>
+
+<div class="aiwms-card aiwms-input-frame">
+    <div class="aiwms-card-header">Create Client App</div>
+    <div class="aiwms-input-row">
+        <span class="aiwms-input-lbl">App Name</span>
+        <input class="aiwms-input" @bind="_newName" @bind:event="oninput" placeholder="e.g. Mobile App, ERP Integration" />
+    </div>
+
+    @if (_newSecret is not null)
+    {
+        <div class="aiwms-input-info">
+            Client secret — copy it now, it will not be shown again:
+            <div style="font-family:Consolas,monospace;margin-top:6px;font-weight:400">Client ID: @_newClientId</div>
+            <div style="font-family:Consolas,monospace;font-weight:400">Secret: @_newSecret</div>
+        </div>
+    }
+
+    <div class="aiwms-input-actions">
+        <button class="aiwms-btn aiwms-btn-primary" @onclick="Create" disabled="@string.IsNullOrWhiteSpace(_newName)">Generate Credentials</button>
+    </div>
+</div>
+
+<div class="aiwms-card">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <div class="aiwms-card-header" style="margin:0">Client Apps</div>
+        <button class="aiwms-btn aiwms-btn-secondary" @onclick="Reload">⟲ Refresh</button>
+    </div>
+
+    <table class="aiwms-table">
+        <thead><tr><th>#</th><th>Name</th><th>Client ID</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead>
+        <tbody>
+            @{ var i = 0; }
+            @foreach (var a in _apps)
+            {
+                i++;
+                <tr>
+                    <td>@i</td>
+                    <td>@a.Name</td>
+                    <td style="font-family:Consolas,monospace">@a.ClientId</td>
+                    <td><span class="aiwms-pill @(a.Enabled ? "tier1" : "tier4")">@(a.Enabled ? "Active" : "Revoked")</span></td>
+                    <td>@a.CreateTS.ToString("yyyy-MM-dd HH:mm")</td>
+                    <td>
+                        @if (a.Enabled)
+                        {
+                            <button class="aiwms-btn aiwms-btn-danger" @onclick="@(() => Revoke(a))">Revoke</button>
+                        }
+                        else
+                        {
+                            <button class="aiwms-btn aiwms-btn-secondary" @onclick="@(() => Reactivate(a))">Reactivate</button>
+                        }
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+</div>
+
+@code {
+    private List<ApiClientApp> _apps = new();
+    private string _newName = "";
+    private string? _newClientId, _newSecret;
+
+    protected override async Task OnInitializedAsync() => await Reload();
+
+    private async Task Reload() => _apps = await ClientApps.ListAsync();
+
+    private async Task Create()
+    {
+        if (string.IsNullOrWhiteSpace(_newName)) return;
+        (_newClientId, _newSecret) = await ClientApps.CreateAsync(_newName.Trim());
+        _newName = "";
+        await Reload();
+    }
+
+    private async Task Revoke(ApiClientApp a)
+    {
+        await ClientApps.SetEnabledAsync(a.ClientId, false);
+        await Reload();
+    }
+
+    private async Task Reactivate(ApiClientApp a)
+    {
+        await ClientApps.SetEnabledAsync(a.ClientId, true);
+        await Reload();
+    }
+}

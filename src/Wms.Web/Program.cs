@@ -210,6 +210,30 @@ public class Program
             .AddAuthentication(OpenIdConnectDefaults.AuthenticationScheme)
             .AddMicrosoftIdentityWebApp(builder.Configuration.GetSection("AzureAd"));
 
+        // Second scheme, "Bearer", alongside the cookie/OIDC login above — for
+        // machine-to-machine callers of /api/v1 (see Admin > API > Client Apps and
+        // OAuthController's client-credentials token endpoint). Calling
+        // AddAuthentication() again (no default-scheme arg) does not touch the
+        // OpenIdConnect default already configured; it just registers this handler.
+        builder.Services.AddAuthentication().AddJwtBearer(options =>
+        {
+            var jwtSection = builder.Configuration.GetSection("ApiJwt");
+            var signingKey = jwtSection["SigningKey"];
+            options.TokenValidationParameters = new Microsoft.IdentityModel.Tokens.TokenValidationParameters
+            {
+                ValidateIssuer = true,
+                ValidIssuer = jwtSection["Issuer"],
+                ValidateAudience = true,
+                ValidAudience = jwtSection["Audience"],
+                ValidateLifetime = true,
+                ValidateIssuerSigningKey = true,
+                IssuerSigningKey = new Microsoft.IdentityModel.Tokens.SymmetricSecurityKey(
+                    System.Text.Encoding.UTF8.GetBytes(string.IsNullOrEmpty(signingKey) ? new string('0', 32) : signingKey)),
+                ClockSkew = TimeSpan.FromSeconds(30),
+            };
+        });
+        builder.Services.AddScoped<Wms.Data.Api.ApiClientAppService>();
+
         if (builder.Environment.IsDevelopment())
         {
             // OIDC's correlation/nonce cookies default to SameSite=None, which browsers
