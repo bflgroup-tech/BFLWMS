@@ -604,7 +604,17 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                   FROM dbo.LPM_EOM_Output e WITH (NOLOCK)
                   LEFT JOIN LPMSIM.dbo.Division dv WITH (NOLOCK) ON dv.DivCode = e.DivCode
                   LEFT JOIN storeNames sn ON sn.StoreID = e.StoreID AND sn.rn = 1
-                  LEFT JOIN dbo.WmsCountryOtsWeeks w WITH (NOLOCK) ON w.SimCountry = e.Country
+                  -- Lead weeks per (Country, DivCode). A row naming this division
+                  -- wins; a row with DivCode NULL is the country-wide fallback, which
+                  -- is how WmsCountryOtsWeeks is seeded. ORDER BY puts the specific
+                  -- row first so TOP 1 picks it without needing two lookups.
+                  OUTER APPLY (
+                      SELECT TOP 1 cw.Weeks
+                        FROM dbo.WmsCountryOtsWeeks cw WITH (NOLOCK)
+                       WHERE cw.SimCountry = e.Country
+                         AND (cw.DivCode = e.DivCode OR cw.DivCode IS NULL)
+                       ORDER BY CASE WHEN cw.DivCode IS NULL THEN 1 ELSE 0 END
+                  ) w
                   LEFT JOIN sdgLatest sdg ON sdg.StoreID = e.StoreID AND sdg.DivCode = e.DivCode AND sdg.rn = 1
                  WHERE e.Month1 = @month AND e.Year1 = @year
                    AND e.Country <> 'Ex2Locations'
@@ -622,7 +632,25 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         // Satellites 2-6 run concurrently — each opens its own connection so
         // there's no shared state. Warnings.Add is guarded by a lock inside
         // SafeAsync.
-        var weeksByCountry = baseRows.GroupBy(b => b.Country).ToDictionary(g => g.Key, g => g.First().NoOfLeadWeeks);
+        // Lead weeks are per (Country, DivCode) — WmsCountryOtsWeeks carries a row
+        // per division with a DivCode-NULL country fallback, and the base query has
+        // already resolved which one applies to each row. Keyed by division rather
+        // than collapsed per country as it was before: a country whose divisions
+        // disagree would otherwise take whichever division happened to sort first,
+        // and silently apply its lead time to every other division.
+        //
+        // Everything downstream that used to be per-country — target EOM month,
+        // Target Week, the WeekAdjustment divisor, the CurrentEOW multiplier, the
+        // Lead InTransit / DC SOH cutoffs and the WeekSales window — is keyed the
+        // same way for the same reason.
+        var weeksByKey = baseRows
+            .GroupBy(b => (b.Country, b.DivCode))
+            .ToDictionary(g => g.Key, g => g.First().NoOfLeadWeeks);
+
+        // Country-level view, used only where a value genuinely cannot be per
+        // division (the per-country Lead queries below pick their own cutoffs).
+        int LeadWeeksFor(string country, int divCode) =>
+            weeksByKey.TryGetValue((country, divCode), out var w) ? w : 1;
 
         // PER-COUNTRY TARGET EOM MONTH
         // Each country's "last week of sales" (currentWk + N — the Target Week) can
@@ -632,7 +660,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         // month - 1. Falls back to picked (month, year) when the country has no
         // WmsCountryOtsWeeks config or MFP has no calendar entry for lastWk.
         //
-        // weeksInTargetMonthByCountry drives the WeekAdjustment denominator
+        // weeksInTargetMonthByKey drives the WeekAdjustment denominator
         // downstream — #weeks in the month that lastWk (= currentWk + LeadWeeks)
         // falls in, i.e. the country's TARGET EOM month. The walk from PrevMonthEOM
         // toward TgtEOM is therefore paced by the month it is walking INTO.
@@ -641,7 +669,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         // whenever consecutive fiscal months have different week counts (4 vs 5),
         // which shifts WeekAdjustment and CurrentEOW. Surfaced on the grid as the
         // "Divisor Weeks" column so the arithmetic is checkable from the report.
-        var weeksInTargetMonthByCountry = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var weeksInTargetMonthByKey = new Dictionary<(string Country, int DivCode), int>();
 
         // Week bookkeeping surfaced on the grid so CurrentEOW is checkable:
         //   CurrentWeek     = latest wk in LPM_OTS_Output (global, same for all rows)
@@ -650,9 +678,9 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         //                     month, i.e. how many weeks INTO the target month the
         //                     target week sits. This replaces NoOfLeadWeeks as the
         //                     CurrentEOW multiplier.
-        var currentWeekGlobal          = 0;
-        var targetWeekByCountry        = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-        var weeksMultiplierByCountry   = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var currentWeekGlobal      = 0;
+        var targetWeekByKey        = new Dictionary<(string Country, int DivCode), int>();
+        var weeksMultiplierByKey   = new Dictionary<(string Country, int DivCode), int>();
         {
             await using var c = OpenOnPremBackup();
             var currentWk = (await c.ExecuteScalarAsync<int?>(new CommandDefinition(@"
@@ -674,9 +702,9 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
             var pickedPrevYear  = month == 1 ? year - 1 : year;
             var pickedPrevLabel = new DateTime(pickedPrevYear, pickedPrevMonth, 1).ToString("MMM-yyyy");
 
-            // Per country -> (TgtMonth, TgtYear, PrevMonth, PrevYear, TgtLabel, PrevLabel)
-            var targetByCountry = new Dictionary<string, (int TgtMonth, int TgtYear, int PrevMonth, int PrevYear, string TgtLabel, string PrevLabel)>(StringComparer.OrdinalIgnoreCase);
-            foreach (var (cty, n) in weeksByCountry)
+            // Per (country, division) -> (TgtMonth, TgtYear, PrevMonth, PrevYear, TgtLabel, PrevLabel)
+            var targetByKey = new Dictionary<(string Country, int DivCode), (int TgtMonth, int TgtYear, int PrevMonth, int PrevYear, string TgtLabel, string PrevLabel)>();
+            foreach (var (key, n) in weeksByKey)
             {
                 var lastWk = currentWk + n;
                 int tgtM, tgtY;
@@ -694,7 +722,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                 }
                 var prevM = tgtM == 1 ? 12 : tgtM - 1;
                 var prevY = tgtM == 1 ? tgtY - 1 : tgtY;
-                targetByCountry[cty] = (
+                targetByKey[key] = (
                     tgtM, tgtY, prevM, prevY,
                     new DateTime(tgtY, tgtM, 1).ToString("MMM-yyyy"),
                     new DateTime(prevY, prevM, 1).ToString("MMM-yyyy"));
@@ -713,7 +741,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
 
             foreach (var row in baseRows)
             {
-                if (targetByCountry.TryGetValue(row.Country, out var t))
+                if (targetByKey.TryGetValue((row.Country, row.DivCode), out var t))
                 {
                     row.TgtEOMMonth  = t.TgtLabel;
                     row.TgtEOM       = eomLookup.TryGetValue((row.StoreID, row.DivCode, t.TgtMonth, t.TgtYear), out var teom) ? teom : row.TgtEOM;
@@ -733,16 +761,16 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
             var weeksByMonthYear = fiscalCal.Values
                 .GroupBy(mm => (mm.Month, mm.Year))
                 .ToDictionary(g => g.Key, g => g.Count());
-            foreach (var (cty, t) in targetByCountry)
+            foreach (var (key, t) in targetByKey)
             {
-                weeksInTargetMonthByCountry[cty] = weeksByMonthYear.TryGetValue((t.TgtMonth, t.TgtYear), out var w) ? w : 0;
+                weeksInTargetMonthByKey[key] = weeksByMonthYear.TryGetValue((t.TgtMonth, t.TgtYear), out var w) ? w : 0;
 
                 // TargetWeek and the CurrentEOW multiplier. The multiplier counts how
                 // far INTO the target month the target week sits, measured from the
                 // last week of the preceding month.
-                var leadWeeks = weeksByCountry.TryGetValue(cty, out var lw) ? lw : 0;
+                var leadWeeks = weeksByKey.TryGetValue(key, out var lw) ? lw : 0;
                 var targetWk  = currentWk > 0 ? currentWk + leadWeeks : 0;
-                targetWeekByCountry[cty] = targetWk;
+                targetWeekByKey[key] = targetWk;
 
                 var lastWkOfPrev = fiscalCal
                     .Where(kv => kv.Value.Month == t.PrevMonth && kv.Value.Item2 == t.PrevYear)
@@ -756,7 +784,7 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                 if (mult <= 0 && targetWk > 0 && lastWkOfPrev > 0) mult += 52;
                 // Last resort — keep the previous behaviour rather than emit 0/negative.
                 if (mult <= 0) mult = leadWeeks;
-                weeksMultiplierByCountry[cty] = mult;
+                weeksMultiplierByKey[key] = mult;
             }
         }
 
@@ -850,12 +878,25 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
         var leadTask = SafeAsync(warnings, "LeadIntransit + LeadDCSOH", async () =>
         {
             var todayGst = DateTime.UtcNow.AddHours(4).Date;
-            var perCountryCutoff = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
-            foreach (var (cty, weeks) in weeksByCountry)
-            {
-                var landing = todayGst.AddDays(weeks * 7);
-                perCountryCutoff[cty] = new DateTime(landing.Year, landing.Month, 1);
-            }
+
+            // Lead weeks now vary per division, so the cutoff does too. Rather than
+            // one query per (country, division) — which would multiply a handful of
+            // queries into hundreds — the divisions of a country are grouped by the
+            // cutoff they share. Most countries have one distinct cutoff, so this is
+            // the same query count as before; a country whose divisions disagree
+            // costs one extra query per distinct cutoff.
+            var cutoffGroups = weeksByKey
+                .Select(kv => new
+                {
+                    Country = (kv.Key.Country ?? "").Trim().ToUpperInvariant(),
+                    kv.Key.DivCode,
+                    Cutoff  = FirstOfMonth(todayGst.AddDays(kv.Value * 7)),
+                })
+                .Where(x => x.Country.Length > 0)
+                .GroupBy(x => (x.Country, x.Cutoff))
+                .ToList();
+
+            static DateTime FirstOfMonth(DateTime d) => new(d.Year, d.Month, 1);
             var leadDict = new Dictionary<(string Country, int DivCode), (int LeadIntransit, int LeadDcSoh)>();
 
             await using var c = OpenOnPremBackup();
@@ -868,10 +909,13 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                 .GroupBy(r => r.Country)
                 .ToDictionary(g => g.Key, g => g.First().DataName, StringComparer.OrdinalIgnoreCase);
 
-            foreach (var (ctyRaw, cutoff) in perCountryCutoff)
+            foreach (var grp in cutoffGroups)
             {
-                var cty = (ctyRaw ?? "").Trim().ToUpperInvariant();
-                if (string.IsNullOrEmpty(cty)) continue;
+                var (cty, cutoff) = grp.Key;
+                // Only the divisions that actually share this cutoff take its result —
+                // otherwise a country with two cutoffs would have the second query
+                // overwrite every division from the first.
+                var divsForCutoff = grp.Select(x => x.DivCode).ToHashSet();
                 // Skip countries that don't need Lead InTransit / Lead DC SOH:
                 //   UAE, OMAN  -- excluded per operator spec (no lead qty tracked).
                 //   ECOM (+ its ONLINE/ONLINEKSA data-name aliases) -- no physical
@@ -895,7 +939,10 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                     new { cty, cutoff },
                     commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
                 foreach (var r in itRows)
+                {
+                    if (!divsForCutoff.Contains(r.DivCode)) continue;
                     leadDict[(cty, r.DivCode)] = (r.Total, 0);
+                }
 
                 // LeadDCSOH — per-country DB name lookup, skip when DataName missing.
                 if (!dataNames.TryGetValue(cty, out var dataName)) continue;
@@ -956,13 +1003,13 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
             var minWk = currentWk is int cw && cw > 0
                 ? cw
                 : (rows.Any() ? rows.Min(r => r.Wk) : 0);
-            var maxWkPerCountry = rows.Any()
-                ? rows.GroupBy(r => r.Country).ToDictionary(
+            var maxWkPerKey = rows.Any()
+                ? rows.GroupBy(r => (r.Country, r.DivCode)).ToDictionary(
                     g => g.Key,
                     // Last week INCLUDED = currentWk + N, i.e. Target Week. N+1 weeks
                     // of demand, not N — see the per-store sum below.
-                    g => minWk + (weeksByCountry.TryGetValue(g.Key, out var w) ? w : 1))
-                : new Dictionary<string, int>();
+                    g => minWk + (weeksByKey.TryGetValue(g.Key, out var w) ? w : 1))
+                : new Dictionary<(string Country, int DivCode), int>();
 
             // Per-store WeekSales — sum wk in [minWk, minWk + N], i.e. N+1 weeks,
             // using lpm_salestgtwk_stores as the per-store shape.
@@ -976,14 +1023,14 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                 .ToDictionary(g => g.Key, g =>
                 {
                     var cty = g.First().Country;
-                    var n = weeksByCountry.TryGetValue(cty, out var w) ? w : 1;
+                    var n = weeksByKey.TryGetValue((cty, g.Key.DivCode), out var w) ? w : 1;
                     return g.Where(x => x.Wk >= minWk && x.Wk <= minWk + n).Sum(x => x.Sales);
                 });
 
             if (minWk == 0 || !rows.Any()) return existing;
 
             // Pull MFP totals for the wk range and rescale existing per-store values.
-            var globalMaxWk = maxWkPerCountry.Values.DefaultIfEmpty(minWk).Max();
+            var globalMaxWk = maxWkPerKey.Values.DefaultIfEmpty(minWk).Max();
             var mfpRows = await c.QueryAsync<(string Country, int DivCode, int Wk, decimal Planned)>(new CommandDefinition(@"
                 SELECT tm.SIMCountry AS Country, m.division AS DivCode, m.week AS Wk,
                        SUM(ISNULL(m.planned_sls, 0)) AS Planned
@@ -996,9 +1043,10 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                 new { year, minWk, maxWk = globalMaxWk },
                 commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
 
-            // Sum MFP planned_sls for the wk range per country (respecting per-country N).
+            // Sum MFP planned_sls for the wk range per (country, division) — N is per
+            // division now, so two divisions of one country can have different horizons.
             var mfpTotals = mfpRows
-                .Where(r => maxWkPerCountry.TryGetValue(r.Country, out var mx) ? r.Wk <= mx : true)
+                .Where(r => maxWkPerKey.TryGetValue((r.Country, r.DivCode), out var mx) ? r.Wk <= mx : true)
                 .GroupBy(r => (r.Country, r.DivCode))
                 .ToDictionary(g => g.Key, g => g.Sum(x => x.Planned));
 
@@ -1335,14 +1383,14 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
             // CurrentEOW = PrevMonthEOM + WeekAdjustment × NoOfLeadWeeks — the
             // interpolation projects forward by the country's lead-weeks value.
             // The divisor is persisted as DivisorWeeks so the report is self-checking.
-            var wpm = weeksInTargetMonthByCountry.TryGetValue(r.Country, out var wp) && wp > 0
+            var wpm = weeksInTargetMonthByKey.TryGetValue((r.Country, r.DivCode), out var wp) && wp > 0
                 ? wp
                 : (weeksInMonth > 0 ? weeksInMonth : 0);
             // Multiplier is how many weeks INTO the target month the target week sits
             // (TargetWeek - last week of the preceding month), NOT NoOfLeadWeeks. The
             // two differ whenever the lead horizon does not land at a month boundary.
-            var targetWeek  = targetWeekByCountry.TryGetValue(r.Country, out var tw) ? tw : 0;
-            var weeksMult   = weeksMultiplierByCountry.TryGetValue(r.Country, out var wm) && wm > 0
+            var targetWeek  = targetWeekByKey.TryGetValue((r.Country, r.DivCode), out var tw) ? tw : 0;
+            var weeksMult   = weeksMultiplierByKey.TryGetValue((r.Country, r.DivCode), out var wm) && wm > 0
                 ? wm
                 : r.NoOfLeadWeeks;
 
