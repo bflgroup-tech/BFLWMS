@@ -182,6 +182,32 @@ public class ShipmentStatusService(IOnPremConnectionResolver resolver)
             reserved?.TrfCount ?? 0,  (int)(reserved?.Qty ?? 0),  reserved?.ShipCount ?? 0);
     }
 
+    // Division x Month drill-down for the Trf Count/Ship Count/Trf Qty (Intransit) and
+    // Trf Count/Ship Count/Quantity (Reserved) figures above — same P2EXPORT..vTransferDetail
+    // + usa.dbo.USAPriority rollup as BuildPivot/RunDivisionMonthChunkAsync below, but
+    // scoped to racks..InTransit_ExportShipment's TrfNo set instead of the GIN-mapped one.
+    // No per-shop chunking needed: P2EXPORT is a single shared catalog for these countries.
+    public async Task<DivisionMonthSummaryResult> GetExportTransferDivisionMonthSummaryAsync(
+        string country, string intransitFlag, CancellationToken ct = default)
+    {
+        if (!CountryToBflCode.TryGetValue(country, out var bflCode))
+            return BuildPivot(new List<DivisionMonthChunkRow>());
+
+        await using var conn = OpenOnPremBackup();
+        var rows = (await conn.QueryAsync<DivisionMonthChunkRow>(new CommandDefinition($@"
+            SELECT up.DivisionY AS Division, YEAR(b.LpmDt) AS Year, MONTH(b.LpmDt) AS Month, SUM(b.Quantity) AS Qty
+              FROM racks..InTransit_ExportShipment a WITH (NOLOCK)
+              JOIN P2EXPORT..vTransferDetail b WITH (NOLOCK) ON b.TrfNo = a.TrfNo
+              LEFT JOIN usa.dbo.USAPriority up WITH (NOLOCK) ON up.groupCode = b.groupcode
+             WHERE a.Country = @country
+               AND a.Intransit = @intransitFlag
+               AND b.TrfNo NOT IN (SELECT TrfNo FROM [{bflCode}]..VerifyGin WITH (NOLOCK))
+             GROUP BY up.DivisionY, YEAR(b.LpmDt), MONTH(b.LpmDt)",
+            new { country, intransitFlag }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).AsList();
+
+        return BuildPivot(rows);
+    }
+
     private async Task<List<ShipmentStatusRow>> GetForCountryAsync(
         string country, DateTime from, DateTime to, SemaphoreSlim throttle, CancellationToken ct)
     {

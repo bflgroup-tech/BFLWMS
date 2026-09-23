@@ -255,17 +255,17 @@
                                                 }
                                                 @if (t.Type == "JAFZA" && _exportTransfers.TryGetValue(cts.Country, out var jafzaExport))
                                                 {
-                                                    <div title="racks..InTransit_ExportShipment, Intransit='Y' (excludes TrfNos already in VerifyGin)">
+                                                    <div style="cursor:pointer;" @onclick='() => OpenExportTransferPivotAsync(cts.Country, t.Title + " Intransit", "Y")' title="racks..InTransit_ExportShipment, Intransit='Y' (excludes TrfNos already in VerifyGin) — click for Division / Month breakdown">
                                                         <div style="font-size:11px; color:var(--text-secondary); white-space:nowrap;">Trf Count</div>
-                                                        <div style="font-size:16px; font-weight:700; color:#222222; margin-top:2px; white-space:nowrap;">@jafzaExport.IntransitTrfCount.ToString("N0")</div>
+                                                        <div style="font-size:16px; font-weight:700; color:var(--link-color,#1a56db); margin-top:2px; white-space:nowrap; text-decoration:underline;">@jafzaExport.IntransitTrfCount.ToString("N0")</div>
                                                     </div>
-                                                    <div title="racks..InTransit_ExportShipment, Intransit='Y' (excludes TrfNos already in VerifyGin)">
+                                                    <div style="cursor:pointer;" @onclick='() => OpenExportTransferPivotAsync(cts.Country, t.Title + " Intransit", "Y")' title="racks..InTransit_ExportShipment, Intransit='Y' (excludes TrfNos already in VerifyGin) — click for Division / Month breakdown">
                                                         <div style="font-size:11px; color:var(--text-secondary); white-space:nowrap;">Ship Count</div>
-                                                        <div style="font-size:16px; font-weight:700; color:#222222; margin-top:2px; white-space:nowrap;">@jafzaExport.IntransitShipCount.ToString("N0")</div>
+                                                        <div style="font-size:16px; font-weight:700; color:var(--link-color,#1a56db); margin-top:2px; white-space:nowrap; text-decoration:underline;">@jafzaExport.IntransitShipCount.ToString("N0")</div>
                                                     </div>
-                                                    <div title="racks..InTransit_ExportShipment, Intransit='Y' (excludes TrfNos already in VerifyGin)">
+                                                    <div style="cursor:pointer;" @onclick='() => OpenExportTransferPivotAsync(cts.Country, t.Title + " Intransit", "Y")' title="racks..InTransit_ExportShipment, Intransit='Y' (excludes TrfNos already in VerifyGin) — click for Division / Month breakdown">
                                                         <div style="font-size:11px; color:var(--text-secondary); white-space:nowrap;">Trf Qty</div>
-                                                        <div style="font-size:16px; font-weight:700; color:#222222; margin-top:2px; white-space:nowrap;">@jafzaExport.IntransitQty.ToString("N0")</div>
+                                                        <div style="font-size:16px; font-weight:700; color:var(--link-color,#1a56db); margin-top:2px; white-space:nowrap; text-decoration:underline;">@jafzaExport.IntransitQty.ToString("N0")</div>
                                                     </div>
                                                 }
                                             </div>
@@ -275,17 +275,17 @@
                                             <div style="flex:1; text-align:center; min-width:0; border-left:1px solid rgba(0,0,0,0.18); margin-left:6px; padding-left:6px;">
                                                 <div style="font-size:12px; color:var(--text-secondary);" title="racks..InTransit_ExportShipment, Intransit='C' — not yet through the GIN flow">Reserved</div>
                                                 <div style="display:flex; justify-content:center; gap:8px; margin-top:5px;">
-                                                    <div>
+                                                    <div style="cursor:pointer;" @onclick='() => OpenExportTransferPivotAsync(cts.Country, t.Title + " Reserved", "C")' title="Click for Division / Month breakdown">
                                                         <div style="font-size:11px; color:var(--text-secondary); white-space:nowrap;">Trf Count</div>
-                                                        <div style="font-size:16px; font-weight:700; color:#222222; margin-top:2px; white-space:nowrap;">@jafzaReserved.ReservedTrfCount.ToString("N0")</div>
+                                                        <div style="font-size:16px; font-weight:700; color:var(--link-color,#1a56db); margin-top:2px; white-space:nowrap; text-decoration:underline;">@jafzaReserved.ReservedTrfCount.ToString("N0")</div>
                                                     </div>
-                                                    <div>
+                                                    <div style="cursor:pointer;" @onclick='() => OpenExportTransferPivotAsync(cts.Country, t.Title + " Reserved", "C")' title="Click for Division / Month breakdown">
                                                         <div style="font-size:11px; color:var(--text-secondary); white-space:nowrap;">Ship Count</div>
-                                                        <div style="font-size:16px; font-weight:700; color:#222222; margin-top:2px; white-space:nowrap;">@jafzaReserved.ReservedShipCount.ToString("N0")</div>
+                                                        <div style="font-size:16px; font-weight:700; color:var(--link-color,#1a56db); margin-top:2px; white-space:nowrap; text-decoration:underline;">@jafzaReserved.ReservedShipCount.ToString("N0")</div>
                                                     </div>
-                                                    <div>
+                                                    <div style="cursor:pointer;" @onclick='() => OpenExportTransferPivotAsync(cts.Country, t.Title + " Reserved", "C")' title="Click for Division / Month breakdown">
                                                         <div style="font-size:11px; color:var(--text-secondary); white-space:nowrap;">Quantity</div>
-                                                        <div style="font-size:16px; font-weight:700; color:#222222; margin-top:2px; white-space:nowrap;">@jafzaReserved.ReservedQty.ToString("N0")</div>
+                                                        <div style="font-size:16px; font-weight:700; color:var(--link-color,#1a56db); margin-top:2px; white-space:nowrap; text-decoration:underline;">@jafzaReserved.ReservedQty.ToString("N0")</div>
                                                     </div>
                                                 </div>
                                             </div>
@@ -620,6 +620,13 @@ else if (_rows.Count > 0 && !_isBflGroupView)
     {
         _pivotTitle = $"{country.ToUpperInvariant()} — {typeTitle} Intransit — Quantity by Division / Month (LPM Date)";
         await LoadPivotAsync(() => Svc.GetIntransitDivisionMonthSummaryAsync(country, type, _lastEffectiveTo));
+    }
+
+    // intransitFlag: "Y" (Intransit — Trf Count/Ship Count/Trf Qty) or "C" (Reserved).
+    private async Task OpenExportTransferPivotAsync(string country, string label, string intransitFlag)
+    {
+        _pivotTitle = $"{country.ToUpperInvariant()} — {label} — Quantity by Division / Month (LPM Date)";
+        await LoadPivotAsync(() => Svc.GetExportTransferDivisionMonthSummaryAsync(country, intransitFlag));
     }
 
     private async Task LoadPivotAsync(Func<Task<DivisionMonthSummaryResult>> fetch)
