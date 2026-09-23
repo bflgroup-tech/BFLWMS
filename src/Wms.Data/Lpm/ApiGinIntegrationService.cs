@@ -88,6 +88,12 @@ public class ApiGinIntegrationService(
 
     private sealed record PendingGin(string GinNo, string ShopName);
 
+    // One entry per GIN/endpoint attempt, success or failure — serialized to JSON and
+    // stored as the run's ErrorMessage so the Nightly Batches admin page can expand a
+    // run row and show exactly which calls succeeded and which didn't, not just an
+    // aggregate count.
+    private sealed record GinCallResult(string Endpoint, string GinNo, string ShopName, bool Success, string? Message);
+
     // A settable-property class rather than a positional record: Dapper's fast
     // constructor-matching path for records needs the constructor parameter types to
     // exactly match the reader's column types (e.g. SrNo came back as int, DelDate as
@@ -107,7 +113,7 @@ public class ApiGinIntegrationService(
 
     // Core GIN-send loop over an already-open connection — no locking/run-log of its
     // own, so SendPendingAsync can run it as one step of a single combined job run.
-    private async Task<(int Sent, int Failed, List<string> Errors)> SendGinsCoreAsync(
+    private async Task<(int Sent, int Failed, List<GinCallResult> Results)> SendGinsCoreAsync(
         SqlConnection c, ApiGinIntegrationOptions opts, CancellationToken ct)
     {
         var pending = (await c.QueryAsync<PendingGin>(new CommandDefinition(
@@ -115,7 +121,7 @@ public class ApiGinIntegrationService(
 
         var sent = 0;
         var failed = 0;
-        var errors = new List<string>();
+        var results = new List<GinCallResult>();
 
         foreach (var gin in pending)
         {
@@ -134,6 +140,8 @@ public class ApiGinIntegrationService(
                     await c.ExecuteAsync(new CommandDefinition(
                         MarkSentSql, new { ginNo = gin.GinNo, shopName = gin.ShopName },
                         commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+                    results.Add(new GinCallResult("gins", gin.GinNo, gin.ShopName, true, "No serialized lines — marked sent, no API call."));
+                    sent++;
                     continue;
                 }
 
@@ -181,7 +189,7 @@ public class ApiGinIntegrationService(
                 {
                     failed++;
                     var reason = res.IsSuccessStatusCode ? $"status={parsed?.Status}" : $"HTTP {(int)res.StatusCode}";
-                    errors.Add($"GIN {gin.GinNo}/{gin.ShopName}: {reason} — {Truncate(body)}");
+                    results.Add(new GinCallResult("gins", gin.GinNo, gin.ShopName, false, $"{reason} — {Truncate(body)}"));
                     log.LogWarning("APIGinIntegration: GIN {Gin}/{Shop} not accepted ({Reason}). Body: {Body}",
                         gin.GinNo, gin.ShopName, reason, Truncate(body));
                     continue;
@@ -190,17 +198,18 @@ public class ApiGinIntegrationService(
                 await c.ExecuteAsync(new CommandDefinition(
                     MarkSentSql, new { ginNo = gin.GinNo, shopName = gin.ShopName },
                     commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+                results.Add(new GinCallResult("gins", gin.GinNo, gin.ShopName, true, null));
                 sent++;
             }
             catch (Exception ex)
             {
                 failed++;
-                errors.Add($"GIN {gin.GinNo}/{gin.ShopName}: {ex.Message}");
+                results.Add(new GinCallResult("gins", gin.GinNo, gin.ShopName, false, ex.Message));
                 log.LogWarning(ex, "APIGinIntegration: GIN {Gin}/{Shop} threw.", gin.GinNo, gin.ShopName);
             }
         }
 
-        return (sent, failed, errors);
+        return (sent, failed, results);
     }
 
     private const string PendingProductsSql = @"
@@ -286,7 +295,7 @@ public class ApiGinIntegrationService(
 
     // Core product-send loop, same shape as SendGinsCoreAsync — no locking/run-log of
     // its own.
-    private async Task<(int Sent, int Failed, List<string> Errors)> SendProductsCoreAsync(
+    private async Task<(int Sent, int Failed, List<GinCallResult> Results)> SendProductsCoreAsync(
         SqlConnection c, ApiGinIntegrationOptions opts, CancellationToken ct)
     {
         var pending = (await c.QueryAsync<PendingGin>(new CommandDefinition(
@@ -294,7 +303,7 @@ public class ApiGinIntegrationService(
 
         var sent = 0;
         var failed = 0;
-        var errors = new List<string>();
+        var results = new List<GinCallResult>();
 
         foreach (var gin in pending)
         {
@@ -310,6 +319,8 @@ public class ApiGinIntegrationService(
                     await c.ExecuteAsync(new CommandDefinition(
                         MarkItemSentSql, new { ginNo = gin.GinNo, shopName = gin.ShopName },
                         commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+                    results.Add(new GinCallResult("products", gin.GinNo, gin.ShopName, true, "No SKUs found — marked sent, no API call."));
+                    sent++;
                     continue;
                 }
 
@@ -360,7 +371,7 @@ public class ApiGinIntegrationService(
                 {
                     failed++;
                     var reason = res.IsSuccessStatusCode ? $"status={parsed?.Status}" : $"HTTP {(int)res.StatusCode}";
-                    errors.Add($"GIN {gin.GinNo}/{gin.ShopName}: {reason} — {Truncate(body)}");
+                    results.Add(new GinCallResult("products", gin.GinNo, gin.ShopName, false, $"{reason} — {Truncate(body)}"));
                     log.LogWarning("APIGinIntegration (products): GIN {Gin}/{Shop} not accepted ({Reason}). Body: {Body}",
                         gin.GinNo, gin.ShopName, reason, Truncate(body));
                     continue;
@@ -369,17 +380,18 @@ public class ApiGinIntegrationService(
                 await c.ExecuteAsync(new CommandDefinition(
                     MarkItemSentSql, new { ginNo = gin.GinNo, shopName = gin.ShopName },
                     commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+                results.Add(new GinCallResult("products", gin.GinNo, gin.ShopName, true, null));
                 sent++;
             }
             catch (Exception ex)
             {
                 failed++;
-                errors.Add($"GIN {gin.GinNo}/{gin.ShopName}: {ex.Message}");
+                results.Add(new GinCallResult("products", gin.GinNo, gin.ShopName, false, ex.Message));
                 log.LogWarning(ex, "APIGinIntegration (products): GIN {Gin}/{Shop} threw.", gin.GinNo, gin.ShopName);
             }
         }
 
-        return (sent, failed, errors);
+        return (sent, failed, results);
     }
 
     /// <summary>
@@ -412,16 +424,23 @@ public class ApiGinIntegrationService(
         {
             await using var c = OpenWmsProductionDb();
 
-            var (productsSent, productsFailed, productErrors) = await SendProductsCoreAsync(c, opts, ct);
-            var (ginsSent, ginsFailed, ginErrors) = await SendGinsCoreAsync(c, opts, ct);
+            var (productsSent, productsFailed, productResults) = await SendProductsCoreAsync(c, opts, ct);
+            var (ginsSent, ginsFailed, ginResults) = await SendGinsCoreAsync(c, opts, ct);
 
             var sent = productsSent + ginsSent;
             var failed = productsFailed + ginsFailed;
-            var errors = productErrors.Concat(ginErrors).ToList();
+            var results = productResults.Concat(ginResults).ToList();
 
-            var summary = errors.Count == 0 ? null : string.Join(" | ", errors.Take(5));
-            await jobs.FinishRunAsync(runId, failed == 0 ? "Success" : "Failed", sent, summary, ct);
-            return (sent, failed, summary);
+            // Stored as ErrorMessage (the only free-text column on WmsRptJobRun) so
+            // Recent Runs can expand this row and show every GIN/endpoint call, not
+            // just an aggregate count — see NightlyBatches.razor's ParseCallResults.
+            var detail = results.Count == 0 ? null : System.Text.Json.JsonSerializer.Serialize(results);
+            await jobs.FinishRunAsync(runId, failed == 0 ? "Success" : "Failed", sent, detail, ct);
+
+            var errorSummary = failed == 0
+                ? null
+                : string.Join(" | ", results.Where(r => !r.Success).Take(5).Select(r => $"GIN {r.GinNo}/{r.ShopName} ({r.Endpoint}): {r.Message}"));
+            return (sent, failed, errorSummary);
         }
         catch (Exception ex)
         {
