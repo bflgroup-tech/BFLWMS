@@ -14,9 +14,12 @@
 
 <div class="aiwms-card aiwms-input-frame">
     <div class="aiwms-card-header">Create Client App</div>
-    <div class="aiwms-input-row">
+    <div class="aiwms-input-row" style="padding-bottom:20px">
         <span class="aiwms-input-lbl">App Name</span>
-        <input class="aiwms-input" @bind="_newName" @bind:event="oninput" placeholder="e.g. Mobile App, ERP Integration" />
+        <div style="display:flex;gap:8px;align-items:center">
+            <input class="aiwms-input" style="max-width:320px;height:38px;box-sizing:border-box" @bind="_newName" @bind:event="oninput" placeholder="e.g. Mobile App, ERP Integration" />
+            <button class="aiwms-btn aiwms-btn-primary" style="height:38px;box-sizing:border-box" @onclick="Create" disabled="@string.IsNullOrWhiteSpace(_newName)">Generate Credentials</button>
+        </div>
     </div>
 
     @if (_newSecret is not null)
@@ -27,10 +30,6 @@
             <div style="font-family:Consolas,monospace;font-weight:400">Secret: @_newSecret</div>
         </div>
     }
-
-    <div class="aiwms-input-actions">
-        <button class="aiwms-btn aiwms-btn-primary" @onclick="Create" disabled="@string.IsNullOrWhiteSpace(_newName)">Generate Credentials</button>
-    </div>
 </div>
 
 <div class="aiwms-card">
