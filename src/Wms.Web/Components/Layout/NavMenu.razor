@@ -44,7 +44,7 @@
                 {
                     @foreach (var menu in cat)
                     {
-                        <NavLink class="@(cat.Key is not null ? "aiwms-nav-link aiwms-nav-link-indent" : "aiwms-nav-link")" ActiveClass="active" href="@menu.Url">
+                        <NavLink class="@(cat.Key is not null ? "aiwms-nav-link aiwms-nav-link-indent" : "aiwms-nav-link")" ActiveClass="active" href="@menu.Url" Match="NavLinkMatch.All">
                             <span class="aiwms-nav-icon">@IconFor(menu.Key)</span>
                             <span>@menu.Label</span>
                         </NavLink>
