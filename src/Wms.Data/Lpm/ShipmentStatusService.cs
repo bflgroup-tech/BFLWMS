@@ -151,8 +151,7 @@ public class ShipmentStatusService(IOnPremConnectionResolver resolver)
         ["Oman"]     = "BFLOMAN",
     };
 
-    // gi.Qty is decimal, not int (same as vTransferDetail.Quantity elsewhere in this file).
-    private record ReservedRow(int TrfCount, decimal Qty);
+    private record ReservedRow(int TrfCount, int Qty);
 
     private async Task<ReservedSummary> GetReservedForCountryAsync(string country, DateTime from, CancellationToken ct)
     {
@@ -168,7 +167,7 @@ public class ShipmentStatusService(IOnPremConnectionResolver resolver)
                AND gi.SrNo NOT IN (SELECT GINNo FROM USA.dbo.ExportPass WITH (NOLOCK) WHERE GINNo IS NOT NULL AND Country = @bflCode)
                AND gi.SrNo NOT IN (SELECT GINNO FROM bfldata..contreceiptExport WITH (NOLOCK) WHERE GINNO IS NOT NULL AND Country = @bflCode)",
             new { from, country, bflCode }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-        return new ReservedSummary(country, row.TrfCount, (int)row.Qty);
+        return new ReservedSummary(country, row.TrfCount, row.Qty);
     }
 
     private async Task<List<ShipmentStatusRow>> GetForCountryAsync(
