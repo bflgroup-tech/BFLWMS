@@ -61,3 +61,17 @@ public record DivisionMonthRow(
     List<decimal> MonthQty,
     decimal       RowTotal
 );
+
+// Row-level detail shown as a popup when the Received/Intransit/Reserved title icon on
+// the JAFZA card is clicked — one row per (TrfNo, Division) rather than the
+// Division x Month collapse above. TransferDate is transferheader.TrfDate (when the
+// transfer was created); Lpm is vTransferDetail.LpmDt (same date already used for the
+// Division/Month pivot elsewhere on this page).
+public record TransferDetailRow(
+    string    Country,
+    string?   StoreId,
+    string    TrfNo,
+    DateTime? TransferDate,
+    string?   Division,
+    DateTime? Lpm,
+    decimal   Qty);

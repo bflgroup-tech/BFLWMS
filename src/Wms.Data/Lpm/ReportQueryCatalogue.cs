@@ -1463,6 +1463,36 @@ SELECT groupCode AS GroupCode, DivisionY AS Division, Department, Brand
                AND b.TrfNo NOT IN (SELECT TrfNo FROM [BFLKSA]..VerifyGin WITH (NOLOCK))
              GROUP BY a.Intransit"),
 
+        new QueryEntry("Shipment Status", "Intransit/Reserved Transfer Detail", "racks..InTransit_ExportShipment, P2EXPORT..vTransferDetail, P2EXPORT..transferheader, usa.dbo.USAPriority, bfldata.dbo.DataSettings, [BFLCode]..VerifyGin -- ShipmentStatusService.GetExportTransferDetailAsync (row-level detail behind the JAFZA card's Intransit/Reserved title icon, one row per TrfNo/Division)", @"
+            SELECT @country AS Country, ds.StoreID AS StoreId, b.TrfNo AS TrfNo, th.TrfDate AS TransferDate,
+                   up.DivisionY AS Division, MAX(b.LpmDt) AS Lpm, SUM(b.Quantity) AS Qty
+              FROM racks..InTransit_ExportShipment a WITH (NOLOCK)
+              JOIN P2EXPORT..vTransferDetail b WITH (NOLOCK) ON b.TrfNo = a.TrfNo
+              LEFT JOIN P2EXPORT..transferheader th WITH (NOLOCK) ON th.TrfNo = b.TrfNo
+              LEFT JOIN usa.dbo.USAPriority up WITH (NOLOCK) ON up.groupCode = b.groupcode
+              LEFT JOIN bfldata.dbo.DataSettings ds WITH (NOLOCK) ON ds.CostCodeTo = b.CostCodeTo AND ds.LocCodeTo = b.LocCodeTo
+             WHERE a.Country = @country
+               AND a.Intransit = @intransitFlag
+               AND b.TrfNo NOT IN (SELECT TrfNo FROM [BFLKSA]..VerifyGin WITH (NOLOCK))
+             GROUP BY ds.StoreID, b.TrfNo, th.TrfDate, up.DivisionY
+             ORDER BY b.TrfNo"),
+
+        new QueryEntry("Shipment Status", "Received Transfer Detail", "USA.dbo.ExportPass, bfldata..vGoodsIssueplt, bfldata..contreceiptExport, P2EXPORT..vTransferDetail, P2EXPORT..transferheader, usa.dbo.USAPriority, bfldata.dbo.DataSettings -- ShipmentStatusService.GetReceivedTransferDetailAsync (row-level detail behind the JAFZA card's Received title icon, one row per TrfNo/Division; JAFZA only — ShipNo not LIKE LOC/INT)", @"
+            SELECT @country AS Country, ds.StoreID AS StoreId, gi.TrfNo AS TrfNo, th.TrfDate AS TransferDate,
+                   up.DivisionY AS Division, MAX(vtd.LpmDt) AS Lpm, SUM(vtd.Quantity) AS Qty
+              FROM USA.dbo.ExportPass ep WITH (NOLOCK)
+              JOIN bfldata..vGoodsIssueplt gi WITH (NOLOCK) ON gi.SrNo = ep.GINNo
+              JOIN bfldata.dbo.DataSettings ds WITH (NOLOCK) ON ds.ShopName = gi.ShopIssue
+              JOIN bfldata..contreceiptExport cre WITH (NOLOCK) ON TRIM(cre.GINNO) = TRIM(ep.GINNo)
+              JOIN P2EXPORT..vTransferDetail vtd WITH (NOLOCK) ON vtd.TrfNo = gi.TrfNo
+              LEFT JOIN P2EXPORT..transferheader th WITH (NOLOCK) ON th.TrfNo = gi.TrfNo
+              LEFT JOIN usa.dbo.USAPriority up WITH (NOLOCK) ON up.groupCode = vtd.groupcode
+             WHERE ds.Country = @country
+               AND cre.ReceiptDt >= @from AND cre.ReceiptDt <= @to
+               AND ep.Shipno NOT LIKE '%LOC%' AND ep.Shipno NOT LIKE '%INT%'
+             GROUP BY ds.StoreID, gi.TrfNo, th.TrfDate, up.DivisionY
+             ORDER BY gi.TrfNo"),
+
         // ============================== Warehouse SOH Summary ==============================
         new QueryEntry("Warehouse SOH Summary", "Stock On Hand (UAE — TECHNO/JAFZA/YOTO)", "RACKS.dbo.WHBoxItems -- WarehouseSohSummaryService.GetStockOnHandExcludingBlackboxAsync", @"
             SELECT

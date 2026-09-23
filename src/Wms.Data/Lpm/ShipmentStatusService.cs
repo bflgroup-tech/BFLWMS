@@ -182,6 +182,61 @@ public class ShipmentStatusService(IOnPremConnectionResolver resolver)
             reserved?.TrfCount ?? 0,  (int)(reserved?.Qty ?? 0),  reserved?.ShipCount ?? 0);
     }
 
+    // Row-level detail behind the Intransit ('Y') / Reserved ('C') icon on the JAFZA
+    // card — one row per (TrfNo, Division), same filters as GetExportTransferSummaryAsync.
+    public async Task<List<TransferDetailRow>> GetExportTransferDetailAsync(
+        string country, string intransitFlag, CancellationToken ct = default)
+    {
+        if (!CountryToBflCode.TryGetValue(country, out var bflCode))
+            return new();
+
+        await using var conn = OpenOnPremBackup();
+        var rows = await conn.QueryAsync<TransferDetailRow>(new CommandDefinition($@"
+            SELECT @country AS Country, ds.StoreID AS StoreId, b.TrfNo AS TrfNo, th.TrfDate AS TransferDate,
+                   up.DivisionY AS Division, MAX(b.LpmDt) AS Lpm, SUM(b.Quantity) AS Qty
+              FROM racks..InTransit_ExportShipment a WITH (NOLOCK)
+              JOIN P2EXPORT..vTransferDetail b WITH (NOLOCK) ON b.TrfNo = a.TrfNo
+              LEFT JOIN P2EXPORT..transferheader th WITH (NOLOCK) ON th.TrfNo = b.TrfNo
+              LEFT JOIN usa.dbo.USAPriority up WITH (NOLOCK) ON up.groupCode = b.groupcode
+              LEFT JOIN bfldata.dbo.DataSettings ds WITH (NOLOCK) ON ds.CostCodeTo = b.CostCodeTo AND ds.LocCodeTo = b.LocCodeTo
+             WHERE a.Country = @country
+               AND a.Intransit = @intransitFlag
+               AND b.TrfNo NOT IN (SELECT TrfNo FROM [{bflCode}]..VerifyGin WITH (NOLOCK))
+             GROUP BY ds.StoreID, b.TrfNo, th.TrfDate, up.DivisionY
+             ORDER BY b.TrfNo",
+            new { country, intransitFlag }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        return rows.AsList();
+    }
+
+    // Row-level detail behind the Received icon on the JAFZA card — same GIN/receipt
+    // scoping as the header query (GinHeaderSql), narrowed to JAFZA (not LOC/INT in
+    // ShipNo) and flattened to (TrfNo, Division) rows via vTransferDetail/transferheader
+    // instead of the header's one-row-per-GIN shape. P2EXPORT hardcoded rather than
+    // resolved per-shop DataName — same simplification as GetExportTransferDetailAsync,
+    // valid for the same set of countries.
+    public async Task<List<TransferDetailRow>> GetReceivedTransferDetailAsync(
+        string country, DateTime from, DateTime to, CancellationToken ct = default)
+    {
+        await using var conn = OpenOnPremBackup();
+        var rows = await conn.QueryAsync<TransferDetailRow>(new CommandDefinition(@"
+            SELECT @country AS Country, ds.StoreID AS StoreId, gi.TrfNo AS TrfNo, th.TrfDate AS TransferDate,
+                   up.DivisionY AS Division, MAX(vtd.LpmDt) AS Lpm, SUM(vtd.Quantity) AS Qty
+              FROM USA.dbo.ExportPass ep WITH (NOLOCK)
+              JOIN bfldata..vGoodsIssueplt gi WITH (NOLOCK) ON gi.SrNo = ep.GINNo
+              JOIN bfldata.dbo.DataSettings ds WITH (NOLOCK) ON ds.ShopName = gi.ShopIssue
+              JOIN bfldata..contreceiptExport cre WITH (NOLOCK) ON TRIM(cre.GINNO) = TRIM(ep.GINNo)
+              JOIN P2EXPORT..vTransferDetail vtd WITH (NOLOCK) ON vtd.TrfNo = gi.TrfNo
+              LEFT JOIN P2EXPORT..transferheader th WITH (NOLOCK) ON th.TrfNo = gi.TrfNo
+              LEFT JOIN usa.dbo.USAPriority up WITH (NOLOCK) ON up.groupCode = vtd.groupcode
+             WHERE ds.Country = @country
+               AND cre.ReceiptDt >= @from AND cre.ReceiptDt <= @to
+               AND ep.Shipno NOT LIKE '%LOC%' AND ep.Shipno NOT LIKE '%INT%'
+             GROUP BY ds.StoreID, gi.TrfNo, th.TrfDate, up.DivisionY
+             ORDER BY gi.TrfNo",
+            new { country, from, to }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        return rows.AsList();
+    }
+
     // Division x Month drill-down for the Trf Count/Ship Count/Trf Qty (Intransit) and
     // Trf Count/Ship Count/Quantity (Reserved) figures above — same P2EXPORT..vTransferDetail
     // + usa.dbo.USAPriority rollup as BuildPivot/RunDivisionMonthChunkAsync below, but
