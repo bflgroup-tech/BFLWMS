@@ -140,7 +140,7 @@ public static class MenuKeys
         new MenuEntry(ADMIN_NIGHTLY_BATCHES, "Admin",               "Nightly Batches Status",    "admin/nightly-batches",     new[] { Roles.Admin }),
         new MenuEntry(ADMIN_PENDING_GOODS_RECEIPT_EMAIL, "Admin",   "Pending Goods Receipt Email","admin/pending-goods-receipt-email", new[] { Roles.Admin }),
         new MenuEntry(ADMIN_RD_RS_AGEING_EMAIL,  "Admin",   "RD/RS Ageing Email",         "admin/rd-rs-ageing-email",          new[] { Roles.Admin }),
-        new MenuEntry(ADMIN_API,             "Admin",               "API",                        "admin/api",                 new[] { Roles.Admin }),
+        new MenuEntry(ADMIN_API,             "Admin",               "Overview",                   "admin/api",                 new[] { Roles.Admin }, "API"),
         new MenuEntry(ADMIN_API_CLIENT_APPS, "Admin",               "Client Apps",                "admin/api/client-apps",     new[] { Roles.Admin }, "API"),
     };
 
