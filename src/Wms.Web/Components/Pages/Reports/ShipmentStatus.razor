@@ -231,18 +231,7 @@
                                         <div style="flex:1; text-align:center; min-width:0; border-left:1px solid rgba(0,0,0,0.18); margin-left:6px; padding-left:6px;">
                                             <div style="font-size:12px; color:var(--text-secondary);">Intransit</div>
                                             <div style="display:flex; justify-content:center; gap:8px; margin-top:5px;">
-                                                @if (t.Type == "JAFZA")
-                                                {
-                                                    <div style="cursor:pointer;" @onclick="() => OpenIntransitPivotAsync(cts.Country, t.Title, t.Type)" title="Click for Division / Month breakdown">
-                                                        <div style="font-size:11px; color:var(--text-secondary); white-space:nowrap;">Ship Count</div>
-                                                        <div style="font-size:16px; font-weight:700; color:var(--link-color,#1a56db); margin-top:2px; white-space:nowrap; text-decoration:underline;">@t.IntransitCount.ToString("N0")</div>
-                                                    </div>
-                                                    <div style="cursor:pointer;" @onclick="() => OpenIntransitPivotAsync(cts.Country, t.Title, t.Type)" title="Click for Division / Month breakdown">
-                                                        <div style="font-size:11px; color:var(--text-secondary); white-space:nowrap;">Quantity</div>
-                                                        <div style="font-size:16px; font-weight:700; color:var(--link-color,#1a56db); margin-top:2px; white-space:nowrap; text-decoration:underline;">@t.IntransitQty.ToString("N0")</div>
-                                                    </div>
-                                                }
-                                                else
+                                                @if (t.Type != "JAFZA")
                                                 {
                                                     <div>
                                                         <div style="font-size:11px; color:var(--text-secondary); white-space:nowrap;">Ship Count</div>
@@ -602,7 +591,6 @@ else if (_rows.Count > 0 && !_isBflGroupView)
     private bool _isBflGroupView;
 
     // ===================== Division x Month drill-down popup =====================
-    private DateTime _lastEffectiveTo = DateTime.Today; // InTransit-as-of cutoff from the last Load
     private bool     _pivotOpen;
     private bool     _pivotLoading;
     private string   _pivotTitle = "";
@@ -614,12 +602,6 @@ else if (_rows.Count > 0 && !_isBflGroupView)
         if (string.IsNullOrWhiteSpace(ginNo)) return;
         _pivotTitle = $"GIN {ginNo} — Quantity by Division / Month (LPM Date)";
         await LoadPivotAsync(() => Svc.GetDivisionMonthSummaryByGinAsync(ginNo));
-    }
-
-    private async Task OpenIntransitPivotAsync(string country, string typeTitle, string? type)
-    {
-        _pivotTitle = $"{country.ToUpperInvariant()} — {typeTitle} Intransit — Quantity by Division / Month (LPM Date)";
-        await LoadPivotAsync(() => Svc.GetIntransitDivisionMonthSummaryAsync(country, type, _lastEffectiveTo));
     }
 
     // intransitFlag: "Y" (Intransit — Trf Count/Ship Count/Trf Qty) or "C" (Reserved).
@@ -1022,7 +1004,6 @@ else if (_rows.Count > 0 && !_isBflGroupView)
                 Countries: countries,
                 DateFrom:  effectiveFrom,
                 DateTo:    effectiveTo);
-            _lastEffectiveTo = effectiveTo; // for the Intransit drill-down's InTransit-as-of cutoff
 
             var result = await Svc.GetShipmentStatusAsync(filter);
             _rows = result.Rows;

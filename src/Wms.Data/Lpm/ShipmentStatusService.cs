@@ -594,7 +594,6 @@ public class ShipmentStatusService(IOnPremConnectionResolver resolver)
     // usaorgfile flow for LOCAL/International, which has no LpmDt to group by.
 
     private record TrfShopKey(string TrfNo, string CostCodeTo, string LocCodeTo, string? DataName);
-    private record TrfShopKeyWithShip(string TrfNo, string CostCodeTo, string LocCodeTo, string? DataName, string ShipNo);
     private record DivisionMonthChunkRow(string? Division, int? Year, int? Month, decimal Qty);
 
     private const string NoDateKey = "(no date)";
@@ -610,34 +609,6 @@ public class ShipmentStatusService(IOnPremConnectionResolver resolver)
             JOIN bfldata.dbo.DataSettings ds WITH (NOLOCK) ON ds.ShopName = gi.ShopIssue
             WHERE ep.GINNo = @ginNo",
             new { ginNo }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).AsList();
-
-        return await BuildDivisionMonthSummaryAsync(entries, ct);
-    }
-
-    // type: "JAFZA" | "LOCAL" | "International" | null (Total — every type combined).
-    public async Task<DivisionMonthSummaryResult> GetIntransitDivisionMonthSummaryAsync(
-        string? country, string? type, DateTime to, CancellationToken ct = default)
-    {
-        await using var conn = OpenOnPremBackup();
-        var raw = (await conn.QueryAsync<TrfShopKeyWithShip>(new CommandDefinition(@"
-            SELECT gi.TrfNo AS TrfNo, ds.CostCodeTo AS CostCodeTo, ds.LocCodeTo AS LocCodeTo, ds.DataName AS DataName, ep.Shipno AS ShipNo
-            FROM USA.dbo.ExportPass ep WITH (NOLOCK)
-            JOIN bfldata..vGoodsIssueplt gi WITH (NOLOCK) ON gi.SrNo = ep.GINNo
-            JOIN bfldata.dbo.DataSettings ds WITH (NOLOCK) ON ds.ShopName = gi.ShopIssue
-            LEFT JOIN bfldata..contreceiptExport cre WITH (NOLOCK) ON TRIM(cre.GINNO) = TRIM(ep.GINNo)
-            WHERE (@country IS NULL OR ds.Country = @country)
-              AND cre.ReceiptDt IS NULL
-              AND ep.Trndate <= @to AND ep.Trndate >= @inTransitFloor",
-            new { country, to, inTransitFloor = InTransitFloor },
-            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).AsList();
-
-        var filtered = string.IsNullOrEmpty(type)
-            ? raw
-            : raw.Where(r => DetermineType(r.ShipNo) == type).ToList();
-
-        var entries = filtered
-            .Select(r => new TrfShopKey(r.TrfNo, r.CostCodeTo, r.LocCodeTo, r.DataName))
-            .ToList();
 
         return await BuildDivisionMonthSummaryAsync(entries, ct);
     }
