@@ -1,0 +1,70 @@
+@page "/admin/api/client-apps"
+@rendermode RenderMode.InteractiveServer
+@attribute [Authorize(Policy = Wms.Core.MenuKeys.ADMIN_API_CLIENT_APPS)]
+@using Wms.Core.Entities
+@using Wms.Data.Api
+@inject ApiClientAppService ClientApps
+
+<PageTitle>WMS — Client Apps</PageTitle>
+
+<div class="aiwms-page-header">
+    <h2>Client Apps</h2>
+    <p>Registered machine-to-machine clients for the WMS API (OAuth2 client-credentials grant against /api/v1/oauth/token).</p>
+</div>
+
+<div class="aiwms-section">
+    <div style="display:flex;gap:8px;margin-bottom:14px">
+        <input @bind="_newName" placeholder="app name..." style="padding:8px 12px;border:1px solid var(--border);border-radius:6px" />
+        <button class="aiwms-btn aiwms-btn-primary" @onclick="Create" disabled="@string.IsNullOrWhiteSpace(_newName)">Create Client App</button>
+    </div>
+
+    @if (_newSecret is not null)
+    {
+        <div style="padding:12px;border:1px solid var(--bfl-yellow);border-radius:6px;margin-bottom:14px;background:rgba(255,193,7,.08)">
+            <strong>Client secret — copy it now, it will not be shown again:</strong>
+            <div style="font-family:Consolas,monospace;margin-top:6px">Client ID: @_newClientId</div>
+            <div style="font-family:Consolas,monospace">Secret: @_newSecret</div>
+        </div>
+    }
+
+    <table class="aiwms-table">
+        <thead><tr><th>Client ID</th><th>Name</th><th>Enabled</th><th>Created</th><th>Created By</th><th></th></tr></thead>
+        <tbody>
+            @foreach (var a in _apps)
+            {
+                <tr>
+                    <td style="font-family:Consolas,monospace">@a.ClientId</td>
+                    <td>@a.Name</td>
+                    <td>@(a.Enabled ? "Yes" : "No")</td>
+                    <td>@a.CreateTS.ToString("yyyy-MM-dd HH:mm:ss")</td>
+                    <td>@a.CreatedBy</td>
+                    <td><button class="aiwms-btn" @onclick="@(() => ToggleEnabled(a))">@(a.Enabled ? "Disable" : "Enable")</button></td>
+                </tr>
+            }
+        </tbody>
+    </table>
+</div>
+
+@code {
+    private List<ApiClientApp> _apps = new();
+    private string _newName = "";
+    private string? _newClientId, _newSecret;
+
+    protected override async Task OnInitializedAsync() => await Reload();
+
+    private async Task Reload() => _apps = await ClientApps.ListAsync();
+
+    private async Task Create()
+    {
+        if (string.IsNullOrWhiteSpace(_newName)) return;
+        (_newClientId, _newSecret) = await ClientApps.CreateAsync(_newName.Trim());
+        _newName = "";
+        await Reload();
+    }
+
+    private async Task ToggleEnabled(ApiClientApp a)
+    {
+        await ClientApps.SetEnabledAsync(a.ClientId, !a.Enabled);
+        await Reload();
+    }
+}
