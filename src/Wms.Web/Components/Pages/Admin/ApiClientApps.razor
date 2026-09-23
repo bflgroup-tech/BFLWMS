@@ -17,8 +17,8 @@
     <div class="aiwms-input-row" style="padding-bottom:20px">
         <span class="aiwms-input-lbl">App Name</span>
         <div style="display:flex;gap:8px;align-items:center">
-            <input class="aiwms-input" style="max-width:320px" @bind="_newName" @bind:event="oninput" placeholder="e.g. Mobile App, ERP Integration" />
-            <button class="aiwms-btn aiwms-btn-primary" @onclick="Create" disabled="@string.IsNullOrWhiteSpace(_newName)">Generate Credentials</button>
+            <input class="aiwms-input" style="max-width:320px;height:38px;box-sizing:border-box" @bind="_newName" @bind:event="oninput" placeholder="e.g. Mobile App, ERP Integration" />
+            <button class="aiwms-btn aiwms-btn-primary" style="height:38px;box-sizing:border-box" @onclick="Create" disabled="@string.IsNullOrWhiteSpace(_newName)">Generate Credentials</button>
         </div>
     </div>
 
