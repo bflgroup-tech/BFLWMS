@@ -12,33 +12,56 @@
     <p>Registered machine-to-machine clients for the WMS API (OAuth2 client-credentials grant against /api/v1/oauth/token).</p>
 </div>
 
-<div class="aiwms-section">
-    <div style="display:flex;gap:8px;margin-bottom:14px">
-        <input @bind="_newName" placeholder="app name..." style="padding:8px 12px;border:1px solid var(--border);border-radius:6px" />
-        <button class="aiwms-btn aiwms-btn-primary" @onclick="Create" disabled="@string.IsNullOrWhiteSpace(_newName)">Create Client App</button>
+<div class="aiwms-card aiwms-input-frame">
+    <div class="aiwms-card-header">Create Client App</div>
+    <div class="aiwms-input-row">
+        <span class="aiwms-input-lbl">App Name</span>
+        <input class="aiwms-input" @bind="_newName" @bind:event="oninput" placeholder="e.g. Mobile App, ERP Integration" />
     </div>
 
     @if (_newSecret is not null)
     {
-        <div style="padding:12px;border:1px solid var(--bfl-yellow);border-radius:6px;margin-bottom:14px;background:rgba(255,193,7,.08)">
-            <strong>Client secret — copy it now, it will not be shown again:</strong>
-            <div style="font-family:Consolas,monospace;margin-top:6px">Client ID: @_newClientId</div>
-            <div style="font-family:Consolas,monospace">Secret: @_newSecret</div>
+        <div class="aiwms-input-info">
+            Client secret — copy it now, it will not be shown again:
+            <div style="font-family:Consolas,monospace;margin-top:6px;font-weight:400">Client ID: @_newClientId</div>
+            <div style="font-family:Consolas,monospace;font-weight:400">Secret: @_newSecret</div>
         </div>
     }
 
+    <div class="aiwms-input-actions">
+        <button class="aiwms-btn aiwms-btn-primary" @onclick="Create" disabled="@string.IsNullOrWhiteSpace(_newName)">Generate Credentials</button>
+    </div>
+</div>
+
+<div class="aiwms-card">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <div class="aiwms-card-header" style="margin:0">Client Apps</div>
+        <button class="aiwms-btn aiwms-btn-secondary" @onclick="Reload">⟲ Refresh</button>
+    </div>
+
     <table class="aiwms-table">
-        <thead><tr><th>Client ID</th><th>Name</th><th>Enabled</th><th>Created</th><th>Created By</th><th></th></tr></thead>
+        <thead><tr><th>#</th><th>Name</th><th>Client ID</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead>
         <tbody>
+            @{ var i = 0; }
             @foreach (var a in _apps)
             {
+                i++;
                 <tr>
-                    <td style="font-family:Consolas,monospace">@a.ClientId</td>
+                    <td>@i</td>
                     <td>@a.Name</td>
-                    <td>@(a.Enabled ? "Yes" : "No")</td>
-                    <td>@a.CreateTS.ToString("yyyy-MM-dd HH:mm:ss")</td>
-                    <td>@a.CreatedBy</td>
-                    <td><button class="aiwms-btn" @onclick="@(() => ToggleEnabled(a))">@(a.Enabled ? "Disable" : "Enable")</button></td>
+                    <td style="font-family:Consolas,monospace">@a.ClientId</td>
+                    <td><span class="aiwms-pill @(a.Enabled ? "tier1" : "tier4")">@(a.Enabled ? "Active" : "Revoked")</span></td>
+                    <td>@a.CreateTS.ToString("yyyy-MM-dd HH:mm")</td>
+                    <td>
+                        @if (a.Enabled)
+                        {
+                            <button class="aiwms-btn aiwms-btn-danger" @onclick="@(() => Revoke(a))">Revoke</button>
+                        }
+                        else
+                        {
+                            <button class="aiwms-btn aiwms-btn-secondary" @onclick="@(() => Reactivate(a))">Reactivate</button>
+                        }
+                    </td>
                 </tr>
             }
         </tbody>
@@ -62,9 +85,15 @@
         await Reload();
     }
 
-    private async Task ToggleEnabled(ApiClientApp a)
+    private async Task Revoke(ApiClientApp a)
     {
-        await ClientApps.SetEnabledAsync(a.ClientId, !a.Enabled);
+        await ClientApps.SetEnabledAsync(a.ClientId, false);
+        await Reload();
+    }
+
+    private async Task Reactivate(ApiClientApp a)
+    {
+        await ClientApps.SetEnabledAsync(a.ClientId, true);
         await Reload();
     }
 }
