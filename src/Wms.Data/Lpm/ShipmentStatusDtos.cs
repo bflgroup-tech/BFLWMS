@@ -12,7 +12,6 @@ public record ShipmentStatusRow(
     DateTime? Eta,
     int       TotalQty,
     int?      BoxCount,         // TransferCount; null for LOCAL/International
-    int?      TrfCount,         // distinct TrfNo count from vGoodsIssueplt; null for LOCAL/International
     DateTime? ReceiptDt,        // null while InTransit
     int?      SlaReceiptDays,   // ReleasedOn -> ReceiptDt
     int?      ReceivedBoxes,    // null for LOCAL/International
@@ -30,17 +29,22 @@ public record ShipmentStatusFilter(
 );
 
 public record ShipmentStatusResult(
-    List<ShipmentStatusRow> Rows,
-    List<string>            Warnings,   // one entry per country that failed during a "BFL Group" fan-out
-    List<ReservedSummary>   Reserved    // one entry per country — goods issued but never GIN'd or received
+    List<ShipmentStatusRow>     Rows,
+    List<string>                Warnings,        // one entry per country that failed during a "BFL Group" fan-out
+    List<ExportTransferSummary> ExportTransfers  // one entry per country — from racks..InTransit_ExportShipment
 );
 
-// Distinct TrfNo count + Quantity from bfldata..vGoodsIssueplt rows whose SrNo
-// never made it into a GIN (USA.dbo.ExportPass) or a receipt (contreceiptExport) —
-// goods physically issued (picked/loaded) but stuck before GIN creation. Shown
-// inside the JAFZA card; has no JAFZA/LOCAL/International split of its own since a
-// row here has no ShipNo yet (that only exists once a GIN is created).
-public record ReservedSummary(string Country, int TrfCount, int Qty);
+// Distinct TrfNo count, Quantity, and distinct ShipNo count from
+// racks..InTransit_ExportShipment (JOIN P2EXPORT..vTransferDetail), split by its own
+// Intransit flag: 'Y' shown on the JAFZA card's Intransit section, 'C' shown as
+// Reserved. Excludes any TrfNo already present in that country's own VerifyGin
+// table (already verified/received at destination, even if this source hasn't
+// caught up yet). Neither half has its own JAFZA/LOCAL/International split — the
+// source table only carries Country + TrfNo, no ShipNo of its own to derive Type.
+public record ExportTransferSummary(
+    string Country,
+    int IntransitTrfCount, int IntransitQty, int IntransitShipCount,
+    int ReservedTrfCount,  int ReservedQty,  int ReservedShipCount);
 
 // Division x Month (by vTransferDetail.LpmDt) drill-down pivot, shown as a popup when
 // an Intransit number or a GIN No. is clicked. MonthQty on each row is index-aligned

@@ -106,47 +106,44 @@ public class ShipmentStatusService(IOnPremConnectionResolver resolver)
                 return new List<ShipmentStatusRow>();
             }
         });
-        var reservedTasks = countries.Select(async country =>
+        var exportTransferTasks = countries.Select(async country =>
         {
             try
             {
-                return await GetReservedForCountryAsync(country, from, ct);
+                return await GetExportTransferSummaryAsync(country, ct);
             }
             catch (Exception ex)
             {
-                lock (warnings) warnings.Add($"{country} (reserved): {ex.Message}");
-                return new ReservedSummary(country, 0, 0);
+                lock (warnings) warnings.Add($"{country} (export transfers): {ex.Message}");
+                return new ExportTransferSummary(country, 0, 0, 0, 0, 0, 0);
             }
         });
 
         var perCountry = await Task.WhenAll(rowTasks);
-        var reserved = (await Task.WhenAll(reservedTasks)).ToList();
+        var exportTransfers = (await Task.WhenAll(exportTransferTasks)).ToList();
         var allRows = perCountry.SelectMany(r => r)
             .OrderBy(r => r.ReceiptDt ?? r.ReleasedOn ?? DateTime.MaxValue)
             .ToList();
-        return new ShipmentStatusResult(allRows, warnings, reserved);
+        return new ShipmentStatusResult(allRows, warnings, exportTransfers);
     }
 
-    // ===================== "Reserved" — transfer not fully through the GIN flow yet =====================
-    // Starts from every transfer in P2EXPORT..vTransferDetail for the country's shops
-    // (CostCodeTo/LocCodeTo), not just ones already issued:
-    //   - Never reached bfldata..vGoodsIssueplt at all (not yet physically picked/issued)
-    //     -> Reserved unconditionally.
-    //   - Reached vGoodsIssueplt (issued) but its SrNo never made it into a GIN
-    //     (USA.dbo.ExportPass) or a receipt (contreceiptExport) -> also Reserved.
-    // No JAFZA/LOCAL/International split — Type is derived from ShipNo, which only
-    // exists once a GIN is created. Shown inside the JAFZA card since it precedes that
-    // flow specifically. Aggregated via EXISTS/NOT EXISTS rather than a join, so a TrfNo
-    // with more than one vGoodsIssueplt row can't double-count its Quantity.
+    // ===================== Export transfer Intransit/Reserved (racks..InTransit_ExportShipment) =====================
+    // Same source already used elsewhere in this codebase (e.g. OtsPoAllocationService's
+    // LeadIntransit) for export-from-UAE transfer quantities: racks..InTransit_ExportShipment
+    // carries one row per TrfNo with an Intransit flag ('Y' = still in transit, 'C' =
+    // Reserved — not yet through the GIN flow), joined to the single shared
+    // P2EXPORT..vTransferDetail catalog for Quantity/ShipNo (not per-shop DataName — this
+    // is deliberately a single-DB query, same as the existing LeadIntransit precedent).
+    // Excludes any TrfNo already present in that country's own VerifyGin table (already
+    // verified/received at destination even if this source hasn't caught up yet). Neither
+    // half has its own JAFZA/LOCAL/International split, since the source table only
+    // carries Country + TrfNo — no ShipNo of its own to derive Type from.
     //
-    // ExportPass.Country and contreceiptExport.Country use a different, BFL-prefixed
-    // convention from DataSettings.Country/SIMCountry used everywhere else in this file
-    // (e.g. "BFLKSA" for country "KSA") — needed here because, unlike the rest of this
-    // file, GINNo/SrNo values aren't proven globally unique across countries (each
-    // country's vGoodsIssueplt/ExportPass lives in its own on-prem database with its own
-    // identity sequence), so the NOT IN subqueries must be scoped per country, not just
-    // globally. Mirrors SyncDataCountService.DataNameToDbName (duplicated rather than
-    // shared — small, stable, hand-maintained, not sourced from a DB query).
+    // racks..InTransit_ExportShipment.Country and [DataName]..VerifyGin's catalog name use
+    // a different, BFL-prefixed convention from DataSettings.Country/SIMCountry used
+    // everywhere else in this file (e.g. "BFLKSA" for country "KSA") — mirrors
+    // SyncDataCountService.DataNameToDbName (duplicated rather than shared — small,
+    // stable, hand-maintained, not sourced from a DB query).
     private static readonly Dictionary<string, string> CountryToBflCode = new(StringComparer.OrdinalIgnoreCase)
     {
         ["KSA"]      = "BFLKSA",
@@ -157,42 +154,32 @@ public class ShipmentStatusService(IOnPremConnectionResolver resolver)
         ["Oman"]     = "BFLOMAN",
     };
 
-    // vTransferDetail.Quantity is decimal (same as elsewhere in this file); vGoodsIssueplt
-    // isn't the source table here so its int Qty column doesn't apply to this query.
-    private record ReservedRow(int TrfCount, decimal Qty);
+    // vTransferDetail.Quantity is decimal, not int — SUM(b.Quantity) materializes as
+    // decimal (same as the earlier version of this query broke on: "9746.000000").
+    private record IntransitExportRow(string Intransit, int TrfCount, decimal Qty, int ShipCount);
 
-    private async Task<ReservedSummary> GetReservedForCountryAsync(string country, DateTime from, CancellationToken ct)
+    private async Task<ExportTransferSummary> GetExportTransferSummaryAsync(string country, CancellationToken ct)
     {
         if (!CountryToBflCode.TryGetValue(country, out var bflCode))
-            return new ReservedSummary(country, 0, 0);
+            return new ExportTransferSummary(country, 0, 0, 0, 0, 0, 0);
 
         await using var conn = OpenOnPremBackup();
-        var row = await conn.QuerySingleAsync<ReservedRow>(new CommandDefinition(@"
-            ;WITH Shops AS (
-                SELECT DISTINCT CostCodeTo, LocCodeTo
-                  FROM bfldata.dbo.DataSettings WITH (NOLOCK)
-                 WHERE Country = @country
-                   AND CostCodeTo IS NOT NULL AND CostCodeTo <> ''
-                   AND LocCodeTo IS NOT NULL AND LocCodeTo <> ''
-            ),
-            Transfers AS (
-                SELECT vtd.TrfNo, SUM(vtd.Quantity) AS Qty
-                  FROM P2EXPORT..vTransferDetail vtd WITH (NOLOCK)
-                  JOIN Shops s ON s.CostCodeTo = vtd.CostCodeTo AND s.LocCodeTo = vtd.LocCodeTo
-                 WHERE vtd.LpmDt >= @from
-                 GROUP BY vtd.TrfNo
-            )
-            SELECT COUNT(DISTINCT t.TrfNo) AS TrfCount, ISNULL(SUM(t.Qty), 0) AS Qty
-              FROM Transfers t
-             WHERE NOT EXISTS (SELECT 1 FROM bfldata..vGoodsIssueplt gi WITH (NOLOCK) WHERE gi.TrfNo = t.TrfNo)
-                OR EXISTS (
-                     SELECT 1 FROM bfldata..vGoodsIssueplt gi WITH (NOLOCK)
-                      WHERE gi.TrfNo = t.TrfNo
-                        AND gi.SrNo NOT IN (SELECT GINNo FROM USA.dbo.ExportPass WITH (NOLOCK) WHERE GINNo IS NOT NULL AND Country = @bflCode)
-                        AND gi.SrNo NOT IN (SELECT GINNO FROM bfldata..contreceiptExport WITH (NOLOCK) WHERE GINNO IS NOT NULL AND Country = @bflCode)
-                   )",
-            new { country, from, bflCode }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-        return new ReservedSummary(country, row.TrfCount, (int)row.Qty);
+        var rows = (await conn.QueryAsync<IntransitExportRow>(new CommandDefinition($@"
+            SELECT a.Intransit AS Intransit, COUNT(DISTINCT a.TrfNo) AS TrfCount,
+                   ISNULL(SUM(b.Quantity), 0) AS Qty, COUNT(DISTINCT b.Shipno) AS ShipCount
+              FROM racks..InTransit_ExportShipment a WITH (NOLOCK)
+              JOIN P2EXPORT..vTransferDetail b WITH (NOLOCK) ON b.TrfNo = a.TrfNo
+             WHERE a.Country = @country
+               AND a.Intransit IN ('Y', 'C')
+               AND b.TrfNo NOT IN (SELECT TrfNo FROM [{bflCode}]..VerifyGin WITH (NOLOCK))
+             GROUP BY a.Intransit",
+            new { country }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).AsList();
+
+        var intransit = rows.FirstOrDefault(r => string.Equals(r.Intransit, "Y", StringComparison.OrdinalIgnoreCase));
+        var reserved  = rows.FirstOrDefault(r => string.Equals(r.Intransit, "C", StringComparison.OrdinalIgnoreCase));
+        return new ExportTransferSummary(country,
+            intransit?.TrfCount ?? 0, (int)(intransit?.Qty ?? 0), intransit?.ShipCount ?? 0,
+            reserved?.TrfCount ?? 0,  (int)(reserved?.Qty ?? 0),  reserved?.ShipCount ?? 0);
     }
 
     private async Task<List<ShipmentStatusRow>> GetForCountryAsync(
@@ -280,7 +267,6 @@ public class ShipmentStatusService(IOnPremConnectionResolver resolver)
                 Eta:              h.Eta,
                 TotalQty:         h.TotalQty,
                 BoxCount:         h.TransferCount,
-                TrfCount:         trfNos.Count(),
                 ReceiptDt:        h.ReceiptDt,
                 SlaReceiptDays:   DayDiff(h.ReleasedOn, h.ReceiptDt),
                 ReceivedBoxes:    receivedBoxes,
@@ -478,7 +464,6 @@ public class ShipmentStatusService(IOnPremConnectionResolver resolver)
                 Eta:             null,
                 TotalQty:        (int)totalQty,
                 BoxCount:        null,
-                TrfCount:        null,
                 ReceiptDt:       r.ReceiptDt,
                 SlaReceiptDays:  null,
                 ReceivedBoxes:   null,

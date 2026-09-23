@@ -1453,30 +1453,15 @@ SELECT groupCode AS GroupCode, DivisionY AS Division, Department, Brand
                 WHERE uo.ContNo IN ({BuildInClause(contNos)})
                 GROUP BY uo.ContNo, up.DivisionY, up.Department, up.Brand"),
 
-        new QueryEntry("Shipment Status", "Reserved (transfer not fully through the GIN flow yet)", "P2EXPORT..vTransferDetail, bfldata..vGoodsIssueplt, USA.dbo.ExportPass, bfldata..contreceiptExport, bfldata.dbo.DataSettings -- ShipmentStatusService.GetReservedForCountryAsync (shown inside the JAFZA card; no Type since ShipNo doesn't exist pre-GIN; @bflCode is the BFL-prefixed country code used by ExportPass.Country/contreceiptExport.Country, e.g. 'BFLKSA' for KSA)", @"
-            ;WITH Shops AS (
-                SELECT DISTINCT CostCodeTo, LocCodeTo
-                  FROM bfldata.dbo.DataSettings WITH (NOLOCK)
-                 WHERE Country = @country
-                   AND CostCodeTo IS NOT NULL AND CostCodeTo <> ''
-                   AND LocCodeTo IS NOT NULL AND LocCodeTo <> ''
-            ),
-            Transfers AS (
-                SELECT vtd.TrfNo, SUM(vtd.Quantity) AS Qty
-                  FROM P2EXPORT..vTransferDetail vtd WITH (NOLOCK)
-                  JOIN Shops s ON s.CostCodeTo = vtd.CostCodeTo AND s.LocCodeTo = vtd.LocCodeTo
-                 WHERE vtd.LpmDt >= @from
-                 GROUP BY vtd.TrfNo
-            )
-            SELECT COUNT(DISTINCT t.TrfNo) AS TrfCount, ISNULL(SUM(t.Qty), 0) AS Qty
-              FROM Transfers t
-             WHERE NOT EXISTS (SELECT 1 FROM bfldata..vGoodsIssueplt gi WITH (NOLOCK) WHERE gi.TrfNo = t.TrfNo)
-                OR EXISTS (
-                     SELECT 1 FROM bfldata..vGoodsIssueplt gi WITH (NOLOCK)
-                      WHERE gi.TrfNo = t.TrfNo
-                        AND gi.SrNo NOT IN (SELECT GINNo FROM USA.dbo.ExportPass WITH (NOLOCK) WHERE GINNo IS NOT NULL AND Country = @bflCode)
-                        AND gi.SrNo NOT IN (SELECT GINNO FROM bfldata..contreceiptExport WITH (NOLOCK) WHERE GINNO IS NOT NULL AND Country = @bflCode)
-                   )"),
+        new QueryEntry("Shipment Status", "Export Transfer Intransit/Reserved", "racks..InTransit_ExportShipment, P2EXPORT..vTransferDetail, [BFLCode]..VerifyGin -- ShipmentStatusService.GetExportTransferSummaryAsync (single shared catalog, same precedent as OtsPoAllocationService's LeadIntransit; Intransit='Y' shown on the JAFZA card, Intransit='C' shown as Reserved — neither has a Type since the source table only carries Country + TrfNo; [BFLCode] is the BFL-prefixed country code, e.g. 'BFLKSA' for KSA)", @"
+            SELECT a.Intransit AS Intransit, COUNT(DISTINCT a.TrfNo) AS TrfCount,
+                   ISNULL(SUM(b.Quantity), 0) AS Qty, COUNT(DISTINCT b.Shipno) AS ShipCount
+              FROM racks..InTransit_ExportShipment a WITH (NOLOCK)
+              JOIN P2EXPORT..vTransferDetail b WITH (NOLOCK) ON b.TrfNo = a.TrfNo
+             WHERE a.Country = @country
+               AND a.Intransit IN ('Y', 'C')
+               AND b.TrfNo NOT IN (SELECT TrfNo FROM [BFLKSA]..VerifyGin WITH (NOLOCK))
+             GROUP BY a.Intransit"),
 
         // ============================== Warehouse SOH Summary ==============================
         new QueryEntry("Warehouse SOH Summary", "Stock On Hand (UAE — TECHNO/JAFZA/YOTO)", "RACKS.dbo.WHBoxItems -- WarehouseSohSummaryService.GetStockOnHandExcludingBlackboxAsync", @"
