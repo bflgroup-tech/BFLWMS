@@ -39,12 +39,14 @@ public record ShipmentStatusResult(
 // Intransit flag: 'Y' shown on the JAFZA card's Intransit section, 'C' shown as
 // Reserved. Excludes any TrfNo already present in that country's own VerifyGin
 // table (already verified/received at destination, even if this source hasn't
-// caught up yet). Neither half has its own JAFZA/LOCAL/International split — the
+// caught up yet). 'R' is shown as Received, scoped to CreateDate within the selected
+// Receipt Date range (no VerifyGin exclusion). None has its own JAFZA/LOCAL/International split — the
 // source table only carries Country + TrfNo, no ShipNo of its own to derive Type.
 public record ExportTransferSummary(
     string Country,
     int IntransitTrfCount, int IntransitQty, int IntransitShipCount,
-    int ReservedTrfCount,  int ReservedQty,  int ReservedShipCount);
+    int ReservedTrfCount,  int ReservedQty,  int ReservedShipCount,
+    int ReceivedTrfCount,  int ReceivedQty,  int ReceivedShipCount);
 
 // Division x Month (by vTransferDetail.LpmDt) drill-down pivot, shown as a popup when
 // an Intransit number or a GIN No. is clicked. MonthQty on each row is index-aligned
@@ -67,6 +69,15 @@ public record DivisionMonthRow(
 // Division x Month collapse above. TransferDate is transferheader.TrfDate (when the
 // transfer was created); Lpm is vTransferDetail.LpmDt (same date already used for the
 // Division/Month pivot elsewhere on this page).
+// One row per (ShipNo, GIN) behind the JAFZA card's Ship Count figures.
+public record ExportShipmentRow(
+    string    Country,
+    string?   ShipNo,
+    string?   GinNo,
+    DateTime? GinDate,
+    int       TrfCount,
+    decimal   Qty);
+
 public record TransferDetailRow(
     string    Country,
     string?   StoreId,

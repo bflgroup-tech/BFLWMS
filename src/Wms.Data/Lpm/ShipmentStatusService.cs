@@ -110,12 +110,12 @@ public class ShipmentStatusService(IOnPremConnectionResolver resolver)
         {
             try
             {
-                return await GetExportTransferSummaryAsync(country, ct);
+                return await GetExportTransferSummaryAsync(country, from, to, throttle, ct);
             }
             catch (Exception ex)
             {
                 lock (warnings) warnings.Add($"{country} (export transfers): {ex.Message}");
-                return new ExportTransferSummary(country, 0, 0, 0, 0, 0, 0);
+                return new ExportTransferSummary(country, 0, 0, 0, 0, 0, 0, 0, 0, 0);
             }
         });
 
@@ -154,113 +154,255 @@ public class ShipmentStatusService(IOnPremConnectionResolver resolver)
         ["Oman"]     = "BFLOMAN",
     };
 
-    // vTransferDetail.Quantity is decimal, not int — SUM(b.Quantity) materializes as
-    // decimal (same as the earlier version of this query broke on: "9746.000000").
-    private record IntransitExportRow(string Intransit, int TrfCount, decimal Qty, int ShipCount);
+    // Two-step, like the GIN flow below, instead of one big join: (1) pick the TrfNos
+    // from the small racks..InTransit_ExportShipment table — 'Y'/'C' minus VerifyGin
+    // via NOT EXISTS, 'R' by CreateDate, as separate UNION ALL branches so each can use
+    // its own filter (the earlier single query OR-ed them together, and that plan timed
+    // out for KSA at 120s); (2) read P2EXPORT..vTransferDetail only for those TrfNos, in
+    // literal-IN chunks (see RunTransferDetailChunkAsync for why literal IN). Every card
+    // figure and popup (summary, transfer list, shipment list, Division x Month) is then
+    // built in memory from the same two result sets. Trfdate/StoreID/GINNO/GIN_DATE come
+    // from InTransit_ExportShipment itself, so no transferheader join is needed.
+    private record ExportKeyRow(string TrfNo, string Intransit, string? StoreId, DateTime? TrfDate, string? GinNo, DateTime? GinDate);
+    private record ExportLineRow(string TrfNo, string? ShipNo, string? Division, DateTime? Lpm, decimal Qty);
 
-    private async Task<ExportTransferSummary> GetExportTransferSummaryAsync(string country, CancellationToken ct)
+    private static readonly string[] AllExportFlags = ["Y", "C", "R"];
+
+    private async Task<(List<ExportKeyRow> Keys, List<ExportLineRow> Lines)> LoadExportTransfersAsync(
+        string country, string bflCode, IReadOnlyCollection<string> flags, DateTime from, DateTime to,
+        SemaphoreSlim throttle, CancellationToken ct)
     {
-        if (!CountryToBflCode.TryGetValue(country, out var bflCode))
-            return new ExportTransferSummary(country, 0, 0, 0, 0, 0, 0);
-
-        await using var conn = OpenOnPremBackup();
-        var rows = (await conn.QueryAsync<IntransitExportRow>(new CommandDefinition($@"
-            SELECT a.Intransit AS Intransit, COUNT(DISTINCT a.TrfNo) AS TrfCount,
-                   ISNULL(SUM(b.Quantity), 0) AS Qty, COUNT(DISTINCT b.Shipno) AS ShipCount
-              FROM racks..InTransit_ExportShipment a WITH (NOLOCK)
-              JOIN P2EXPORT..vTransferDetail b WITH (NOLOCK) ON b.TrfNo = a.TrfNo
-             WHERE a.Country = @country
-               AND a.Intransit IN ('Y', 'C')
-               AND b.TrfNo NOT IN (SELECT TrfNo FROM [{bflCode}]..VerifyGin WITH (NOLOCK))
-             GROUP BY a.Intransit",
-            new { country }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).AsList();
-
-        var intransit = rows.FirstOrDefault(r => string.Equals(r.Intransit, "Y", StringComparison.OrdinalIgnoreCase));
-        var reserved  = rows.FirstOrDefault(r => string.Equals(r.Intransit, "C", StringComparison.OrdinalIgnoreCase));
-        return new ExportTransferSummary(country,
-            intransit?.TrfCount ?? 0, (int)(intransit?.Qty ?? 0), intransit?.ShipCount ?? 0,
-            reserved?.TrfCount ?? 0,  (int)(reserved?.Qty ?? 0),  reserved?.ShipCount ?? 0);
+        var keys = await LoadExportKeysAsync(country, bflCode, flags, from, to, throttle, ct);
+        var trfNos = keys.Select(k => k.TrfNo).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        var chunks = await Task.WhenAll(Chunk(trfNos, ChunkSize).Select(c => RunExportLineChunkAsync(c, throttle, ct)));
+        return (keys, chunks.SelectMany(c => c).ToList());
     }
 
-    // Row-level detail behind the Intransit ('Y') / Reserved ('C') icon on the JAFZA
-    // card — one row per (TrfNo, Division), same filters as GetExportTransferSummaryAsync.
+    private async Task<List<ExportKeyRow>> LoadExportKeysAsync(
+        string country, string bflCode, IReadOnlyCollection<string> flags, DateTime from, DateTime to,
+        SemaphoreSlim throttle, CancellationToken ct)
+    {
+        var (fromDay, toExcl) = DayRange(from, to);
+        var snapshotFlags = flags.Where(f => f is "Y" or "C").ToList();
+        var branches = new List<string>();
+        const string cols = "a.TrfNo AS TrfNo, a.Intransit AS Intransit, a.StoreID AS StoreId, a.Trfdate AS TrfDate, " +
+                            "CAST(a.GINNO AS VARCHAR(20)) AS GinNo, a.GIN_DATE AS GinDate";
+        if (snapshotFlags.Count > 0)
+            branches.Add($@"
+                SELECT {cols}
+                  FROM racks..InTransit_ExportShipment a WITH (NOLOCK)
+                 WHERE a.Country = @country
+                   AND a.Intransit IN ({BuildInClause(snapshotFlags)})
+                   AND NOT EXISTS (SELECT 1 FROM [{bflCode}]..VerifyGin v WITH (NOLOCK) WHERE v.TrfNo = a.TrfNo)");
+        if (flags.Contains("R"))
+            branches.Add($@"
+                SELECT {cols}
+                  FROM racks..InTransit_ExportShipment a WITH (NOLOCK)
+                 WHERE a.Country = @country
+                   AND a.Intransit = 'R'
+                   AND a.CreateDate >= @fromDay AND a.CreateDate < @toExcl");
+        if (branches.Count == 0) return [];
+
+        List<ExportKeyRow> keys;
+        await throttle.WaitAsync(ct);
+        try
+        {
+            await using var conn = OpenOnPremBackup();
+            keys = (await conn.QueryAsync<ExportKeyRow>(new CommandDefinition(
+                    string.Join("\n                UNION ALL", branches),
+                    new { country, fromDay, toExcl }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
+                // one row per (TrfNo, flag) — a duplicated source row would otherwise double its Qty
+                .Select(k => k with { TrfNo = k.TrfNo.Trim(), Intransit = k.Intransit.Trim().ToUpperInvariant() })
+                .GroupBy(k => (TrfNo: k.TrfNo.ToUpperInvariant(), k.Intransit))
+                .Select(g => g.First())
+                .ToList();
+        }
+        finally { throttle.Release(); }
+        return keys;
+    }
+
+    private async Task<List<ExportLineRow>> RunExportLineChunkAsync(
+        List<string> trfNos, SemaphoreSlim throttle, CancellationToken ct)
+    {
+        await throttle.WaitAsync(ct);
+        try
+        {
+            await using var conn = OpenOnPremBackup();
+            var sql = $@"
+                SELECT vtd.TrfNo AS TrfNo, vtd.Shipno AS ShipNo, up.DivisionY AS Division,
+                       CAST(vtd.LpmDt AS DATE) AS Lpm, SUM(vtd.Quantity) AS Qty
+                FROM P2EXPORT.dbo.vTransferDetail vtd WITH (NOLOCK)
+                LEFT JOIN usa.dbo.USAPriority up WITH (NOLOCK) ON up.groupCode = vtd.groupcode
+                WHERE vtd.TrfNo IN ({BuildInClause(trfNos)})
+                GROUP BY vtd.TrfNo, vtd.Shipno, up.DivisionY, CAST(vtd.LpmDt AS DATE)";
+            var rows = await conn.QueryAsync<ExportLineRow>(new CommandDefinition(
+                sql, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            return rows.AsList();
+        }
+        finally { throttle.Release(); }
+    }
+
+    // Lines of the transfers carrying one flag, each paired with its source row.
+    private static List<(ExportKeyRow Key, ExportLineRow Line)> LinesForFlag(
+        List<ExportKeyRow> keys, List<ExportLineRow> lines, string flag)
+    {
+        var keyByTrf = keys.Where(k => k.Intransit == flag)
+            .ToDictionary(k => k.TrfNo, StringComparer.OrdinalIgnoreCase);
+        return lines.Where(l => keyByTrf.ContainsKey(l.TrfNo.Trim()))
+            .Select(l => (keyByTrf[l.TrfNo.Trim()], l))
+            .ToList();
+    }
+
+    private async Task<List<(ExportKeyRow Key, ExportLineRow Line)>> LoadFlagAsync(
+        string country, string intransitFlag, DateTime from, DateTime to, CancellationToken ct)
+    {
+        if (!CountryToBflCode.TryGetValue(country, out var bflCode)) return [];
+        var flag = intransitFlag.Trim().ToUpperInvariant();
+        using var throttle = new SemaphoreSlim(MaxConcurrentChunkQueries);
+        var (keys, lines) = await LoadExportTransfersAsync(country, bflCode, [flag], from, to, throttle, ct);
+        return LinesForFlag(keys, lines, flag);
+    }
+
+    private async Task<ExportTransferSummary> GetExportTransferSummaryAsync(
+        string country, DateTime from, DateTime to, SemaphoreSlim throttle, CancellationToken ct)
+    {
+        if (!CountryToBflCode.TryGetValue(country, out var bflCode))
+            return new ExportTransferSummary(country, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+
+        var (keys, lines) = await LoadExportTransfersAsync(country, bflCode, AllExportFlags, from, to, throttle, ct);
+
+        (int Trf, int Qty, int Ship) Totals(string flag)
+        {
+            var x = LinesForFlag(keys, lines, flag);
+            return (x.Select(p => p.Key.TrfNo).Distinct(StringComparer.OrdinalIgnoreCase).Count(),
+                    (int)x.Sum(p => p.Line.Qty),
+                    x.Select(p => p.Line.ShipNo).Where(sn => !string.IsNullOrWhiteSpace(sn))
+                     .Distinct(StringComparer.OrdinalIgnoreCase).Count());
+        }
+        var y = Totals("Y"); var c = Totals("C"); var r = Totals("R");
+        return new ExportTransferSummary(country, y.Trf, y.Qty, y.Ship, c.Trf, c.Qty, c.Ship, r.Trf, r.Qty, r.Ship);
+    }
+
+    // Whole-day bounds for the 'R' (Received) CreateDate filter: [from 00:00, to+1 00:00).
+    private static (DateTime FromDay, DateTime ToExcl) DayRange(DateTime from, DateTime to) =>
+        (from.Date, to.Date.AddDays(1));
+
+    // Transfer list behind Trf Count (JAFZA card Received/Intransit/Reserved, and the
+    // Reserved row of the summary table) — one row per (TrfNo, Division).
     public async Task<List<TransferDetailRow>> GetExportTransferDetailAsync(
-        string country, string intransitFlag, CancellationToken ct = default)
+        string country, string intransitFlag, DateTime from, DateTime to, CancellationToken ct = default)
     {
-        if (!CountryToBflCode.TryGetValue(country, out var bflCode))
-            return new();
-
-        await using var conn = OpenOnPremBackup();
-        var rows = await conn.QueryAsync<TransferDetailRow>(new CommandDefinition($@"
-            SELECT @country AS Country, ds.StoreID AS StoreId, b.TrfNo AS TrfNo, th.TrfDate AS TransferDate,
-                   up.DivisionY AS Division, MAX(b.LpmDt) AS Lpm, SUM(b.Quantity) AS Qty
-              FROM racks..InTransit_ExportShipment a WITH (NOLOCK)
-              JOIN P2EXPORT..vTransferDetail b WITH (NOLOCK) ON b.TrfNo = a.TrfNo
-              LEFT JOIN P2EXPORT..transferheader th WITH (NOLOCK) ON th.TrfNo = b.TrfNo
-              LEFT JOIN usa.dbo.USAPriority up WITH (NOLOCK) ON up.groupCode = b.groupcode
-              LEFT JOIN bfldata.dbo.DataSettings ds WITH (NOLOCK) ON ds.CostCodeTo = b.CostCodeTo AND ds.LocCodeTo = b.LocCodeTo
-             WHERE a.Country = @country
-               AND a.Intransit = @intransitFlag
-               AND b.TrfNo NOT IN (SELECT TrfNo FROM [{bflCode}]..VerifyGin WITH (NOLOCK))
-             GROUP BY ds.StoreID, b.TrfNo, th.TrfDate, up.DivisionY
-             ORDER BY b.TrfNo",
-            new { country, intransitFlag }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-        return rows.AsList();
+        var pairs = await LoadFlagAsync(country, intransitFlag, from, to, ct);
+        return pairs
+            .GroupBy(p => (TrfNo: p.Key.TrfNo, Division: p.Line.Division ?? ""))
+            .Select(g => new TransferDetailRow(country, g.First().Key.StoreId, g.Key.TrfNo, g.First().Key.TrfDate,
+                                               g.First().Line.Division, g.Max(p => p.Line.Lpm), g.Sum(p => p.Line.Qty)))
+            .OrderBy(r => r.TrfNo, StringComparer.OrdinalIgnoreCase)
+            .ToList();
     }
 
-    // Row-level detail behind the Received icon on the JAFZA card — same GIN/receipt
-    // scoping as the header query (GinHeaderSql), narrowed to JAFZA (not LOC/INT in
-    // ShipNo) and flattened to (TrfNo, Division) rows via vTransferDetail/transferheader
-    // instead of the header's one-row-per-GIN shape. P2EXPORT hardcoded rather than
-    // resolved per-shop DataName — same simplification as GetExportTransferDetailAsync,
-    // valid for the same set of countries.
-    public async Task<List<TransferDetailRow>> GetReceivedTransferDetailAsync(
-        string country, DateTime from, DateTime to, CancellationToken ct = default)
+    // Shipment list behind Ship Count — one row per (ShipNo, GIN). A blank ShipNo
+    // (transfer not yet on a shipment) stays as its own row so the Qty reconciles,
+    // but isn't counted in Ship Count.
+    public async Task<List<ExportShipmentRow>> GetExportShipmentListAsync(
+        string country, string intransitFlag, DateTime from, DateTime to, CancellationToken ct = default)
     {
-        await using var conn = OpenOnPremBackup();
-        var rows = await conn.QueryAsync<TransferDetailRow>(new CommandDefinition(@"
-            SELECT @country AS Country, ds.StoreID AS StoreId, gi.TrfNo AS TrfNo, th.TrfDate AS TransferDate,
-                   up.DivisionY AS Division, MAX(vtd.LpmDt) AS Lpm, SUM(vtd.Quantity) AS Qty
-              FROM USA.dbo.ExportPass ep WITH (NOLOCK)
-              JOIN bfldata..vGoodsIssueplt gi WITH (NOLOCK) ON gi.SrNo = ep.GINNo
-              JOIN bfldata.dbo.DataSettings ds WITH (NOLOCK) ON ds.ShopName = gi.ShopIssue
-              JOIN bfldata..contreceiptExport cre WITH (NOLOCK) ON TRIM(cre.GINNO) = TRIM(ep.GINNo)
-              JOIN P2EXPORT..vTransferDetail vtd WITH (NOLOCK) ON vtd.TrfNo = gi.TrfNo
-              LEFT JOIN P2EXPORT..transferheader th WITH (NOLOCK) ON th.TrfNo = gi.TrfNo
-              LEFT JOIN usa.dbo.USAPriority up WITH (NOLOCK) ON up.groupCode = vtd.groupcode
-             WHERE ds.Country = @country
-               AND cre.ReceiptDt >= @from AND cre.ReceiptDt <= @to
-               AND ep.Shipno NOT LIKE '%LOC%' AND ep.Shipno NOT LIKE '%INT%'
-             GROUP BY ds.StoreID, gi.TrfNo, th.TrfDate, up.DivisionY
-             ORDER BY gi.TrfNo",
-            new { country, from, to }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-        return rows.AsList();
+        var pairs = await LoadFlagAsync(country, intransitFlag, from, to, ct);
+        return pairs
+            .GroupBy(p => (ShipNo: string.IsNullOrWhiteSpace(p.Line.ShipNo) ? "" : p.Line.ShipNo.Trim(), GinNo: p.Key.GinNo ?? ""))
+            .Select(g => new ExportShipmentRow(country, g.Key.ShipNo == "" ? null : g.Key.ShipNo,
+                                               g.Key.GinNo == "" ? null : g.Key.GinNo, g.Max(p => p.Key.GinDate),
+                                               g.Select(p => p.Key.TrfNo).Distinct(StringComparer.OrdinalIgnoreCase).Count(),
+                                               g.Sum(p => p.Line.Qty)))
+            .OrderBy(r => r.ShipNo ?? "", StringComparer.OrdinalIgnoreCase)
+            .ToList();
     }
 
-    // Division x Month drill-down for the Trf Count/Ship Count/Trf Qty (Intransit) and
-    // Trf Count/Ship Count/Quantity (Reserved) figures above — same P2EXPORT..vTransferDetail
-    // + usa.dbo.USAPriority rollup as BuildPivot/RunDivisionMonthChunkAsync below, but
-    // scoped to racks..InTransit_ExportShipment's TrfNo set instead of the GIN-mapped one.
-    // No per-shop chunking needed: P2EXPORT is a single shared catalog for these countries.
+    // Row-level detail behind a double-click on a GIN-flow row of the summary table
+    // (JAFZA/International x InTransit/Delivered) — one row per (TrfNo, Division) for
+    // exactly the GINs already counted in that row. Unlike the card popups, which
+    // hardcode P2EXPORT, this resolves vTransferDetail per shop DataName, filtered
+    // by CostCodeTo/LocCodeTo — the same routing the page's own Qty/Division
+    // rollup uses (GetGinFlowRowsAsync), so the popup total matches the row.
+    private record GinTrfStoreRow(string TrfNo, string? StoreId, string CostCodeTo, string LocCodeTo, string? DataName);
+    private record GinTrfDetailChunkRow(string TrfNo, DateTime? TransferDate, string? Division, DateTime? Lpm, decimal Qty);
+
+    public async Task<List<TransferDetailRow>> GetGinTransferDetailAsync(
+        string country, IReadOnlyCollection<string> ginNos, CancellationToken ct = default)
+    {
+        var ginList = ginNos.Where(g => !string.IsNullOrWhiteSpace(g)).Distinct().ToList();
+        if (ginList.Count == 0) return new();
+
+        var mapping = new List<GinTrfStoreRow>();
+        await using (var conn = OpenOnPremBackup())
+        {
+            foreach (var chunk in Chunk(ginList, ChunkSize))
+            {
+                var rows = await conn.QueryAsync<GinTrfStoreRow>(new CommandDefinition($@"
+                    SELECT DISTINCT gi.TrfNo AS TrfNo, ds.StoreID AS StoreId, ds.CostCodeTo AS CostCodeTo,
+                           ds.LocCodeTo AS LocCodeTo, ds.DataName AS DataName
+                      FROM bfldata..vGoodsIssueplt gi WITH (NOLOCK)
+                      JOIN bfldata.dbo.DataSettings ds WITH (NOLOCK) ON ds.ShopName = gi.ShopIssue
+                     WHERE gi.SrNo IN ({BuildInClause(chunk)})",
+                    commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+                mapping.AddRange(rows);
+            }
+        }
+
+        var storeByTrfNo = mapping
+            .GroupBy(m => m.TrfNo, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.First().StoreId, StringComparer.OrdinalIgnoreCase);
+
+        using var throttle = new SemaphoreSlim(MaxConcurrentChunkQueries);
+        var chunkTasks = new List<Task<List<GinTrfDetailChunkRow>>>();
+        foreach (var shop in mapping.GroupBy(m => (m.DataName, m.CostCodeTo, m.LocCodeTo))
+                                    .Where(g => !string.IsNullOrWhiteSpace(g.Key.DataName)))
+        {
+            var trfNos = shop.Select(m => m.TrfNo).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            foreach (var chunk in Chunk(trfNos, ChunkSize))
+                chunkTasks.Add(RunGinTrfDetailChunkAsync(shop.Key.DataName!, shop.Key.CostCodeTo, shop.Key.LocCodeTo, chunk, throttle, ct));
+        }
+
+        return (await Task.WhenAll(chunkTasks))
+            .SelectMany(r => r)
+            .Select(r => new TransferDetailRow(country, storeByTrfNo.GetValueOrDefault(r.TrfNo), r.TrfNo,
+                                               r.TransferDate, r.Division, r.Lpm, r.Qty))
+            .OrderBy(r => r.TrfNo, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private async Task<List<GinTrfDetailChunkRow>> RunGinTrfDetailChunkAsync(
+        string dataName, string costCodeTo, string locCodeTo, List<string> trfNos,
+        SemaphoreSlim throttle, CancellationToken ct)
+    {
+        await throttle.WaitAsync(ct);
+        try
+        {
+            await using var conn = OpenOnPremBackup();
+            var sql = $@"
+                SELECT vtd.TrfNo AS TrfNo, th.TrfDate AS TransferDate, up.DivisionY AS Division,
+                       MAX(vtd.LpmDt) AS Lpm, SUM(vtd.Quantity) AS Qty
+                FROM [{dataName}].dbo.vTransferDetail vtd WITH (NOLOCK)
+                LEFT JOIN [{dataName}].dbo.transferheader th WITH (NOLOCK) ON th.TrfNo = vtd.TrfNo
+                LEFT JOIN usa.dbo.USAPriority up WITH (NOLOCK) ON up.groupCode = vtd.groupcode
+                WHERE vtd.CostCodeTo = @costCodeTo AND vtd.LocCodeTo = @locCodeTo AND vtd.TrfNo IN ({BuildInClause(trfNos)})
+                GROUP BY vtd.TrfNo, th.TrfDate, up.DivisionY";
+            var rows = await conn.QueryAsync<GinTrfDetailChunkRow>(new CommandDefinition(
+                sql, new { costCodeTo, locCodeTo }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            return rows.AsList();
+        }
+        finally { throttle.Release(); }
+    }
+
+    // Division x Month (by LPM) behind the Qty figure on the JAFZA card's Received/
+    // Intransit/Reserved sections — same two-step load as the transfer list above.
     public async Task<DivisionMonthSummaryResult> GetExportTransferDivisionMonthSummaryAsync(
-        string country, string intransitFlag, CancellationToken ct = default)
+        string country, string intransitFlag, DateTime from, DateTime to, CancellationToken ct = default)
     {
-        if (!CountryToBflCode.TryGetValue(country, out var bflCode))
-            return BuildPivot(new List<DivisionMonthChunkRow>());
-
-        await using var conn = OpenOnPremBackup();
-        var rows = (await conn.QueryAsync<DivisionMonthChunkRow>(new CommandDefinition($@"
-            SELECT up.DivisionY AS Division, YEAR(b.LpmDt) AS Year, MONTH(b.LpmDt) AS Month, SUM(b.Quantity) AS Qty
-              FROM racks..InTransit_ExportShipment a WITH (NOLOCK)
-              JOIN P2EXPORT..vTransferDetail b WITH (NOLOCK) ON b.TrfNo = a.TrfNo
-              LEFT JOIN usa.dbo.USAPriority up WITH (NOLOCK) ON up.groupCode = b.groupcode
-             WHERE a.Country = @country
-               AND a.Intransit = @intransitFlag
-               AND b.TrfNo NOT IN (SELECT TrfNo FROM [{bflCode}]..VerifyGin WITH (NOLOCK))
-             GROUP BY up.DivisionY, YEAR(b.LpmDt), MONTH(b.LpmDt)",
-            new { country, intransitFlag }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).AsList();
-
-        return BuildPivot(rows);
+        var pairs = await LoadFlagAsync(country, intransitFlag, from, to, ct);
+        return BuildPivot(pairs
+            .Select(p => new DivisionMonthChunkRow(p.Line.Division, p.Line.Lpm?.Year, p.Line.Lpm?.Month, p.Line.Qty))
+            .ToList());
     }
 
     private async Task<List<ShipmentStatusRow>> GetForCountryAsync(
