@@ -162,5 +162,5 @@ Authorization: Bearer &lt;access_token&gt;</pre>
             </tr>
         </tbody>
     </table>
-    <p style="margin-top:12px;font-size:12px;color:var(--text-secondary)"><code>AwsBflShopDb</code> is configured as a plain environment variable (not a <code>ConnectionStrings:</code> entry) — <code>AwsBflShopDb</code> in App Service Environment variables (production) or a matching user-secret locally.</p>
+    <p style="margin-top:12px;font-size:12px;color:var(--text-secondary)"><code>AwsBflShopDb</code> is configured in Azure App Service under Environment variables > <strong>Connection strings</strong> (Type: SQLServer), same as the other connections here — locally, set it via <code>dotnet user-secrets set "ConnectionStrings:AwsBflShopDb" "..."</code>.</p>
 </div>
