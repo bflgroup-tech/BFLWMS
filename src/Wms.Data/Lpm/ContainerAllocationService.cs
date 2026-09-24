@@ -215,34 +215,62 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         contno = contno.Trim();
 
         await using var c = OpenOnPremBackup();
-        // ContReceiptDT comes from bfldata.dbo.Contreceipt joined on TCMNo.
-        // Buyer / LPM / Division / orgqty come from usa.dbo.usaorgfile_LPM.
-        // Column names follow the existing on-prem schema — adjust if any
-        // are slightly different (e.g. Vendor vs Buyer).
         // Sources:
-        //   usaorgfile_LPM   — ContNo, OraPONo, LPM, ItemCode, orgqty
+        //   usaorgfile_LPM   — ContNo, OraPONo, LPM, ItemCode, orgqty (the qty of record)
         //   Contreceipt      — ReceiptDt (via TCMNo)
         //   vUSAOrder        — OthersPath = Buyer, country = DestCountry (subqueries)
         //   vupc_subclass    — Division (via itemcode)
         //   USAOrgFile       — vendor = Brand (via ContNo + itemcode)
+        //
+        // NOTHING may be LEFT JOINed straight onto the PO lines here. This used to
+        // join Contreceipt, vupc_subclass and USAOrgFile directly and then
+        // SUM(u.orgqty) over the result — so a second row in ANY of them multiplied
+        // every line's qty. On AEINT8429 the grid reported 16,720 pcs against a true
+        // 8,360 — exactly double on both POs, which is the signature of the
+        // container-level Contreceipt join matching twice, though any of the three
+        // could do it. vupc_subclass is known to hold several rows per itemcode.
+        //
+        // So: aggregate the lines on their own, and reach the per-item attributes
+        // through CTEs that are already one row per item. MAX(MAX(x)) == MAX(x), so
+        // the Division/Brand actually displayed is unchanged — only the duplication
+        // is gone. Container-level values stay scalar subqueries for the same reason.
+        //
+        // The allocation engine was never affected: it reads usaorgfile_LPM with no
+        // joins at all, as does the three-way qty validation. This was display only.
         var rows = await c.QueryAsync<PoDataRow>(new CommandDefinition(@"
+            ;WITH poLines AS (
+                SELECT ContNo, OraPONo, LPM, ItemCode,
+                       Qty = CAST(ISNULL(orgqty, 0) AS INT)
+                  FROM usa.dbo.usaorgfile_LPM WITH (NOLOCK)
+                 WHERE ContNo = @contno
+            ), itemDiv AS (
+                SELECT itemcode, Division = MAX(Division)
+                  FROM datareporting.dbo.vupc_subclass WITH (NOLOCK)
+                 WHERE itemcode IN (SELECT ItemCode FROM poLines)
+                 GROUP BY itemcode
+            ), itemBrand AS (
+                SELECT ContNo, itemcode, Vendor = MAX(vendor)
+                  FROM usa.dbo.USAOrgFile WITH (NOLOCK)
+                 WHERE ContNo = @contno
+                 GROUP BY ContNo, itemcode
+            )
             SELECT
-                u.ContNo                              AS Contno,
-                MAX(cr.ReceiptDt)                     AS ContReceiptDT,
-                u.OraPONo                             AS PONO,
-                u.LPM                                 AS LPM,
-                (SELECT TOP 1 OthersPath FROM hodata.dbo.vUSAOrder WHERE refno = u.ContNo)  AS Buyer,
-                MAX(sub.Division)                     AS Division,
-                MAX(org.vendor)                       AS Brand,
-                CAST(ISNULL(SUM(u.orgqty), 0) AS INT) AS Qty,
-                (SELECT TOP 1 country     FROM hodata.dbo.vUSAOrder WHERE refno = u.ContNo) AS DestCountry
-            FROM usa.dbo.usaorgfile_LPM u WITH (NOLOCK)
-            LEFT JOIN bfldata.dbo.Contreceipt cr           WITH (NOLOCK) ON cr.TCMNo    = u.ContNo
-            LEFT JOIN datareporting.dbo.vupc_subclass sub  WITH (NOLOCK) ON sub.itemcode = u.ItemCode
-            LEFT JOIN usa.dbo.USAOrgFile org               WITH (NOLOCK) ON org.ContNo  = u.ContNo AND org.itemcode = u.ItemCode
-            WHERE u.ContNo = @contno
-            GROUP BY u.ContNo, u.OraPONo, u.LPM
-            ORDER BY u.OraPONo, u.LPM",
+                Contno        = l.ContNo,
+                ContReceiptDT = (SELECT MAX(cr.ReceiptDt)
+                                   FROM bfldata.dbo.Contreceipt cr WITH (NOLOCK)
+                                  WHERE cr.TCMNo = l.ContNo),
+                PONO          = l.OraPONo,
+                LPM           = l.LPM,
+                Buyer         = (SELECT TOP 1 OthersPath FROM hodata.dbo.vUSAOrder WHERE refno = l.ContNo),
+                Division      = MAX(d.Division),
+                Brand         = MAX(b.Vendor),
+                Qty           = CAST(ISNULL(SUM(l.Qty), 0) AS INT),
+                DestCountry   = (SELECT TOP 1 country     FROM hodata.dbo.vUSAOrder WHERE refno = l.ContNo)
+            FROM poLines l
+            LEFT JOIN itemDiv   d ON d.itemcode = l.ItemCode
+            LEFT JOIN itemBrand b ON b.ContNo   = l.ContNo AND b.itemcode = l.ItemCode
+            GROUP BY l.ContNo, l.OraPONo, l.LPM
+            ORDER BY l.OraPONo, l.LPM",
             new { contno }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         return rows.AsList();
     }
