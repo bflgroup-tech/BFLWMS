@@ -322,7 +322,7 @@
                             @foreach (var t in cts.Types)
                             {
                                 var (bg, text) = TypeColor(t.Type);
-                                <div style="background:@bg; border-radius:8px; padding:10px 12px; flex:@(t.Type == "JAFZA" ? "1.6" : "1") 1 0; min-width:0;">
+                                <div style="background:@bg; border-radius:8px; padding:10px 12px; flex:@(t.Type == "JAFZA" ? "3" : "1") 1 0; min-width:0;">
                                     <div style="text-align:center; font-size:13px; font-weight:700; color:@text; text-transform:uppercase; letter-spacing:0.02em; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
                                         @t.Title
                                     </div>
