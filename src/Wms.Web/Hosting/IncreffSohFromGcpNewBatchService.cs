@@ -5,13 +5,15 @@ namespace Wms.Web.Hosting;
 /// <summary>
 /// Fires EVERY DAY at 08:05 GST (Arabian Standard Time = UTC+04:00) — 5 minutes
 /// after IncreffSohFromGcpBatchService's 08:00 GST pull, so the two independent
-/// BigQuery pulls don't contend. Pulls yesterday's ECOM SOH from the newer
+/// BigQuery pulls don't contend. Pulls TODAY's (GST) ECOM SOH from the newer
 /// Silver-tier BigQuery source (IncreffSohFromGcpNewService.RefreshAsync) and
-/// overwrites dbo.LPM_ECOM_INCREFF_SOH_NEW. IncreffMfcsSohCompareBatchService
-/// follows at 08:15 GST and depends on THIS run having succeeded today — this
-/// job's output now feeds the live ECOM Stock Variance Report (after being
-/// validated in parallel against the older dbo.LPM_ECOM_INCREFF_SOH), so move
-/// this fire time and move that dependency together.
+/// overwrites dbo.LPM_ECOM_INCREFF_SOH_NEW — per user request; the source was
+/// previously read one day in arrears ("yesterday GST") like the older
+/// per-country tables. IncreffMfcsSohCompareBatchService follows at 08:15 GST
+/// and depends on THIS run having succeeded today — this job's output now
+/// feeds the live ECOM Stock Variance Report (after being validated in
+/// parallel against the older dbo.LPM_ECOM_INCREFF_SOH), so move this fire
+/// time and move that dependency together.
 ///
 /// Gated on the dbo.WmsRptCountryConfig row (JobName='IncreffSohFromGCP_New',
 /// Country=''); missing or inactive means the loop no-ops. Lives in-process,
