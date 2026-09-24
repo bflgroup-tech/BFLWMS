@@ -739,13 +739,30 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                 .GroupBy(r => (r.StoreID, r.DivCode, r.Month1, r.Year1))
                 .ToDictionary(g => g.Key, g => g.Sum(x => x.TargetEOM));
 
+            // Target EOM must EXIST for the month the lead horizon lands in. It used
+            // to fall back to the picked month's TargetEOM when the target month had
+            // no LPM_EOM_Output row, which is the worst of both worlds: the grid
+            // showed "Tgt EOM Month: Oct-2026" beside September's number, the two EOM
+            // columns read identically, and every OTS figure downstream was computed
+            // against a target that was never set. Silent and unfalsifiable.
+            //
+            // Missing rows are collected and the run is refused — see the throw below.
+            var missingTgtEom = new List<(string Country, string StoreID, int DivCode, string TgtLabel)>();
+
             foreach (var row in baseRows)
             {
                 if (targetByKey.TryGetValue((row.Country, row.DivCode), out var t))
                 {
                     row.TgtEOMMonth  = t.TgtLabel;
-                    row.TgtEOM       = eomLookup.TryGetValue((row.StoreID, row.DivCode, t.TgtMonth, t.TgtYear), out var teom) ? teom : row.TgtEOM;
+                    if (eomLookup.TryGetValue((row.StoreID, row.DivCode, t.TgtMonth, t.TgtYear), out var teom))
+                        row.TgtEOM = teom;
+                    else
+                        missingTgtEom.Add((row.Country, row.StoreID, row.DivCode, t.TgtLabel));
+
                     row.PrevEOMMonth = t.PrevLabel;
+                    // PrevMonthEOM keeps its fallback: it is the WALK-FROM value, and a
+                    // store with no prior month legitimately starts from the picked
+                    // month. Only the walk-TO target has to be real.
                     row.PrevMonthEOM = eomLookup.TryGetValue((row.StoreID, row.DivCode, t.PrevMonth, t.PrevYear), out var peom) ? peom : row.PrevMonthEOM;
                 }
                 else
@@ -753,6 +770,31 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
                     row.TgtEOMMonth  = pickedLabel;
                     row.PrevEOMMonth = pickedPrevLabel;
                 }
+            }
+
+            if (missingTgtEom.Count > 0)
+            {
+                // Named by month and by the worst-affected countries, so the fix is
+                // obvious from the message: generate EOM for that month.
+                var months = missingTgtEom.Select(m => m.TgtLabel).Distinct().OrderBy(s => s).ToList();
+                var byCountry = missingTgtEom
+                    .GroupBy(m => m.Country)
+                    .OrderByDescending(g => g.Count())
+                    .Select(g => $"{g.Key} ({g.Count():N0})")
+                    .Take(6)
+                    .ToList();
+                var sample = missingTgtEom
+                    .Take(3)
+                    .Select(m => $"{m.StoreID}/{m.DivCode}")
+                    .ToList();
+
+                throw new InvalidOperationException(
+                    $"Target EOM is missing for {missingTgtEom.Count:N0} store/division row(s) in " +
+                    $"{string.Join(", ", months)}. OTS has NOT been generated — the previous month's " +
+                    "EOM is deliberately not substituted, because that would compute every OTS figure " +
+                    $"against a target that was never set. Affected: {string.Join(", ", byCountry)}. " +
+                    $"For example {string.Join(", ", sample)}. " +
+                    $"Generate EOM for {string.Join(" / ", months)} in LpmSim, then re-run Generate here.");
             }
 
             // Count DISTINCT week per (month, year) in the fiscal calendar

@@ -463,6 +463,54 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                     sales.Ok,
                     sales.Ok ? null : sales.Summary + " Run the WeeklySalesFromGCP batch (Admin → Nightly Batches), regenerate Volume Group and OTS, then re-run Process."));
                 if (!sales.Ok) return new ContainerAllocationValidationResult(false, steps);
+
+                // 9c. Target EOM must exist for the month each OTS row targets.
+                //     Generate now refuses when it does not, but a run persisted
+                //     earlier today — before this change, or before someone deleted
+                //     an EOM month — would still be sitting there passing the
+                //     "generated today" gate above while every OTS figure on it was
+                //     computed against a target that was never set.
+                //
+                //     Checked against the run's own TgtEOMMonth label ('Oct-2026'),
+                //     so this needs nothing from the OTS service: whatever month the
+                //     run says it targeted must have EOM rows for that store/division.
+                //     TRY_CAST, not CAST — an unparseable label must not error the
+                //     whole validation; those rows are simply not checked.
+                progress?.Report(new AllocationProgress(8, TOTAL, "Validating: Target EOM present"));
+                var missingEom = await opb.QueryFirstOrDefaultAsync<(int Missing, string? Sample, string? Months)>(
+                    new CommandDefinition(@"
+                    WITH tgt AS (
+                        SELECT DISTINCT o.StoreID, o.DivCode, o.TgtEOMMonth,
+                               d = TRY_CAST('01-' + o.TgtEOMMonth AS date)
+                          FROM dbo.WmsOtsPoAllocationRun o WITH (NOLOCK)
+                         WHERE o.OTSDate = @dt AND o.TgtEOMMonth IS NOT NULL
+                    ), miss AS (
+                        SELECT t.StoreID, t.DivCode, t.TgtEOMMonth
+                          FROM tgt t
+                         WHERE t.d IS NOT NULL
+                           AND NOT EXISTS (
+                               SELECT 1 FROM dbo.LPM_EOM_Output e WITH (NOLOCK)
+                                WHERE e.StoreID = t.StoreID AND e.DivCode = t.DivCode
+                                  AND e.Month1 = MONTH(t.d) AND e.Year1 = YEAR(t.d))
+                    )
+                    SELECT Missing = (SELECT COUNT(*) FROM miss),
+                           Sample  = (SELECT TOP 1 StoreID + '/' + CAST(DivCode AS varchar(10)) FROM miss ORDER BY StoreID),
+                           Months  = (SELECT TOP 1 TgtEOMMonth FROM miss ORDER BY TgtEOMMonth)",
+                    new { dt = todayGst },
+                    commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+
+                var eomOk = missingEom.Missing == 0;
+                steps.Add(new ValidationStep(
+                    "Target EOM present for every store/division in today's OTS run",
+                    eomOk,
+                    eomOk
+                        ? null
+                        : $"{missingEom.Missing:N0} store/division row(s) in today's OTS run target " +
+                          $"{missingEom.Months} but have no LPM_EOM_Output row for it (e.g. {missingEom.Sample}). " +
+                          "The previous month's EOM is deliberately NOT substituted — allocating on it would " +
+                          $"size every store against a target that was never set. Generate EOM for {missingEom.Months} " +
+                          "in LpmSim, re-run Generate on OTS for PO Allocation, then re-run Process."));
+                if (!eomOk) return new ContainerAllocationValidationResult(false, steps);
             }
 
             // 10. SKU Max band coverage — every (Division, Volume Group, PO line qty)
