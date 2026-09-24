@@ -191,12 +191,12 @@ public class IncreffSohFromGcpNewService(
         catch { await tx.RollbackAsync(ct); throw; }
     }
 
-    /// <summary>On-demand "Refresh Now" — pulls yesterday's (GST) SOH from BigQuery
+    /// <summary>On-demand "Refresh Now" — pulls today's (GST) SOH from BigQuery
     /// for every channel/country and overwrites dbo.LPM_ECOM_INCREFF_SOH_NEW.</summary>
     public async Task<int> RefreshAsync(CancellationToken ct = default)
     {
-        var yesterday = DateOnly.FromDateTime(DateTime.UtcNow.AddHours(4).AddDays(-1));
-        var rows = await FetchFromBigQueryAsync(yesterday, ct);
+        var todayGst = DateOnly.FromDateTime(DateTime.UtcNow.AddHours(4));
+        var rows = await FetchFromBigQueryAsync(todayGst, ct);
         return await UpsertRowsAsync(rows, ct);
     }
 }

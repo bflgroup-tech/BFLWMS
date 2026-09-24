@@ -68,6 +68,99 @@ Authorization: Bearer &lt;access_token&gt;</pre>
                 <td>None</td>
                 <td>Sample open endpoint — for connectivity testing without credentials.</td>
             </tr>
+            <tr>
+                <td><span class="aiwms-pill tier2">POST</span></td>
+                <td style="font-family:Consolas,monospace">/api/v1/store/grn</td>
+                <td><span class="aiwms-pill tier3">Bearer token</span></td>
+                <td>A store submits a GRN (goods receipt note) — header plus received item lines.</td>
+            </tr>
+            <tr>
+                <td><span class="aiwms-pill tier2">POST</span></td>
+                <td style="font-family:Consolas,monospace">/api/v1/store/stocktake</td>
+                <td><span class="aiwms-pill tier3">Bearer token</span></td>
+                <td>A store submits stocktake scan results — header plus scanned item lines (EAN, QR code, RFID, quantity).</td>
+            </tr>
+            <tr>
+                <td><span class="aiwms-pill tier2">POST</span></td>
+                <td style="font-family:Consolas,monospace">/api/v1/store/stocktake/report</td>
+                <td><span class="aiwms-pill tier3">Bearer token</span></td>
+                <td>A store submits stocktake data — header plus counted item lines (quantity, SOH, variance).</td>
+            </tr>
         </tbody>
     </table>
+
+    <p style="margin-top:16px"><strong>POST /api/v1/store/grn</strong> — request body:</p>
+    <pre style="background:var(--bfl-grey-900);color:#e4e4e0;padding:14px 16px;border-radius:var(--r-sm);font-family:Consolas,monospace;font-size:12px;overflow-x:auto">{
+  "storeId": "UAE-001",
+  "dateTime": "2026-09-23T10:00:00",
+  "ginNo": "GIN12345",
+  "user": "user1",
+  "transfers": [
+    {
+      "trfNo": "TRF001",
+      "items": [
+        { "itemCode": "ITM001", "ean": "1234567890123", "epc": "30340...", "qrcode": "BC001", "trfQty": 5, "scanQty": 5 }
+      ]
+    },
+    {
+      "trfNo": "TRF002",
+      "items": [
+        { "itemCode": "ITM001", "ean": "1234567890123", "epc": "30340...", "qrcode": "BC001", "trfQty": 5, "scanQty": 5 }
+      ]
+    }
+  ]
+}</pre>
+    <p style="margin-top:8px;font-size:12px;color:var(--text-secondary)">Returns <code>{ "status": "success", "message": "..." }</code> (HTTP 200) on success, or <code>{ "status": "failed", "message": "..." }</code> (HTTP 400/500) with the reason on failure — e.g. an unrecognized <code>storeId</code>, or a transfer whose <code>trfNo</code> already exists. <code>storeId</code> is looked up against <code>BFLDATA.dbo.DataSettings</code> (StoreID) at submission time to resolve DataName/CostCodeTo/LocCodeTo/ShopLetter.</p>
+    <p style="margin-top:8px;font-size:12px;color:var(--text-secondary)">No WMS-side record is kept — each transfer is written directly to the store's <code>GRNHeaderRf_test</code> (with a generated <code>EntryNo</code> like <code>JO2600001</code>) plus one <code>GRNDetailRf_test</code> row per item line, both on <code>AwsBflShopDb</code>.</p>
+
+    <p style="margin-top:16px"><strong>POST /api/v1/store/stocktake</strong> — request body:</p>
+    <pre style="background:var(--bfl-grey-900);color:#e4e4e0;padding:14px 16px;border-radius:var(--r-sm);font-family:Consolas,monospace;font-size:12px;overflow-x:auto">{
+  "stockCountId": "SC0001",
+  "storeId": "BFL-SPRG",
+  "trnDate": "2026-09-24T10:00:00",
+  "username": "user1",
+  "items": [
+    { "itemCode": "ITM001", "ean": "1234567890123", "qrCode": "BC001", "rfid": "30340...", "quantity": 1 },
+    { "itemCode": "ITM002", "ean": "9876543210987", "qrCode": "BC002", "rfid": "30341...", "quantity": 1 }
+  ]
+}</pre>
+    <p style="margin-top:8px;font-size:12px;color:var(--text-secondary)">Same response shape as <code>store/grn</code>. <code>trnDate</code> is split into <code>Trndate</code>/<code>Time1</code> when written to <code>[DataName]..stocktaking_result</code> on <code>AwsBflShopDb</code> — one row per item. Rejected with <code>400</code> and <code>"StockCountID '...' already exists."</code> if that <code>stockCountId</code> already has a row there.</p>
+
+    <p style="margin-top:16px"><strong>POST /api/v1/store/stocktake/report</strong> — request body:</p>
+    <pre style="background:var(--bfl-grey-900);color:#e4e4e0;padding:14px 16px;border-radius:var(--r-sm);font-family:Consolas,monospace;font-size:12px;overflow-x:auto">{
+  "stockCountId": "SC0001",
+  "storeId": "BFL-SPRG",
+  "trnDate": "2026-09-24T10:00:00",
+  "items": [
+    { "itemCode": "ITM001", "ean": "1234567890123", "quantity": 5, "soh": 10, "variance": -5 },
+    { "itemCode": "ITM002", "ean": "9876543210987", "quantity": 8, "soh": 8, "variance": 0 }
+  ]
+}</pre>
+    <p style="margin-top:8px;font-size:12px;color:var(--text-secondary)">Same response shape as <code>store/grn</code>: <code>{ "status": "success"|"failed", "message": "..." }</code>. <code>storeId</code> is looked up against <code>BFLDATA.dbo.DataSettings</code> to resolve <code>DataName</code>, then one row per item is written to <code>[DataName]..stocktaking_report</code> on <code>AwsBflShopDb</code>.</p>
+</div>
+
+<div class="aiwms-card">
+    <div class="aiwms-card-header">store/* endpoints — where the data actually goes</div>
+    <p>None of the three <code>store/*</code> endpoints (<code>grn</code>, <code>stocktake</code>, <code>stocktake/report</code>) touch WMS's own Azure SQL database — they write only to the store's own legacy tables, resolved per request:</p>
+    <table class="aiwms-table">
+        <thead><tr><th>Step</th><th>Connection</th><th>What it does</th></tr></thead>
+        <tbody>
+            <tr>
+                <td>1. Resolve store</td>
+                <td style="font-family:Consolas,monospace">OnPremBackup</td>
+                <td>Looks up <code>storeId</code> in <code>BFLDATA.dbo.DataSettings</code> to get that store's <code>DataName</code> (which database on <code>AwsBflShopDb</code> to use) plus <code>CostCodeTo</code>/<code>ShopLetter</code> where needed. Unrecognized <code>storeId</code> → <code>400</code>, nothing written anywhere.</td>
+            </tr>
+            <tr>
+                <td>2. Duplicate check</td>
+                <td style="font-family:Consolas,monospace">AwsBflShopDb</td>
+                <td><code>store/grn</code> checks each transfer's <code>trfNo</code>; <code>store/stocktake</code> and <code>stocktake/report</code> check <code>stockCountId</code>. Any match → <code>400</code>, nothing written.</td>
+            </tr>
+            <tr>
+                <td>3. Write</td>
+                <td style="font-family:Consolas,monospace">AwsBflShopDb</td>
+                <td>One row per line, into <code>[DataName]..GRNHeaderRf_test</code>/<code>GRNDetailRf_test</code>, <code>[DataName]..stocktaking_result</code>, or <code>[DataName]..stocktaking_report</code> depending on the endpoint.</td>
+            </tr>
+        </tbody>
+    </table>
+    <p style="margin-top:12px;font-size:12px;color:var(--text-secondary)"><code>AwsBflShopDb</code> is configured in Azure App Service under Environment variables > <strong>Connection strings</strong> (Type: SQLServer), same as the other connections here — locally, set it via <code>dotnet user-secrets set "ConnectionStrings:AwsBflShopDb" "..."</code>.</p>
 </div>

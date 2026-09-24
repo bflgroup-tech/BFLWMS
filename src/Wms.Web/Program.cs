@@ -234,6 +234,8 @@ public class Program
             };
         });
         builder.Services.AddScoped<Wms.Data.Api.ApiClientAppService>();
+        builder.Services.AddScoped<Wms.Data.Api.StoreGrnService>();
+        builder.Services.AddScoped<Wms.Data.Api.StoreStocktakeService>();
 
         if (builder.Environment.IsDevelopment())
         {
