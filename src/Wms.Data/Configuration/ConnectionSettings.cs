@@ -16,11 +16,11 @@ namespace Wms.Data.Configuration;
 ///      each hosting ROBOTICS.dbo.* (chute mapping/status) and BFLDATA.dbo.*
 ///      (shop master) for that warehouse. Looked up by whatever key
 ///      RoboticApiOptions.Warehouses[...].ConnectionStringKey names.
-///   5. AwsBflShopDb — AWS RDS shop DB. NOT under ConnectionStrings: read as a
-///      plain top-level environment variable named "AwsBflShopDb" (App Service
-///      > Environment variables in production; a user-secret with that exact
-///      key, no "ConnectionStrings:" prefix, works the same way locally, since
-///      both feed the same flat IConfiguration key).
+///   5. AwsBflShopDb — AWS RDS shop DB. Configured in Azure App Service under
+///      Environment variables > "Connection strings" (Type: SQLServer), same
+///      as the others — Azure exposes that as env var SQLCONNSTR_AwsBflShopDb,
+///      which ASP.NET Core's config system auto-maps to ConnectionStrings:
+///      AwsBflShopDb. Key: "AwsBflShopDb".
 /// </summary>
 public interface IOnPremConnectionResolver
 {
@@ -75,9 +75,9 @@ public class OnPremConnectionResolver(IConfiguration cfg) : IOnPremConnectionRes
     }
 
     public string GetAwsBflShopDbConnectionString() =>
-        cfg["AwsBflShopDb"]
+        cfg.GetConnectionString("AwsBflShopDb")
         ?? throw new InvalidOperationException(
-            "Environment variable 'AwsBflShopDb' is not configured.");
+            "ConnectionStrings:AwsBflShopDb is not configured.");
 
     public IReadOnlyList<string> GetConfiguredCountries() =>
         _knownCountries
