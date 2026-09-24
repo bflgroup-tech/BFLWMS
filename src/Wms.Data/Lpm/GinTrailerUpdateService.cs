@@ -21,7 +21,8 @@ public record GinTrailerLogEntry(int GinNo, string? OldTrailerNo, string? NewTra
 /// trailer is stamped onto every valid GIN's TrailerNo column as "{TrailerNo}-HH:mm"
 /// (UAE local time, UTC+4), and GINTrailerLog gets one audit row per GIN recording the
 /// old and new Trailer No., who made the change and when — all in one transaction.
-/// Rejected if the chosen Trailer No. was already used (any GIN) earlier the same day.
+/// The same Trailer No. can be used again later the same day (a trailer making several
+/// trips): each Submit stamps the time it was made, so every trip stays distinguishable.
 ///
 /// GINTrailerLog columns: SRNo (the GIN), OldTrailerNo, NewTrailerNo, UpdatedUser (the
 /// updating user's email), UpdatedTS.
@@ -108,8 +109,7 @@ public class GinTrailerUpdateService(IOnPremConnectionResolver resolver)
     }
 
     /// <summary>Stamps the chosen Trailer No. onto every given GIN's TrailerNo column and
-    /// logs one GINTrailerLog row per GIN, all in one transaction. The whole batch is
-    /// rejected if the Trailer No. was already used (any GIN) earlier the same day.</summary>
+    /// logs one GINTrailerLog row per GIN, all in one transaction.</summary>
     public async Task<GinTrailerUpdateResult> UpdateManyAsync(
         IEnumerable<int> ginNos, string trailerNo, string username, CancellationToken ct = default)
     {
@@ -120,24 +120,11 @@ public class GinTrailerUpdateService(IOnPremConnectionResolver resolver)
 
         var nowGst = DateTime.UtcNow.AddHours(4);
         var stamped = $"{trailerNo}-{nowGst:HH:mm}";
-        var today = nowGst.Date;
 
         await using var c = OpenConnection();
         await using var tx = (SqlTransaction)await c.BeginTransactionAsync(ct);
         try
         {
-            // Trailer No. must not repeat within the same day — check every log entry
-            // written today, since NewTrailerNo is always "{TrailerNo}-HH:mm".
-            var todaysLogs = await c.QueryAsync<string?>(new CommandDefinition(@"
-                SELECT NewTrailerNo FROM BFLDATA.dbo.GINTrailerLog WITH (NOLOCK)
-                 WHERE CAST(UpdatedTS AS date) = CAST(@today AS date)",
-                new { today }, tx, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-            if (todaysLogs.Any(t => t is not null && t.StartsWith(trailerNo + "-", StringComparison.OrdinalIgnoreCase)))
-            {
-                await tx.RollbackAsync(ct);
-                return new(false, $"Trailer {trailerNo} has already been used today.");
-            }
-
             foreach (var ginNo in gins)
             {
                 var oldTrailerNo = await c.QuerySingleOrDefaultAsync<string?>(new CommandDefinition(@"
