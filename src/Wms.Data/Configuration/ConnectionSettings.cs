@@ -16,6 +16,11 @@ namespace Wms.Data.Configuration;
 ///      each hosting ROBOTICS.dbo.* (chute mapping/status) and BFLDATA.dbo.*
 ///      (shop master) for that warehouse. Looked up by whatever key
 ///      RoboticApiOptions.Warehouses[...].ConnectionStringKey names.
+///   5. AwsBflShopDb — AWS RDS shop DB. NOT under ConnectionStrings: read as a
+///      plain top-level environment variable named "AwsBflShopDb" (App Service
+///      > Environment variables in production; a user-secret with that exact
+///      key, no "ConnectionStrings:" prefix, works the same way locally, since
+///      both feed the same flat IConfiguration key).
 /// </summary>
 public interface IOnPremConnectionResolver
 {
@@ -24,6 +29,7 @@ public interface IOnPremConnectionResolver
     string GetOnPremBackupConnectionString();
     string GetWmsProductionDbConnectionString();
     string GetRoboticsConnectionString(string connectionStringKey);
+    string GetAwsBflShopDbConnectionString();
     IReadOnlyList<string> GetConfiguredCountries();
 }
 
@@ -67,6 +73,11 @@ public class OnPremConnectionResolver(IConfiguration cfg) : IOnPremConnectionRes
             ?? throw new InvalidOperationException(
                 $"ConnectionStrings:{connectionStringKey} is not configured.");
     }
+
+    public string GetAwsBflShopDbConnectionString() =>
+        cfg["AwsBflShopDb"]
+        ?? throw new InvalidOperationException(
+            "Environment variable 'AwsBflShopDb' is not configured.");
 
     public IReadOnlyList<string> GetConfiguredCountries() =>
         _knownCountries
