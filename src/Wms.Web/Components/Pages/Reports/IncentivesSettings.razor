@@ -14,9 +14,24 @@
     .incset-header { position: relative; background: var(--bfl-black); color: var(--bfl-yellow); font-family: var(--font-display); font-weight: 800; font-size: 13px; text-transform: uppercase; letter-spacing: .5px; padding: 10px 40px; text-align: center; }
     .incset-header .incset-toggle { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); background: none; border: none; color: inherit; cursor: pointer; padding: 2px 6px; line-height: 1; border-radius: var(--r-sm); }
     .incset-header .incset-toggle:hover { background: rgba(255,255,255,0.12); }
+    /* Light panels that group the Employee sections and the Attendance sections. */
+    .incset-group { border-radius: 10px; padding: 12px 12px 1px 12px; margin-bottom: 18px; }
+    .incset-group-emp { background: #eef4ff; border: 1px solid #d6e3fb; }
+    .incset-group-att { background: #fff6e8; border: 1px solid #f6e2c0; }
+    .incset-group-tgt { background: #ecfbf1; border: 1px solid #cdeed8; }
+    /* The three upload sections side by side; stacked again on narrow screens. */
+    .incset-upload-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; align-items: stretch; margin-bottom: 18px; }
+    .incset-upload-row > .incset-group { margin-bottom: 0; display: flex; flex-direction: column; }
+    .incset-upload-row > .incset-group > .aiwms-section { flex: 1; margin-bottom: 11px; }
+    .incset-upload-row .incset-help-row { flex-direction: column; }
+    @@media (max-width: 1200px) { .incset-upload-row { grid-template-columns: minmax(0, 1fr); } }
+    .incset-area-title { font-family: var(--font-display); font-weight: 800; font-size: 14px; text-transform: uppercase; letter-spacing: .5px; color: var(--text-secondary); margin: 6px 2px 8px 2px; }
 </style>
 
-@* ===================== 1. Employee Master ===================== *@
+@* ===================== Uploads (top) ===================== *@
+<div class="incset-area-title">Upload</div>
+<div class="incset-upload-row">
+<div class="incset-group incset-group-emp">
 <div class="aiwms-section" style="padding:0; overflow:hidden;">
     <div class="incset-header">
         <span>Employee Master Upload</span>
@@ -25,7 +40,7 @@
     @if (!_empCollapsed)
     {
     <div style="padding:16px 20px;">
-    <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; margin-bottom:10px;">
+    <div class="incset-help-row" style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; margin-bottom:10px;">
         <p style="margin:0; color:var(--text-secondary); font-size:12px;">
             Excel (.xlsx) with header row <b>EmpCode, EmpName, Country, Warehouse, Category</b>. New employees only —
             if any EmpCode already exists in the master, nothing is saved and the existing EmpCodes are listed.
@@ -59,52 +74,8 @@
     </div>
     }
 </div>
-
-<div class="aiwms-section" style="padding:0; overflow:hidden;">
-    <div class="incset-header">
-        <span>Uploaded Employees @(_empLoaded ? $"({_employees.Count:N0})" : "")</span>
-        @Toggle(_empGridCollapsed, () => _empGridCollapsed = !_empGridCollapsed)
-    </div>
-    @if (!_empGridCollapsed)
-    {
-    <div style="padding:16px 20px;">
-    <div style="display:flex; justify-content:flex-end; align-items:end; gap:12px; flex-wrap:wrap; margin-bottom:10px;">
-        <div>
-            <label class="aiwms-filter-label">EMPCODE</label>
-            <input @bind="_empSearch" @bind:event="oninput" @onkeyup="OnEmpSearchKey" placeholder="Search EmpCode…"
-                   style="padding:7px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; width:180px;" />
-        </div>
-        <button class="aiwms-btn aiwms-btn-primary" @onclick="LoadEmployeesAsync" disabled="@_busy">Search</button>
-    </div>
-    @Message(EmpGridArea)
-    @if (_empLoaded && _employees.Count == 0)
-    {
-        <p style="color:var(--text-secondary); margin:0;">No employees found.</p>
-    }
-    else if (_employees.Count > 0)
-    {
-        <div style="max-height:360px; overflow:auto;">
-            <table class="aiwms-table aiwms-table-dense">
-                <thead style="position:sticky; top:0; z-index:1;">
-                    <tr><th>EmpCode</th><th>EmpName</th><th>Country</th><th>Warehouse</th><th>Category</th><th>Uploaded By</th><th>Uploaded On</th></tr>
-                </thead>
-                <tbody>
-                    @foreach (var r in _employees)
-                    {
-                        <tr>
-                            <td>@r.EmpCode</td><td>@r.EmpName</td><td>@r.Country</td><td>@r.Warehouse</td><td>@r.Category</td>
-                            <td>@r.UploadedUser</td><td>@(r.CreateTS?.ToString("dd-MMM-yyyy HH:mm") ?? "")</td>
-                        </tr>
-                    }
-                </tbody>
-            </table>
-        </div>
-    }
-    </div>
-    }
 </div>
-
-@* ===================== 2. Attendance Discrepancies ===================== *@
+<div class="incset-group incset-group-att">
 <div class="aiwms-section" style="padding:0; overflow:hidden;">
     <div class="incset-header">
         <span>Attendance Discrepancies Upload</span>
@@ -113,7 +84,7 @@
     @if (!_attCollapsed)
     {
     <div style="padding:16px 20px;">
-    <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; margin-bottom:10px;">
+    <div class="incset-help-row" style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; margin-bottom:10px;">
     <div style="color:var(--text-secondary); font-size:12px; line-height:1.6;">
         <div>* AttendanceDate must fall between Date From and Date To.</div>
         <div>* Shift timings like <b>6AM</b> / <b>8PM</b> (or 06:00 / 20:00). DiscrepancyType must be <b>Earlygoing</b>, <b>LateComing</b> or <b>Absent</b>.</div>
@@ -178,22 +149,141 @@
     </div>
     }
 </div>
-
+</div>
+<div class="incset-group incset-group-tgt">
 <div class="aiwms-section" style="padding:0; overflow:hidden;">
     <div class="incset-header">
-        <span>Uploaded Attendance Discrepancies (@_attFrom.ToString("dd-MMM-yyyy") – @_attTo.ToString("dd-MMM-yyyy")) @(_attLoaded ? $"({_attendance.Count:N0})" : "")</span>
+        <span>Target Upload</span>
+        @Toggle(_tgtCollapsed, () => _tgtCollapsed = !_tgtCollapsed)
+    </div>
+    @if (!_tgtCollapsed)
+    {
+    <div style="padding:16px 20px;">
+    <div class="incset-help-row" style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; margin-bottom:10px;">
+        <div style="color:var(--text-secondary); font-size:12px; line-height:1.6;">
+            <div>* One row per Category — no date period; a target stays in force until it is changed.</div>
+            <div>* TargetAuto, TargetManual and IncentiveBase are required; Add_IncentiveTgt and Add_IncentiveRate can be left blank. Numbers with up to 2 decimals.</div>
+            <div>* A Category that already has a target is rejected — nothing is saved — unless <b>Update existing</b> is ticked, which replaces its values.</div>
+            @if (_isAdmin)
+            {
+                <div style="margin-top:4px;">
+                    Excel (.xlsx) with header row <b>Category, TargetAuto, TargetManual, IncentiveBase, Add_IncentiveTgt, Add_IncentiveRate</b>.
+                    Saved to DATAREPORTING..INC_Target.
+                </div>
+            }
+        </div>
+        <button class="aiwms-btn aiwms-btn-secondary" style="white-space:nowrap;" @onclick="DownloadTargetTemplateAsync">Download template</button>
+    </div>
+    <div style="display:flex; align-items:center; gap:18px; flex-wrap:wrap;">
+        <InputFile OnChange="OnTargetFileSelected" accept=".xlsx" disabled="@_busy" @key="_tgtFileKey" />
+        <label style="display:flex; align-items:center; gap:6px; font-size:13px; cursor:pointer;">
+            <input type="checkbox" @bind="_tgtUpdateExisting" disabled="@_busy" />
+            Update existing categories
+        </label>
+    </div>
+    @Message(TgtArea)
+
+    @if (_tgtUpload.Count > 0)
+    {
+        <div style="margin-top:12px; display:flex; align-items:center; gap:12px;">
+            <b>Preview — @_tgtUpload.Count.ToString("N0") category(ies)
+                (@TgtNewCount new@(TgtUpdateCount > 0 ? $", {TgtUpdateCount} to update" : ""))</b>
+            <button class="aiwms-btn aiwms-btn-primary" @onclick="SaveTargetsAsync" disabled="@_busy">Save</button>
+            <button class="aiwms-btn aiwms-btn-secondary" @onclick="() => { _tgtUpload = new(); _tgtFileKey++; }" disabled="@_busy">Cancel</button>
+        </div>
+        <div style="max-height:260px; overflow:auto; margin-top:8px;">
+            <table class="aiwms-table aiwms-table-dense">
+                <thead style="position:sticky; top:0; z-index:1;">
+                    <tr><th>Action</th><th>Category</th><th style="text-align:right;">Target Auto</th><th style="text-align:right;">Target Manual</th><th style="text-align:right;">Incentive Base</th>
+                        <th style="text-align:right;">Add. Incentive Tgt</th><th style="text-align:right;">Add. Incentive Rate</th></tr>
+                </thead>
+                <tbody>
+                    @foreach (var r in _tgtUpload)
+                    {
+                        var isUpdate = TgtIsStored(r.Category);
+                        <tr>
+                            <td style="font-weight:600; color:@(isUpdate ? "#b45309" : "#15803d");">@(isUpdate ? "Update" : "New")</td>
+                            <td>@r.Category</td>
+                            <td style="text-align:right;">@r.TargetAuto.ToString("N2")</td><td style="text-align:right;">@r.TargetManual.ToString("N2")</td>
+                            <td style="text-align:right;">@r.IncentiveBase.ToString("N2")</td>
+                            <td style="text-align:right;">@(r.Add_IncentiveTgt?.ToString("N2"))</td><td style="text-align:right;">@(r.Add_IncentiveRate?.ToString("N2"))</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+    </div>
+    }
+</div>
+</div>
+</div>
+
+@* ===================== Uploaded data (below) ===================== *@
+<div class="incset-area-title">Uploaded Data</div>
+<div class="incset-group incset-group-emp">
+<div class="aiwms-section" style="padding:0; overflow:hidden;">
+    <div class="incset-header">
+        <span>Employees @(_empLoaded ? $"({_employees.Count:N0})" : "")</span>
+        @Toggle(_empGridCollapsed, () => _empGridCollapsed = !_empGridCollapsed)
+    </div>
+    @if (!_empGridCollapsed)
+    {
+    <div style="padding:16px 20px;">
+    <div style="display:flex; justify-content:flex-start; align-items:end; gap:12px; flex-wrap:wrap; margin-bottom:10px;">
+        <div>
+            <label class="aiwms-filter-label">EMPCODE</label>
+            <input @bind="_empSearch" @bind:event="oninput" @onkeyup="OnEmpSearchKey" placeholder="Search EmpCode…"
+                   style="padding:7px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; width:180px;" />
+        </div>
+        <button class="aiwms-btn aiwms-btn-primary" @onclick="LoadEmployeesAsync" disabled="@_busy">Search</button>
+        <button class="aiwms-btn aiwms-btn-secondary" @onclick="ShowAllEmployeesAsync" disabled="@_busy">Show all</button>
+    </div>
+    @Message(EmpGridArea)
+    @if (_empLoaded && _employees.Count == 0)
+    {
+        <p style="color:var(--text-secondary); margin:0;">No employees found.</p>
+    }
+    else if (_employees.Count > 0)
+    {
+        <div style="max-height:360px; overflow:auto;">
+            <table class="aiwms-table aiwms-table-dense">
+                <thead style="position:sticky; top:0; z-index:1;">
+                    <tr><th>EmpCode</th><th>EmpName</th><th>Country</th><th>Warehouse</th><th>Category</th><th>Uploaded By</th><th>Uploaded On</th></tr>
+                </thead>
+                <tbody>
+                    @foreach (var r in _employees)
+                    {
+                        <tr>
+                            <td>@r.EmpCode</td><td>@r.EmpName</td><td>@r.Country</td><td>@r.Warehouse</td><td>@r.Category</td>
+                            <td>@r.UploadedUser</td><td>@(r.CreateTS?.ToString("dd-MMM-yyyy HH:mm") ?? "")</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+    </div>
+    }
+</div>
+</div>
+<div class="incset-group incset-group-att">
+<div class="aiwms-section" style="padding:0; overflow:hidden;">
+    <div class="incset-header">
+        <span>Attendance Discrepancies (@_attFrom.ToString("dd-MMM-yyyy") – @_attTo.ToString("dd-MMM-yyyy")) @(_attLoaded ? $"({_attendance.Count:N0})" : "")</span>
         @Toggle(_attGridCollapsed, () => _attGridCollapsed = !_attGridCollapsed)
     </div>
     @if (!_attGridCollapsed)
     {
     <div style="padding:16px 20px;">
-    <div style="display:flex; justify-content:flex-end; align-items:end; gap:12px; flex-wrap:wrap; margin-bottom:10px;">
+    <div style="display:flex; justify-content:flex-start; align-items:end; gap:12px; flex-wrap:wrap; margin-bottom:10px;">
         <div>
             <label class="aiwms-filter-label">EMPCODE</label>
             <input @bind="_attSearch" @bind:event="oninput" @onkeyup="OnAttSearchKey" placeholder="Search EmpCode…"
                    style="padding:7px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; width:180px;" />
         </div>
         <button class="aiwms-btn aiwms-btn-primary" @onclick="LoadAttendanceAsync" disabled="@(_busy || !AttRangeValid)">Search</button>
+        <button class="aiwms-btn aiwms-btn-secondary" @onclick="ShowAllAttendanceAsync" disabled="@(_busy || !AttRangeValid)">Show all</button>
     </div>
     @Message(AttGridArea)
     @if (_attLoaded && _attendance.Count == 0)
@@ -223,6 +313,90 @@
     </div>
     }
 </div>
+</div>
+<div class="incset-group incset-group-tgt">
+<div class="aiwms-section" style="padding:0; overflow:hidden;">
+    <div class="incset-header">
+        <span>Targets @(_tgtLoaded ? $"({_targets.Count:N0})" : "")</span>
+        @Toggle(_tgtGridCollapsed, () => _tgtGridCollapsed = !_tgtGridCollapsed)
+    </div>
+    @if (!_tgtGridCollapsed)
+    {
+    <div style="padding:16px 20px;">
+    <div style="display:flex; justify-content:flex-start; align-items:end; gap:12px; flex-wrap:wrap; margin-bottom:10px;">
+        <button class="aiwms-btn aiwms-btn-secondary" @onclick="LoadTargetsAsync" disabled="@_busy">Show all</button>
+        <button class="aiwms-btn aiwms-btn-secondary" @onclick="ToggleTargetLogAsync" disabled="@_busy">@(_tgtLogOpen ? "Hide log" : "View log")</button>
+    </div>
+    @Message(TgtGridArea)
+    @if (_tgtLogOpen)
+    {
+        <div style="margin-bottom:14px;">
+            <b style="font-size:13px;">Target log (@_tgtLog.Count.ToString("N0")) — rows replaced by an update, most recent first</b>
+            @if (_tgtLog.Count == 0)
+            {
+                <p style="color:var(--text-secondary); margin:6px 0 0 0;">No target has been updated yet.</p>
+            }
+            else
+            {
+                <div style="max-height:320px; overflow:auto; margin-top:6px;">
+                    <table class="aiwms-table aiwms-table-dense">
+                        <thead style="position:sticky; top:0; z-index:1;">
+                            <tr><th>Replaced On</th><th>Replaced By</th><th>Category</th>
+                                <th style="text-align:right;">Target Auto</th><th style="text-align:right;">Target Manual</th><th style="text-align:right;">Incentive Base</th>
+                                <th style="text-align:right;">Add. Incentive Tgt</th><th style="text-align:right;">Add. Incentive Rate</th>
+                                <th>Uploaded By</th><th>Uploaded On</th><th>Modified By</th><th>Modified On</th></tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var l in _tgtLog)
+                            {
+                                <tr>
+                                    <td>@l.ModifiedDate.ToString("dd-MMM-yyyy HH:mm")</td><td>@l.UpdatedUser</td><td>@l.Category</td>
+                                    <td style="text-align:right;">@(l.TargetAuto?.ToString("N2"))</td><td style="text-align:right;">@(l.TargetManual?.ToString("N2"))</td>
+                                    <td style="text-align:right;">@(l.IncentiveBase?.ToString("N2"))</td>
+                                    <td style="text-align:right;">@(l.Add_IncentiveTgt?.ToString("N2"))</td><td style="text-align:right;">@(l.Add_IncentiveRate?.ToString("N2"))</td>
+                                    <td>@l.UploadedUser</td><td>@(l.CreateTS?.ToString("dd-MMM-yyyy HH:mm") ?? "")</td>
+                                    <td>@l.ModifiedUser</td><td>@(l.ModifiedTS?.ToString("dd-MMM-yyyy HH:mm") ?? "")</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        </div>
+    }
+    @if (_tgtLoaded && _targets.Count == 0)
+    {
+        <p style="color:var(--text-secondary); margin:0;">No targets uploaded yet.</p>
+    }
+    else if (_targets.Count > 0)
+    {
+        <div style="max-height:360px; overflow:auto;">
+            <table class="aiwms-table aiwms-table-dense">
+                <thead style="position:sticky; top:0; z-index:1;">
+                    <tr><th>Category</th><th style="text-align:right;">Target Auto</th><th style="text-align:right;">Target Manual</th><th style="text-align:right;">Incentive Base</th>
+                        <th style="text-align:right;">Add. Incentive Tgt</th><th style="text-align:right;">Add. Incentive Rate</th>
+                        <th>Uploaded By</th><th>Uploaded On</th><th>Modified By</th><th>Modified On</th></tr>
+                </thead>
+                <tbody>
+                    @foreach (var r in _targets)
+                    {
+                        <tr>
+                            <td>@r.Category</td>
+                            <td style="text-align:right;">@(r.TargetAuto?.ToString("N2"))</td><td style="text-align:right;">@(r.TargetManual?.ToString("N2"))</td>
+                            <td style="text-align:right;">@(r.IncentiveBase?.ToString("N2"))</td>
+                            <td style="text-align:right;">@(r.Add_IncentiveTgt?.ToString("N2"))</td><td style="text-align:right;">@(r.Add_IncentiveRate?.ToString("N2"))</td>
+                            <td>@r.UploadedUser</td><td>@(r.CreateTS?.ToString("dd-MMM-yyyy HH:mm") ?? "")</td>
+                            <td>@r.ModifiedUser</td><td>@(r.ModifiedTS?.ToString("dd-MMM-yyyy HH:mm") ?? "")</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+    </div>
+    }
+</div>
+</div>
 
 @code {
     private const int MaxProblemsShown = 25;
@@ -234,6 +408,18 @@
     private bool _empCollapsed;
     private bool _attCollapsed;
     private bool _empGridCollapsed;
+    private bool _tgtCollapsed;
+    private bool _tgtGridCollapsed;
+    private int _tgtFileKey;
+    private List<IncTargetUploadRow> _tgtUpload = new();
+    private List<IncTargetRow> _targets = new();
+    private bool _tgtLoaded;
+    private bool _tgtUpdateExisting;
+    private bool _tgtLogOpen;
+    private List<IncTargetLogRow> _tgtLog = new();
+    private bool TgtIsStored(string category) => _targets.Any(t => string.Equals(t.Category.Trim(), category, StringComparison.OrdinalIgnoreCase));
+    private int TgtUpdateCount => _tgtUpload.Count(r => TgtIsStored(r.Category));
+    private int TgtNewCount => _tgtUpload.Count - TgtUpdateCount;
     private bool _attGridCollapsed;
     private string _message = "";
     private bool _isError;
@@ -262,6 +448,7 @@
         if (AuthState is not null) _isAdmin = (await AuthState).User.IsInRole(Roles.Admin);
         await LoadEmployeesAsync();
         await LoadAttendanceAsync();
+        await LoadTargetsAsync();
     }
 
     private string Uploader => Me.Email ?? Me.Name ?? "";
@@ -269,7 +456,8 @@
     // Each message is shown inside the section it came from (under its Upload / Search
     // controls), not in one banner at the top of the tab that is off screen by the time
     // you reach the Attendance section.
-    private const string EmpArea = "emp", AttArea = "att", EmpGridArea = "empgrid", AttGridArea = "attgrid";
+    private const string EmpArea = "emp", AttArea = "att", EmpGridArea = "empgrid", AttGridArea = "attgrid",
+                         TgtArea = "tgt", TgtGridArea = "tgtgrid";
     private string _msgArea = "";
     private void ShowError(string msg, List<string>? problems = null) { _message = msg; _isError = true;  _problems = problems ?? new(); }
     private void ShowInfo(string msg)                                  { _message = msg; _isError = false; _problems = new(); }
@@ -317,6 +505,20 @@
 
     private async Task OnEmpSearchKey(KeyboardEventArgs e) { if (e.Key == "Enter") await LoadEmployeesAsync(); }
     private async Task OnAttSearchKey(KeyboardEventArgs e) { if (e.Key == "Enter") await LoadAttendanceAsync(); }
+
+    private async Task ShowAllAttendanceAsync()
+    {
+        _attSearch = "";
+        _attGridCollapsed = false;
+        await LoadAttendanceAsync();
+    }
+
+    private async Task ShowAllEmployeesAsync()
+    {
+        _empSearch = "";
+        _empGridCollapsed = false;
+        await LoadEmployeesAsync();
+    }
 
     private async Task LoadEmployeesAsync()
     {
@@ -526,6 +728,161 @@
         }
         return rows;
     }
+
+
+    // ===================== Target upload =====================
+
+    private async Task LoadTargetsAsync()
+    {
+        StartIn(TgtGridArea);
+        try { _targets = await Svc.GetTargetsAsync(); _tgtLoaded = true; }
+        catch (Exception ex) { ShowError($"Couldn't load targets: {ex.Message}"); }
+    }
+
+    private async Task OnTargetFileSelected(InputFileChangeEventArgs e)
+    {
+        StartIn(TgtArea);
+        _tgtUpload = new();
+        _busy = true; StateHasChanged();
+        var ms = await ReadXlsxAsync(e.File);
+        if (ms is null) { _busy = false; return; }
+        try
+        {
+            var problems = new List<string>();
+            var rows = ParseTargets(ms, problems);
+            if (problems.Count > 0) { ShowError($"'{e.File.Name}' has {problems.Count} problem(s) — nothing was loaded. Fix them and choose the file again.", problems); _tgtFileKey++; return; }
+            if (rows.Count == 0)     { ShowError($"No data rows found in '{e.File.Name}'."); _tgtFileKey++; return; }
+
+            // Tell them about existing categories now, not only at Save.
+            var stored = _targets.Select(t => t.Category.Trim()).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var clashes = rows.Where(r => stored.Contains(r.Category)).Select(r => r.Category).ToList();
+            if (clashes.Count > 0 && !_tgtUpdateExisting)
+            {
+                ShowError($"{clashes.Count} category(ies) already have a target — nothing was loaded. Remove them from the file, or tick \"Update existing categories\" and choose the file again.",
+                          clashes.Select(c => $"Category {c} already exists").ToList());
+                _tgtFileKey++;
+                return;
+            }
+            _tgtUpload = rows;
+            ShowInfo(clashes.Count > 0
+                ? $"Read {rows.Count:N0} target row(s) — {clashes.Count} existing category(ies) will be updated. Check the preview, then click Save."
+                : $"Read {rows.Count:N0} target row(s). Check the preview, then click Save.");
+        }
+        catch (Exception ex) { ShowError($"Couldn't read the Excel: {ex.Message}"); _tgtFileKey++; }
+        finally { _busy = false; }
+    }
+
+    private async Task ToggleTargetLogAsync()
+    {
+        if (_tgtLogOpen) { _tgtLogOpen = false; return; }
+        await LoadTargetLogAsync();
+    }
+
+    private async Task LoadTargetLogAsync()
+    {
+        StartIn(TgtGridArea);
+        try { _tgtLog = await Svc.GetTargetLogAsync(); _tgtLogOpen = true; _tgtGridCollapsed = false; }
+        catch (Exception ex) { ShowError($"Couldn't load the target log: {ex.Message}"); }
+    }
+
+
+    private async Task SaveTargetsAsync()
+    {
+        StartIn(TgtArea);
+        if (TgtUpdateCount > 0 && !_tgtUpdateExisting)
+        {
+            ShowError($"{TgtUpdateCount} category(ies) already have a target. Tick \"Update existing categories\" to replace them, or Cancel.");
+            return;
+        }
+        if (TgtUpdateCount > 0 &&
+            !await JS.InvokeAsync<bool>("confirm", $"Replace the targets of {TgtUpdateCount} existing category(ies) and add {TgtNewCount} new one(s)?"))
+            return;
+        _busy = true; StateHasChanged();
+        try
+        {
+            var r = await Svc.UploadTargetsAsync(_tgtUpload, Uploader, _tgtUpdateExisting);
+            if (r.Ok)
+            {
+                _tgtUpload = new(); _tgtFileKey++;
+                await LoadTargetsAsync();
+                if (_tgtLogOpen) await LoadTargetLogAsync();
+                _msgArea = TgtArea;
+                ShowInfo($"Saved {r.RowsSaved:N0} target row(s).");
+                _tgtUpdateExisting = false;
+            }
+            else ShowError(r.Error ?? "Save failed.", r.Problems);
+        }
+        finally { _busy = false; }
+    }
+
+    private const decimal MaxDecimal10_2 = 99_999_999.99m;
+
+    private static List<IncTargetUploadRow> ParseTargets(Stream stream, List<string> problems)
+    {
+        using var wb = new XLWorkbook(stream);
+        var ws = wb.Worksheet(1);
+        var cols = HeaderMap(ws);
+        string[] numberCols = ["targetauto", "targetmanual", "incentivebase", "addincentivetgt", "addincentiverate"];
+        string[] labels     = ["TargetAuto", "TargetManual", "IncentiveBase", "Add_IncentiveTgt", "Add_IncentiveRate"];
+        bool[]   required   = [true, true, true, false, false];   // INC_Target: the two Add_ columns are NULL-able
+        foreach (var col in numberCols.Prepend("category"))
+            if (!cols.ContainsKey(col))
+                problems.Add($"Header row is missing column '{col}'. Expected: Category, TargetAuto, TargetManual, IncentiveBase, Add_IncentiveTgt, Add_IncentiveRate.");
+        if (problems.Count > 0) return new();
+
+        var rows = new List<IncTargetUploadRow>();
+        var seen = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var last = ws.LastRowUsed()?.RowNumber() ?? 1;
+        for (var r = 2; r <= last; r++)
+        {
+            var category = ws.Cell(r, cols["category"]).GetFormattedString().Trim();
+            if (category.Length == 0 && numberCols.All(c => ws.Cell(r, cols[c]).IsEmpty())) continue;   // blank line
+
+            var rowOk = true;
+            void Bad(string msg) { problems.Add($"Row {r}: {msg}"); rowOk = false; }
+
+            if (category.Length == 0) Bad("Category is empty.");
+            var values = new decimal?[numberCols.Length];
+            for (var i = 0; i < numberCols.Length; i++)
+            {
+                var cell = ws.Cell(r, cols[numberCols[i]]);
+                if (!TryReadDecimal(cell, out var v)) { Bad($"{labels[i]} '{cell.GetFormattedString()}' is not a number."); continue; }
+                if (v is null) { if (required[i]) Bad($"{labels[i]} is empty."); continue; }
+                if (v < 0 || v > MaxDecimal10_2) { Bad($"{labels[i]} {v} is out of range (0 to {MaxDecimal10_2:N2})."); continue; }
+                if (decimal.Round(v.Value, 2) != v.Value) { Bad($"{labels[i]} {v} has more than 2 decimals."); continue; }
+                values[i] = v.Value;
+            }
+            if (!rowOk) continue;
+
+            if (seen.TryGetValue(category, out var firstRow)) { Bad($"Category {category} is repeated (also on row {firstRow})."); continue; }
+            seen[category] = r;
+            rows.Add(new IncTargetUploadRow(category, values[0]!.Value, values[1]!.Value, values[2]!.Value, values[3], values[4]));
+        }
+        return rows;
+    }
+
+    // Empty cell -> true with null.
+    private static bool TryReadDecimal(IXLCell cell, out decimal? value)
+    {
+        value = null;
+        if (cell.IsEmpty()) return true;
+        if (cell.DataType == XLDataType.Number)
+        {
+            var d = cell.GetDouble();
+            if (Math.Abs(d) > (double)decimal.MaxValue) return false;
+            value = decimal.Round((decimal)d, 6);   // strip binary-float noise (e.g. 12.3 stored as 12.2999999)
+            return true;
+        }
+        var s = cell.GetString().Trim().Replace(",", "");
+        if (s.Length == 0) return true;
+        if (decimal.TryParse(s, NumberStyles.Number, CultureInfo.InvariantCulture, out var m)) { value = m; return true; }
+        return false;
+    }
+
+    private Task DownloadTargetTemplateAsync() =>
+        DownloadTemplateAsync("Target_Template.xlsx", "Targets",
+            ["Category", "TargetAuto", "TargetManual", "IncentiveBase", "Add_IncentiveTgt", "Add_IncentiveRate"],
+            ["Checking", "1000.00", "800.00", "150.00", "200.00", "0.50"]);
 
     // ===================== shared Excel helpers =====================
 
