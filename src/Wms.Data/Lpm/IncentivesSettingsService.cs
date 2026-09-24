@@ -31,8 +31,11 @@ public record IncUploadResult(bool Ok, int RowsSaved, string? Error, List<string
 /// user can drop them from the file and upload again. Attendance is only accepted for
 /// EmpCodes already in INC_EmployeeMaster.
 ///
-/// Uses OnPremBackupDB_ConnectionString — the same on-prem instance the incentive
-/// reports already read DATAREPORTING from. Its login needs INSERT on both tables.
+/// Uses the WmsProductionDb connection (not OnPremBackupDB): the OnPremBackupDB login
+/// could read DATAREPORTING but was denied INSERT on the INC_ tables in production,
+/// same as it was denied UPDATE on BFLDATA for GIN Trailer Update. WmsProductionDb is
+/// the connection the other on-prem-writing features use (GinTrailerUpdateService,
+/// GenerateEan13Service, TechnoBuildingService, ...).
 /// </summary>
 public class IncentivesSettingsService(IOnPremConnectionResolver resolver)
 {
@@ -45,7 +48,7 @@ public class IncentivesSettingsService(IOnPremConnectionResolver resolver)
 
     private SqlConnection Open()
     {
-        var b = new SqlConnectionStringBuilder(resolver.GetOnPremBackupConnectionString()) { ConnectTimeout = ConnectTimeoutSeconds };
+        var b = new SqlConnectionStringBuilder(resolver.GetWmsProductionDbConnectionString()) { ConnectTimeout = ConnectTimeoutSeconds };
         var c = new SqlConnection(b.ConnectionString);
         c.Open();
         return c;
