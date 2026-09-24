@@ -344,18 +344,17 @@
                             <tr><th>Replaced On</th><th>Replaced By</th><th>Category</th>
                                 <th style="text-align:right;">Target Auto</th><th style="text-align:right;">Target Manual</th><th style="text-align:right;">Incentive Base</th>
                                 <th style="text-align:right;">Add. Incentive Tgt</th><th style="text-align:right;">Add. Incentive Rate</th>
-                                <th>Uploaded By</th><th>Uploaded On</th><th>Modified By</th><th>Modified On</th></tr>
+                                <th>Uploaded By</th><th>Uploaded On</th></tr>
                         </thead>
                         <tbody>
                             @foreach (var l in _tgtLog)
                             {
                                 <tr>
-                                    <td>@l.ModifiedDate.ToString("dd-MMM-yyyy HH:mm")</td><td>@l.UpdatedUser</td><td>@l.Category</td>
+                                    <td>@(l.ModifiedTS?.ToString("dd-MMM-yyyy HH:mm") ?? "")</td><td>@l.ModifiedUser</td><td>@l.Category</td>
                                     <td style="text-align:right;">@(l.TargetAuto?.ToString("N2"))</td><td style="text-align:right;">@(l.TargetManual?.ToString("N2"))</td>
                                     <td style="text-align:right;">@(l.IncentiveBase?.ToString("N2"))</td>
                                     <td style="text-align:right;">@(l.Add_IncentiveTgt?.ToString("N2"))</td><td style="text-align:right;">@(l.Add_IncentiveRate?.ToString("N2"))</td>
                                     <td>@l.UploadedUser</td><td>@(l.CreateTS?.ToString("dd-MMM-yyyy HH:mm") ?? "")</td>
-                                    <td>@l.ModifiedUser</td><td>@(l.ModifiedTS?.ToString("dd-MMM-yyyy HH:mm") ?? "")</td>
                                 </tr>
                             }
                         </tbody>
