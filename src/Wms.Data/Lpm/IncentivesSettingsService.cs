@@ -26,13 +26,12 @@ public record IncTargetRow(
     decimal? Add_IncentiveTgt, decimal? Add_IncentiveRate,
     string? UploadedUser, DateTime? CreateTS, string? ModifiedUser, DateTime? ModifiedTS);
 
-// A copy of an INC_Target row as it was just before an update replaced it, plus who
-// replaced it (UpdatedUser) and when (ModifiedDate).
+// An INC_Target row as it was just before an update replaced it. INC_Target_Log has the
+// same columns as INC_Target: ModifiedUser / ModifiedTS here are who replaced it and when.
 public record IncTargetLogRow(
-    int LogID, string Category, decimal? TargetAuto, decimal? TargetManual, decimal? IncentiveBase,
+    string Category, decimal? TargetAuto, decimal? TargetManual, decimal? IncentiveBase,
     decimal? Add_IncentiveTgt, decimal? Add_IncentiveRate,
-    string? UploadedUser, string? ModifiedUser, DateTime? CreateTS, DateTime? ModifiedTS,
-    string? UpdatedUser, DateTime ModifiedDate);
+    string? UploadedUser, DateTime? CreateTS, string? ModifiedUser, DateTime? ModifiedTS);
 
 // TargetAuto / TargetManual / IncentiveBase are required (NOT NULL); the two Add_ columns may be blank.
 public record IncTargetUploadRow(
@@ -252,7 +251,8 @@ public class IncentivesSettingsService(IOnPremConnectionResolver resolver)
     // "Update existing" ticked, stored Categories are overwritten (needs UPDATE permission).
     // A new Category gets UploadedUser/CreateTS and ModifiedUser/ModifiedTS; an update only
     // moves ModifiedUser/ModifiedTS, so the original uploader is kept. Before an update, the
-    // row being replaced is copied as-is into INC_Target_Log (same transaction).
+    // row being replaced is copied into INC_Target_Log (same transaction), with ModifiedUser /
+    // ModifiedTS set to who is replacing it and when.
 
     private const string TargetColumns =
         "Category, TargetAuto, TargetManual, IncentiveBase, Add_IncentiveTgt, Add_IncentiveRate, UploadedUser, CreateTS, ModifiedUser, ModifiedTS";
@@ -305,9 +305,9 @@ public class IncentivesSettingsService(IOnPremConnectionResolver resolver)
                 await c.ExecuteAsync(new CommandDefinition(@"
                     INSERT INTO DATAREPORTING.dbo.INC_Target_Log
                         (Category, TargetAuto, TargetManual, IncentiveBase, Add_IncentiveTgt, Add_IncentiveRate,
-                         UploadedUser, ModifiedUser, CreateTS, ModifiedTS, UpdatedUser, ModifiedDate)
+                         UploadedUser, CreateTS, ModifiedUser, ModifiedTS)
                     SELECT Category, TargetAuto, TargetManual, IncentiveBase, Add_IncentiveTgt, Add_IncentiveRate,
-                           UploadedUser, ModifiedUser, CreateTS, ModifiedTS, @uploadedUser, @now
+                           UploadedUser, CreateTS, @uploadedUser, @now
                       FROM DATAREPORTING.dbo.INC_Target
                      WHERE Category IN @cats",
                     new { cats = updates.Select(r => r.Category).ToList(), uploadedUser, now },
@@ -348,10 +348,10 @@ public class IncentivesSettingsService(IOnPremConnectionResolver resolver)
     {
         await using var c = Open();
         var rows = await c.QueryAsync<IncTargetLogRow>(new CommandDefinition(@"
-            SELECT LogID, Category, TargetAuto, TargetManual, IncentiveBase, Add_IncentiveTgt, Add_IncentiveRate,
-                   UploadedUser, ModifiedUser, CreateTS, ModifiedTS, UpdatedUser, ModifiedDate
+            SELECT Category, TargetAuto, TargetManual, IncentiveBase, Add_IncentiveTgt, Add_IncentiveRate,
+                   UploadedUser, CreateTS, ModifiedUser, ModifiedTS
               FROM DATAREPORTING.dbo.INC_Target_Log WITH (NOLOCK)
-             ORDER BY ModifiedDate DESC, LogID DESC",
+             ORDER BY ModifiedTS DESC, Category",
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         return rows.AsList();
     }
