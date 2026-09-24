@@ -162,12 +162,12 @@
     <div class="incset-help-row" style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; margin-bottom:10px;">
         <div style="color:var(--text-secondary); font-size:12px; line-height:1.6;">
             <div>* One row per Category — no date period; a target stays in force until it is changed.</div>
-            <div>* TargetAuto, TargetManual and IncentiveBase are required; Add_IncentiveTgt and Add_IncentiveRate can be left blank. Numbers with up to 2 decimals.</div>
+            <div>* TargetAuto, TargetManual, IncentiveBase and Add_IncentiveRate are all required — numbers with up to 2 decimals.</div>
             <div>* A Category that already has a target is rejected — nothing is saved — unless <b>Update existing</b> is ticked, which replaces its values.</div>
             @if (_isAdmin)
             {
                 <div style="margin-top:4px;">
-                    Excel (.xlsx) with header row <b>Category, TargetAuto, TargetManual, IncentiveBase, Add_IncentiveTgt, Add_IncentiveRate</b>.
+                    Excel (.xlsx) with header row <b>Category, TargetAuto, TargetManual, IncentiveBase, Add_IncentiveRate</b>.
                     Saved to DATAREPORTING..INC_Target.
                 </div>
             }
@@ -195,7 +195,7 @@
             <table class="aiwms-table aiwms-table-dense">
                 <thead style="position:sticky; top:0; z-index:1;">
                     <tr><th>Action</th><th>Category</th><th style="text-align:right;">Target Auto</th><th style="text-align:right;">Target Manual</th><th style="text-align:right;">Incentive Base</th>
-                        <th style="text-align:right;">Add. Incentive Tgt</th><th style="text-align:right;">Add. Incentive Rate</th></tr>
+                        <th style="text-align:right;">Add. Incentive Rate</th></tr>
                 </thead>
                 <tbody>
                     @foreach (var r in _tgtUpload)
@@ -206,7 +206,7 @@
                             <td>@r.Category</td>
                             <td style="text-align:right;">@r.TargetAuto.ToString("N2")</td><td style="text-align:right;">@r.TargetManual.ToString("N2")</td>
                             <td style="text-align:right;">@r.IncentiveBase.ToString("N2")</td>
-                            <td style="text-align:right;">@(r.Add_IncentiveTgt?.ToString("N2"))</td><td style="text-align:right;">@(r.Add_IncentiveRate?.ToString("N2"))</td>
+                            <td style="text-align:right;">@(r.Add_IncentiveRate?.ToString("N2"))</td>
                         </tr>
                     }
                 </tbody>
@@ -325,44 +325,8 @@
     <div style="padding:16px 20px;">
     <div style="display:flex; justify-content:flex-start; align-items:end; gap:12px; flex-wrap:wrap; margin-bottom:10px;">
         <button class="aiwms-btn aiwms-btn-secondary" @onclick="LoadTargetsAsync" disabled="@_busy">Show all</button>
-        <button class="aiwms-btn aiwms-btn-secondary" @onclick="ToggleTargetLogAsync" disabled="@_busy">@(_tgtLogOpen ? "Hide log" : "View log")</button>
     </div>
     @Message(TgtGridArea)
-    @if (_tgtLogOpen)
-    {
-        <div style="margin-bottom:14px;">
-            <b style="font-size:13px;">Target log (@_tgtLog.Count.ToString("N0")) — rows replaced by an update, most recent first</b>
-            @if (_tgtLog.Count == 0)
-            {
-                <p style="color:var(--text-secondary); margin:6px 0 0 0;">No target has been updated yet.</p>
-            }
-            else
-            {
-                <div style="max-height:320px; overflow:auto; margin-top:6px;">
-                    <table class="aiwms-table aiwms-table-dense">
-                        <thead style="position:sticky; top:0; z-index:1;">
-                            <tr><th>Replaced On</th><th>Replaced By</th><th>Category</th>
-                                <th style="text-align:right;">Target Auto</th><th style="text-align:right;">Target Manual</th><th style="text-align:right;">Incentive Base</th>
-                                <th style="text-align:right;">Add. Incentive Tgt</th><th style="text-align:right;">Add. Incentive Rate</th>
-                                <th>Uploaded By</th><th>Uploaded On</th></tr>
-                        </thead>
-                        <tbody>
-                            @foreach (var l in _tgtLog)
-                            {
-                                <tr>
-                                    <td>@(l.ModifiedTS?.ToString("dd-MMM-yyyy HH:mm") ?? "")</td><td>@l.ModifiedUser</td><td>@l.Category</td>
-                                    <td style="text-align:right;">@(l.TargetAuto?.ToString("N2"))</td><td style="text-align:right;">@(l.TargetManual?.ToString("N2"))</td>
-                                    <td style="text-align:right;">@(l.IncentiveBase?.ToString("N2"))</td>
-                                    <td style="text-align:right;">@(l.Add_IncentiveTgt?.ToString("N2"))</td><td style="text-align:right;">@(l.Add_IncentiveRate?.ToString("N2"))</td>
-                                    <td>@l.UploadedUser</td><td>@(l.CreateTS?.ToString("dd-MMM-yyyy HH:mm") ?? "")</td>
-                                </tr>
-                            }
-                        </tbody>
-                    </table>
-                </div>
-            }
-        </div>
-    }
     @if (_tgtLoaded && _targets.Count == 0)
     {
         <p style="color:var(--text-secondary); margin:0;">No targets uploaded yet.</p>
@@ -373,7 +337,7 @@
             <table class="aiwms-table aiwms-table-dense">
                 <thead style="position:sticky; top:0; z-index:1;">
                     <tr><th>Category</th><th style="text-align:right;">Target Auto</th><th style="text-align:right;">Target Manual</th><th style="text-align:right;">Incentive Base</th>
-                        <th style="text-align:right;">Add. Incentive Tgt</th><th style="text-align:right;">Add. Incentive Rate</th>
+                        <th style="text-align:right;">Add. Incentive Rate</th>
                         <th>Uploaded By</th><th>Uploaded On</th></tr>
                 </thead>
                 <tbody>
@@ -383,7 +347,7 @@
                             <td>@r.Category</td>
                             <td style="text-align:right;">@(r.TargetAuto?.ToString("N2"))</td><td style="text-align:right;">@(r.TargetManual?.ToString("N2"))</td>
                             <td style="text-align:right;">@(r.IncentiveBase?.ToString("N2"))</td>
-                            <td style="text-align:right;">@(r.Add_IncentiveTgt?.ToString("N2"))</td><td style="text-align:right;">@(r.Add_IncentiveRate?.ToString("N2"))</td>
+                            <td style="text-align:right;">@(r.Add_IncentiveRate?.ToString("N2"))</td>
                             <td>@r.UploadedUser</td><td>@(r.CreateTS?.ToString("dd-MMM-yyyy HH:mm") ?? "")</td>
                         </tr>
                     }
@@ -391,6 +355,51 @@
             </table>
         </div>
     }
+    </div>
+    }
+</div>
+
+<div class="aiwms-section" style="padding:0; overflow:hidden;">
+    <div class="incset-header">
+        <span>Target Update Log @(_tgtLogLoaded ? $"({_tgtLog.Count:N0})" : "")</span>
+        <button type="button" class="incset-toggle" title="@(_tgtLogCollapsed ? "Expand" : "Minimize")" @onclick="ToggleTargetLogAsync">
+            <span class="mi sm">@(_tgtLogCollapsed ? "add" : "remove")</span>
+        </button>
+    </div>
+    @if (!_tgtLogCollapsed)
+    {
+    <div style="padding:16px 20px;">
+        <p style="margin:0 0 8px 0; color:var(--text-secondary); font-size:12px;">Rows replaced by an update, most recent first.</p>
+        @Message(TgtLogArea)
+        @if (_tgtLog.Count == 0)
+        {
+            <p style="color:var(--text-secondary); margin:6px 0 0 0;">No target has been updated yet.</p>
+        }
+        else
+        {
+            <div style="max-height:320px; overflow:auto; margin-top:6px;">
+                <table class="aiwms-table aiwms-table-dense">
+                    <thead style="position:sticky; top:0; z-index:1;">
+                        <tr><th>Replaced On</th><th>Replaced By</th><th>Category</th>
+                            <th style="text-align:right;">Target Auto</th><th style="text-align:right;">Target Manual</th><th style="text-align:right;">Incentive Base</th>
+                            <th style="text-align:right;">Add. Incentive Rate</th>
+                            <th>Uploaded By</th><th>Uploaded On</th></tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var l in _tgtLog)
+                        {
+                            <tr>
+                                <td>@(l.ModifiedTS?.ToString("dd-MMM-yyyy HH:mm") ?? "")</td><td>@l.ModifiedUser</td><td>@l.Category</td>
+                                <td style="text-align:right;">@(l.TargetAuto?.ToString("N2"))</td><td style="text-align:right;">@(l.TargetManual?.ToString("N2"))</td>
+                                <td style="text-align:right;">@(l.IncentiveBase?.ToString("N2"))</td>
+                                <td style="text-align:right;">@(l.Add_IncentiveRate?.ToString("N2"))</td>
+                                <td>@l.UploadedUser</td><td>@(l.CreateTS?.ToString("dd-MMM-yyyy HH:mm") ?? "")</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
     </div>
     }
 </div>
@@ -413,7 +422,8 @@
     private List<IncTargetRow> _targets = new();
     private bool _tgtLoaded;
     private bool _tgtUpdateExisting;
-    private bool _tgtLogOpen;
+    private bool _tgtLogCollapsed = true;   // Target Update Log starts minimized; loads on first expand
+    private bool _tgtLogLoaded;
     private List<IncTargetLogRow> _tgtLog = new();
     private bool TgtIsStored(string category) => _targets.Any(t => string.Equals(t.Category.Trim(), category, StringComparison.OrdinalIgnoreCase));
     private int TgtUpdateCount => _tgtUpload.Count(r => TgtIsStored(r.Category));
@@ -455,7 +465,7 @@
     // controls), not in one banner at the top of the tab that is off screen by the time
     // you reach the Attendance section.
     private const string EmpArea = "emp", AttArea = "att", EmpGridArea = "empgrid", AttGridArea = "attgrid",
-                         TgtArea = "tgt", TgtGridArea = "tgtgrid";
+                         TgtArea = "tgt", TgtGridArea = "tgtgrid", TgtLogArea = "tgtlog";
     private string _msgArea = "";
     private void ShowError(string msg, List<string>? problems = null) { _message = msg; _isError = true;  _problems = problems ?? new(); }
     private void ShowInfo(string msg)                                  { _message = msg; _isError = false; _problems = new(); }
@@ -772,15 +782,15 @@
 
     private async Task ToggleTargetLogAsync()
     {
-        if (_tgtLogOpen) { _tgtLogOpen = false; return; }
-        await LoadTargetLogAsync();
+        _tgtLogCollapsed = !_tgtLogCollapsed;
+        if (!_tgtLogCollapsed) await LoadTargetLogAsync();   // fresh each time it's opened
     }
 
     private async Task LoadTargetLogAsync()
     {
-        StartIn(TgtGridArea);
-        try { _tgtLog = await Svc.GetTargetLogAsync(); _tgtLogOpen = true; _tgtGridCollapsed = false; }
-        catch (Exception ex) { ShowError($"Couldn't load the target log: {ex.Message}"); }
+        StartIn(TgtLogArea);
+        try { _tgtLog = await Svc.GetTargetLogAsync(); _tgtLogLoaded = true; }
+        catch (Exception ex) { ShowError($"Couldn't load the target update log: {ex.Message}"); }
     }
 
 
@@ -803,7 +813,7 @@
             {
                 _tgtUpload = new(); _tgtFileKey++;
                 await LoadTargetsAsync();
-                if (_tgtLogOpen) await LoadTargetLogAsync();
+                if (!_tgtLogCollapsed) await LoadTargetLogAsync();
                 _msgArea = TgtArea;
                 ShowInfo($"Saved {r.RowsSaved:N0} target row(s).");
                 _tgtUpdateExisting = false;
@@ -820,12 +830,13 @@
         using var wb = new XLWorkbook(stream);
         var ws = wb.Worksheet(1);
         var cols = HeaderMap(ws);
-        string[] numberCols = ["targetauto", "targetmanual", "incentivebase", "addincentivetgt", "addincentiverate"];
-        string[] labels     = ["TargetAuto", "TargetManual", "IncentiveBase", "Add_IncentiveTgt", "Add_IncentiveRate"];
-        bool[]   required   = [true, true, true, false, false];   // INC_Target: the two Add_ columns are NULL-able
+        // For now the file is Category + these four, all required (Add_IncentiveTgt isn't uploaded yet).
+        string[] numberCols = ["targetauto", "targetmanual", "incentivebase", "addincentiverate"];
+        string[] labels     = ["TargetAuto", "TargetManual", "IncentiveBase", "Add_IncentiveRate"];
+        bool[]   required   = [true, true, true, true];
         foreach (var col in numberCols.Prepend("category"))
             if (!cols.ContainsKey(col))
-                problems.Add($"Header row is missing column '{col}'. Expected: Category, TargetAuto, TargetManual, IncentiveBase, Add_IncentiveTgt, Add_IncentiveRate.");
+                problems.Add($"Header row is missing column '{col}'. Expected: Category, TargetAuto, TargetManual, IncentiveBase, Add_IncentiveRate.");
         if (problems.Count > 0) return new();
 
         var rows = new List<IncTargetUploadRow>();
@@ -854,7 +865,7 @@
 
             if (seen.TryGetValue(category, out var firstRow)) { Bad($"Category {category} is repeated (also on row {firstRow})."); continue; }
             seen[category] = r;
-            rows.Add(new IncTargetUploadRow(category, values[0]!.Value, values[1]!.Value, values[2]!.Value, values[3], values[4]));
+            rows.Add(new IncTargetUploadRow(category, values[0]!.Value, values[1]!.Value, values[2]!.Value, null, values[3]));
         }
         return rows;
     }
@@ -879,8 +890,8 @@
 
     private Task DownloadTargetTemplateAsync() =>
         DownloadTemplateAsync("Target_Template.xlsx", "Targets",
-            ["Category", "TargetAuto", "TargetManual", "IncentiveBase", "Add_IncentiveTgt", "Add_IncentiveRate"],
-            ["Checking", "1000.00", "800.00", "150.00", "200.00", "0.50"]);
+            ["Category", "TargetAuto", "TargetManual", "IncentiveBase", "Add_IncentiveRate"],
+            ["Checking", "1000.00", "800.00", "150.00", "0.50"]);
 
     // ===================== shared Excel helpers =====================
 
