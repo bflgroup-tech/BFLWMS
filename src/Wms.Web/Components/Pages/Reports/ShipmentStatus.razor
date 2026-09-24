@@ -7,6 +7,14 @@
 @inject ShipmentStatusService Svc
 @inject ICurrentUser CurrentUser
 @inject Microsoft.JSInterop.IJSRuntime JS
+@inject IDialogService DialogService
+
+<style>
+    /* Same green icon-only download button as EcomProductionReports.razor. */
+    .shipstatus-export-btn { background: #dcfce7; color: #14532d; border: 1px solid #14532d40; height: 36px; width: 36px; box-sizing: border-box; display: flex; align-items: center; justify-content: center; padding: 0; }
+    .shipstatus-export-btn:hover:not(:disabled) { background: #bbf7d0; }
+    .shipstatus-export-btn:disabled { opacity: 0.5; cursor: default; }
+</style>
 
 <PageTitle>WMS — Shipment Status</PageTitle>
 
@@ -80,6 +88,111 @@
     </div>
 }
 
+@if (_detailOpen)
+{
+    <div style="position:fixed; inset:0; background:rgba(0,0,0,0.45); z-index:100; display:flex; align-items:center; justify-content:center;" @onclick="CloseDetail">
+        <div style="background:white; border-radius:8px; max-width:90vw; max-height:85vh; overflow:auto; padding:20px; box-shadow:0 8px 32px rgba(0,0,0,0.3);" @onclick:stopPropagation="true">
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:20px; margin-bottom:14px;">
+                <h3 style="margin:0; font-size:15px;">@_detailTitle</h3>
+                <div style="display:flex; gap:8px;">
+                    <button class="aiwms-btn shipstatus-export-btn" title="Export Excel" @onclick="ExportDetailExcelAsync" disabled="@(_detailLoading || DetailRowCount == 0)">
+                        <span class="mi sm">download</span>
+                    </button>
+                    <button class="aiwms-btn aiwms-btn-secondary" @onclick="CloseDetail">Close</button>
+                </div>
+            </div>
+
+            @if (_detailLoading)
+            {
+                <div style="padding:20px; text-align:center; color:var(--text-secondary);">Loading…</div>
+            }
+            else if (_detailError is not null)
+            {
+                <div class="aiwms-alert error">@_detailError</div>
+            }
+            else if (DetailRowCount == 0)
+            {
+                <div style="padding:20px; text-align:center; color:var(--text-secondary);">No data.</div>
+            }
+            else if (_detailIsShipments)
+            {
+                <div style="overflow:auto; max-width:90vw;">
+                <table class="aiwms-table aiwms-table-dense" style="border-collapse:separate; border-spacing:0;">
+                    <thead style="position:sticky; top:0; z-index:5; background:var(--bfl-black);">
+                        <tr>
+                            <th>Country</th>
+                            <th>Ship No.</th>
+                            <th>GIN No.</th>
+                            <th>GIN Date</th>
+                            <th style="text-align:right;">Transfers</th>
+                            <th style="text-align:right;">Qty</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var r in _shipRows)
+                        {
+                            <tr>
+                                <td>@r.Country.ToUpperInvariant()</td>
+                                <td>@(string.IsNullOrWhiteSpace(r.ShipNo) ? "(no ship no.)" : r.ShipNo)</td>
+                                <td>@r.GinNo</td>
+                                <td>@(r.GinDate?.ToString("dd-MMM-yyyy") ?? "")</td>
+                                <td style="text-align:right;">@r.TrfCount.ToString("N0")</td>
+                                <td style="text-align:right;">@r.Qty.ToString("N0")</td>
+                            </tr>
+                        }
+                    </tbody>
+                    <tfoot>
+                        <tr style="font-weight:600; border-top:2px solid var(--border-default);">
+                            <td colspan="4">Total (@DistinctShipCount shipment(s))</td>
+                            <td style="text-align:right;">@_shipRows.Sum(r => r.TrfCount).ToString("N0")</td>
+                            <td style="text-align:right;">@_shipRows.Sum(r => r.Qty).ToString("N0")</td>
+                        </tr>
+                    </tfoot>
+                </table>
+                </div>
+            }
+            else
+            {
+                <div style="overflow:auto; max-width:90vw;">
+                <table class="aiwms-table aiwms-table-dense" style="border-collapse:separate; border-spacing:0;">
+                    <thead style="position:sticky; top:0; z-index:5; background:var(--bfl-black);">
+                        <tr>
+                            <th>Country</th>
+                            <th>Store Id</th>
+                            <th>Transfer No.</th>
+                            <th>Transfer Date</th>
+                            <th>Division</th>
+                            <th>LPM</th>
+                            <th style="text-align:right;">Qty</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var r in _detailRows)
+                        {
+                            <tr>
+                                <td>@r.Country.ToUpperInvariant()</td>
+                                <td>@r.StoreId</td>
+                                <td>@r.TrfNo</td>
+                                <td>@(r.TransferDate?.ToString("dd-MMM-yyyy") ?? "")</td>
+                                <td>@r.Division</td>
+                                <td>@(r.Lpm?.ToString("dd-MMM-yyyy") ?? "")</td>
+                                <td style="text-align:right;">@r.Qty.ToString("N0")</td>
+                            </tr>
+                        }
+                    </tbody>
+                    <tfoot>
+                        <tr style="font-weight:600; border-top:2px solid var(--border-default);">
+                            <td colspan="6">Total (@_detailRows.Count row(s), @_detailRows.Select(r => r.TrfNo).Distinct().Count() transfer(s))</td>
+                            <td style="text-align:right;">@_detailRows.Sum(r => r.Qty).ToString("N0")</td>
+                        </tr>
+                    </tfoot>
+                </table>
+                </div>
+            }
+        </div>
+    </div>
+}
+
 <div class="aiwms-section" style="padding:10px 16px;">
     <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:flex-end;">
         @if (_canSelectMultiple)
@@ -133,7 +246,7 @@
             <select @bind="_statusFilter" style="width:100%; padding:5px 7px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:12px; background:white">
                 <option value="">All</option>
                 <option value="InTransit">InTransit</option>
-                <option value="Delivered">Delivered</option>
+                <option value="Delivered">Received</option>
             </select>
         </div>
         <div style="flex:0 0 150px;">
@@ -176,6 +289,12 @@
                 Export to Excel
             </button>
         </div>
+        @if (CurrentUser.HasAllCountriesAccess)
+        {
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:12px; color:var(--text-secondary); height:36px; margin-left:auto;">
+                <input type="checkbox" @bind="_hideAdminControls" /> Hide admin controls (preview user view)
+            </label>
+        }
     </div>
 
     @if (!string.IsNullOrEmpty(_message))
@@ -187,8 +306,9 @@
 @if (_rows.Count > 0)
 {
     <div class="aiwms-section" style="padding:0; overflow:hidden;">
-        <div style="padding:10px 16px; background:var(--bg-subtle, #f7f7f5); font-weight:700; font-size:13px; letter-spacing:0.02em;">
+        <div style="padding:10px 16px; background:var(--bg-subtle, #f7f7f5); font-weight:700; font-size:13px; letter-spacing:0.02em; position:relative;">
             BY COUNTRY
+            @AdminQueryButton()
         </div>
         <div style="padding:14px 16px; display:flex; gap:24px; align-items:flex-start;">
             <div style="flex:1 1 auto; min-width:0; display:flex; flex-direction:column; gap:16px;">
@@ -202,14 +322,39 @@
                             @foreach (var t in cts.Types)
                             {
                                 var (bg, text) = TypeColor(t.Type);
-                                <div style="background:@bg; border-radius:8px; padding:10px 12px; flex:1 1 0; min-width:0;">
+                                <div style="background:@bg; border-radius:8px; padding:10px 12px; flex:@(t.Type == "JAFZA" ? "1.6" : "1") 1 0; min-width:0;">
                                     <div style="text-align:center; font-size:13px; font-weight:700; color:@text; text-transform:uppercase; letter-spacing:0.02em; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
                                         @t.Title
                                     </div>
                                     <div style="display:flex; align-items:stretch; margin-top:8px;">
                                         <div style="flex:1; text-align:center; min-width:0;">
-                                            <div style="font-size:12px; color:var(--text-secondary);">Delivered</div>
+                                            <div style="font-size:12px; font-weight:700; color:var(--text-secondary); display:flex; align-items:center; justify-content:center; gap:4px;">
+                                                Received
+                                            </div>
+                                            @if (t.Type == "JAFZA")
+                                            {
+                                                @* keeps Received's figures level with the noted Intransit/Reserved columns *@
+                                                <div style="font-size:9px; margin-top:1px; visibility:hidden;">&nbsp;</div>
+                                            }
                                             <div style="display:flex; justify-content:center; gap:8px; margin-top:5px;">
+                                                @if (t.Type == "JAFZA")
+                                                {
+                                                    var jafzaReceived = _exportTransfers.GetValueOrDefault(cts.Country);
+                                                    <div style="cursor:pointer;" @onclick='() => OpenExportTransferDetailAsync(cts.Country, t.Title + " Received", "R")' title="Received — transfer list (one row per transfer and division)">
+                                                        <div style="font-size:11px; color:var(--text-secondary); white-space:nowrap;">Trf Count</div>
+                                                        <div style="font-size:16px; font-weight:700; color:var(--link-color,#1a56db); margin-top:2px; white-space:nowrap; text-decoration:underline;">@((jafzaReceived?.ReceivedTrfCount ?? 0).ToString("N0"))</div>
+                                                    </div>
+                                                    <div style="cursor:pointer;" @onclick='() => OpenExportShipmentListAsync(cts.Country, t.Title + " Received", "R")' title="Received — shipment list (one row per shipment, with its transfers and quantity)">
+                                                        <div style="font-size:11px; color:var(--text-secondary); white-space:nowrap;">Ship Count</div>
+                                                        <div style="font-size:16px; font-weight:700; color:var(--link-color,#1a56db); margin-top:2px; white-space:nowrap; text-decoration:underline;">@((jafzaReceived?.ReceivedShipCount ?? 0).ToString("N0"))</div>
+                                                    </div>
+                                                    <div style="cursor:pointer;" @onclick='() => OpenExportTransferPivotAsync(cts.Country, t.Title + " Received", "R")' title="Received — quantity by division and LPM month">
+                                                        <div style="font-size:11px; color:var(--text-secondary); white-space:nowrap;">Quantity</div>
+                                                        <div style="font-size:16px; font-weight:700; color:var(--link-color,#1a56db); margin-top:2px; white-space:nowrap; text-decoration:underline;">@((jafzaReceived?.ReceivedQty ?? 0).ToString("N0"))</div>
+                                                    </div>
+                                                }
+                                                else
+                                                {
                                                 <div>
                                                     <div style="font-size:11px; color:var(--text-secondary); white-space:nowrap;">Ship Count</div>
                                                     <div style="font-size:16px; font-weight:700; color:#222222; margin-top:2px; white-space:nowrap;">@t.DeliveredCount.ToString("N0")</div>
@@ -218,23 +363,19 @@
                                                     <div style="font-size:11px; color:var(--text-secondary); white-space:nowrap;">Quantity</div>
                                                     <div style="font-size:16px; font-weight:700; color:#222222; margin-top:2px; white-space:nowrap;">@t.DeliveredQty.ToString("N0")</div>
                                                 </div>
+                                                }
                                             </div>
                                         </div>
                                         <div style="flex:1; text-align:center; min-width:0; border-left:1px solid rgba(0,0,0,0.18); margin-left:6px; padding-left:6px;">
-                                            <div style="font-size:12px; color:var(--text-secondary);">Intransit</div>
+                                            <div style="font-size:12px; font-weight:700; color:var(--text-secondary); display:flex; align-items:center; justify-content:center; gap:4px;">
+                                                Intransit
+                                            </div>
+                                            @if (t.Type == "JAFZA")
+                                            {
+                                                @AsOfTodayNote()
+                                            }
                                             <div style="display:flex; justify-content:center; gap:8px; margin-top:5px;">
-                                                @if (t.Type == "JAFZA")
-                                                {
-                                                    <div style="cursor:pointer;" @onclick="() => OpenIntransitPivotAsync(cts.Country, t.Title, t.Type)" title="Click for Division / Month breakdown">
-                                                        <div style="font-size:11px; color:var(--text-secondary); white-space:nowrap;">Ship Count</div>
-                                                        <div style="font-size:16px; font-weight:700; color:var(--link-color,#1a56db); margin-top:2px; white-space:nowrap; text-decoration:underline;">@t.IntransitCount.ToString("N0")</div>
-                                                    </div>
-                                                    <div style="cursor:pointer;" @onclick="() => OpenIntransitPivotAsync(cts.Country, t.Title, t.Type)" title="Click for Division / Month breakdown">
-                                                        <div style="font-size:11px; color:var(--text-secondary); white-space:nowrap;">Quantity</div>
-                                                        <div style="font-size:16px; font-weight:700; color:var(--link-color,#1a56db); margin-top:2px; white-space:nowrap; text-decoration:underline;">@t.IntransitQty.ToString("N0")</div>
-                                                    </div>
-                                                }
-                                                else
+                                                @if (t.Type != "JAFZA")
                                                 {
                                                     <div>
                                                         <div style="font-size:11px; color:var(--text-secondary); white-space:nowrap;">Ship Count</div>
@@ -245,8 +386,46 @@
                                                         <div style="font-size:16px; font-weight:700; color:#222222; margin-top:2px; white-space:nowrap;">@t.IntransitQty.ToString("N0")</div>
                                                     </div>
                                                 }
+                                                @if (t.Type == "JAFZA" && _exportTransfers.TryGetValue(cts.Country, out var jafzaExport))
+                                                {
+                                                    <div style="cursor:pointer;" @onclick='() => OpenExportTransferDetailAsync(cts.Country, t.Title + " Intransit", "Y")' title="Intransit — transfer list (one row per transfer and division)">
+                                                        <div style="font-size:11px; color:var(--text-secondary); white-space:nowrap;">Trf Count</div>
+                                                        <div style="font-size:16px; font-weight:700; color:var(--link-color,#1a56db); margin-top:2px; white-space:nowrap; text-decoration:underline;">@jafzaExport.IntransitTrfCount.ToString("N0")</div>
+                                                    </div>
+                                                    <div style="cursor:pointer;" @onclick='() => OpenExportShipmentListAsync(cts.Country, t.Title + " Intransit", "Y")' title="Intransit — shipment list (one row per shipment, with its transfers and quantity)">
+                                                        <div style="font-size:11px; color:var(--text-secondary); white-space:nowrap;">Ship Count</div>
+                                                        <div style="font-size:16px; font-weight:700; color:var(--link-color,#1a56db); margin-top:2px; white-space:nowrap; text-decoration:underline;">@jafzaExport.IntransitShipCount.ToString("N0")</div>
+                                                    </div>
+                                                    <div style="cursor:pointer;" @onclick='() => OpenExportTransferPivotAsync(cts.Country, t.Title + " Intransit", "Y")' title="Intransit — quantity by division and LPM month">
+                                                        <div style="font-size:11px; color:var(--text-secondary); white-space:nowrap;">Trf Qty</div>
+                                                        <div style="font-size:16px; font-weight:700; color:var(--link-color,#1a56db); margin-top:2px; white-space:nowrap; text-decoration:underline;">@jafzaExport.IntransitQty.ToString("N0")</div>
+                                                    </div>
+                                                }
                                             </div>
                                         </div>
+                                        @if (t.Type == "JAFZA" && _exportTransfers.TryGetValue(cts.Country, out var jafzaReserved))
+                                        {
+                                            <div style="flex:1; text-align:center; min-width:0; border-left:1px solid rgba(0,0,0,0.18); margin-left:6px; padding-left:6px;">
+                                                <div style="font-size:12px; font-weight:700; color:var(--text-secondary); display:flex; align-items:center; justify-content:center; gap:4px;" title="Reserved transfers — not yet dispatched on a GIN">
+                                                    Reserved
+                                                </div>
+                                                @AsOfTodayNote()
+                                                <div style="display:flex; justify-content:center; gap:8px; margin-top:5px;">
+                                                    <div style="cursor:pointer;" @onclick='() => OpenExportTransferDetailAsync(cts.Country, t.Title + " Reserved", "C")' title="Reserved — transfer list (one row per transfer and division)">
+                                                        <div style="font-size:11px; color:var(--text-secondary); white-space:nowrap;">Trf Count</div>
+                                                        <div style="font-size:16px; font-weight:700; color:var(--link-color,#1a56db); margin-top:2px; white-space:nowrap; text-decoration:underline;">@jafzaReserved.ReservedTrfCount.ToString("N0")</div>
+                                                    </div>
+                                                    <div style="cursor:pointer;" @onclick='() => OpenExportShipmentListAsync(cts.Country, t.Title + " Reserved", "C")' title="Reserved — shipment list (one row per shipment, with its transfers and quantity)">
+                                                        <div style="font-size:11px; color:var(--text-secondary); white-space:nowrap;">Ship Count</div>
+                                                        <div style="font-size:16px; font-weight:700; color:var(--link-color,#1a56db); margin-top:2px; white-space:nowrap; text-decoration:underline;">@jafzaReserved.ReservedShipCount.ToString("N0")</div>
+                                                    </div>
+                                                    <div style="cursor:pointer;" @onclick='() => OpenExportTransferPivotAsync(cts.Country, t.Title + " Reserved", "C")' title="Reserved — quantity by division and LPM month">
+                                                        <div style="font-size:11px; color:var(--text-secondary); white-space:nowrap;">Quantity</div>
+                                                        <div style="font-size:16px; font-weight:700; color:var(--link-color,#1a56db); margin-top:2px; white-space:nowrap; text-decoration:underline;">@jafzaReserved.ReservedQty.ToString("N0")</div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        }
                                     </div>
                                 </div>
                             }
@@ -258,7 +437,7 @@
             {
                 <div style="flex:0 0 260px; text-align:center;">
                     <div style="font-size:11px; font-weight:700; color:var(--text-secondary); text-transform:uppercase; margin-bottom:6px;">
-                        Quantity by Country (Delivered / Intransit)
+                        Quantity by Country (Received / Intransit)
                     </div>
                     <svg viewBox="0 0 200 200" width="220" height="220">
                         @if (CountryPieSlices.Count == 1)
@@ -292,8 +471,17 @@
 
 @if (_rows.Count > 0 && _isBflGroupView)
 {
-    <div class="aiwms-section">
-        <div style="overflow:auto; max-height:calc(100vh - 320px);">
+    <div class="aiwms-section" style="padding:0; overflow:hidden;">
+        @* Banner layout as the YOTO VNA Dashboard's section banners, in the page's own yellow (same as the "Loaded N rows" info alert). *@
+        <div style="position:relative; text-align:center; background:var(--bfl-yellow-lite); color:var(--bfl-grey-700); border-bottom:1px solid rgba(255,209,0,.5); padding:10px 56px;">
+            <div style="font-family:var(--font-display); font-weight:800; font-size:15px; text-transform:uppercase; letter-spacing:.5px;">JAFZA Shipment Details</div>
+            <div style="font-size:11px; opacity:.75; margin-top:2px;">Double-click a row for transfer detail</div>
+            <button class="aiwms-btn shipstatus-export-btn" title="Export Excel" @onclick="ExportSummaryExcelAsync"
+                    style="position:absolute; right:12px; top:50%; transform:translateY(-50%);">
+                <span class="mi sm">download</span>
+            </button>
+        </div>
+        <div style="overflow:auto; max-height:calc(100vh - 320px); padding:14px 16px;">
         <table class="aiwms-table aiwms-table-dense" style="table-layout:fixed; width:100%; border-collapse:separate; border-spacing:0;">
             <colgroup>
                 <col style="width:100px;" />
@@ -320,10 +508,12 @@
             <tbody>
                 @foreach (var s in SummaryRows)
                 {
-                    <tr>
+                    var canDrill = CanDrillSummaryRow(s);
+                    <tr style="@(canDrill ? "cursor:pointer;" : "")" title="@(canDrill ? "Double-click for transfer detail" : "")"
+                        @ondblclick="() => OpenSummaryRowDetailAsync(s)">
                         <td>@s.Type</td>
                         <td>@s.Country</td>
-                        <td>@s.Status</td>
+                        <td>@DisplayStatus(s.Status)</td>
                         <td style="text-align:right;">@s.ShipmentCount.ToString("N0")</td>
                         <td style="text-align:right;">@s.Quantity.ToString("N0")</td>
                         <td style="text-align:right;">@(s.BoxCount?.ToString("N0") ?? "")</td>
@@ -337,8 +527,8 @@
                     <td>Total</td>
                     <td></td>
                     <td></td>
-                    <td style="text-align:right;">@SummaryRows.Sum(s => s.ShipmentCount).ToString("N0")</td>
-                    <td style="text-align:right;">@SummaryRows.Sum(s => s.Quantity).ToString("N0")</td>
+                    <td style="text-align:right;">@SummaryRows.Where(s => s.Status != ReservedStatus).Sum(s => s.ShipmentCount).ToString("N0")</td>
+                    <td style="text-align:right;">@SummaryRows.Where(s => s.Status != ReservedStatus).Sum(s => s.Quantity).ToString("N0")</td>
                     <td style="text-align:right;">@((SummaryRows.Sum(s => s.BoxCount) ?? 0).ToString("N0"))</td>
                     <td style="text-align:right;">@((SummaryRows.Sum(s => s.ReceivedBoxes) ?? 0).ToString("N0"))</td>
                     <td style="text-align:right;">@((SummaryRows.Sum(s => s.BoxCountDiff) ?? 0).ToString("N0"))</td>
@@ -406,7 +596,7 @@ else if (_rows.Count > 0 && !_isBflGroupView)
                         <td>@r.Type</td>
                         <td>@r.Country</td>
                         <td style="text-align:right;">@r.ShipNo</td>
-                        <td>@r.Status</td>
+                        <td>@DisplayStatus(r.Status)</td>
                         <td>
                             @if (!string.IsNullOrWhiteSpace(r.GinNo))
                             {
@@ -462,7 +652,53 @@ else if (_rows.Count > 0 && !_isBflGroupView)
 
 @code {
     private List<ShipmentStatusRow> _rows = new();
+    private Dictionary<string, ExportTransferSummary> _exportTransfers = new(StringComparer.OrdinalIgnoreCase);
     private List<string> _countries = new();
+    private bool _hideAdminControls;
+
+    // Admin-only "View Query" popup — same mechanism as UAE WH Inbound/Outbound
+    // Dashboard's AdminQueryButton: sourced from ReportQueryCatalogue (no duplicated
+    // SQL), gated on HasAllCountriesAccess and the Hide-admin-controls preview toggle.
+    // One button for the whole page (unlike that dashboard's per-section buttons) —
+    // this report's SQL is a single backend pipeline (GIN + LOCAL flows + export
+    // transfer summary) rather than several independently-loaded sections.
+    private RenderFragment AdminQueryButton() => __builder =>
+    {
+        if (CurrentUser.HasAllCountriesAccess && !_hideAdminControls)
+        {
+            <button type="button" class="aiwms-icon-btn" title="View query" @onclick="ShowQueryAsync"
+                    style="position:absolute; right:8px; top:50%; transform:translateY(-50%); z-index:1; width:auto;
+                           display:inline-flex; align-items:center; gap:6px; white-space:nowrap;
+                           font-size:9px; font-weight:400; font-family:inherit; text-transform:none; letter-spacing:normal; line-height:1;
+                           color:var(--text-secondary);">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;">
+                    <ellipse cx="9" cy="5" rx="6" ry="2.3" />
+                    <path d="M3 5v10c0 1.27 2.69 2.3 6 2.3s6-1.03 6-2.3V5" />
+                    <path d="M3 10.5c0 1.27 2.69 2.3 6 2.3s6-1.03 6-2.3" />
+                    <circle cx="17.5" cy="16.5" r="3.6" />
+                    <line x1="20" y1="19" x2="22.5" y2="21.5" />
+                </svg>
+                <span style="opacity:0.9;">Admin view</span>
+            </button>
+        }
+    };
+
+    private async Task ShowQueryAsync()
+    {
+        var parameters = new DialogParameters<QueryViewerDialog>
+        {
+            { x => x.Title, "Shipment Status — all queries" },
+            { x => x.Sql, QuerySql() },
+        };
+        var options = new DialogOptions { MaxWidth = MaxWidth.Large, FullWidth = true, CloseOnEscapeKey = true };
+        await DialogService.ShowAsync<QueryViewerDialog>("Shipment Status — all queries", parameters, options);
+    }
+
+    private static string QuerySql() =>
+        string.Join("\n\n",
+            ReportQueryCatalogue.All
+                .Where(e => e.Report == "Shipment Status")
+                .Select(e => $"-- {e.Subsection} ({e.SourceNote})\n{e.Sql}"));
 
     // Bumped on every Load — the Country/Week <details> dropdowns key off this, so
     // changing it forces Blazor to discard and recreate those elements, which resets
@@ -513,7 +749,6 @@ else if (_rows.Count > 0 && !_isBflGroupView)
     private bool _isBflGroupView;
 
     // ===================== Division x Month drill-down popup =====================
-    private DateTime _lastEffectiveTo = DateTime.Today; // InTransit-as-of cutoff from the last Load
     private bool     _pivotOpen;
     private bool     _pivotLoading;
     private string   _pivotTitle = "";
@@ -527,10 +762,11 @@ else if (_rows.Count > 0 && !_isBflGroupView)
         await LoadPivotAsync(() => Svc.GetDivisionMonthSummaryByGinAsync(ginNo));
     }
 
-    private async Task OpenIntransitPivotAsync(string country, string typeTitle, string? type)
+    // intransitFlag: "Y" (Intransit — Trf Count/Ship Count/Trf Qty) or "C" (Reserved).
+    private async Task OpenExportTransferPivotAsync(string country, string label, string intransitFlag)
     {
-        _pivotTitle = $"{country.ToUpperInvariant()} — {typeTitle} Intransit — Quantity by Division / Month (LPM Date)";
-        await LoadPivotAsync(() => Svc.GetIntransitDivisionMonthSummaryAsync(country, type, _lastEffectiveTo));
+        _pivotTitle = $"{country.ToUpperInvariant()} — {label} — Quantity by Division / Month (LPM Date)";
+        await LoadPivotAsync(() => Svc.GetExportTransferDivisionMonthSummaryAsync(country, intransitFlag, _lastEffectiveFrom, _lastEffectiveTo));
     }
 
     private async Task LoadPivotAsync(Func<Task<DivisionMonthSummaryResult>> fetch)
@@ -543,6 +779,193 @@ else if (_rows.Count > 0 && !_isBflGroupView)
     }
 
     private void ClosePivot() => _pivotOpen = false;
+
+    // ===================== Row-level transfer detail popup =====================
+    // Separate from the Division x Month pivot above — this shows one row per
+    // (TrfNo, Division) with Country/StoreId/TrfNo/TransferDate/Division/Lpm/Qty,
+    // opened via the small icon next to Received/Intransit/Reserved on the JAFZA card.
+    private bool    _detailOpen;
+    private bool    _detailLoading;
+    private string  _detailTitle = "";
+    private string? _detailError;
+    private List<TransferDetailRow> _detailRows = new();
+    private DateTime _lastEffectiveFrom = DateTime.Today;
+    private DateTime _lastEffectiveTo   = DateTime.Today;
+
+    private bool _detailIsShipments;
+    private List<ExportShipmentRow> _shipRows = new();
+    private int DetailRowCount => _detailIsShipments ? _shipRows.Count : _detailRows.Count;
+    private int DistinctShipCount =>
+        _shipRows.Where(r => !string.IsNullOrWhiteSpace(r.ShipNo)).Select(r => r.ShipNo).Distinct().Count();
+
+    private async Task OpenExportShipmentListAsync(string country, string label, string intransitFlag)
+    {
+        _detailTitle = $"{country.ToUpperInvariant()} — {label} — Shipment List";
+        _detailIsShipments = true;
+        _detailOpen = true; _detailLoading = true; _detailError = null; _shipRows = new(); _detailRows = new();
+        StateHasChanged();
+        try { _shipRows = await Svc.GetExportShipmentListAsync(country, intransitFlag, _lastEffectiveFrom, _lastEffectiveTo); }
+        catch (Exception ex) { _detailError = ex.Message; }
+        finally { _detailLoading = false; StateHasChanged(); }
+    }
+
+    // intransitFlag: "R" (Received, within the Receipt Date range), "Y" (Intransit) or "C" (Reserved).
+    private async Task OpenExportTransferDetailAsync(string country, string label, string intransitFlag)
+    {
+        _detailTitle = $"{country.ToUpperInvariant()} — {label} — Transfer Detail";
+        await LoadDetailAsync(() => Svc.GetExportTransferDetailAsync(country, intransitFlag, _lastEffectiveFrom, _lastEffectiveTo));
+    }
+
+    private async Task LoadDetailAsync(Func<Task<List<TransferDetailRow>>> fetch)
+    {
+        _detailIsShipments = false;
+        _detailOpen = true; _detailLoading = true; _detailError = null; _detailRows = new();
+        StateHasChanged();
+        try { _detailRows = await fetch(); }
+        catch (Exception ex) { _detailError = ex.Message; }
+        finally { _detailLoading = false; StateHasChanged(); }
+    }
+
+    private void CloseDetail() => _detailOpen = false;
+
+    private async Task ExportSummaryExcelAsync()
+    {
+        var rows = SummaryRows;
+        if (rows.Count == 0) return;
+
+        using var wb = new ClosedXML.Excel.XLWorkbook();
+        var ws = wb.Worksheets.Add("JAFZA Shipment Details");
+        string[] headers = { "Source Location", "Target Location", "Status", "Shipments", "Quantity", "Box Count", "Received Boxes", "Box Variance" };
+        for (var i = 0; i < headers.Length; i++) ws.Cell(1, i + 1).Value = headers[i];
+        ws.Range(1, 1, 1, headers.Length).Style.Font.Bold = true;
+
+        var row = 2;
+        foreach (var s in rows)
+        {
+            ws.Cell(row, 1).Value = s.Type;
+            ws.Cell(row, 2).Value = s.Country;
+            ws.Cell(row, 3).Value = DisplayStatus(s.Status);
+            ws.Cell(row, 4).Value = s.ShipmentCount;
+            ws.Cell(row, 5).Value = s.Quantity;
+            if (s.BoxCount is not null)      ws.Cell(row, 6).Value = s.BoxCount.Value;
+            if (s.ReceivedBoxes is not null) ws.Cell(row, 7).Value = s.ReceivedBoxes.Value;
+            if (s.BoxCountDiff is not null)  ws.Cell(row, 8).Value = s.BoxCountDiff.Value;
+            row++;
+        }
+        // Same Total as on screen — Reserved rows excluded (not shipments yet).
+        var shipped = rows.Where(s => s.Status != ReservedStatus).ToList();
+        ws.Cell(row, 1).Value = "Total";
+        ws.Cell(row, 4).Value = shipped.Sum(s => s.ShipmentCount);
+        ws.Cell(row, 5).Value = shipped.Sum(s => s.Quantity);
+        ws.Cell(row, 6).Value = rows.Sum(s => s.BoxCount ?? 0);
+        ws.Cell(row, 7).Value = rows.Sum(s => s.ReceivedBoxes ?? 0);
+        ws.Cell(row, 8).Value = rows.Sum(s => s.BoxCountDiff ?? 0);
+        ws.Row(row).Style.Font.Bold = true;
+
+        ws.Range(2, 4, row, 8).Style.NumberFormat.Format = "#,##0";
+        ws.SheetView.FreezeRows(1);
+        ws.Columns().AdjustToContents();
+
+        using var ms = new MemoryStream();
+        wb.SaveAs(ms);
+        var name = $"JAFZA_Shipment_Details_{_lastEffectiveFrom:yyyyMMdd}_{_lastEffectiveTo:yyyyMMdd}.xlsx";
+        await JS.InvokeVoidAsync("downloadFileWithPicker", name, Convert.ToBase64String(ms.ToArray()),
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    }
+
+    private async Task ExportShipmentListExcelAsync()
+    {
+        if (_shipRows.Count == 0) return;
+
+        using var wb = new ClosedXML.Excel.XLWorkbook();
+        var ws = wb.Worksheets.Add("Shipment List");
+        string[] headers = { "Country", "Ship No.", "GIN No.", "GIN Date", "Transfers", "Qty" };
+        for (var i = 0; i < headers.Length; i++) ws.Cell(1, i + 1).Value = headers[i];
+        ws.Range(1, 1, 1, headers.Length).Style.Font.Bold = true;
+
+        var row = 2;
+        foreach (var r in _shipRows)
+        {
+            ws.Cell(row, 1).Value = r.Country.ToUpperInvariant();
+            ws.Cell(row, 2).Value = string.IsNullOrWhiteSpace(r.ShipNo) ? "(no ship no.)" : r.ShipNo;
+            ws.Cell(row, 3).Value = r.GinNo ?? "";
+            if (r.GinDate is not null) ws.Cell(row, 4).Value = r.GinDate.Value;
+            ws.Cell(row, 5).Value = r.TrfCount;
+            ws.Cell(row, 6).Value = r.Qty;
+            row++;
+        }
+        ws.Cell(row, 1).Value = $"Total ({DistinctShipCount} shipment(s))";
+        ws.Cell(row, 5).Value = _shipRows.Sum(r => r.TrfCount);
+        ws.Cell(row, 6).Value = _shipRows.Sum(r => r.Qty);
+        ws.Row(row).Style.Font.Bold = true;
+
+        ws.Range(2, 4, row, 4).Style.DateFormat.Format = "dd-MMM-yyyy";
+        ws.Range(2, 5, row, 6).Style.NumberFormat.Format = "#,##0";
+        ws.SheetView.FreezeRows(1);
+        ws.Columns().AdjustToContents();
+
+        using var ms = new MemoryStream();
+        wb.SaveAs(ms);
+        await JS.InvokeVoidAsync("downloadFileWithPicker", DetailFileName(), Convert.ToBase64String(ms.ToArray()),
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    }
+
+    private string DetailFileName()
+    {
+        var safe = new string(_detailTitle.Select(c => char.IsLetterOrDigit(c) ? c : '_').ToArray());
+        while (safe.Contains("__")) safe = safe.Replace("__", "_");
+        return $"{safe.Trim('_')}_{DateTime.UtcNow.AddHours(4):yyyyMMdd_HHmm}.xlsx";
+    }
+
+    private async Task ExportDetailExcelAsync()
+    {
+        if (_detailIsShipments) { await ExportShipmentListExcelAsync(); return; }
+        if (_detailRows.Count == 0) return;
+
+        using var wb = new ClosedXML.Excel.XLWorkbook();
+        var ws = wb.Worksheets.Add("Transfer Detail");
+        string[] headers = { "Country", "Store Id", "Transfer No.", "Transfer Date", "Division", "LPM", "Qty" };
+        for (var i = 0; i < headers.Length; i++) ws.Cell(1, i + 1).Value = headers[i];
+        ws.Range(1, 1, 1, headers.Length).Style.Font.Bold = true;
+
+        var row = 2;
+        foreach (var r in _detailRows)
+        {
+            ws.Cell(row, 1).Value = r.Country.ToUpperInvariant();
+            ws.Cell(row, 2).Value = r.StoreId ?? "";
+            ws.Cell(row, 3).Value = r.TrfNo;
+            if (r.TransferDate is not null) ws.Cell(row, 4).Value = r.TransferDate.Value;
+            ws.Cell(row, 5).Value = r.Division ?? "";
+            if (r.Lpm is not null) ws.Cell(row, 6).Value = r.Lpm.Value;
+            ws.Cell(row, 7).Value = r.Qty;
+            row++;
+        }
+        ws.Cell(row, 1).Value = $"Total ({_detailRows.Count} row(s), {_detailRows.Select(r => r.TrfNo).Distinct().Count()} transfer(s))";
+        ws.Cell(row, 7).Value = _detailRows.Sum(r => r.Qty);
+        ws.Row(row).Style.Font.Bold = true;
+
+        ws.Range(2, 4, row, 4).Style.DateFormat.Format = "dd-MMM-yyyy";
+        ws.Range(2, 6, row, 6).Style.DateFormat.Format = "dd-MMM-yyyy";
+        ws.Range(2, 7, row, 7).Style.NumberFormat.Format = "#,##0";
+        ws.SheetView.FreezeRows(1);
+        ws.Columns().AdjustToContents();
+
+        using var ms = new MemoryStream();
+        wb.SaveAs(ms);
+        var b64  = Convert.ToBase64String(ms.ToArray());
+        await JS.InvokeVoidAsync("downloadFileWithPicker", DetailFileName(), b64,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    }
+
+    // Intransit/Reserved on the JAFZA card come from racks..InTransit_ExportShipment's
+    // current flag, not the Receipt Date range — only Received follows the dates.
+    private RenderFragment AsOfTodayNote() => __builder =>
+    {
+        <div style="font-size:9px; font-style:italic; color:var(--text-secondary); white-space:nowrap; margin-top:1px;"
+             title="Not filtered by the Receipt Date range — current snapshot">
+            (*As of the current date)
+        </div>
+    };
 
     private record SummaryRow(
         string Country, string Type, string Status, int ShipmentCount,
@@ -587,6 +1010,12 @@ else if (_rows.Count > 0 && !_isBflGroupView)
             .ToList();
 
     // Consistent color per Source Location across every country's card row.
+    // "Delivered" is the underlying Status value everywhere else in this file
+    // (filter, DB comparisons, CSV export) — this only relabels it for on-screen
+    // display, so it reads "Received" without touching any data matching logic.
+    private static string DisplayStatus(string? status) =>
+        string.Equals(status, "Delivered", StringComparison.OrdinalIgnoreCase) ? "Received" : status ?? "";
+
     private static (string Bg, string Text) TypeColor(string type) => type switch
     {
         "JAFZA"         => ("#fde8f0", "#b3195c"),
@@ -619,7 +1048,7 @@ else if (_rows.Count > 0 && !_isBflGroupView)
                     var color = PieColors[i % PieColors.Length];
                     return new[]
                     {
-                        (cts.Country, Status: "Delivered", Qty: (decimal)total.DeliveredQty, Color: color),
+                        (cts.Country, Status: "Received", Qty: (decimal)total.DeliveredQty, Color: color),
                         (cts.Country, Status: "Intransit", Qty: (decimal)total.IntransitQty, Color: Lighten(color, 0.5)),
                     };
                 })
@@ -670,6 +1099,12 @@ else if (_rows.Count > 0 && !_isBflGroupView)
         return (cx + r * Math.Cos(rad), cy + r * Math.Sin(rad));
     }
 
+    // Reserved rows come from racks..InTransit_ExportShipment (Intransit = 'C') — same
+    // figures as the JAFZA card's Reserved section — not from _rows, so they're kept
+    // out of the table's Total (they aren't shipments yet). Hidden when a Status
+    // filter is set, since that filter only knows Delivered/InTransit.
+    private const string ReservedStatus = "Reserved";
+
     private List<SummaryRow> SummaryRows =>
         FilteredRows
             .GroupBy(r => (r.Country, r.Type, r.Status))
@@ -680,8 +1115,38 @@ else if (_rows.Count > 0 && !_isBflGroupView)
                 g.Any(r => r.BoxCount.HasValue)      ? g.Sum(r => r.BoxCount ?? 0)      : null,
                 g.Any(r => r.ReceivedBoxes.HasValue)  ? g.Sum(r => r.ReceivedBoxes ?? 0) : null,
                 g.Any(r => r.BoxCountDiff.HasValue)    ? g.Sum(r => r.BoxCountDiff ?? 0)  : null))
+            .Concat(_statusFilter != "" || (_typeFilter != "" && _typeFilter != "JAFZA")
+                ? Enumerable.Empty<SummaryRow>()
+                : _exportTransfers.Values
+                    .Where(e => e.ReservedTrfCount > 0)
+                    .Select(e => new SummaryRow(e.Country, "JAFZA", ReservedStatus,
+                        e.ReservedShipCount, e.ReservedQty, null, null, null)))
             .OrderBy(s => s.Type).ThenBy(s => s.Country).ThenBy(s => s.Status)
             .ToList();
+
+    // LOCAL rows are ContReceipt containers with no GIN/transfer behind them, so
+    // there's no transfer-level detail to drill into.
+    private bool CanDrillSummaryRow(SummaryRow s) =>
+        s.Status == ReservedStatus || SummaryRowGinNos(s).Count > 0;
+
+    private List<string> SummaryRowGinNos(SummaryRow s) =>
+        FilteredRows
+            .Where(r => r.Country == s.Country && r.Type == s.Type && r.Status == s.Status && !string.IsNullOrWhiteSpace(r.GinNo))
+            .Select(r => r.GinNo).Distinct().ToList();
+
+    private async Task OpenSummaryRowDetailAsync(SummaryRow s)
+    {
+        if (!CanDrillSummaryRow(s)) return;
+        var typeLabel = s.Type == "JAFZA" ? "JAFZA Shipment" : s.Type;
+        _detailTitle = $"{s.Country.ToUpperInvariant()} — {typeLabel} {DisplayStatus(s.Status)} — Transfer Detail";
+        if (s.Status == ReservedStatus)
+        {
+            await LoadDetailAsync(() => Svc.GetExportTransferDetailAsync(s.Country, "C", _lastEffectiveFrom, _lastEffectiveTo));
+            return;
+        }
+        var ginNos = SummaryRowGinNos(s);
+        await LoadDetailAsync(() => Svc.GetGinTransferDetailAsync(s.Country, ginNos));
+    }
 
     // Business "week of year" (not ISO — there's no standard for this). Weeks stay
     // Monday-Sunday and numbering is continuous for the whole year — it does NOT
@@ -920,10 +1385,12 @@ else if (_rows.Count > 0 && !_isBflGroupView)
                 Countries: countries,
                 DateFrom:  effectiveFrom,
                 DateTo:    effectiveTo);
-            _lastEffectiveTo = effectiveTo; // for the Intransit drill-down's InTransit-as-of cutoff
+            _lastEffectiveFrom = effectiveFrom; // for the Received transfer-detail popup
+            _lastEffectiveTo   = effectiveTo;
 
             var result = await Svc.GetShipmentStatusAsync(filter);
             _rows = result.Rows;
+            _exportTransfers = result.ExportTransfers.ToDictionary(r => r.Country, StringComparer.OrdinalIgnoreCase);
 
             if (result.Warnings.Count > 0)
                 ShowError($"Loaded {_rows.Count} rows. Some countries failed: {string.Join("; ", result.Warnings)}");
