@@ -13,10 +13,11 @@ public record IncEmployeeUploadRow(string EmpCode, string? EmpName, string? Coun
 
 public record IncAttendanceRow(
     string EmpCode, DateTime AttendanceDate, TimeSpan? ShiftTimingFrom, TimeSpan? ShiftTimingTo,
-    string? DiscrepancyType, string? UploadedUser, DateTime? CreateTS);
+    string? DiscrepancyType, int? DiscrepancyDuration, string? UploadedUser, DateTime? CreateTS);
 
 public record IncAttendanceUploadRow(
-    string EmpCode, DateTime AttendanceDate, TimeSpan? ShiftTimingFrom, TimeSpan? ShiftTimingTo, string DiscrepancyType);
+    string EmpCode, DateTime AttendanceDate, TimeSpan? ShiftTimingFrom, TimeSpan? ShiftTimingTo, string DiscrepancyType,
+    int? DiscrepancyDuration);  // minutes; required 1..MaxDiscrepancyMinutes for Earlygoing/LateComing, blank for Absent
 
 public record IncUploadResult(bool Ok, int RowsSaved, string? Error, List<string> Problems);
 
@@ -45,6 +46,9 @@ public class IncentivesSettingsService(IOnPremConnectionResolver resolver)
 
     /// <summary>The only DiscrepancyType values accepted, in their stored spelling.</summary>
     public static readonly IReadOnlyList<string> DiscrepancyTypes = ["Earlygoing", "LateComing", "Absent"];
+
+    /// <summary>Upper limit for DiscrepancyDuration (minutes) — a 9-hour shift.</summary>
+    public const int MaxDiscrepancyMinutes = 9 * 60;
 
     private SqlConnection Open()
     {
@@ -121,7 +125,7 @@ public class IncentivesSettingsService(IOnPremConnectionResolver resolver)
     {
         await using var c = Open();
         var rows = await c.QueryAsync<IncAttendanceRow>(new CommandDefinition(@"
-            SELECT EmpCode, AttendanceDate, ShiftTimingFrom, ShiftTimingTo, DiscrepancyType, UploadedUser, CreateTS
+            SELECT EmpCode, AttendanceDate, ShiftTimingFrom, ShiftTimingTo, DiscrepancyType, DiscrepancyDuration, UploadedUser, CreateTS
               FROM DATAREPORTING.dbo.INC_EmployeeAttendance WITH (NOLOCK)
              WHERE AttendanceDate >= @from AND AttendanceDate <= @to
                AND (@empCode IS NULL OR EmpCode LIKE '%' + @empCode + '%')
@@ -202,13 +206,16 @@ public class IncentivesSettingsService(IOnPremConnectionResolver resolver)
             table.Columns.Add("ShiftTimingFrom", typeof(TimeSpan));
             table.Columns.Add("ShiftTimingTo", typeof(TimeSpan));
             table.Columns.Add("DiscrepancyType", typeof(string));
+            table.Columns.Add("DiscrepancyDuration", typeof(int));
             table.Columns.Add("UploadedUser", typeof(string));
             table.Columns.Add("CreateTS", typeof(DateTime));
             foreach (var r in rows)
                 table.Rows.Add(r.EmpCode, r.AttendanceDate.Date,
                                r.ShiftTimingFrom.HasValue ? r.ShiftTimingFrom.Value : (object)DBNull.Value,
                                r.ShiftTimingTo.HasValue ? r.ShiftTimingTo.Value : (object)DBNull.Value,
-                               r.DiscrepancyType, uploadedUser, now);
+                               r.DiscrepancyType,
+                               r.DiscrepancyDuration.HasValue ? r.DiscrepancyDuration.Value : (object)DBNull.Value,
+                               uploadedUser, now);
 
             await BulkInsertAsync(c, tx, "DATAREPORTING.dbo.INC_EmployeeAttendance", table, ct);
             await tx.CommitAsync(ct);

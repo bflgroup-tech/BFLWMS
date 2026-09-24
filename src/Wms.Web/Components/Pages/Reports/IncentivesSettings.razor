@@ -16,23 +16,6 @@
     .incset-header .incset-toggle:hover { background: rgba(255,255,255,0.12); }
 </style>
 
-@if (!string.IsNullOrEmpty(_message))
-{
-    <div class="aiwms-alert @(_isError ? "error" : "info")" style="margin-bottom:12px;">
-        @_message
-        @if (_problems.Count > 0)
-        {
-            <ul style="margin:6px 0 0 18px; padding:0;">
-                @foreach (var p in _problems.Take(MaxProblemsShown)) { <li>@p</li> }
-            </ul>
-            @if (_problems.Count > MaxProblemsShown)
-            {
-                <div style="margin-top:4px;">…and @(_problems.Count - MaxProblemsShown) more.</div>
-            }
-        }
-    </div>
-}
-
 @* ===================== 1. Employee Master ===================== *@
 <div class="aiwms-section" style="padding:0; overflow:hidden;">
     <div class="incset-header">
@@ -50,6 +33,7 @@
         <button class="aiwms-btn aiwms-btn-secondary" style="white-space:nowrap;" @onclick="DownloadEmployeeTemplateAsync">Download template</button>
     </div>
     <InputFile OnChange="OnEmployeeFileSelected" accept=".xlsx" disabled="@_busy" @key="_empFileKey" />
+    @Message(EmpArea)
 
     @if (_empUpload.Count > 0)
     {
@@ -92,6 +76,7 @@
         </div>
         <button class="aiwms-btn aiwms-btn-primary" @onclick="LoadEmployeesAsync" disabled="@_busy">Search</button>
     </div>
+    @Message(EmpGridArea)
     @if (_empLoaded && _employees.Count == 0)
     {
         <p style="color:var(--text-secondary); margin:0;">No employees found.</p>
@@ -132,11 +117,12 @@
     <div style="color:var(--text-secondary); font-size:12px; line-height:1.6;">
         <div>* AttendanceDate must fall between Date From and Date To.</div>
         <div>* Shift timings like <b>6AM</b> / <b>8PM</b> (or 06:00 / 20:00). DiscrepancyType must be <b>Earlygoing</b>, <b>LateComing</b> or <b>Absent</b>.</div>
+        <div>* DiscrepancyDuration (minutes): a whole number from 1 to 540 for Earlygoing / LateComing; leave blank for Absent.</div>
         <div>* Every EmpCode must already be in the Employee Master.</div>
         @if (_isAdmin)
         {
             <div style="margin-top:4px;">
-                Excel (.xlsx) with header row <b>EmpCode, AttendanceDate, ShiftTimingFrom, ShiftTimingTo, DiscrepancyType</b>.
+                Excel (.xlsx) with header row <b>EmpCode, AttendanceDate, ShiftTimingFrom, ShiftTimingTo, DiscrepancyType, DiscrepancyDuration</b>.
                 If any row is invalid, or the employee already has a row for that date, nothing is saved.
             </div>
         }
@@ -163,6 +149,7 @@
     {
         <p style="margin:6px 0 0 0; font-size:12px; color:#b91c1c;">Date To must be on or after Date From.</p>
     }
+    @Message(AttArea)
 
     @if (_attUpload.Count > 0)
     {
@@ -174,14 +161,14 @@
         <div style="max-height:260px; overflow:auto; margin-top:8px;">
             <table class="aiwms-table aiwms-table-dense">
                 <thead style="position:sticky; top:0; z-index:1;">
-                    <tr><th>EmpCode</th><th>Attendance Date</th><th>Shift From</th><th>Shift To</th><th>Discrepancy</th></tr>
+                    <tr><th>EmpCode</th><th>Attendance Date</th><th>Shift From</th><th>Shift To</th><th>Discrepancy</th><th style="text-align:right;">Duration (min)</th></tr>
                 </thead>
                 <tbody>
                     @foreach (var r in _attUpload)
                     {
                         <tr>
                             <td>@r.EmpCode</td><td>@r.AttendanceDate.ToString("dd-MMM-yyyy")</td>
-                            <td>@ShowTime(r.ShiftTimingFrom)</td><td>@ShowTime(r.ShiftTimingTo)</td><td>@r.DiscrepancyType</td>
+                            <td>@ShowTime(r.ShiftTimingFrom)</td><td>@ShowTime(r.ShiftTimingTo)</td><td>@r.DiscrepancyType</td><td style="text-align:right;">@r.DiscrepancyDuration</td>
                         </tr>
                     }
                 </tbody>
@@ -208,6 +195,7 @@
         </div>
         <button class="aiwms-btn aiwms-btn-primary" @onclick="LoadAttendanceAsync" disabled="@(_busy || !AttRangeValid)">Search</button>
     </div>
+    @Message(AttGridArea)
     @if (_attLoaded && _attendance.Count == 0)
     {
         <p style="color:var(--text-secondary); margin:0;">No attendance discrepancies found for these dates.</p>
@@ -217,14 +205,14 @@
         <div style="max-height:360px; overflow:auto;">
             <table class="aiwms-table aiwms-table-dense">
                 <thead style="position:sticky; top:0; z-index:1;">
-                    <tr><th>EmpCode</th><th>Attendance Date</th><th>Shift From</th><th>Shift To</th><th>Discrepancy</th><th>Uploaded By</th><th>Uploaded On</th></tr>
+                    <tr><th>EmpCode</th><th>Attendance Date</th><th>Shift From</th><th>Shift To</th><th>Discrepancy</th><th style="text-align:right;">Duration (min)</th><th>Uploaded By</th><th>Uploaded On</th></tr>
                 </thead>
                 <tbody>
                     @foreach (var r in _attendance)
                     {
                         <tr>
                             <td>@r.EmpCode</td><td>@r.AttendanceDate.ToString("dd-MMM-yyyy")</td>
-                            <td>@ShowTime(r.ShiftTimingFrom)</td><td>@ShowTime(r.ShiftTimingTo)</td><td>@r.DiscrepancyType</td>
+                            <td>@ShowTime(r.ShiftTimingFrom)</td><td>@ShowTime(r.ShiftTimingTo)</td><td>@r.DiscrepancyType</td><td style="text-align:right;">@r.DiscrepancyDuration</td>
                             <td>@r.UploadedUser</td><td>@(r.CreateTS?.ToString("dd-MMM-yyyy HH:mm") ?? "")</td>
                         </tr>
                     }
@@ -278,8 +266,38 @@
 
     private string Uploader => Me.Email ?? Me.Name ?? "";
 
+    // Each message is shown inside the section it came from (under its Upload / Search
+    // controls), not in one banner at the top of the tab that is off screen by the time
+    // you reach the Attendance section.
+    private const string EmpArea = "emp", AttArea = "att", EmpGridArea = "empgrid", AttGridArea = "attgrid";
+    private string _msgArea = "";
     private void ShowError(string msg, List<string>? problems = null) { _message = msg; _isError = true;  _problems = problems ?? new(); }
     private void ShowInfo(string msg)                                  { _message = msg; _isError = false; _problems = new(); }
+    private void StartIn(string area) { _msgArea = area; _message = ""; _problems = new(); }
+
+    private RenderFragment Message(string area) => __builder =>
+    {
+        if (_msgArea == area && _busy && string.IsNullOrEmpty(_message))
+        {
+            <div class="aiwms-alert info" style="margin-top:10px;">Working…</div>
+        }
+        else if (_msgArea == area && !string.IsNullOrEmpty(_message))
+        {
+            <div class="aiwms-alert @(_isError ? "error" : "info")" style="margin-top:10px;">
+                @_message
+                @if (_problems.Count > 0)
+                {
+                    <ul style="margin:6px 0 0 18px; padding:0;">
+                        @foreach (var p in _problems.Take(MaxProblemsShown)) { <li>@p</li> }
+                    </ul>
+                    @if (_problems.Count > MaxProblemsShown)
+                    {
+                        <div style="margin-top:4px;">…and @(_problems.Count - MaxProblemsShown) more.</div>
+                    }
+                }
+            </div>
+        }
+    };
 
     private static void SetDate(ChangeEventArgs e, Action<DateTime> apply)
     {
@@ -302,6 +320,7 @@
 
     private async Task LoadEmployeesAsync()
     {
+        StartIn(EmpGridArea);
         try { _employees = await Svc.GetEmployeesAsync(_empSearch); _empLoaded = true; }
         catch (Exception ex) { ShowError($"Couldn't load employees: {ex.Message}"); }
     }
@@ -309,6 +328,7 @@
     private async Task LoadAttendanceAsync()
     {
         if (!AttRangeValid) return;
+        StartIn(AttGridArea);
         try { _attendance = await Svc.GetAttendanceAsync(_attFrom, _attTo, _attSearch); _attLoaded = true; }
         catch (Exception ex) { ShowError($"Couldn't load attendance: {ex.Message}"); }
     }
@@ -317,16 +337,17 @@
 
     private async Task OnEmployeeFileSelected(InputFileChangeEventArgs e)
     {
+        StartIn(EmpArea);
         _empUpload = new();
+        _busy = true; StateHasChanged();
         var ms = await ReadXlsxAsync(e.File);
-        if (ms is null) return;
-        _busy = true;
+        if (ms is null) { _busy = false; return; }
         try
         {
             var problems = new List<string>();
             var rows = ParseEmployees(ms, problems);
-            if (problems.Count > 0) { ShowError($"The file has {problems.Count} problem(s) — nothing was loaded. Fix them and choose the file again.", problems); _empFileKey++; return; }
-            if (rows.Count == 0)     { ShowError("No data rows found in the Excel."); _empFileKey++; return; }
+            if (problems.Count > 0) { ShowError($"'{e.File.Name}' has {problems.Count} problem(s) — nothing was loaded. Fix them and choose the file again.", problems); _empFileKey++; return; }
+            if (rows.Count == 0)     { ShowError($"No data rows found in '{e.File.Name}'."); _empFileKey++; return; }
             _empUpload = rows;
             ShowInfo($"Read {rows.Count:N0} employee(s). Check the preview, then click Save.");
         }
@@ -336,15 +357,17 @@
 
     private async Task SaveEmployeesAsync()
     {
+        StartIn(EmpArea);
         _busy = true; StateHasChanged();
         try
         {
             var r = await Svc.UploadEmployeesAsync(_empUpload, Uploader);
             if (r.Ok)
             {
-                ShowInfo($"Saved {r.RowsSaved:N0} employee(s) to the Employee Master.");
                 _empUpload = new(); _empFileKey++;
                 await LoadEmployeesAsync();
+                _msgArea = EmpArea;
+                ShowInfo($"Saved {r.RowsSaved:N0} employee(s) to the Employee Master.");
             }
             else ShowError(r.Error ?? "Save failed.", r.Problems);
         }
@@ -382,16 +405,17 @@
 
     private async Task OnAttendanceFileSelected(InputFileChangeEventArgs e)
     {
+        StartIn(AttArea);
         _attUpload = new();
+        _busy = true; StateHasChanged();
         var ms = await ReadXlsxAsync(e.File);
-        if (ms is null) return;
-        _busy = true;
+        if (ms is null) { _busy = false; return; }
         try
         {
             var problems = new List<string>();
             var rows = ParseAttendance(ms, _attFrom, _attTo, problems);
-            if (problems.Count > 0) { ShowError($"The file has {problems.Count} problem(s) — nothing was loaded. Fix them and choose the file again.", problems); _attFileKey++; return; }
-            if (rows.Count == 0)     { ShowError("No data rows found in the Excel."); _attFileKey++; return; }
+            if (problems.Count > 0) { ShowError($"'{e.File.Name}' has {problems.Count} problem(s) — nothing was loaded. Fix them and choose the file again.", problems); _attFileKey++; return; }
+            if (rows.Count == 0)     { ShowError($"No data rows found in '{e.File.Name}'."); _attFileKey++; return; }
 
             var notInMaster = await Svc.GetEmpCodesNotInMasterAsync(rows.Select(r => r.EmpCode));
             if (notInMaster.Count > 0)
@@ -410,6 +434,7 @@
 
     private async Task SaveAttendanceAsync()
     {
+        StartIn(AttArea);
         // Date From / To may have been changed after the file was read.
         var outside = _attUpload.Where(r => r.AttendanceDate < _attFrom.Date || r.AttendanceDate > _attTo.Date).ToList();
         if (outside.Count > 0)
@@ -425,9 +450,10 @@
             var r = await Svc.UploadAttendanceAsync(_attUpload, Uploader);
             if (r.Ok)
             {
-                ShowInfo($"Saved {r.RowsSaved:N0} attendance discrepancy row(s).");
                 _attUpload = new(); _attFileKey++;
                 await LoadAttendanceAsync();
+                _msgArea = AttArea;
+                ShowInfo($"Saved {r.RowsSaved:N0} attendance discrepancy row(s).");
             }
             else ShowError(r.Error ?? "Save failed.", r.Problems);
         }
@@ -439,9 +465,9 @@
         using var wb = new XLWorkbook(stream);
         var ws = wb.Worksheet(1);
         var cols = HeaderMap(ws);
-        foreach (var required in new[] { "empcode", "attendancedate", "shifttimingfrom", "shifttimingto", "discrepancytype" })
+        foreach (var required in new[] { "empcode", "attendancedate", "shifttimingfrom", "shifttimingto", "discrepancytype", "discrepancyduration" })
             if (!cols.ContainsKey(required))
-                problems.Add($"Header row is missing column '{required}'. Expected: EmpCode, AttendanceDate, ShiftTimingFrom, ShiftTimingTo, DiscrepancyType.");
+                problems.Add($"Header row is missing column '{required}'. Expected: EmpCode, AttendanceDate, ShiftTimingFrom, ShiftTimingTo, DiscrepancyType, DiscrepancyDuration.");
         if (problems.Count > 0) return new();
 
         var rows = new List<IncAttendanceUploadRow>();
@@ -474,12 +500,29 @@
             if (!TryReadTime(fromCell, out var shiftFrom)) Bad($"ShiftTimingFrom '{fromCell.GetFormattedString()}' is not a time (use e.g. 6AM or 06:00).");
             if (!TryReadTime(toCell,   out var shiftTo))   Bad($"ShiftTimingTo '{toCell.GetFormattedString()}' is not a time (use e.g. 8PM or 20:00).");
 
+            // Minutes: required (1..540) for Earlygoing / LateComing, blank for Absent.
+            var durCell = ws.Cell(r, cols["discrepancyduration"]);
+            int? duration = null;
+            if (!TryReadWholeNumber(durCell, out var durValue))
+                Bad($"DiscrepancyDuration '{durCell.GetFormattedString()}' is not a whole number of minutes.");
+            else if (type == "Absent")
+            {
+                if (durValue is not null) Bad($"DiscrepancyDuration must be blank for Absent (found {durValue}).");
+            }
+            else if (type is not null)
+            {
+                if (durValue is null) Bad($"DiscrepancyDuration is required for {type} — enter the minutes (1 to {IncentivesSettingsService.MaxDiscrepancyMinutes}).");
+                else if (durValue < 1 || durValue > IncentivesSettingsService.MaxDiscrepancyMinutes)
+                    Bad($"DiscrepancyDuration {durValue} is out of range — must be 1 to {IncentivesSettingsService.MaxDiscrepancyMinutes} minutes.");
+                else duration = durValue;
+            }
+
             if (!rowOk) continue;
 
             var key = (code.ToUpperInvariant(), date);
             if (seen.TryGetValue(key, out var firstRow)) { Bad($"EmpCode {code} on {date:dd-MMM-yyyy} is repeated (also on row {firstRow})."); continue; }
             seen[key] = r;
-            rows.Add(new IncAttendanceUploadRow(code, date, shiftFrom, shiftTo, type!));
+            rows.Add(new IncAttendanceUploadRow(code, date, shiftFrom, shiftTo, type!, duration));
         }
         return rows;
     }
@@ -552,6 +595,24 @@
 
     private static string? NullIfEmpty(string s) => s.Length == 0 ? null : s;
 
+    // Empty cell -> true with null. A number cell or text must be a whole number (e.g. 30, not 30.5 or "30 min").
+    private static bool TryReadWholeNumber(IXLCell cell, out int? value)
+    {
+        value = null;
+        if (cell.IsEmpty()) return true;
+        if (cell.DataType == XLDataType.Number)
+        {
+            var d = cell.GetDouble();
+            if (d != Math.Floor(d) || d < int.MinValue || d > int.MaxValue) return false;
+            value = (int)d;
+            return true;
+        }
+        var s = cell.GetString().Trim();
+        if (s.Length == 0) return true;
+        if (int.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out var i)) { value = i; return true; }
+        return false;
+    }
+
     // ===================== templates =====================
 
     private Task DownloadEmployeeTemplateAsync() =>
@@ -561,8 +622,8 @@
 
     private Task DownloadAttendanceTemplateAsync() =>
         DownloadTemplateAsync("Attendance_Discrepancies_Template.xlsx", "Attendance",
-            ["EmpCode", "AttendanceDate", "ShiftTimingFrom", "ShiftTimingTo", "DiscrepancyType"],
-            ["E1001", DateTime.Today.ToString("dd/MM/yyyy"), "6AM", "8PM", "LateComing"]);
+            ["EmpCode", "AttendanceDate", "ShiftTimingFrom", "ShiftTimingTo", "DiscrepancyType", "DiscrepancyDuration"],
+            ["E1001", DateTime.Today.ToString("dd/MM/yyyy"), "6AM", "8PM", "LateComing", "30"]);
 
     private async Task DownloadTemplateAsync(string fileName, string sheet, string[] headers, string[] example)
     {
