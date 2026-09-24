@@ -44,7 +44,7 @@
                 {
                     @foreach (var menu in cat)
                     {
-                        <NavLink class="@(cat.Key is not null ? "aiwms-nav-link aiwms-nav-link-indent" : "aiwms-nav-link")" ActiveClass="active" href="@menu.Url">
+                        <NavLink class="@(cat.Key is not null ? "aiwms-nav-link aiwms-nav-link-indent" : "aiwms-nav-link")" ActiveClass="active" href="@menu.Url" Match="NavLinkMatch.All">
                             <span class="aiwms-nav-icon">@IconFor(menu.Key)</span>
                             <span>@menu.Label</span>
                         </NavLink>
@@ -128,6 +128,9 @@
         MenuKeys.ADMIN_WH_MASTER           => "apartment",
         MenuKeys.ADMIN_AUDIT_LOG           => "history",
         MenuKeys.ADMIN_NIGHTLY_BATCHES     => "schedule",
+        MenuKeys.ADMIN_RD_RS_AGEING_EMAIL  => "mark_email_unread",
+        MenuKeys.ADMIN_API                 => "api",
+        MenuKeys.ADMIN_API_CLIENT_APPS     => "devices",
         _ => "circle",
     };
 }

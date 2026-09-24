@@ -413,7 +413,9 @@
 
     private async Task LoadStoresAsync()
     {
-        try { _stores = await Svc.GetStoresAsync(_country); }
+        // Opt-in per-user store restriction (Wms_UserStoreAccess, managed on Admin >
+        // Users) — a user with no store grants at all sees every store, unchanged.
+        try { _stores = CurrentUser.FilterStores(await Svc.GetStoresAsync(_country)).ToList(); }
         catch (Exception ex) { ShowError($"Failed to load stores for {_country}: {ex.Message}"); }
     }
 

@@ -55,6 +55,9 @@ public static class MenuKeys
     public const string ADMIN_AUDIT_LOG           = "ADMIN_AUDIT_LOG";
     public const string ADMIN_NIGHTLY_BATCHES     = "ADMIN_NIGHTLY_BATCHES";
     public const string ADMIN_PENDING_GOODS_RECEIPT_EMAIL = "ADMIN_PENDING_GOODS_RECEIPT_EMAIL";
+    public const string ADMIN_RD_RS_AGEING_EMAIL  = "ADMIN_RD_RS_AGEING_EMAIL";
+    public const string ADMIN_API                 = "ADMIN_API";
+    public const string ADMIN_API_CLIENT_APPS     = "ADMIN_API_CLIENT_APPS";
 
     public const string TCM_LABORATORY             = "TCM_LABORATORY";
 
@@ -130,12 +133,15 @@ public static class MenuKeys
         new MenuEntry(RPT_WAREHOUSE_INCENTIVES, "Reports",          "Warehouse Incentives",    "reports/warehouse-incentives", new[] { Roles.Admin, Roles.Reports }),
         new MenuEntry(RPT_SYNC_DATA_COUNT,   "IT",                 "Sync Data Count",           "reports/sync-data-count",   new[] { Roles.Admin, Roles.Reports }),
 
+        new MenuEntry(ADMIN_API,             "Admin",               "Overview",                   "admin/api",                 new[] { Roles.Admin }, "API"),
+        new MenuEntry(ADMIN_API_CLIENT_APPS, "Admin",               "Client Apps",                "admin/api/client-apps",     new[] { Roles.Admin }, "API"),
         new MenuEntry(ADMIN_USERS,           "Admin",               "Users & Roles",             "admin/users",               new[] { Roles.Admin }),
         new MenuEntry(RPT_REPORT_ASSISTANT,  "Admin",               "Report Assistant (Chat)",   "reports/report-assistant",  new[] { Roles.Admin }),
         new MenuEntry(ADMIN_WH_MASTER,       "Admin",               "WH Master",                 "admin/wh-master",           new[] { Roles.Admin }),
         new MenuEntry(ADMIN_AUDIT_LOG,       "Admin",               "Audit Log",                 "admin/audit",               new[] { Roles.Admin }),
         new MenuEntry(ADMIN_NIGHTLY_BATCHES, "Admin",               "Nightly Batches Status",    "admin/nightly-batches",     new[] { Roles.Admin }),
         new MenuEntry(ADMIN_PENDING_GOODS_RECEIPT_EMAIL, "Admin",   "Pending Goods Receipt Email","admin/pending-goods-receipt-email", new[] { Roles.Admin }),
+        new MenuEntry(ADMIN_RD_RS_AGEING_EMAIL,  "Admin",   "RD/RS Ageing Email",         "admin/rd-rs-ageing-email",          new[] { Roles.Admin }),
     };
 
     /// <summary>Claim type emitted per granted menu by WmsClaimsTransformer.</summary>

@@ -21,10 +21,12 @@ public class AuthStateCurrentUser(
     private bool _hasAllCountriesAccess;
     private IReadOnlyCollection<string> _allowedCountries = Array.Empty<string>();
     private IReadOnlyCollection<string> _allowedSections = Array.Empty<string>();
+    private IReadOnlyCollection<string> _allowedStores = Array.Empty<string>();
 
     public static string ProfileCacheKey(string username) => $"profile:{username}";
     public static string CountryAccessCacheKey(string username) => $"countryAccess:{username}";
     public static string SectionAccessCacheKey(string username) => $"sectionAccess:{username}";
+    public static string StoreAccessCacheKey(string username) => $"storeAccess:{username}";
 
     public async Task EnsureLoadedAsync(CancellationToken ct = default)
     {
@@ -133,6 +135,32 @@ public class AuthStateCurrentUser(
             cache.Set(saKey, _allowedSections, TimeSpan.FromMinutes(2));
         }
 
+        // Store access — same cache-per-username approach as country/section access.
+        // Table may not exist yet on every environment; leave "no grants" (unrestricted,
+        // per FilterStores' opt-in semantics) rather than failing the whole load.
+        var stKey = StoreAccessCacheKey(_name);
+        if (cache.TryGetValue<IReadOnlyCollection<string>>(stKey, out var stCached))
+        {
+            _allowedStores = stCached ?? Array.Empty<string>();
+        }
+        else
+        {
+            try
+            {
+                using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                cts.CancelAfter(TimeSpan.FromSeconds(5));
+                await using var db = await dbFactory.CreateDbContextAsync(cts.Token);
+                var stores = await db.UserStoreAccess.AsNoTracking()
+                    .Where(a => a.Username == _name)
+                    .Select(a => a.StoreName)
+                    .ToListAsync(cts.Token);
+                _allowedStores = new HashSet<string>(stores, StringComparer.OrdinalIgnoreCase);
+            }
+            catch { /* leave defaults — empty (unrestricted), e.g. table not migrated yet */ }
+
+            cache.Set(stKey, _allowedStores, TimeSpan.FromMinutes(2));
+        }
+
         _loaded = true;
     }
 
@@ -218,4 +246,11 @@ public class AuthStateCurrentUser(
         return all.Where(c => c is not null && allowed.Contains(c!));
     }
     public bool CanSeeSection(string sectionKey) => _hasAllCountriesAccess || _allowedSections.Contains(sectionKey);
+    public IReadOnlyCollection<string> AllowedStores => _allowedStores;
+    public IEnumerable<string> FilterStores(IEnumerable<string> all)
+    {
+        if (_hasAllCountriesAccess || _allowedStores.Count == 0) return all;
+        var allowed = _allowedStores;
+        return all.Where(s => s is not null && allowed.Contains(s!));
+    }
 }

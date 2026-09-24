@@ -18,6 +18,8 @@ public class WmsDbContext(DbContextOptions<WmsDbContext> options) : DbContext(op
     public DbSet<WmsUserMenuAccess> UserMenuAccess => Set<WmsUserMenuAccess>();
     public DbSet<WmsUserCountryAccess> UserCountryAccess => Set<WmsUserCountryAccess>();
     public DbSet<WmsUserSectionAccess> UserSectionAccess => Set<WmsUserSectionAccess>();
+    public DbSet<WmsUserStoreAccess> UserStoreAccess => Set<WmsUserStoreAccess>();
+    public DbSet<ApiClientApp> ApiClientApps => Set<ApiClientApp>();
 
     protected override void OnModelCreating(ModelBuilder mb)
     {
@@ -163,6 +165,16 @@ public class WmsDbContext(DbContextOptions<WmsDbContext> options) : DbContext(op
             e.Property(x => x.GrantedTS).HasColumnType("datetime2(0)");
         });
 
+        mb.Entity<WmsUserStoreAccess>(e =>
+        {
+            e.ToTable("Wms_UserStoreAccess");
+            e.HasKey(x => new { x.Username, x.StoreName });
+            e.Property(x => x.Username).HasMaxLength(100);
+            e.Property(x => x.StoreName).HasMaxLength(100);
+            e.Property(x => x.GrantedBy).HasMaxLength(100);
+            e.Property(x => x.GrantedTS).HasColumnType("datetime2(0)");
+        });
+
         mb.Entity<WmsContainerPhotoCheck>(e =>
         {
             e.ToTable("WmsContainerPhotoCheck");
@@ -170,6 +182,17 @@ public class WmsDbContext(DbContextOptions<WmsDbContext> options) : DbContext(op
             e.Property(x => x.Contno).HasColumnType("varchar(50)");
             e.Property(x => x.CheckedTS).HasColumnType("datetime2(0)");
             e.Property(x => x.CheckedBy).HasMaxLength(100);
+        });
+
+        mb.Entity<ApiClientApp>(e =>
+        {
+            e.ToTable("ApiClientApp");
+            e.HasKey(x => x.ClientId);
+            e.Property(x => x.ClientId).HasMaxLength(64);
+            e.Property(x => x.Name).HasMaxLength(200);
+            e.Property(x => x.SecretHash).HasMaxLength(200);
+            e.Property(x => x.CreatedBy).HasMaxLength(100);
+            e.Property(x => x.CreateTS).HasColumnType("datetime2(0)");
         });
     }
 }

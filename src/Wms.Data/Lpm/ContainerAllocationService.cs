@@ -215,34 +215,62 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         contno = contno.Trim();
 
         await using var c = OpenOnPremBackup();
-        // ContReceiptDT comes from bfldata.dbo.Contreceipt joined on TCMNo.
-        // Buyer / LPM / Division / orgqty come from usa.dbo.usaorgfile_LPM.
-        // Column names follow the existing on-prem schema — adjust if any
-        // are slightly different (e.g. Vendor vs Buyer).
         // Sources:
-        //   usaorgfile_LPM   — ContNo, OraPONo, LPM, ItemCode, orgqty
+        //   usaorgfile_LPM   — ContNo, OraPONo, LPM, ItemCode, orgqty (the qty of record)
         //   Contreceipt      — ReceiptDt (via TCMNo)
         //   vUSAOrder        — OthersPath = Buyer, country = DestCountry (subqueries)
         //   vupc_subclass    — Division (via itemcode)
         //   USAOrgFile       — vendor = Brand (via ContNo + itemcode)
+        //
+        // NOTHING may be LEFT JOINed straight onto the PO lines here. This used to
+        // join Contreceipt, vupc_subclass and USAOrgFile directly and then
+        // SUM(u.orgqty) over the result — so a second row in ANY of them multiplied
+        // every line's qty. On AEINT8429 the grid reported 16,720 pcs against a true
+        // 8,360 — exactly double on both POs, which is the signature of the
+        // container-level Contreceipt join matching twice, though any of the three
+        // could do it. vupc_subclass is known to hold several rows per itemcode.
+        //
+        // So: aggregate the lines on their own, and reach the per-item attributes
+        // through CTEs that are already one row per item. MAX(MAX(x)) == MAX(x), so
+        // the Division/Brand actually displayed is unchanged — only the duplication
+        // is gone. Container-level values stay scalar subqueries for the same reason.
+        //
+        // The allocation engine was never affected: it reads usaorgfile_LPM with no
+        // joins at all, as does the three-way qty validation. This was display only.
         var rows = await c.QueryAsync<PoDataRow>(new CommandDefinition(@"
+            ;WITH poLines AS (
+                SELECT ContNo, OraPONo, LPM, ItemCode,
+                       Qty = CAST(ISNULL(orgqty, 0) AS INT)
+                  FROM usa.dbo.usaorgfile_LPM WITH (NOLOCK)
+                 WHERE ContNo = @contno
+            ), itemDiv AS (
+                SELECT itemcode, Division = MAX(Division)
+                  FROM datareporting.dbo.vupc_subclass WITH (NOLOCK)
+                 WHERE itemcode IN (SELECT ItemCode FROM poLines)
+                 GROUP BY itemcode
+            ), itemBrand AS (
+                SELECT ContNo, itemcode, Vendor = MAX(vendor)
+                  FROM usa.dbo.USAOrgFile WITH (NOLOCK)
+                 WHERE ContNo = @contno
+                 GROUP BY ContNo, itemcode
+            )
             SELECT
-                u.ContNo                              AS Contno,
-                MAX(cr.ReceiptDt)                     AS ContReceiptDT,
-                u.OraPONo                             AS PONO,
-                u.LPM                                 AS LPM,
-                (SELECT TOP 1 OthersPath FROM hodata.dbo.vUSAOrder WHERE refno = u.ContNo)  AS Buyer,
-                MAX(sub.Division)                     AS Division,
-                MAX(org.vendor)                       AS Brand,
-                CAST(ISNULL(SUM(u.orgqty), 0) AS INT) AS Qty,
-                (SELECT TOP 1 country     FROM hodata.dbo.vUSAOrder WHERE refno = u.ContNo) AS DestCountry
-            FROM usa.dbo.usaorgfile_LPM u WITH (NOLOCK)
-            LEFT JOIN bfldata.dbo.Contreceipt cr           WITH (NOLOCK) ON cr.TCMNo    = u.ContNo
-            LEFT JOIN datareporting.dbo.vupc_subclass sub  WITH (NOLOCK) ON sub.itemcode = u.ItemCode
-            LEFT JOIN usa.dbo.USAOrgFile org               WITH (NOLOCK) ON org.ContNo  = u.ContNo AND org.itemcode = u.ItemCode
-            WHERE u.ContNo = @contno
-            GROUP BY u.ContNo, u.OraPONo, u.LPM
-            ORDER BY u.OraPONo, u.LPM",
+                Contno        = l.ContNo,
+                ContReceiptDT = (SELECT MAX(cr.ReceiptDt)
+                                   FROM bfldata.dbo.Contreceipt cr WITH (NOLOCK)
+                                  WHERE cr.TCMNo = l.ContNo),
+                PONO          = l.OraPONo,
+                LPM           = l.LPM,
+                Buyer         = (SELECT TOP 1 OthersPath FROM hodata.dbo.vUSAOrder WHERE refno = l.ContNo),
+                Division      = MAX(d.Division),
+                Brand         = MAX(b.Vendor),
+                Qty           = CAST(ISNULL(SUM(l.Qty), 0) AS INT),
+                DestCountry   = (SELECT TOP 1 country     FROM hodata.dbo.vUSAOrder WHERE refno = l.ContNo)
+            FROM poLines l
+            LEFT JOIN itemDiv   d ON d.itemcode = l.ItemCode
+            LEFT JOIN itemBrand b ON b.ContNo   = l.ContNo AND b.itemcode = l.ItemCode
+            GROUP BY l.ContNo, l.OraPONo, l.LPM
+            ORDER BY l.OraPONo, l.LPM",
             new { contno }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         return rows.AsList();
     }
@@ -751,6 +779,47 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
             }
         }
 
+        /// <summary>
+        /// Brand x PO blocks — LPM_StoreBrandAccessPO rows with IsActive = 0 bar a
+        /// (Store, PO, Brand) combination outright. LpmSim owns the screen (Admin >
+        /// Block Brand*PO) and writes the rows; WMS is the consumer, and until now
+        /// was not reading them at all — a block set there changed nothing, with no
+        /// Blocked Items row to show why.
+        ///
+        /// Keyed (StoreID, PONo, Brand), all three upper-cased and trimmed: the table
+        /// is hand-keyed through a screen and Brand is free text from
+        /// usa.dbo.USAOrgFile.vendor, so a case-sensitive key would silently miss —
+        /// the trap that starved four countries in the ADM band lookup.
+        ///
+        /// Country is deliberately NOT in the key. The store already determines the
+        /// country, and including it would mean a row saved under a country label
+        /// that disagrees with the OTS run's spelling would stop blocking.
+        /// </summary>
+        async Task<HashSet<(string Sid, string PoNo, string Brand)>> LoadBrandPoBlocks()
+        {
+            try
+            {
+                await using var c1 = OpenOnPremBackup();
+                return (await c1.QueryAsync<(string StoreID, string PONo, string Brand)>(new CommandDefinition(@"
+                    SELECT StoreID, PONo, Brand
+                      FROM dbo.LPM_StoreBrandAccessPO WITH (NOLOCK)
+                     WHERE IsActive = 0
+                       AND StoreID IS NOT NULL AND PONo IS NOT NULL AND Brand IS NOT NULL",
+                    commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
+                    .Select(r => (
+                        (r.StoreID ?? "").Trim().ToUpperInvariant(),
+                        (r.PONo    ?? "").Trim().ToUpperInvariant(),
+                        (r.Brand   ?? "").Trim().ToUpperInvariant()))
+                    .Where(r => r.Item1.Length > 0 && r.Item2.Length > 0 && r.Item3.Length > 0)
+                    .ToHashSet();
+            }
+            catch
+            {
+                // Table not deployed -> no Brand x PO blocks, same as before this change.
+                return new HashSet<(string, string, string)>();
+            }
+        }
+
         async Task<HashSet<(string Sid, int DivCode)>> LoadDivBlocks()
         {
             await using var c1 = OpenOnPremBackup();
@@ -1116,6 +1185,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         var w1_deptBlocks     = LoadDeptBlocks();
         var w1_divBlocks      = LoadDivBlocks();
         var w1_ex2CtryBlocks  = LoadEx2CountryDivBlocks();
+        var w1_brandPoBlocks  = LoadBrandPoBlocks();
         var w1_orgByItem      = LoadOrgByItem();
         var w1_storeNameById  = LoadStoreNames();
         var w1_palletByStore  = LoadPalletByStore();
@@ -1133,7 +1203,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         var w1_vgOrder        = LoadVolumeGroupOrder();
 
         await Task.WhenAll(
-            w1_itemMeta, w1_deptBlocks, w1_divBlocks, w1_ex2CtryBlocks, w1_orgByItem,
+            w1_itemMeta, w1_deptBlocks, w1_divBlocks, w1_ex2CtryBlocks, w1_brandPoBlocks, w1_orgByItem,
             w1_storeNameById, w1_palletByStore, w1_priority, w1_mnw,
             w1_prices, w1_completed, w1_receiptDt, w1_initialAlloc, w1_otsRunRows,
             w1_simSkuMaxBlocked, w1_itemSohByStore, w1_otsBandPct, w1_vgOrder, w1_poMaxPct);
@@ -1142,6 +1212,7 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         var deptBlocks        = await w1_deptBlocks;
         var divBlocks         = await w1_divBlocks;
         var ex2CountryDivBlocks = await w1_ex2CtryBlocks;
+        var brandPoBlocks       = await w1_brandPoBlocks;
         var orgByItem         = await w1_orgByItem;
         var storeNameById     = await w1_storeNameById;
         var palletByStore     = await w1_palletByStore;
@@ -1644,6 +1715,16 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                 // universe from the OTS run, so it has to apply the same predicate —
                 // this keeps the two from drifting apart again.
                 var deptUpper = dept.ToUpperInvariant();
+
+                // Brand x PO block key for THIS line: the line's own PO and the item's
+                // brand. Both are per line, so they are resolved once here rather than
+                // per store inside the predicate. Empty when either is missing — an
+                // item with no vendor cannot match a block that names one.
+                var linePoU    = (line.OraPONo   ?? "").Trim().ToUpperInvariant();
+                var lineBrandU = (orgRow.vendor  ?? "").Trim().ToUpperInvariant();
+                var brandPoCheckable = brandPoBlocks.Count > 0
+                                       && linePoU.Length > 0 && lineBrandU.Length > 0;
+
                 (bool Hit, string? Reason) AccessBlock(string storeId, string? country)
                 {
                     var sidU = storeId.Trim().ToUpperInvariant();
@@ -1653,12 +1734,17 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
                     // division, regardless of the store's own DivAccess rows.
                     var ctryU   = (country ?? "").Trim().ToUpperInvariant();
                     var ex2Hit  = ctryU.Length > 0 && ex2CountryDivBlocks.Contains((ctryU, divCode));
+                    // Brand x PO block (LpmSim > Admin > Block Brand*PO): bars this
+                    // store from this brand ON THIS PO only. Scoped to the PO by
+                    // design — the same store may still take the brand on another PO.
+                    var brandHit = brandPoCheckable && brandPoBlocks.Contains((sidU, linePoU, lineBrandU));
 
-                    if (!deptHit && !divHit && !ex2Hit) return (false, null);
-                    var reasons = new List<string>(3);
-                    if (deptHit) reasons.Add("DeptAccess");
-                    if (divHit)  reasons.Add("DivAccess");
-                    if (ex2Hit)  reasons.Add("Ex2CountryBlock");
+                    if (!deptHit && !divHit && !ex2Hit && !brandHit) return (false, null);
+                    var reasons = new List<string>(4);
+                    if (deptHit)  reasons.Add("DeptAccess");
+                    if (divHit)   reasons.Add("DivAccess");
+                    if (ex2Hit)   reasons.Add("Ex2CountryBlock");
+                    if (brandHit) reasons.Add("BrandPOBlock");
                     return (true, string.Join("+", reasons));
                 }
 

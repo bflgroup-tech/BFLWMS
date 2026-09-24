@@ -36,6 +36,15 @@ public interface ICurrentUser
     /// <summary>true if the user may see the sub-section identified by sectionKey
     /// (Wms.Core.SectionKeys.*) — explicit grant in dbo.Wms_UserSectionAccess, or Admin role.</summary>
     bool CanSeeSection(string sectionKey);
+    /// <summary>Explicit store access rows from dbo.Wms_UserStoreAccess, scoped to the
+    /// Transfer/GIN/GRN History report's STORE dropdown. Opt-in: an empty set here means
+    /// unrestricted (every store FilterCountries already lets through), NOT "no access" —
+    /// unlike AllowedCountries. Ignored when HasAllCountriesAccess is true.</summary>
+    IReadOnlyCollection<string> AllowedStores { get; }
+    /// <summary>Return the subset of `all` the current user is allowed to see. If the user
+    /// has no store grants at all, returns `all` unchanged (opt-in restriction — see
+    /// AllowedStores). Preserves order.</summary>
+    IEnumerable<string> FilterStores(IEnumerable<string> all);
     /// <summary>
     /// Awaits the AuthenticationStateProvider, reads the principal, then loads the
     /// user's Country/Warehouse from the DB. Caches the result on the instance.

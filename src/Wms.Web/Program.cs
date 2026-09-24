@@ -155,6 +155,11 @@ public class Program
         // only ("Generate Now" on the Nightly Batches admin page) — no timer.
         builder.Services.AddScoped<GenerateEan13Service>();
 
+        // Step 1 of pushing GIN-linked shop-issue transfers to the external
+        // store-inbounds API: enqueues eligible GINs into bfldata.dbo.APICallGIN.
+        // On-demand only ("Enqueue Now") — no timer yet, API-call step not built.
+        builder.Services.AddScoped<ApiGinIntegrationService>();
+
         // Robotics chute-mapping/status APIs used by the Chute Mapping page.
         builder.Services.Configure<Wms.Data.Robotic.RoboticApiOptions>(
             builder.Configuration.GetSection(Wms.Data.Robotic.RoboticApiOptions.SectionName));
@@ -170,6 +175,13 @@ public class Program
         builder.Services.AddHostedService<Wms.Web.Hosting.PendingGoodsReceiptEmailScheduledService>();
         builder.Services.AddScoped<Wms.Web.Hosting.PendingGoodsReceiptEmailSender>();
         builder.Services.AddScoped<Wms.Data.Notifications.PendingGoodsReceiptEmailService>();
+
+        // Weekly RD (RTV) / RS (MC HOLD) ageing mail — same shape as above, but
+        // fires on a configured day + GST time instead of an interval.
+        builder.Services.AddHostedService<Wms.Web.Hosting.RdRsAgeingEmailScheduledService>();
+        builder.Services.AddScoped<Wms.Web.Hosting.RdRsAgeingEmailSender>();
+        builder.Services.AddScoped<Wms.Data.Notifications.RdRsAgeingEmailService>();
+        builder.Services.AddScoped<RdRsAgeingService>();
 
         // Daily 08:00 GST: pull ECOM SOH from BigQuery. Daily 08:15 GST: compare it
         // against MFCS stock — a fixed offset after the pull, not a wait-chain (see
@@ -197,6 +209,30 @@ public class Program
         builder.Services
             .AddAuthentication(OpenIdConnectDefaults.AuthenticationScheme)
             .AddMicrosoftIdentityWebApp(builder.Configuration.GetSection("AzureAd"));
+
+        // Second scheme, "Bearer", alongside the cookie/OIDC login above — for
+        // machine-to-machine callers of /api/v1 (see Admin > API > Client Apps and
+        // OAuthController's client-credentials token endpoint). Calling
+        // AddAuthentication() again (no default-scheme arg) does not touch the
+        // OpenIdConnect default already configured; it just registers this handler.
+        builder.Services.AddAuthentication().AddJwtBearer(options =>
+        {
+            var jwtSection = builder.Configuration.GetSection("ApiJwt");
+            var signingKey = jwtSection["SigningKey"];
+            options.TokenValidationParameters = new Microsoft.IdentityModel.Tokens.TokenValidationParameters
+            {
+                ValidateIssuer = true,
+                ValidIssuer = jwtSection["Issuer"],
+                ValidateAudience = true,
+                ValidAudience = jwtSection["Audience"],
+                ValidateLifetime = true,
+                ValidateIssuerSigningKey = true,
+                IssuerSigningKey = new Microsoft.IdentityModel.Tokens.SymmetricSecurityKey(
+                    System.Text.Encoding.UTF8.GetBytes(string.IsNullOrEmpty(signingKey) ? new string('0', 32) : signingKey)),
+                ClockSkew = TimeSpan.FromSeconds(30),
+            };
+        });
+        builder.Services.AddScoped<Wms.Data.Api.ApiClientAppService>();
 
         if (builder.Environment.IsDevelopment())
         {
