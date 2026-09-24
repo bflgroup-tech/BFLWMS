@@ -798,8 +798,8 @@ else
     private const string RfidProduction = "RFID Production";
     private const string JafzaExportChecking = "Jafza Export Checking";
     private const string JafzaExportPairing = "Jafza Export Pairing & R1 Sorting";
-    // Settings (Employee Master / Attendance uploads) is shown first, and only to Admin / Payroll.
-    private const string Settings = "Settings";
+    // AdminPanel (Employee Master / Attendance / Target uploads) is shown first, and only to Admin / Payroll.
+    private const string Settings = "AdminPanel";
     [CascadingParameter] private Task<AuthenticationState>? AuthState { get; set; }
     private bool _canSeeSettings;
     private IEnumerable<string> VisibleTabs => _canSeeSettings ? Tabs.Prepend(Settings) : Tabs;

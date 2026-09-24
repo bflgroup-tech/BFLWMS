@@ -33,7 +33,8 @@ public record IncTargetLogRow(
     decimal? Add_IncentiveTgt, decimal? Add_IncentiveRate,
     string? UploadedUser, DateTime? CreateTS, string? ModifiedUser, DateTime? ModifiedTS);
 
-// TargetAuto / TargetManual / IncentiveBase are required (NOT NULL); the two Add_ columns may be blank.
+// Upload file for now: Category, TargetAuto, TargetManual, IncentiveBase, Add_IncentiveRate (all
+// required). Add_IncentiveTgt isn't in the file yet — new rows store NULL, updates keep the stored value.
 public record IncTargetUploadRow(
     string Category, decimal TargetAuto, decimal TargetManual, decimal IncentiveBase,
     decimal? Add_IncentiveTgt, decimal? Add_IncentiveRate);
@@ -316,9 +317,9 @@ public class IncentivesSettingsService(IOnPremConnectionResolver resolver)
                 await c.ExecuteAsync(new CommandDefinition(@"
                     UPDATE DATAREPORTING.dbo.INC_Target
                        SET TargetAuto = @TargetAuto, TargetManual = @TargetManual, IncentiveBase = @IncentiveBase,
-                           Add_IncentiveTgt = @Add_IncentiveTgt, Add_IncentiveRate = @Add_IncentiveRate
-                     WHERE Category = @Category",
-                    updates.Select(r => new { r.Category, r.TargetAuto, r.TargetManual, r.IncentiveBase, r.Add_IncentiveTgt, r.Add_IncentiveRate }),
+                           Add_IncentiveRate = @Add_IncentiveRate
+                     WHERE Category = @Category",   // Add_IncentiveTgt isn't uploaded for now: leave the stored value as it is
+                    updates.Select(r => new { r.Category, r.TargetAuto, r.TargetManual, r.IncentiveBase, r.Add_IncentiveRate }),
                     tx, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
 
             if (inserts.Count > 0)
