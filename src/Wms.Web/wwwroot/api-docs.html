@@ -1,0 +1,587 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Store API Reference — BFL WMS</title>
+<meta name="description" content="Integration reference for BFL WMS's store/grn, store/stocktake, and store/stocktake/report endpoints, including OAuth2 authentication.">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap">
+<style>
+  :root {
+    --bg: #FBFAF6;
+    --surface: #FFFFFF;
+    --surface-2: #F4F2EA;
+    --border: #E3E0D4;
+    --text: #201D17;
+    --text-2: #6B6656;
+    --text-3: #9A9584;
+    --accent: #A87A00;
+    --accent-ink: #FFFFFF;
+    --accent-soft: #FCF1D6;
+    --success: #1B7A4B;
+    --success-soft: #E4F5EB;
+    --danger: #B0293F;
+    --danger-soft: #FBE7EA;
+    --code-bg: #1B1C1E;
+    --code-text: #E7E6E1;
+    --code-key: #E5B93B;
+    --code-str: #9FD88A;
+    --code-mute: #8B8D91;
+    --shadow: 0 1px 2px rgba(32,29,23,.05), 0 8px 24px -12px rgba(32,29,23,.12);
+    --radius: 10px;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #17181B;
+      --surface: #1E2024;
+      --surface-2: #24262B;
+      --border: #33363C;
+      --text: #EDECE7;
+      --text-2: #A9ABA6;
+      --text-3: #7B7D81;
+      --accent: #E5B93B;
+      --accent-ink: #1B1600;
+      --accent-soft: #35300F;
+      --success: #4ADE94;
+      --success-soft: #123527;
+      --danger: #F0748A;
+      --danger-soft: #3A1620;
+      --code-bg: #101113;
+      --code-text: #E7E6E1;
+      color-scheme: dark;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-size: 15px;
+    line-height: 1.6;
+    padding: 0 16px;
+  }
+  main { max-width: 860px; margin: 0 auto; padding: 48px 0 96px; }
+  code, .mono { font-family: "JetBrains Mono", ui-monospace, Consolas, monospace; }
+
+  .eyebrow {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 12px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase;
+    color: var(--accent);
+  }
+  .eyebrow::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+  h1 {
+    font-size: clamp(28px, 5vw, 38px);
+    font-weight: 700;
+    letter-spacing: -.01em;
+    margin: 10px 0 8px;
+    text-wrap: balance;
+  }
+  .lede { color: var(--text-2); font-size: 16px; max-width: 60ch; margin: 0 0 28px; }
+
+  nav.toc {
+    display: flex; flex-wrap: wrap; gap: 6px;
+    padding: 10px; margin-bottom: 40px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+    position: sticky; top: 12px; z-index: 5;
+    box-shadow: var(--shadow);
+  }
+  nav.toc a {
+    font-size: 13px; font-weight: 500; color: var(--text-2); text-decoration: none;
+    padding: 6px 10px; border-radius: 999px;
+  }
+  nav.toc a:hover { background: var(--surface-2); color: var(--text); }
+
+  section { margin-bottom: 56px; scroll-margin-top: 64px; }
+  h2 {
+    font-size: 22px; font-weight: 700; letter-spacing: -.01em;
+    margin: 0 0 6px;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .h2-num {
+    font-family: "JetBrains Mono", monospace; font-size: 13px; font-weight: 600;
+    color: var(--accent-ink); background: var(--accent);
+    width: 26px; height: 26px; border-radius: 7px;
+    display: inline-flex; align-items: center; justify-content: center;
+    flex: none;
+  }
+  h3 { font-size: 16px; font-weight: 600; margin: 28px 0 10px; }
+  p { margin: 0 0 14px; }
+  .section-intro { color: var(--text-2); max-width: 66ch; }
+
+  .card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 20px 22px; box-shadow: var(--shadow);
+  }
+  .card + .card { margin-top: 16px; }
+
+  .endpoint-bar {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    margin-bottom: 16px;
+  }
+  .method {
+    font-family: "JetBrains Mono", monospace; font-weight: 700; font-size: 12px;
+    padding: 5px 10px; border-radius: 6px; letter-spacing: .03em;
+    background: var(--accent-soft); color: var(--accent);
+  }
+  .path {
+    font-family: "JetBrains Mono", monospace; font-size: 14px; font-weight: 500;
+    color: var(--text); word-break: break-all;
+  }
+  .pill {
+    font-size: 11px; font-weight: 600; letter-spacing: .03em; text-transform: uppercase;
+    padding: 3px 9px; border-radius: 999px;
+  }
+  .pill.auth { background: var(--surface-2); color: var(--text-2); }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; margin: 4px 0 4px; }
+  th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { font-family: "JetBrains Mono", monospace; font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--text-3); }
+  td.field { font-family: "JetBrains Mono", monospace; font-size: 13px; color: var(--text); white-space: nowrap; }
+  td.type { color: var(--text-2); white-space: nowrap; font-size: 12.5px; }
+  .req { color: var(--danger); font-weight: 600; font-size: 11px; }
+  .opt { color: var(--text-3); font-size: 11px; }
+  .table-wrap { overflow-x: auto; }
+
+  .code-block { position: relative; margin: 10px 0 18px; }
+  pre {
+    background: var(--code-bg); color: var(--code-text);
+    border-radius: 8px; padding: 16px 18px;
+    overflow-x: auto; font-size: 12.5px; line-height: 1.6;
+    margin: 0;
+  }
+  .code-label {
+    font-family: "JetBrains Mono", monospace; font-size: 11px; font-weight: 600;
+    letter-spacing: .04em; text-transform: uppercase; color: var(--text-3);
+    margin-bottom: 6px; display: block;
+  }
+  .copy-btn {
+    position: absolute; top: 10px; right: 10px;
+    font-family: "JetBrains Mono", monospace; font-size: 11px; font-weight: 600;
+    background: rgba(255,255,255,.08); color: var(--code-text);
+    border: 1px solid rgba(255,255,255,.15); border-radius: 6px;
+    padding: 5px 9px; cursor: pointer;
+  }
+  .copy-btn:hover { background: rgba(255,255,255,.16); }
+  .str { color: var(--code-str); }
+  .key { color: var(--code-key); }
+  .mut { color: var(--code-mute); }
+
+  .note {
+    display: flex; gap: 10px; padding: 12px 14px; border-radius: 8px;
+    font-size: 13.5px; margin: 14px 0;
+    background: var(--surface-2); border: 1px solid var(--border); color: var(--text-2);
+  }
+  .note.warn { background: var(--danger-soft); border-color: transparent; color: var(--danger); }
+  .note b { color: var(--text); }
+  .note.warn b { color: var(--danger); }
+
+  a { color: var(--accent); }
+
+  .status-chip {
+    font-family: "JetBrains Mono", monospace; font-weight: 700; font-size: 11px;
+    padding: 2px 7px; border-radius: 5px; margin-right: 6px;
+  }
+  .status-chip.ok { background: var(--success-soft); color: var(--success); }
+  .status-chip.err { background: var(--danger-soft); color: var(--danger); }
+
+  footer {
+    max-width: 860px; margin: 0 auto; padding: 24px 0 48px;
+    border-top: 1px solid var(--border); color: var(--text-3); font-size: 12.5px;
+  }
+
+  @media (max-width: 520px) {
+    main { padding-top: 28px; }
+    nav.toc { position: static; }
+    .path { font-size: 12.5px; }
+  }
+</style>
+</head>
+<body>
+<main>
+
+  <span class="eyebrow">BFL WMS &middot; API v1</span>
+  <h1>Store API Reference</h1>
+  <p class="lede">Integration guide for stores pushing GRN and stocktake data into BFL WMS: authentication, request/response formats, and field-level detail for all three endpoints.</p>
+
+  <nav class="toc">
+    <a href="#overview">Overview</a>
+    <a href="#auth">Authentication</a>
+    <a href="#responses">Response format</a>
+    <a href="#grn">store/grn</a>
+    <a href="#stocktake">store/stocktake</a>
+    <a href="#stocktake-report">store/stocktake/report</a>
+    <a href="#errors">Error reference</a>
+  </nav>
+
+  <section id="overview">
+    <h2><span class="h2-num">1</span>Overview</h2>
+    <p class="section-intro">All endpoints live under a single versioned base URL and require a bearer token, obtained via an OAuth2 client-credentials exchange.</p>
+    <div class="card">
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Environment</th><th>Base URL</th></tr></thead>
+          <tbody>
+            <tr><td>Production</td><td class="mono">https://bflwms.bflgroup.ae/api/v1</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p style="margin-top:14px;margin-bottom:0;color:var(--text-2);font-size:13.5px;">The <code>v1</code> path segment is a stable version marker &mdash; a future breaking change will ship as <code>/api/v2</code> alongside it rather than altering this contract.</p>
+    </div>
+  </section>
+
+  <section id="auth">
+    <h2><span class="h2-num">2</span>Authentication</h2>
+    <p class="section-intro">All three endpoints require a bearer token issued via the OAuth2 <strong>client-credentials</strong> grant. Contact your BFL integration contact to have a <code>client_id</code> / <code>client_secret</code> pair issued &mdash; there is no self-service signup.</p>
+
+    <h3>Step 1 &mdash; request a token</h3>
+    <div class="code-block">
+      <span class="code-label">Request</span>
+      <pre>POST /api/v1/oauth/token
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=client_credentials&amp;client_id=<span class="str">&lt;your_client_id&gt;</span>&amp;client_secret=<span class="str">&lt;your_client_secret&gt;</span></pre>
+    </div>
+    <div class="code-block">
+      <span class="code-label">Response &mdash; 200 OK</span>
+      <button class="copy-btn" data-copy-target="tok-resp">Copy</button>
+      <pre id="tok-resp">{
+  <span class="key">"access_token"</span>: <span class="str">"eyJhbGciOiJIUzI1NiIs..."</span>,
+  <span class="key">"token_type"</span>: <span class="str">"Bearer"</span>,
+  <span class="key">"expires_in"</span>: 3600
+}</pre>
+    </div>
+
+    <h3>Step 2 &mdash; call an endpoint</h3>
+    <p>Send the token as a bearer header on every request:</p>
+    <div class="code-block">
+      <pre>Authorization: Bearer <span class="str">&lt;access_token&gt;</span></pre>
+    </div>
+
+    <div class="note">
+      <span>&#9432;</span>
+      <span>Tokens expire after <b>60 minutes</b>. Request a new one when yours expires &mdash; there is no refresh-token flow, just repeat Step 1.</span>
+    </div>
+    <div class="note warn">
+      <span>&#9888;</span>
+      <span>Treat <b>client_secret</b> as a password. Store it server-side only; never embed it in a mobile app, POS terminal, or anything a store employee can inspect.</span>
+    </div>
+  </section>
+
+  <section id="responses">
+    <h2><span class="h2-num">3</span>Response format</h2>
+    <p class="section-intro">Every endpoint below returns the same simple shape, regardless of outcome.</p>
+    <div class="card">
+      <div class="code-block" style="margin-top:0">
+        <span class="code-label"><span class="status-chip ok">200</span>Success</span>
+        <pre>{ <span class="key">"status"</span>: <span class="str">"success"</span>, <span class="key">"message"</span>: <span class="str">"..."</span> }</pre>
+      </div>
+      <div class="code-block" style="margin-bottom:0">
+        <span class="code-label"><span class="status-chip err">400 / 500</span>Failure</span>
+        <pre>{ <span class="key">"status"</span>: <span class="str">"failed"</span>, <span class="key">"message"</span>: <span class="str">"&lt;reason&gt;"</span> }</pre>
+      </div>
+      <p style="margin:14px 0 0;color:var(--text-2);font-size:13.5px;"><strong>400</strong> means the request was rejected before anything was written (bad input, unknown store, duplicate record). <strong>500</strong> means an unexpected server-side error occurred. Always check <code>status</code> before treating a call as successful.</p>
+    </div>
+  </section>
+
+  <section id="grn">
+    <h2><span class="h2-num">4</span>store/grn</h2>
+    <p class="section-intro">A store submits a GRN (goods receipt note): one header covering the whole receipt, plus one or more transfers, each carrying its own received item lines.</p>
+
+    <div class="card">
+      <div class="endpoint-bar">
+        <span class="method">POST</span>
+        <span class="path">/api/v1/store/grn</span>
+        <span class="pill auth">Bearer token required</span>
+      </div>
+
+      <h3>Header fields</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td class="field">storeId</td><td class="type">string</td><td><span class="req">required</span></td><td>Store identifier. Must be a store already registered in WMS.</td></tr>
+            <tr><td class="field">dateTime</td><td class="type">string (ISO 8601)</td><td><span class="req">required</span></td><td>GRN date/time.</td></tr>
+            <tr><td class="field">ginNo</td><td class="type">string</td><td><span class="req">required</span></td><td>GIN number this GRN relates to.</td></tr>
+            <tr><td class="field">user</td><td class="type">string</td><td><span class="req">required</span></td><td>Name/ID of the person performing the receipt.</td></tr>
+            <tr><td class="field">transfers</td><td class="type">array</td><td><span class="req">required</span>, min 1</td><td>One or more transfers received in this GRN.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>transfers[] fields</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td class="field">trfNo</td><td class="type">string</td><td><span class="req">required</span></td><td>Transfer number. Must not already exist for this store.</td></tr>
+            <tr><td class="field">items</td><td class="type">array</td><td><span class="req">required</span>, min 1</td><td>Item lines received against this transfer.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>transfers[].items[] fields</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td class="field">itemCode</td><td class="type">string</td><td><span class="req">required</span></td><td>Item/SKU code.</td></tr>
+            <tr><td class="field">ean</td><td class="type">string</td><td><span class="opt">optional</span></td><td>EAN barcode.</td></tr>
+            <tr><td class="field">epc</td><td class="type">string</td><td><span class="opt">optional</span></td><td>RFID EPC value.</td></tr>
+            <tr><td class="field">qrcode</td><td class="type">string</td><td><span class="opt">optional</span></td><td>QR / serialized code.</td></tr>
+            <tr><td class="field">trfQty</td><td class="type">integer</td><td><span class="req">required</span></td><td>Quantity as per the transfer.</td></tr>
+            <tr><td class="field">scanQty</td><td class="type">integer</td><td><span class="req">required</span></td><td>Quantity actually scanned/received.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>Example request</h3>
+      <div class="code-block">
+        <button class="copy-btn" data-copy-target="grn-req">Copy</button>
+        <pre id="grn-req">{
+  <span class="key">"storeId"</span>: <span class="str">"BFL-SPRG"</span>,
+  <span class="key">"dateTime"</span>: <span class="str">"2026-09-24T10:00:00"</span>,
+  <span class="key">"ginNo"</span>: <span class="str">"GIN12345"</span>,
+  <span class="key">"user"</span>: <span class="str">"user1"</span>,
+  <span class="key">"transfers"</span>: [
+    {
+      <span class="key">"trfNo"</span>: <span class="str">"TRF001"</span>,
+      <span class="key">"items"</span>: [
+        {
+          <span class="key">"itemCode"</span>: <span class="str">"ITM001"</span>,
+          <span class="key">"ean"</span>: <span class="str">"1234567890123"</span>,
+          <span class="key">"epc"</span>: <span class="str">"30340..."</span>,
+          <span class="key">"qrcode"</span>: <span class="str">"BC001"</span>,
+          <span class="key">"trfQty"</span>: 5,
+          <span class="key">"scanQty"</span>: 5
+        }
+      ]
+    }
+  ]
+}</pre>
+      </div>
+
+      <h3>Responses</h3>
+      <div class="code-block">
+        <span class="code-label"><span class="status-chip ok">200</span>Success</span>
+        <pre>{ <span class="key">"status"</span>: <span class="str">"success"</span>, <span class="key">"message"</span>: <span class="str">"GRN created successfully"</span> }</pre>
+      </div>
+      <div class="code-block" style="margin-bottom:0">
+        <span class="code-label"><span class="status-chip err">400</span>Duplicate transfer</span>
+        <pre>{ <span class="key">"status"</span>: <span class="str">"failed"</span>, <span class="key">"message"</span>: <span class="str">"Transfer No 'TRF001' already exists."</span> }</pre>
+      </div>
+    </div>
+  </section>
+
+  <section id="stocktake">
+    <h2><span class="h2-num">5</span>store/stocktake</h2>
+    <p class="section-intro">A store submits raw stocktake <strong>scan results</strong>: one header for the count session, plus the individual items scanned (EAN, QR code, RFID).</p>
+
+    <div class="card">
+      <div class="endpoint-bar">
+        <span class="method">POST</span>
+        <span class="path">/api/v1/store/stocktake</span>
+        <span class="pill auth">Bearer token required</span>
+      </div>
+
+      <h3>Header fields</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td class="field">stockCountId</td><td class="type">string</td><td><span class="req">required</span></td><td>Identifier for this stocktake session. Must not already exist.</td></tr>
+            <tr><td class="field">storeId</td><td class="type">string</td><td><span class="req">required</span></td><td>Store identifier. Must be a store already registered in WMS.</td></tr>
+            <tr><td class="field">trnDate</td><td class="type">string (ISO 8601)</td><td><span class="req">required</span></td><td>Date/time of the count.</td></tr>
+            <tr><td class="field">username</td><td class="type">string</td><td><span class="req">required</span></td><td>Name/ID of the person who scanned.</td></tr>
+            <tr><td class="field">items</td><td class="type">array</td><td><span class="req">required</span>, min 1</td><td>Scanned item lines.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>items[] fields</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td class="field">itemCode</td><td class="type">string</td><td><span class="req">required</span></td><td>Item/SKU code.</td></tr>
+            <tr><td class="field">ean</td><td class="type">string</td><td><span class="opt">optional</span></td><td>EAN barcode.</td></tr>
+            <tr><td class="field">qrCode</td><td class="type">string</td><td><span class="opt">optional</span></td><td>QR / serialized code.</td></tr>
+            <tr><td class="field">rfid</td><td class="type">string</td><td><span class="opt">optional</span></td><td>RFID tag value.</td></tr>
+            <tr><td class="field">quantity</td><td class="type">integer</td><td><span class="req">required</span></td><td>Quantity scanned for this line.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>Example request</h3>
+      <div class="code-block">
+        <button class="copy-btn" data-copy-target="stk-req">Copy</button>
+        <pre id="stk-req">{
+  <span class="key">"stockCountId"</span>: <span class="str">"SC0001"</span>,
+  <span class="key">"storeId"</span>: <span class="str">"BFL-SPRG"</span>,
+  <span class="key">"trnDate"</span>: <span class="str">"2026-09-24T10:00:00"</span>,
+  <span class="key">"username"</span>: <span class="str">"user1"</span>,
+  <span class="key">"items"</span>: [
+    {
+      <span class="key">"itemCode"</span>: <span class="str">"ITM001"</span>,
+      <span class="key">"ean"</span>: <span class="str">"1234567890123"</span>,
+      <span class="key">"qrCode"</span>: <span class="str">"BC001"</span>,
+      <span class="key">"rfid"</span>: <span class="str">"30340..."</span>,
+      <span class="key">"quantity"</span>: 1
+    }
+  ]
+}</pre>
+      </div>
+
+      <h3>Responses</h3>
+      <div class="code-block">
+        <span class="code-label"><span class="status-chip ok">200</span>Success</span>
+        <pre>{ <span class="key">"status"</span>: <span class="str">"success"</span>, <span class="key">"message"</span>: <span class="str">"Stocktake created successfully"</span> }</pre>
+      </div>
+      <div class="code-block" style="margin-bottom:0">
+        <span class="code-label"><span class="status-chip err">400</span>Duplicate count</span>
+        <pre>{ <span class="key">"status"</span>: <span class="str">"failed"</span>, <span class="key">"message"</span>: <span class="str">"StockCountID 'SC0001' already exists."</span> }</pre>
+      </div>
+    </div>
+  </section>
+
+  <section id="stocktake-report">
+    <h2><span class="h2-num">6</span>store/stocktake/report</h2>
+    <p class="section-intro">A store submits the <strong>counted result</strong> of a stocktake: quantity counted, system SOH at the time, and the variance between them.</p>
+
+    <div class="card">
+      <div class="endpoint-bar">
+        <span class="method">POST</span>
+        <span class="path">/api/v1/store/stocktake/report</span>
+        <span class="pill auth">Bearer token required</span>
+      </div>
+
+      <h3>Header fields</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td class="field">stockCountId</td><td class="type">string</td><td><span class="req">required</span></td><td>Identifier for this stocktake session. Must not already exist.</td></tr>
+            <tr><td class="field">storeId</td><td class="type">string</td><td><span class="req">required</span></td><td>Store identifier. Must be a store already registered in WMS.</td></tr>
+            <tr><td class="field">trnDate</td><td class="type">string (ISO 8601)</td><td><span class="req">required</span></td><td>Date/time of the count.</td></tr>
+            <tr><td class="field">items</td><td class="type">array</td><td><span class="req">required</span>, min 1</td><td>Counted item lines.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>items[] fields</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td class="field">itemCode</td><td class="type">string</td><td><span class="req">required</span></td><td>Item/SKU code.</td></tr>
+            <tr><td class="field">ean</td><td class="type">string</td><td><span class="opt">optional</span></td><td>EAN barcode.</td></tr>
+            <tr><td class="field">quantity</td><td class="type">integer</td><td><span class="req">required</span></td><td>Quantity counted.</td></tr>
+            <tr><td class="field">soh</td><td class="type">integer</td><td><span class="req">required</span></td><td>System stock-on-hand at count time.</td></tr>
+            <tr><td class="field">variance</td><td class="type">integer</td><td><span class="req">required</span></td><td>Difference between counted quantity and SOH.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>Example request</h3>
+      <div class="code-block">
+        <button class="copy-btn" data-copy-target="stkr-req">Copy</button>
+        <pre id="stkr-req">{
+  <span class="key">"stockCountId"</span>: <span class="str">"SC0001"</span>,
+  <span class="key">"storeId"</span>: <span class="str">"BFL-SPRG"</span>,
+  <span class="key">"trnDate"</span>: <span class="str">"2026-09-24T10:00:00"</span>,
+  <span class="key">"items"</span>: [
+    {
+      <span class="key">"itemCode"</span>: <span class="str">"ITM001"</span>,
+      <span class="key">"ean"</span>: <span class="str">"1234567890123"</span>,
+      <span class="key">"quantity"</span>: 5,
+      <span class="key">"soh"</span>: 10,
+      <span class="key">"variance"</span>: -5
+    }
+  ]
+}</pre>
+      </div>
+
+      <h3>Responses</h3>
+      <div class="code-block">
+        <span class="code-label"><span class="status-chip ok">200</span>Success</span>
+        <pre>{ <span class="key">"status"</span>: <span class="str">"success"</span>, <span class="key">"message"</span>: <span class="str">"Stocktake created successfully"</span> }</pre>
+      </div>
+      <div class="code-block" style="margin-bottom:0">
+        <span class="code-label"><span class="status-chip err">400</span>Duplicate count</span>
+        <pre>{ <span class="key">"status"</span>: <span class="str">"failed"</span>, <span class="key">"message"</span>: <span class="str">"StockCountID 'SC0001' already exists."</span> }</pre>
+      </div>
+    </div>
+  </section>
+
+  <section id="errors">
+    <h2><span class="h2-num">7</span>Error reference</h2>
+    <p class="section-intro">Common <code>message</code> values returned with <code>"status": "failed"</code>. All are <strong>400</strong> unless noted &mdash; the request is rejected before anything is written.</p>
+    <div class="card">
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Message</th><th>Applies to</th><th>Meaning</th></tr></thead>
+          <tbody>
+            <tr><td class="mono" style="font-size:12.5px">storeId is required</td><td>All</td><td>Missing <code>storeId</code>.</td></tr>
+            <tr><td class="mono" style="font-size:12.5px">Unknown storeId '...'</td><td>All</td><td><code>storeId</code> is not a recognized WMS store.</td></tr>
+            <tr><td class="mono" style="font-size:12.5px">ginNo is required</td><td>grn</td><td>Missing <code>ginNo</code>.</td></tr>
+            <tr><td class="mono" style="font-size:12.5px">user is required</td><td>grn</td><td>Missing <code>user</code>.</td></tr>
+            <tr><td class="mono" style="font-size:12.5px">username is required</td><td>stocktake</td><td>Missing <code>username</code>.</td></tr>
+            <tr><td class="mono" style="font-size:12.5px">stockCountId is required</td><td>stocktake, stocktake/report</td><td>Missing <code>stockCountId</code>.</td></tr>
+            <tr><td class="mono" style="font-size:12.5px">transfers must contain at least one entry</td><td>grn</td><td><code>transfers</code> was empty or missing.</td></tr>
+            <tr><td class="mono" style="font-size:12.5px">every transfer requires a trfNo</td><td>grn</td><td>A transfer was missing <code>trfNo</code>.</td></tr>
+            <tr><td class="mono" style="font-size:12.5px">items must contain at least one entry</td><td>All</td><td><code>items</code> was empty or missing.</td></tr>
+            <tr><td class="mono" style="font-size:12.5px">every item requires an itemCode</td><td>All</td><td>An item line was missing <code>itemCode</code>.</td></tr>
+            <tr><td class="mono" style="font-size:12.5px">Transfer No '...' already exists.</td><td>grn</td><td>That <code>trfNo</code> was already submitted for this store.</td></tr>
+            <tr><td class="mono" style="font-size:12.5px">StockCountID '...' already exists.</td><td>stocktake, stocktake/report</td><td>That <code>stockCountId</code> was already submitted for this store.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p style="margin:14px 0 0;color:var(--text-2);font-size:13.5px;">A <strong>500</strong> response means an unexpected error occurred server-side &mdash; if you see one repeatedly, contact your BFL integration contact with the exact <code>message</code> returned.</p>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  BFL WMS &middot; Store API Reference &middot; v1
+</footer>
+
+<script>
+  document.querySelectorAll('.copy-btn').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var targetId = btn.getAttribute('data-copy-target');
+      var el = document.getElementById(targetId);
+      if (!el) return;
+      var text = el.textContent;
+      var done = function () {
+        var original = btn.textContent;
+        btn.textContent = 'Copied';
+        setTimeout(function () { btn.textContent = original; }, 1400);
+      };
+      try {
+        navigator.clipboard.writeText(text).then(done).catch(function () { fallbackCopy(text, done); });
+      } catch (e) {
+        fallbackCopy(text, done);
+      }
+    });
+  });
+
+  function fallbackCopy(text, done) {
+    try {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+      done();
+    } catch (e) { /* clipboard unavailable — no-op */ }
+  }
+</script>
+</body>
+</html>
