@@ -24,10 +24,10 @@ public record IncUploadResult(bool Ok, int RowsSaved, string? Error, List<string
 public record IncTargetRow(
     string Category, decimal? TargetAuto, decimal? TargetManual, decimal? IncentiveBase,
     decimal? Add_IncentiveTgt, decimal? Add_IncentiveRate,
-    string? UploadedUser, DateTime? CreateTS, string? ModifiedUser, DateTime? ModifiedTS);
+    string? UploadedUser, DateTime? CreateTS);
 
-// An INC_Target row as it was just before an update replaced it. INC_Target_Log has the
-// same columns as INC_Target: ModifiedUser / ModifiedTS here are who replaced it and when.
+// An INC_Target row as it was just before an update replaced it. INC_Target_Log has
+// INC_Target's columns plus ModifiedUser / ModifiedTS: who replaced it and when.
 public record IncTargetLogRow(
     string Category, decimal? TargetAuto, decimal? TargetManual, decimal? IncentiveBase,
     decimal? Add_IncentiveTgt, decimal? Add_IncentiveRate,
@@ -248,14 +248,13 @@ public class IncentivesSettingsService(IOnPremConnectionResolver resolver)
     // ===================== Targets (per Category, no date period) =====================
     // One row per Category in DATAREPORTING.dbo.INC_Target; stays in force until it is
     // changed. By default a Category already stored rejects the file; with
-    // "Update existing" ticked, stored Categories are overwritten (needs UPDATE permission).
-    // A new Category gets UploadedUser/CreateTS and ModifiedUser/ModifiedTS; an update only
-    // moves ModifiedUser/ModifiedTS, so the original uploader is kept. Before an update, the
-    // row being replaced is copied into INC_Target_Log (same transaction), with ModifiedUser /
-    // ModifiedTS set to who is replacing it and when.
+    // "Update existing" ticked, stored Categories get the new values (needs UPDATE).
+    // INC_Target only has UploadedUser / CreateTS — the first uploader, never changed by an
+    // update. Before an update the row being replaced is copied into INC_Target_Log (same
+    // transaction), whose ModifiedUser / ModifiedTS record who replaced it and when.
 
     private const string TargetColumns =
-        "Category, TargetAuto, TargetManual, IncentiveBase, Add_IncentiveTgt, Add_IncentiveRate, UploadedUser, CreateTS, ModifiedUser, ModifiedTS";
+        "Category, TargetAuto, TargetManual, IncentiveBase, Add_IncentiveTgt, Add_IncentiveRate, UploadedUser, CreateTS";
 
     public async Task<List<IncTargetRow>> GetTargetsAsync(CancellationToken ct = default)
     {
@@ -317,19 +316,18 @@ public class IncentivesSettingsService(IOnPremConnectionResolver resolver)
                 await c.ExecuteAsync(new CommandDefinition(@"
                     UPDATE DATAREPORTING.dbo.INC_Target
                        SET TargetAuto = @TargetAuto, TargetManual = @TargetManual, IncentiveBase = @IncentiveBase,
-                           Add_IncentiveTgt = @Add_IncentiveTgt, Add_IncentiveRate = @Add_IncentiveRate,
-                           ModifiedUser = @uploadedUser, ModifiedTS = @now
+                           Add_IncentiveTgt = @Add_IncentiveTgt, Add_IncentiveRate = @Add_IncentiveRate
                      WHERE Category = @Category",
-                    updates.Select(r => new { r.Category, r.TargetAuto, r.TargetManual, r.IncentiveBase, r.Add_IncentiveTgt, r.Add_IncentiveRate, uploadedUser, now }),
+                    updates.Select(r => new { r.Category, r.TargetAuto, r.TargetManual, r.IncentiveBase, r.Add_IncentiveTgt, r.Add_IncentiveRate }),
                     tx, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
 
             if (inserts.Count > 0)
                 await c.ExecuteAsync(new CommandDefinition(@"
                     INSERT INTO DATAREPORTING.dbo.INC_Target
                         (Category, TargetAuto, TargetManual, IncentiveBase, Add_IncentiveTgt, Add_IncentiveRate,
-                         UploadedUser, CreateTS, ModifiedUser, ModifiedTS)
+                         UploadedUser, CreateTS)
                     VALUES (@Category, @TargetAuto, @TargetManual, @IncentiveBase, @Add_IncentiveTgt, @Add_IncentiveRate,
-                            @uploadedUser, @now, @uploadedUser, @now)",
+                            @uploadedUser, @now)",
                     inserts.Select(r => new { r.Category, r.TargetAuto, r.TargetManual, r.IncentiveBase, r.Add_IncentiveTgt, r.Add_IncentiveRate, uploadedUser, now }),
                     tx, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
 
