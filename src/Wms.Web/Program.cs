@@ -93,6 +93,7 @@ public class Program
         builder.Services.AddScoped<WarehouseSohSummaryService>();
         builder.Services.AddScoped<EcomStockVarianceReportService>();
         builder.Services.AddScoped<WarehouseIncentivesService>();
+        builder.Services.AddScoped<IncentivesSettingsService>();
         builder.Services.AddScoped<TechnoPairingService>();
         builder.Services.AddScoped<TechnoBuildingService>();
         builder.Services.AddScoped<TechnoPricingService>();

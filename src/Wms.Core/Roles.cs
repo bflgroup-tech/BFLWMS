@@ -7,10 +7,12 @@ public static class Roles
     public const string WHSupervisor = "WHSupervisor";
     public const string WHManager    = "WHManager";
     public const string Reports      = "Reports";
+    public const string Payroll      = "Payroll";
 
     public const string AnyWarehouse = "Admin,WHAssociate,WHSupervisor,WHManager";
     public const string SupervisorOrAbove = "Admin,WHSupervisor,WHManager";
     public const string ReportsOrAdmin    = "Admin,Reports";
+    public const string PayrollOrAdmin    = "Admin,Payroll";
 }
 
 public static class AuthPolicies

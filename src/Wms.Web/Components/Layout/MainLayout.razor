@@ -18,6 +18,7 @@
                                  : context.User.IsInRole("WHManager") ? "WH Manager"
                                  : context.User.IsInRole("WHSupervisor") ? "WH Supervisor"
                                  : context.User.IsInRole("WHAssociate") ? "WH Associate"
+                                 : context.User.IsInRole("Payroll") ? "Payroll"
                                  : "User";
                     }
                     <span class="aiwms-role-badge">@role</span>
