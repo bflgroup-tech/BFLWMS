@@ -374,7 +374,7 @@
                 <thead style="position:sticky; top:0; z-index:1;">
                     <tr><th>Category</th><th style="text-align:right;">Target Auto</th><th style="text-align:right;">Target Manual</th><th style="text-align:right;">Incentive Base</th>
                         <th style="text-align:right;">Add. Incentive Tgt</th><th style="text-align:right;">Add. Incentive Rate</th>
-                        <th>Uploaded By</th><th>Uploaded On</th><th>Modified By</th><th>Modified On</th></tr>
+                        <th>Uploaded By</th><th>Uploaded On</th></tr>
                 </thead>
                 <tbody>
                     @foreach (var r in _targets)
@@ -385,7 +385,6 @@
                             <td style="text-align:right;">@(r.IncentiveBase?.ToString("N2"))</td>
                             <td style="text-align:right;">@(r.Add_IncentiveTgt?.ToString("N2"))</td><td style="text-align:right;">@(r.Add_IncentiveRate?.ToString("N2"))</td>
                             <td>@r.UploadedUser</td><td>@(r.CreateTS?.ToString("dd-MMM-yyyy HH:mm") ?? "")</td>
-                            <td>@r.ModifiedUser</td><td>@(r.ModifiedTS?.ToString("dd-MMM-yyyy HH:mm") ?? "")</td>
                         </tr>
                     }
                 </tbody>
