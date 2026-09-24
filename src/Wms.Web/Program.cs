@@ -160,6 +160,13 @@ public class Program
         // On-demand only ("Enqueue Now") — no timer yet, API-call step not built.
         builder.Services.AddScoped<ApiGinIntegrationService>();
 
+        // Pushes EPC/RFID tag events (DATAREPORTING.dbo.EPCBarcodes) to the external
+        // EPC imports API. On-demand only ("Send Now") — no timer yet, since the
+        // source query has no "already sent" filter (see ApiEpcIntegrationService doc).
+        builder.Services.Configure<Wms.Data.Lpm.ApiEpcIntegrationOptions>(
+            builder.Configuration.GetSection(Wms.Data.Lpm.ApiEpcIntegrationOptions.SectionName));
+        builder.Services.AddHttpClient<ApiEpcIntegrationService>();
+
         // Robotics chute-mapping/status APIs used by the Chute Mapping page.
         builder.Services.Configure<Wms.Data.Robotic.RoboticApiOptions>(
             builder.Configuration.GetSection(Wms.Data.Robotic.RoboticApiOptions.SectionName));

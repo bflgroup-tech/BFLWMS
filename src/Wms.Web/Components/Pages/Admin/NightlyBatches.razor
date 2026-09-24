@@ -16,6 +16,7 @@
 @inject IncreffMfcsSohCompareService IncreffCompare
 @inject GenerateEan13Service Ean13
 @inject ApiGinIntegrationService ApiGin
+@inject ApiEpcIntegrationService ApiEpc
 @inject OtsPoAllocationService Ots
 @inject ContainerAllocationDataSyncService Sync
 @inject PendingGoodsReceiptEmailService Pgr
@@ -359,6 +360,18 @@
                 active => Task.CompletedTask,
                 new() { ("Enqueue Now", EventCallback.Factory.Create(this, EnqueueApiGinNowAsync)) },
                 "on-demand only"));
+
+            // 12. APIEpcIntegration — on-demand only, no timer yet. The source query
+            //     has no "already sent" filter yet (see ApiEpcIntegrationService doc),
+            //     so this is manual until that's wired. No activation state to toggle,
+            //     so the checkbox is disabled.
+            list.Add(new JobVm(
+                ApiEpcIntegrationService.JobName, "On-demand", null,
+                true, default, "",
+                null,
+                active => Task.CompletedTask,
+                new() { ("Send Now", EventCallback.Factory.Create(this, SendApiEpcNowAsync)) },
+                "on-demand only"));
         }
         catch (Exception ex) { Show($"Failed to load jobs: {ex.Message}", true); }
 
@@ -493,6 +506,18 @@
             var (rows, err) = await ApiGin.EnqueuePendingGinsAsync("OnDemand", CurrentUser.Name ?? "");
             if (err is null) Show($"APIGinIntegration enqueue done — {rows:N0} GINs queued.", false);
             else             Show($"APIGinIntegration enqueue failed: {err}", true);
+        }
+        finally { _busy = false; await RefreshLogAsync(); }
+    }
+
+    private async Task SendApiEpcNowAsync()
+    {
+        _busy = true; Show("Sending pending EPC items…", false); await InvokeAsync(StateHasChanged);
+        try
+        {
+            var (rows, err) = await ApiEpc.SendPendingEpcAsync("OnDemand", CurrentUser.Name ?? "");
+            if (err is null) Show($"APIEpcIntegration send done — {rows:N0} EPC items sent.", false);
+            else             Show($"APIEpcIntegration send failed: {err}", true);
         }
         finally { _busy = false; await RefreshLogAsync(); }
     }
