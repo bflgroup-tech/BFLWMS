@@ -1,0 +1,582 @@
+@using System.Globalization
+@using Wms.Core
+@using Wms.Data.Lpm
+@using ClosedXML.Excel
+@using Microsoft.AspNetCore.Components.Forms
+@inject IncentivesSettingsService Svc
+@inject ICurrentUser Me
+@inject Microsoft.JSInterop.IJSRuntime JS
+
+@* Settings tab of Warehouse Incentives — shown only to Admin / Payroll (gated by the parent page). *@
+
+<style>
+    /* Same black/yellow section title bar as the Ecom Production Report (.ecomprod-header). */
+    .incset-header { position: relative; background: var(--bfl-black); color: var(--bfl-yellow); font-family: var(--font-display); font-weight: 800; font-size: 13px; text-transform: uppercase; letter-spacing: .5px; padding: 10px 40px; text-align: center; }
+    .incset-header .incset-toggle { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); background: none; border: none; color: inherit; cursor: pointer; padding: 2px 6px; line-height: 1; border-radius: var(--r-sm); }
+    .incset-header .incset-toggle:hover { background: rgba(255,255,255,0.12); }
+</style>
+
+@if (!string.IsNullOrEmpty(_message))
+{
+    <div class="aiwms-alert @(_isError ? "error" : "info")" style="margin-bottom:12px;">
+        @_message
+        @if (_problems.Count > 0)
+        {
+            <ul style="margin:6px 0 0 18px; padding:0;">
+                @foreach (var p in _problems.Take(MaxProblemsShown)) { <li>@p</li> }
+            </ul>
+            @if (_problems.Count > MaxProblemsShown)
+            {
+                <div style="margin-top:4px;">…and @(_problems.Count - MaxProblemsShown) more.</div>
+            }
+        }
+    </div>
+}
+
+@* ===================== 1. Employee Master ===================== *@
+<div class="aiwms-section" style="padding:0; overflow:hidden;">
+    <div class="incset-header">
+        <span>Employee Master Upload</span>
+        @Toggle(_empCollapsed, () => _empCollapsed = !_empCollapsed)
+    </div>
+    @if (!_empCollapsed)
+    {
+    <div style="padding:16px 20px;">
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; margin-bottom:10px;">
+        <p style="margin:0; color:var(--text-secondary); font-size:12px;">
+            Excel (.xlsx) with header row <b>EmpCode, EmpName, Country, Warehouse, Category</b>. New employees only —
+            if any EmpCode already exists in the master, nothing is saved and the existing EmpCodes are listed.
+        </p>
+        <button class="aiwms-btn aiwms-btn-secondary" style="white-space:nowrap;" @onclick="DownloadEmployeeTemplateAsync">Download template</button>
+    </div>
+    <InputFile OnChange="OnEmployeeFileSelected" accept=".xlsx" disabled="@_busy" @key="_empFileKey" />
+
+    @if (_empUpload.Count > 0)
+    {
+        <div style="margin-top:12px; display:flex; align-items:center; gap:12px;">
+            <b>Preview — @_empUpload.Count.ToString("N0") employee(s)</b>
+            <button class="aiwms-btn aiwms-btn-primary" @onclick="SaveEmployeesAsync" disabled="@_busy">Save</button>
+            <button class="aiwms-btn aiwms-btn-secondary" @onclick="() => { _empUpload = new(); _empFileKey++; }" disabled="@_busy">Cancel</button>
+        </div>
+        <div style="max-height:260px; overflow:auto; margin-top:8px;">
+            <table class="aiwms-table aiwms-table-dense">
+                <thead style="position:sticky; top:0; z-index:1;">
+                    <tr><th>EmpCode</th><th>EmpName</th><th>Country</th><th>Warehouse</th><th>Category</th></tr>
+                </thead>
+                <tbody>
+                    @foreach (var r in _empUpload)
+                    {
+                        <tr><td>@r.EmpCode</td><td>@r.EmpName</td><td>@r.Country</td><td>@r.Warehouse</td><td>@r.Category</td></tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+    </div>
+    }
+</div>
+
+<div class="aiwms-section" style="padding:0; overflow:hidden;">
+    <div class="incset-header">
+        <span>Uploaded Employees @(_empLoaded ? $"({_employees.Count:N0})" : "")</span>
+        @Toggle(_empGridCollapsed, () => _empGridCollapsed = !_empGridCollapsed)
+    </div>
+    @if (!_empGridCollapsed)
+    {
+    <div style="padding:16px 20px;">
+    <div style="display:flex; justify-content:flex-end; align-items:end; gap:12px; flex-wrap:wrap; margin-bottom:10px;">
+        <div>
+            <label class="aiwms-filter-label">EMPCODE</label>
+            <input @bind="_empSearch" @bind:event="oninput" @onkeyup="OnEmpSearchKey" placeholder="Search EmpCode…"
+                   style="padding:7px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; width:180px;" />
+        </div>
+        <button class="aiwms-btn aiwms-btn-primary" @onclick="LoadEmployeesAsync" disabled="@_busy">Search</button>
+    </div>
+    @if (_empLoaded && _employees.Count == 0)
+    {
+        <p style="color:var(--text-secondary); margin:0;">No employees found.</p>
+    }
+    else if (_employees.Count > 0)
+    {
+        <div style="max-height:360px; overflow:auto;">
+            <table class="aiwms-table aiwms-table-dense">
+                <thead style="position:sticky; top:0; z-index:1;">
+                    <tr><th>EmpCode</th><th>EmpName</th><th>Country</th><th>Warehouse</th><th>Category</th><th>Uploaded By</th><th>Uploaded On</th></tr>
+                </thead>
+                <tbody>
+                    @foreach (var r in _employees)
+                    {
+                        <tr>
+                            <td>@r.EmpCode</td><td>@r.EmpName</td><td>@r.Country</td><td>@r.Warehouse</td><td>@r.Category</td>
+                            <td>@r.UploadedUser</td><td>@(r.CreateTS?.ToString("dd-MMM-yyyy HH:mm") ?? "")</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+    </div>
+    }
+</div>
+
+@* ===================== 2. Attendance Discrepancies ===================== *@
+<div class="aiwms-section" style="padding:0; overflow:hidden;">
+    <div class="incset-header">
+        <span>Attendance Discrepancies Upload</span>
+        @Toggle(_attCollapsed, () => _attCollapsed = !_attCollapsed)
+    </div>
+    @if (!_attCollapsed)
+    {
+    <div style="padding:16px 20px;">
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; margin-bottom:10px;">
+    <div style="color:var(--text-secondary); font-size:12px; line-height:1.6;">
+        <div>* AttendanceDate must fall between Date From and Date To.</div>
+        <div>* Shift timings like <b>6AM</b> / <b>8PM</b> (or 06:00 / 20:00). DiscrepancyType must be <b>Earlygoing</b>, <b>LateComing</b> or <b>Absent</b>.</div>
+        <div>* Every EmpCode must already be in the Employee Master.</div>
+        @if (_isAdmin)
+        {
+            <div style="margin-top:4px;">
+                Excel (.xlsx) with header row <b>EmpCode, AttendanceDate, ShiftTimingFrom, ShiftTimingTo, DiscrepancyType</b>.
+                If any row is invalid, or the employee already has a row for that date, nothing is saved.
+            </div>
+        }
+    </div>
+        <button class="aiwms-btn aiwms-btn-secondary" style="white-space:nowrap;" @onclick="DownloadAttendanceTemplateAsync">Download template</button>
+    </div>
+    <div style="display:flex; gap:12px; align-items:end; flex-wrap:wrap;">
+        <div>
+            <label class="aiwms-filter-label">DATE FROM</label>
+            <input type="date" style="padding:6px 8px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px;" value="@_attFrom.ToString("yyyy-MM-dd")"
+                   @onchange="e => SetDate(e, v => _attFrom = v)" disabled="@_busy" />
+        </div>
+        <div>
+            <label class="aiwms-filter-label">DATE TO</label>
+            <input type="date" style="padding:6px 8px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px;" value="@_attTo.ToString("yyyy-MM-dd")"
+                   @onchange="e => SetDate(e, v => _attTo = v)" disabled="@_busy" />
+        </div>
+        <div>
+            <label class="aiwms-filter-label">UPLOAD FILE</label>
+            <InputFile OnChange="OnAttendanceFileSelected" accept=".xlsx" disabled="@(_busy || !AttRangeValid)" @key="_attFileKey" />
+        </div>
+    </div>
+    @if (!AttRangeValid)
+    {
+        <p style="margin:6px 0 0 0; font-size:12px; color:#b91c1c;">Date To must be on or after Date From.</p>
+    }
+
+    @if (_attUpload.Count > 0)
+    {
+        <div style="margin-top:12px; display:flex; align-items:center; gap:12px;">
+            <b>Preview — @_attUpload.Count.ToString("N0") row(s), @_attUpload.Select(r => r.EmpCode).Distinct(StringComparer.OrdinalIgnoreCase).Count() employee(s)</b>
+            <button class="aiwms-btn aiwms-btn-primary" @onclick="SaveAttendanceAsync" disabled="@_busy">Save</button>
+            <button class="aiwms-btn aiwms-btn-secondary" @onclick="() => { _attUpload = new(); _attFileKey++; }" disabled="@_busy">Cancel</button>
+        </div>
+        <div style="max-height:260px; overflow:auto; margin-top:8px;">
+            <table class="aiwms-table aiwms-table-dense">
+                <thead style="position:sticky; top:0; z-index:1;">
+                    <tr><th>EmpCode</th><th>Attendance Date</th><th>Shift From</th><th>Shift To</th><th>Discrepancy</th></tr>
+                </thead>
+                <tbody>
+                    @foreach (var r in _attUpload)
+                    {
+                        <tr>
+                            <td>@r.EmpCode</td><td>@r.AttendanceDate.ToString("dd-MMM-yyyy")</td>
+                            <td>@ShowTime(r.ShiftTimingFrom)</td><td>@ShowTime(r.ShiftTimingTo)</td><td>@r.DiscrepancyType</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+    </div>
+    }
+</div>
+
+<div class="aiwms-section" style="padding:0; overflow:hidden;">
+    <div class="incset-header">
+        <span>Uploaded Attendance Discrepancies (@_attFrom.ToString("dd-MMM-yyyy") – @_attTo.ToString("dd-MMM-yyyy")) @(_attLoaded ? $"({_attendance.Count:N0})" : "")</span>
+        @Toggle(_attGridCollapsed, () => _attGridCollapsed = !_attGridCollapsed)
+    </div>
+    @if (!_attGridCollapsed)
+    {
+    <div style="padding:16px 20px;">
+    <div style="display:flex; justify-content:flex-end; align-items:end; gap:12px; flex-wrap:wrap; margin-bottom:10px;">
+        <div>
+            <label class="aiwms-filter-label">EMPCODE</label>
+            <input @bind="_attSearch" @bind:event="oninput" @onkeyup="OnAttSearchKey" placeholder="Search EmpCode…"
+                   style="padding:7px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; width:180px;" />
+        </div>
+        <button class="aiwms-btn aiwms-btn-primary" @onclick="LoadAttendanceAsync" disabled="@(_busy || !AttRangeValid)">Search</button>
+    </div>
+    @if (_attLoaded && _attendance.Count == 0)
+    {
+        <p style="color:var(--text-secondary); margin:0;">No attendance discrepancies found for these dates.</p>
+    }
+    else if (_attendance.Count > 0)
+    {
+        <div style="max-height:360px; overflow:auto;">
+            <table class="aiwms-table aiwms-table-dense">
+                <thead style="position:sticky; top:0; z-index:1;">
+                    <tr><th>EmpCode</th><th>Attendance Date</th><th>Shift From</th><th>Shift To</th><th>Discrepancy</th><th>Uploaded By</th><th>Uploaded On</th></tr>
+                </thead>
+                <tbody>
+                    @foreach (var r in _attendance)
+                    {
+                        <tr>
+                            <td>@r.EmpCode</td><td>@r.AttendanceDate.ToString("dd-MMM-yyyy")</td>
+                            <td>@ShowTime(r.ShiftTimingFrom)</td><td>@ShowTime(r.ShiftTimingTo)</td><td>@r.DiscrepancyType</td>
+                            <td>@r.UploadedUser</td><td>@(r.CreateTS?.ToString("dd-MMM-yyyy HH:mm") ?? "")</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+    </div>
+    }
+</div>
+
+@code {
+    private const int MaxProblemsShown = 25;
+    private const string XlsxMime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+
+    [CascadingParameter] private Task<AuthenticationState>? AuthState { get; set; }
+    private bool _isAdmin;
+    private bool _busy;
+    private bool _empCollapsed;
+    private bool _attCollapsed;
+    private bool _empGridCollapsed;
+    private bool _attGridCollapsed;
+    private string _message = "";
+    private bool _isError;
+    private List<string> _problems = new();
+
+    // Employee master
+    private int _empFileKey;
+    private List<IncEmployeeUploadRow> _empUpload = new();
+    private List<IncEmployeeRow> _employees = new();
+    private bool _empLoaded;
+    private string _empSearch = "";
+
+    // Attendance
+    private DateTime _attFrom = new(DateTime.Today.Year, DateTime.Today.Month, 1);
+    private DateTime _attTo = DateTime.Today;
+    private int _attFileKey;
+    private List<IncAttendanceUploadRow> _attUpload = new();
+    private List<IncAttendanceRow> _attendance = new();
+    private bool _attLoaded;
+    private string _attSearch = "";
+    private bool AttRangeValid => _attTo.Date >= _attFrom.Date;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await Me.EnsureLoadedAsync();
+        if (AuthState is not null) _isAdmin = (await AuthState).User.IsInRole(Roles.Admin);
+        await LoadEmployeesAsync();
+        await LoadAttendanceAsync();
+    }
+
+    private string Uploader => Me.Email ?? Me.Name ?? "";
+
+    private void ShowError(string msg, List<string>? problems = null) { _message = msg; _isError = true;  _problems = problems ?? new(); }
+    private void ShowInfo(string msg)                                  { _message = msg; _isError = false; _problems = new(); }
+
+    private static void SetDate(ChangeEventArgs e, Action<DateTime> apply)
+    {
+        if (DateTime.TryParse(e.Value?.ToString(), CultureInfo.InvariantCulture, DateTimeStyles.None, out var d) && d.Year > 1900)
+            apply(d.Date);
+    }
+
+    private RenderFragment Toggle(bool collapsed, Action toggle) => __builder =>
+    {
+        <button type="button" class="incset-toggle" title="@(collapsed ? "Expand" : "Minimize")" @onclick="toggle">
+            <span class="mi sm">@(collapsed ? "add" : "remove")</span>
+        </button>
+    };
+
+    private static string ShowTime(TimeSpan? t) =>
+        t is null ? "" : DateTime.Today.Add(t.Value).ToString("h:mmtt", CultureInfo.InvariantCulture).Replace(":00", "");
+
+    private async Task OnEmpSearchKey(KeyboardEventArgs e) { if (e.Key == "Enter") await LoadEmployeesAsync(); }
+    private async Task OnAttSearchKey(KeyboardEventArgs e) { if (e.Key == "Enter") await LoadAttendanceAsync(); }
+
+    private async Task LoadEmployeesAsync()
+    {
+        try { _employees = await Svc.GetEmployeesAsync(_empSearch); _empLoaded = true; }
+        catch (Exception ex) { ShowError($"Couldn't load employees: {ex.Message}"); }
+    }
+
+    private async Task LoadAttendanceAsync()
+    {
+        if (!AttRangeValid) return;
+        try { _attendance = await Svc.GetAttendanceAsync(_attFrom, _attTo, _attSearch); _attLoaded = true; }
+        catch (Exception ex) { ShowError($"Couldn't load attendance: {ex.Message}"); }
+    }
+
+    // ===================== Employee master upload =====================
+
+    private async Task OnEmployeeFileSelected(InputFileChangeEventArgs e)
+    {
+        _empUpload = new();
+        var ms = await ReadXlsxAsync(e.File);
+        if (ms is null) return;
+        _busy = true;
+        try
+        {
+            var problems = new List<string>();
+            var rows = ParseEmployees(ms, problems);
+            if (problems.Count > 0) { ShowError($"The file has {problems.Count} problem(s) — nothing was loaded. Fix them and choose the file again.", problems); _empFileKey++; return; }
+            if (rows.Count == 0)     { ShowError("No data rows found in the Excel."); _empFileKey++; return; }
+            _empUpload = rows;
+            ShowInfo($"Read {rows.Count:N0} employee(s). Check the preview, then click Save.");
+        }
+        catch (Exception ex) { ShowError($"Couldn't read the Excel: {ex.Message}"); _empFileKey++; }
+        finally { _busy = false; }
+    }
+
+    private async Task SaveEmployeesAsync()
+    {
+        _busy = true; StateHasChanged();
+        try
+        {
+            var r = await Svc.UploadEmployeesAsync(_empUpload, Uploader);
+            if (r.Ok)
+            {
+                ShowInfo($"Saved {r.RowsSaved:N0} employee(s) to the Employee Master.");
+                _empUpload = new(); _empFileKey++;
+                await LoadEmployeesAsync();
+            }
+            else ShowError(r.Error ?? "Save failed.", r.Problems);
+        }
+        finally { _busy = false; }
+    }
+
+    private static List<IncEmployeeUploadRow> ParseEmployees(Stream stream, List<string> problems)
+    {
+        using var wb = new XLWorkbook(stream);
+        var ws = wb.Worksheet(1);
+        var cols = HeaderMap(ws);
+        foreach (var required in new[] { "empcode", "empname", "country", "warehouse", "category" })
+            if (!cols.ContainsKey(required))
+                problems.Add($"Header row is missing column '{required}'. Expected: EmpCode, EmpName, Country, Warehouse, Category.");
+        if (problems.Count > 0) return new();
+
+        var rows = new List<IncEmployeeUploadRow>();
+        var seen = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var last = ws.LastRowUsed()?.RowNumber() ?? 1;
+        for (var r = 2; r <= last; r++)
+        {
+            string Text(string col) => ws.Cell(r, cols[col]).GetFormattedString().Trim();
+            var code = Text("empcode");
+            if (code.Length == 0 && Text("empname").Length == 0) continue;   // blank line
+            if (code.Length == 0) { problems.Add($"Row {r}: EmpCode is empty."); continue; }
+            if (seen.TryGetValue(code, out var firstRow)) { problems.Add($"Row {r}: EmpCode {code} is repeated (also on row {firstRow})."); continue; }
+            seen[code] = r;
+            rows.Add(new IncEmployeeUploadRow(code, NullIfEmpty(Text("empname")), NullIfEmpty(Text("country")),
+                                              NullIfEmpty(Text("warehouse")), NullIfEmpty(Text("category"))));
+        }
+        return rows;
+    }
+
+    // ===================== Attendance upload =====================
+
+    private async Task OnAttendanceFileSelected(InputFileChangeEventArgs e)
+    {
+        _attUpload = new();
+        var ms = await ReadXlsxAsync(e.File);
+        if (ms is null) return;
+        _busy = true;
+        try
+        {
+            var problems = new List<string>();
+            var rows = ParseAttendance(ms, _attFrom, _attTo, problems);
+            if (problems.Count > 0) { ShowError($"The file has {problems.Count} problem(s) — nothing was loaded. Fix them and choose the file again.", problems); _attFileKey++; return; }
+            if (rows.Count == 0)     { ShowError("No data rows found in the Excel."); _attFileKey++; return; }
+
+            var notInMaster = await Svc.GetEmpCodesNotInMasterAsync(rows.Select(r => r.EmpCode));
+            if (notInMaster.Count > 0)
+            {
+                ShowError($"{notInMaster.Count} EmpCode(s) are not in the Employee Master — nothing was loaded. Upload them to the Employee Master first, or remove them from the file.",
+                          notInMaster.Select(c => $"EmpCode {c} is not in the Employee Master").ToList());
+                _attFileKey++;
+                return;
+            }
+            _attUpload = rows;
+            ShowInfo($"Read {rows.Count:N0} attendance row(s). Check the preview, then click Save.");
+        }
+        catch (Exception ex) { ShowError($"Couldn't read the Excel: {ex.Message}"); _attFileKey++; }
+        finally { _busy = false; }
+    }
+
+    private async Task SaveAttendanceAsync()
+    {
+        // Date From / To may have been changed after the file was read.
+        var outside = _attUpload.Where(r => r.AttendanceDate < _attFrom.Date || r.AttendanceDate > _attTo.Date).ToList();
+        if (outside.Count > 0)
+        {
+            ShowError($"{outside.Count} row(s) are outside {_attFrom:dd-MMM-yyyy} – {_attTo:dd-MMM-yyyy} — nothing was saved. Fix the dates or the file and choose it again.",
+                      outside.Select(r => $"EmpCode {r.EmpCode} on {r.AttendanceDate:dd-MMM-yyyy}").ToList());
+            return;
+        }
+
+        _busy = true; StateHasChanged();
+        try
+        {
+            var r = await Svc.UploadAttendanceAsync(_attUpload, Uploader);
+            if (r.Ok)
+            {
+                ShowInfo($"Saved {r.RowsSaved:N0} attendance discrepancy row(s).");
+                _attUpload = new(); _attFileKey++;
+                await LoadAttendanceAsync();
+            }
+            else ShowError(r.Error ?? "Save failed.", r.Problems);
+        }
+        finally { _busy = false; }
+    }
+
+    private static List<IncAttendanceUploadRow> ParseAttendance(Stream stream, DateTime from, DateTime to, List<string> problems)
+    {
+        using var wb = new XLWorkbook(stream);
+        var ws = wb.Worksheet(1);
+        var cols = HeaderMap(ws);
+        foreach (var required in new[] { "empcode", "attendancedate", "shifttimingfrom", "shifttimingto", "discrepancytype" })
+            if (!cols.ContainsKey(required))
+                problems.Add($"Header row is missing column '{required}'. Expected: EmpCode, AttendanceDate, ShiftTimingFrom, ShiftTimingTo, DiscrepancyType.");
+        if (problems.Count > 0) return new();
+
+        var rows = new List<IncAttendanceUploadRow>();
+        var seen = new Dictionary<(string, DateTime), int>();
+        var last = ws.LastRowUsed()?.RowNumber() ?? 1;
+        for (var r = 2; r <= last; r++)
+        {
+            var code = ws.Cell(r, cols["empcode"]).GetFormattedString().Trim();
+            var dateCell = ws.Cell(r, cols["attendancedate"]);
+            var typeRaw = ws.Cell(r, cols["discrepancytype"]).GetFormattedString().Trim();
+            if (code.Length == 0 && dateCell.IsEmpty() && typeRaw.Length == 0) continue;   // blank line
+
+            var rowOk = true;
+            void Bad(string msg) { problems.Add($"Row {r}: {msg}"); rowOk = false; }
+
+            if (code.Length == 0) Bad("EmpCode is empty.");
+
+            if (!TryReadDate(dateCell, out var date)) Bad($"AttendanceDate '{dateCell.GetFormattedString()}' is not a valid date.");
+            else if (date < from.Date || date > to.Date) Bad($"AttendanceDate {date:dd-MMM-yyyy} is outside {from:dd-MMM-yyyy} – {to:dd-MMM-yyyy}.");
+
+            var type = IncentivesSettingsService.DiscrepancyTypes
+                .FirstOrDefault(t => string.Equals(t, typeRaw.Replace(" ", ""), StringComparison.OrdinalIgnoreCase));
+            if (type is null)
+                Bad(typeRaw.Length == 0
+                    ? "DiscrepancyType is empty — must be Earlygoing, LateComing or Absent."
+                    : $"DiscrepancyType '{typeRaw}' is not allowed — must be Earlygoing, LateComing or Absent.");
+
+            var fromCell = ws.Cell(r, cols["shifttimingfrom"]);
+            var toCell   = ws.Cell(r, cols["shifttimingto"]);
+            if (!TryReadTime(fromCell, out var shiftFrom)) Bad($"ShiftTimingFrom '{fromCell.GetFormattedString()}' is not a time (use e.g. 6AM or 06:00).");
+            if (!TryReadTime(toCell,   out var shiftTo))   Bad($"ShiftTimingTo '{toCell.GetFormattedString()}' is not a time (use e.g. 8PM or 20:00).");
+
+            if (!rowOk) continue;
+
+            var key = (code.ToUpperInvariant(), date);
+            if (seen.TryGetValue(key, out var firstRow)) { Bad($"EmpCode {code} on {date:dd-MMM-yyyy} is repeated (also on row {firstRow})."); continue; }
+            seen[key] = r;
+            rows.Add(new IncAttendanceUploadRow(code, date, shiftFrom, shiftTo, type!));
+        }
+        return rows;
+    }
+
+    // ===================== shared Excel helpers =====================
+
+    private async Task<MemoryStream?> ReadXlsxAsync(IBrowserFile? file)
+    {
+        if (file is null) return null;
+        if (!file.Name.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase)) { ShowError("File must be an Excel .xlsx file."); return null; }
+        var ms = new MemoryStream();
+        await using (var s = file.OpenReadStream(maxAllowedSize: 20 * 1024 * 1024)) await s.CopyToAsync(ms);
+        ms.Position = 0;
+        return ms;
+    }
+
+    // Header text -> column number, matched case/space/underscore-insensitively so column order doesn't matter.
+    private static Dictionary<string, int> HeaderMap(IXLWorksheet ws)
+    {
+        var map = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var header = ws.Row(1);
+        var lastCol = header.LastCellUsed()?.Address.ColumnNumber ?? 0;
+        for (var c = 1; c <= lastCol; c++)
+        {
+            var h = header.Cell(c).GetString().Trim().ToLowerInvariant().Replace(" ", "").Replace("_", "");
+            if (h.Length > 0 && !map.ContainsKey(h)) map[h] = c;
+        }
+        return map;
+    }
+
+    private static readonly string[] DateFormats =
+        ["dd/MM/yyyy", "d/M/yyyy", "dd-MM-yyyy", "d-M-yyyy", "yyyy-MM-dd", "dd-MMM-yyyy", "d-MMM-yyyy", "dd MMM yyyy", "d MMM yyyy", "dd.MM.yyyy"];
+
+    private static bool TryReadDate(IXLCell cell, out DateTime date)
+    {
+        date = default;
+        if (cell.IsEmpty()) return false;
+        if (cell.DataType == XLDataType.DateTime) { date = cell.GetDateTime().Date; return true; }
+        if (cell.DataType == XLDataType.Number)   { date = DateTime.FromOADate(cell.GetDouble()).Date; return true; }
+        var s = cell.GetString().Trim();
+        if (DateTime.TryParseExact(s, DateFormats, CultureInfo.InvariantCulture, DateTimeStyles.None, out date)) { date = date.Date; return true; }
+        return false;
+    }
+
+    private static readonly string[] TimeFormats =
+        ["htt", "h tt", "h:mmtt", "h:mm tt", "hh:mmtt", "hh:mm tt", "hhtt", "H:mm", "HH:mm", "HH:mm:ss", "H"];
+
+    // Empty is allowed (column is NULL-able, e.g. Absent). Accepts 6AM / 8PM / 6:30 PM / 06:00 / 20:00 and Excel time cells.
+    private static bool TryReadTime(IXLCell cell, out TimeSpan? time)
+    {
+        time = null;
+        if (cell.IsEmpty()) return true;
+        if (cell.DataType == XLDataType.DateTime) { time = cell.GetDateTime().TimeOfDay; return true; }
+        if (cell.DataType == XLDataType.TimeSpan) { time = cell.GetTimeSpan(); return time.Value < TimeSpan.FromDays(1); }
+        if (cell.DataType == XLDataType.Number)
+        {
+            var d = cell.GetDouble();
+            if (d >= 0 && d < 1) { time = TimeSpan.FromDays(d); return true; }
+            return false;
+        }
+        var s = cell.GetString().Trim().ToUpperInvariant().Replace(".", "");
+        if (s.Length == 0) return true;
+        if (DateTime.TryParseExact(s, TimeFormats, CultureInfo.InvariantCulture, DateTimeStyles.None, out var dt))
+        {
+            time = new TimeSpan(dt.Hour, dt.Minute, 0);
+            return true;
+        }
+        return false;
+    }
+
+    private static string? NullIfEmpty(string s) => s.Length == 0 ? null : s;
+
+    // ===================== templates =====================
+
+    private Task DownloadEmployeeTemplateAsync() =>
+        DownloadTemplateAsync("Employee_Master_Template.xlsx", "Employee Master",
+            ["EmpCode", "EmpName", "Country", "Warehouse", "Category"],
+            ["E1001", "Employee Name", "UAE", "TECHNO", "Picker"]);
+
+    private Task DownloadAttendanceTemplateAsync() =>
+        DownloadTemplateAsync("Attendance_Discrepancies_Template.xlsx", "Attendance",
+            ["EmpCode", "AttendanceDate", "ShiftTimingFrom", "ShiftTimingTo", "DiscrepancyType"],
+            ["E1001", DateTime.Today.ToString("dd/MM/yyyy"), "6AM", "8PM", "LateComing"]);
+
+    private async Task DownloadTemplateAsync(string fileName, string sheet, string[] headers, string[] example)
+    {
+        using var wb = new XLWorkbook();
+        var ws = wb.Worksheets.Add(sheet);
+        for (var i = 0; i < headers.Length; i++)
+        {
+            ws.Cell(1, i + 1).Value = headers[i];
+            ws.Cell(2, i + 1).SetValue(example[i]);   // text, so EmpCodes / dates / "6AM" stay as typed
+        }
+        ws.Range(1, 1, 1, headers.Length).Style.Font.Bold = true;
+        ws.Columns().AdjustToContents();
+        using var ms = new MemoryStream();
+        wb.SaveAs(ms);
+        await JS.InvokeVoidAsync("downloadFileWithPicker", fileName, Convert.ToBase64String(ms.ToArray()), XlsxMime);
+    }
+}

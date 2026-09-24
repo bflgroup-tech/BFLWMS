@@ -22,7 +22,7 @@
 </div>
 
 <div style="display:flex; gap:4px; border-bottom:2px solid var(--border-default); margin:0 0 16px 0; flex-wrap:wrap;">
-    @foreach (var t in Tabs)
+    @foreach (var t in VisibleTabs)
     {
         var isActive = _activeTab == t;
         <button @onclick="@(() => _activeTab = t)"
@@ -32,7 +32,11 @@
     }
 </div>
 
-@if (_activeTab == TechnoTeamProduction)
+@if (_activeTab == Settings && _canSeeSettings)
+{
+    <IncentivesSettings />
+}
+else if (_activeTab == TechnoTeamProduction)
 {
     <div class="aiwms-section">
         <p style="color:var(--text-secondary); margin:0 0 12px 0">TECHNO whole-team pairing/production counts per day, split into AM/PM shift buckets. Pairing from BFLDATA.dbo.RFPairingCount, Production from BFLDATA.dbo.DailyCountCategoryTrf (manual) and DailyCountCategoryTrfRobo (auto). Production-Manual is reported net of Production-Auto for the same shift.</p>
@@ -794,6 +798,11 @@ else
     private const string RfidProduction = "RFID Production";
     private const string JafzaExportChecking = "Jafza Export Checking";
     private const string JafzaExportPairing = "Jafza Export Pairing & R1 Sorting";
+    // Settings (Employee Master / Attendance uploads) is shown first, and only to Admin / Payroll.
+    private const string Settings = "Settings";
+    [CascadingParameter] private Task<AuthenticationState>? AuthState { get; set; }
+    private bool _canSeeSettings;
+    private IEnumerable<string> VisibleTabs => _canSeeSettings ? Tabs.Prepend(Settings) : Tabs;
     private static readonly string[] Tabs =
         [TechnoTeamProduction, TechnoChecking, TechnoPairing, TechnoBuilding, TechnoPricing, RfidProduction, JafzaExportChecking, JafzaExportPairing, "Jafza Production"];
     private string _activeTab = TechnoTeamProduction;
@@ -822,6 +831,12 @@ else
 
     protected override async Task OnInitializedAsync()
     {
+        if (AuthState is not null)
+        {
+            var user = (await AuthState).User;
+            _canSeeSettings = user.IsInRole(Roles.Admin) || user.IsInRole(Roles.Payroll);
+        }
+
         try { _divisions = await Svc.GetDivisionsAsync(); }
         catch { /* fall back to empty list if the lookup fails */ }
 
