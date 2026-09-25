@@ -20,13 +20,14 @@ namespace Wms.Data.Lpm;
 ///   - GINs (POST /v1/store-inbounds) — one call per GIN with its line items
 ///     (quantities from TransferDetail). Tracked via ApiUpdate/ApiResponse.
 ///
-/// SendPendingAsync is the single entry point ("Send Now" on the Nightly Batches
-/// admin page — no timer yet): one dbo.WmsRptJobRun row covering both, products
+/// SendPendingAsync is the single entry point (hourly via ApiGinIntegrationBatchService,
+/// or "Send Now" on the Nightly Batches admin page): one dbo.WmsRptJobRun row covering both, products
 /// always run first because the receiving system needs a SKU's product master
 /// record before an inbound referencing that SKU makes sense on its end.
 ///
-/// Enqueuing new GINs into APICallGIN is not this service's job — it's handled
-/// elsewhere (or manually); this service only sends what's already queued.
+/// Each run first enqueues the last day's serialized BFLSPRINGS GINs into APICallGIN
+/// (EnqueueGinsSql, skipping any GIN/shop already queued), then sends whatever is
+/// still unsent.
 ///
 /// Both halves follow the same convention: the raw response body always gets saved
 /// (success or not), and the *Update column is only stamped GETDATE() when the
@@ -55,6 +56,20 @@ public class ApiGinIntegrationService(
         c.Open();
         return c;
     }
+
+    // Queues the last day's serialized GINs for BFLSPRINGS. The NOT EXISTS keeps a
+    // GIN/shop from being queued twice — without it every run would re-insert the
+    // same day's GINs as fresh unsent rows and they'd be sent again.
+    private const string EnqueueGinsSql = @"
+        INSERT INTO LPMSIM.dbo.APICallGIN
+        SELECT DISTINCT GETDATE(), a.SrNo, a.ShopIssue, NULL, '', NULL, ''
+          FROM BFLDATA.dbo.vGoodsIssuePlt a, DATA2004.dbo.TransferDetail b
+         WHERE a.TrfNo = b.TrfNo
+           AND a.ShopIssue = 'BFLSPRINGS'
+           AND b.SerializedCode <> ''
+           AND a.EntryDate >= GETDATE() - 1
+           AND NOT EXISTS (SELECT 1 FROM LPMSIM.dbo.APICallGIN x
+                            WHERE x.ginno = a.SrNo AND x.shopname = a.ShopIssue);";
 
     private const string PendingGinsSql = @"
         SELECT ginno AS GinNo, shopname AS ShopName
@@ -394,7 +409,8 @@ public class ApiGinIntegrationService(
     }
 
     /// <summary>
-    /// Single entry point for "Send Now" — runs products first, then GINs, in one
+    /// Single entry point for "Send Now" — enqueues new GINs into APICallGIN, then
+    /// runs products first, then GINs, in one
     /// dbo.WmsRptJobRun row. Products go first because the receiving system needs a
     /// SKU's product master record before an inbound referencing that SKU makes
     /// sense on its end. Never throws.
@@ -422,6 +438,9 @@ public class ApiGinIntegrationService(
         try
         {
             await using var c = OpenOnPremBackup();
+
+            await c.ExecuteAsync(new CommandDefinition(
+                EnqueueGinsSql, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
 
             var (productsSent, productsFailed, productResults) = await SendProductsCoreAsync(c, opts, ct);
             var (ginsSent, ginsFailed, ginResults) = await SendGinsCoreAsync(c, opts, ct);
