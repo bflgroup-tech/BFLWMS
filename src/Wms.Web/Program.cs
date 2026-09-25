@@ -159,15 +159,24 @@ public class Program
         // Pushes GIN-linked shop-issue transfers to the external store-inbounds API.
         // Step 1 (enqueue into bfldata.dbo.APICallGIN) is stubbed pending confirmation;
         // Step 2 (POST queued GINs, "Send Now") is live. On-demand only — no timer yet.
+        //
+        // ApiKey is shared with ApiEpcIntegration below — both Altavant endpoints take
+        // the same key — so it's read from the single top-level "Oct_ApiKey" App
+        // Service setting rather than each service's own config section.
         builder.Services.Configure<ApiGinIntegrationOptions>(
             builder.Configuration.GetSection(ApiGinIntegrationOptions.SectionName));
+        builder.Services.PostConfigure<ApiGinIntegrationOptions>(
+            o => o.ApiKey = builder.Configuration["Oct_ApiKey"] ?? "");
         builder.Services.AddHttpClient<ApiGinIntegrationService>();
 
         // Pushes EPC/RFID tag events (DATAREPORTING.dbo.EPCBarcodes) to the external
         // EPC imports API. On-demand only ("Send Now") — no timer yet, since the
         // source query has no "already sent" filter (see ApiEpcIntegrationService doc).
+        // Shares the same "Oct_ApiKey" setting as ApiGinIntegration above.
         builder.Services.Configure<Wms.Data.Lpm.ApiEpcIntegrationOptions>(
             builder.Configuration.GetSection(Wms.Data.Lpm.ApiEpcIntegrationOptions.SectionName));
+        builder.Services.PostConfigure<Wms.Data.Lpm.ApiEpcIntegrationOptions>(
+            o => o.ApiKey = builder.Configuration["Oct_ApiKey"] ?? "");
         builder.Services.AddHttpClient<ApiEpcIntegrationService>();
 
         // Robotics chute-mapping/status APIs used by the Chute Mapping page.
