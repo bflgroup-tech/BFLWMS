@@ -89,13 +89,12 @@ public class ApiEpcIntegrationService(
     // at most 500 items"), so a full EPCBarcodes pull is sent in chunks.
     private const int MaxItemsPerRequest = 500;
 
-    // WmsProductionDb, not OnPremBackup — same as GenerateEan13Service for
-    // DATAREPORTING writes: the OnPremBackup login has been denied UPDATE
-    // there before. Used here for the read too, so the eventual "mark sent"
-    // UPDATE lands on the same connection/transaction semantics.
-    private SqlConnection OpenWmsProductionDb()
+    // OnPremBackup (the LOGBACKUP server), not WmsProductionDb — same switch as
+    // ApiGinIntegrationService, whose WmsProductionDb connection didn't resolve
+    // LPMSIM.dbo.APICallGIN ("Invalid object name") while OnPremBackup did.
+    private SqlConnection OpenOnPremBackup()
     {
-        var c = new SqlConnection(resolver.GetWmsProductionDbConnectionString());
+        var c = new SqlConnection(resolver.GetOnPremBackupConnectionString());
         c.Open();
         return c;
     }
@@ -137,7 +136,7 @@ public class ApiEpcIntegrationService(
         try
         {
             List<EpcSourceRow> rows;
-            await using (var c = OpenWmsProductionDb())
+            await using (var c = OpenOnPremBackup())
             {
                 var dbRows = await c.QueryAsync<EpcSourceRow>(new CommandDefinition(
                     SourceQuery, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
