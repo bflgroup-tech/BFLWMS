@@ -153,6 +153,9 @@ public class YotoVnaDashboardService(IOnPremConnectionResolver resolver)
               AND NOT EXISTS (
                   SELECT 1 FROM usa.dbo.UsaPallets a WITH (NOLOCK) WHERE a.Contno = cr.RefNo
               )
+              AND NOT EXISTS (   -- EDI-enabled containers never get UsaPallets rows, but aren't pending
+                  SELECT 1 FROM BFLDATA..ContColorHeader a WITH (NOLOCK) WHERE a.Contno = cr.RefNo AND EDI = 'Y'
+              )
             GROUP BY CASE WHEN cr.RefNo LIKE 'AEINT%' THEN 'AEINT' ELSE 'AELOC' END",
             new { wh = Warehouse, floor = PendingFloor },
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
@@ -161,9 +164,19 @@ public class YotoVnaDashboardService(IOnPremConnectionResolver resolver)
 
     /// <summary>Detailed (per-container) view of GetPendingOffloadingAsync -- one row per RefNo
     /// instead of rolled up to AEINT/AELOC. Same live-as-of-now floor and NOT-EXISTS-in-UsaPallets
+    /// (and not EDI-enabled in BFLDATA..ContColorHeader)
     /// condition, same PoNumbers approach as GetCompletedOffloadingDetailAsync.</summary>
-    public async Task<List<YotoPendingContainerRow>> GetPendingOffloadingDetailAsync(CancellationToken ct = default)
+    public Task<List<YotoPendingContainerRow>> GetPendingOffloadingDetailAsync(CancellationToken ct = default) =>
+        GetNotOffloadedContainersAsync(ediEnabled: false, ct);
+
+    /// <summary>Received, not in UsaPallets, but EDI-enabled (BFLDATA..ContColorHeader.EDI = 'Y') — these
+    /// never get UsaPallets rows, so they're listed separately under "Pending for offloading", not in it.</summary>
+    public Task<List<YotoPendingContainerRow>> GetEdiEnabledContainersAsync(CancellationToken ct = default) =>
+        GetNotOffloadedContainersAsync(ediEnabled: true, ct);
+
+    private async Task<List<YotoPendingContainerRow>> GetNotOffloadedContainersAsync(bool ediEnabled, CancellationToken ct)
     {
+        var ediCheck = ediEnabled ? "EXISTS" : "NOT EXISTS";
         await using var c = OpenOnPremBackup();
         var rows = await c.QueryAsync<YotoPendingContainerRow>(new CommandDefinition($@"
             WITH OrderPo AS (
@@ -191,6 +204,9 @@ public class YotoVnaDashboardService(IOnPremConnectionResolver resolver)
                AND (cr.RefNo LIKE 'AEINT%' OR cr.RefNo LIKE 'AELOC%')
                AND NOT EXISTS (
                    SELECT 1 FROM usa.dbo.UsaPallets a WITH (NOLOCK) WHERE a.Contno = cr.RefNo
+               )
+               AND {ediCheck} (   -- EDI-enabled containers never get UsaPallets rows, but aren't pending
+                   SELECT 1 FROM BFLDATA..ContColorHeader a WITH (NOLOCK) WHERE a.Contno = cr.RefNo AND EDI = 'Y'
                )
              GROUP BY cr.RefNo
              ORDER BY ReceiptDt, cr.RefNo",
