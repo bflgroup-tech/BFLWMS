@@ -1,4 +1,5 @@
 using Wms.Core;
+using Wms.Core.Entities;
 using Wms.Data;
 using Wms.Data.Auditing;
 using Wms.Data.Configuration;
@@ -157,26 +158,27 @@ public class Program
         builder.Services.AddScoped<GenerateEan13Service>();
 
         // Pushes GIN-linked shop-issue transfers to the external store-inbounds API.
-        // Step 1 (enqueue into bfldata.dbo.APICallGIN) is stubbed pending confirmation;
-        // Step 2 (POST queued GINs, "Send Now") is live. On-demand only — no timer yet.
+        // Each run enqueues new GINs into LPMSIM.dbo.APICallGIN, then POSTs unsent ones.
+        // Hourly via ApiGinIntegrationBatchService (gated by its Nightly Batches toggle),
+        // plus "Send Now" on demand.
         //
         // ApiKey is shared with ApiEpcIntegration below — both Altavant endpoints take
-        // the same key — so it's read from the single top-level "Oct_ApiKey" App
+        // the same key — so it's read from the single top-level "apikey" App
         // Service setting rather than each service's own config section.
         builder.Services.Configure<ApiGinIntegrationOptions>(
             builder.Configuration.GetSection(ApiGinIntegrationOptions.SectionName));
         builder.Services.PostConfigure<ApiGinIntegrationOptions>(
-            o => o.ApiKey = builder.Configuration["Oct_ApiKey"] ?? "");
+            o => o.ApiKey = builder.Configuration["apikey"] ?? "");
         builder.Services.AddHttpClient<ApiGinIntegrationService>();
 
         // Pushes EPC/RFID tag events (DATAREPORTING.dbo.EPCBarcodes) to the external
-        // EPC imports API. On-demand only ("Send Now") — no timer yet, since the
-        // source query has no "already sent" filter (see ApiEpcIntegrationService doc).
-        // Shares the same "Oct_ApiKey" setting as ApiGinIntegration above.
+        // EPC imports API. Hourly via ApiEpcIntegrationBatchService (gated by its
+        // Nightly Batches toggle), plus "Send Now" on demand.
+        // Shares the same "apikey" setting as ApiGinIntegration above.
         builder.Services.Configure<Wms.Data.Lpm.ApiEpcIntegrationOptions>(
             builder.Configuration.GetSection(Wms.Data.Lpm.ApiEpcIntegrationOptions.SectionName));
         builder.Services.PostConfigure<Wms.Data.Lpm.ApiEpcIntegrationOptions>(
-            o => o.ApiKey = builder.Configuration["Oct_ApiKey"] ?? "");
+            o => o.ApiKey = builder.Configuration["apikey"] ?? "");
         builder.Services.AddHttpClient<ApiEpcIntegrationService>();
 
         // Robotics chute-mapping/status APIs used by the Chute Mapping page.
@@ -191,6 +193,8 @@ public class Program
         builder.Services.AddHostedService<Wms.Web.Hosting.ToteMasterScheduledService>();
         builder.Services.AddHostedService<Wms.Web.Hosting.BoxesToWmsProdScheduledService>();
         builder.Services.AddHostedService<Wms.Web.Hosting.GenerateEan13BatchService>();
+        builder.Services.AddHostedService<Wms.Web.Hosting.ApiEpcIntegrationBatchService>();
+        builder.Services.AddHostedService<Wms.Web.Hosting.ApiGinIntegrationBatchService>();
         builder.Services.AddHostedService<Wms.Web.Hosting.PendingGoodsReceiptEmailScheduledService>();
         builder.Services.AddScoped<Wms.Web.Hosting.PendingGoodsReceiptEmailSender>();
         builder.Services.AddScoped<Wms.Data.Notifications.PendingGoodsReceiptEmailService>();
@@ -336,6 +340,54 @@ public class Program
 
         app.UseAuthentication();
         app.UseAuthorization();
+
+        // Logs every /api/v1/* call — method, path, status code, client identity, timing.
+        // Deliberately never reads request/response bodies, so it never touches the JSON payload.
+        app.Use(async (context, next) =>
+        {
+            if (!context.Request.Path.StartsWithSegments("/api/v1", out _))
+            {
+                await next();
+                return;
+            }
+
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            Exception? thrown = null;
+            try
+            {
+                await next();
+            }
+            catch (Exception ex)
+            {
+                thrown = ex;
+                throw;
+            }
+            finally
+            {
+                sw.Stop();
+                try
+                {
+                    var dbFactory = context.RequestServices.GetRequiredService<IDbContextFactory<WmsDbContext>>();
+                    await using var db = await dbFactory.CreateDbContextAsync();
+                    db.ApiRequestLogs.Add(new ApiRequestLog
+                    {
+                        Timestamp = DateTime.UtcNow,
+                        Method = context.Request.Method,
+                        Path = context.Request.Path.Value ?? "",
+                        StatusCode = thrown is null ? context.Response.StatusCode : 500,
+                        ClientId = context.User.FindFirst("client_id")?.Value,
+                        ClientName = context.User.FindFirst("name")?.Value,
+                        ClientIp = context.Connection.RemoteIpAddress?.ToString(),
+                        DurationMs = (int)sw.ElapsedMilliseconds,
+                    });
+                    await db.SaveChangesAsync();
+                }
+                catch
+                {
+                    // Logging must never break the actual API response.
+                }
+            }
+        });
 
         // Microsoft.Identity.Web.UI controllers + razor pages handle /MicrosoftIdentity/Account/*.
         app.MapControllers();

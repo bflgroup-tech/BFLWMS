@@ -1,0 +1,59 @@
+@page "/admin/api/log"
+@rendermode RenderMode.InteractiveServer
+@attribute [Authorize(Policy = Wms.Core.MenuKeys.ADMIN_API_LOG)]
+@using Wms.Core.Entities
+@using Wms.Data
+@using Microsoft.EntityFrameworkCore
+@inject IDbContextFactory<WmsDbContext> DbFactory
+
+<PageTitle>WMS — API Log</PageTitle>
+
+<div class="aiwms-page-header">
+    <h2>API Log</h2>
+    <p>Every call made to <code>/api/v1/*</code> &mdash; method, path, status code, and the calling client. Request/response payloads are never logged.</p>
+</div>
+
+<div class="aiwms-section">
+    <div style="display:flex;gap:8px;margin-bottom:14px;align-items:center">
+        <input @bind="_filterPath" placeholder="path contains..." style="padding:8px 12px;border:1px solid var(--border);border-radius:6px" />
+        <input @bind="_filterClient" placeholder="client id contains..." style="padding:8px 12px;border:1px solid var(--border);border-radius:6px" />
+        <button class="aiwms-btn aiwms-btn-primary" @onclick="Reload">Filter</button>
+        <button class="aiwms-btn aiwms-btn-secondary" @onclick="Reload">⟲ Refresh</button>
+    </div>
+
+    <table class="aiwms-table">
+        <thead><tr><th>Timestamp (UTC)</th><th>Method</th><th>Path</th><th>Status</th><th>Client</th><th>IP</th><th>Duration</th></tr></thead>
+        <tbody>
+            @foreach (var r in _rows)
+            {
+                <tr>
+                    <td>@r.Timestamp.ToString("yyyy-MM-dd HH:mm:ss")</td>
+                    <td style="font-family:Consolas,monospace">@r.Method</td>
+                    <td style="font-family:Consolas,monospace">@r.Path</td>
+                    <td>
+                        <span class="aiwms-pill @(r.StatusCode is >= 200 and < 300 ? "tier1" : "tier4")">@r.StatusCode</span>
+                    </td>
+                    <td>@(r.ClientName ?? r.ClientId ?? "—")</td>
+                    <td>@(r.ClientIp ?? "—")</td>
+                    <td>@(r.DurationMs) ms</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+</div>
+
+@code {
+    private List<ApiRequestLog> _rows = new();
+    private string _filterPath = "", _filterClient = "";
+
+    protected override async Task OnInitializedAsync() => await Reload();
+
+    private async Task Reload()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var q = db.ApiRequestLogs.AsNoTracking();
+        if (!string.IsNullOrWhiteSpace(_filterPath)) q = q.Where(r => r.Path.Contains(_filterPath));
+        if (!string.IsNullOrWhiteSpace(_filterClient)) q = q.Where(r => (r.ClientId ?? "").Contains(_filterClient));
+        _rows = await q.OrderByDescending(r => r.Timestamp).Take(500).ToListAsync();
+    }
+}

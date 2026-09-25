@@ -270,6 +270,40 @@
                     </tbody>
                 </table>
                 }
+                <table class="aiwms-table aiwms-table-dense" style="text-align:center; width:100%; margin-top:14px;">
+                    <thead>
+                        <tr><th colspan="4" style="text-align:center; position:relative;">EDI Enabled Containers (since @PendingFloorLabel) @AdminQueryButton("Offloading Shipment Summary — EDI Enabled Containers")</th></tr>
+                        <tr>
+                            <th style="text-align:left">Container ID</th>
+                            <th style="text-align:right">Receipt Date</th>
+                            <th style="text-align:right">Order Qty</th>
+                            <th style="text-align:left">PO Number</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @if (_ediContainers.Count == 0)
+                        {
+                            <tr><td colspan="4" style="text-align:left; color:var(--text-secondary);">No EDI enabled containers.</td></tr>
+                        }
+                        @foreach (var r in _ediContainers)
+                        {
+                            <tr>
+                                <td style="text-align:left">@r.Contno</td>
+                                <td style="text-align:right">@r.ReceiptDt.ToString("dd-MMM-yyyy")</td>
+                                <td style="text-align:right">@r.Qty.ToString("N0")</td>
+                                <td style="text-align:left">@r.PoNumbers</td>
+                            </tr>
+                        }
+                        @if (_ediContainers.Count > 0)
+                        {
+                            <tr class="yvd-total-row">
+                                <td style="text-align:left" colspan="2">Total (@_ediContainers.Count container(s))</td>
+                                <td style="text-align:right">@_ediContainers.Sum(r => r.Qty).ToString("N0")</td>
+                                <td></td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
             </div>
         </div>
         }
@@ -465,6 +499,8 @@
     private List<YotoOffloadContainerRow> _containerDetails = new();
     private List<YotoPendingGroupRow> _pending = new();
     private List<YotoPendingContainerRow> _pendingDetails = new();
+    // Received, not in UsaPallets, but EDI = 'Y' in BFLDATA..ContColorHeader — not pending, listed under it.
+    private List<YotoPendingContainerRow> _ediContainers = new();
     private List<YotoInboundPeriodRow> _periodRows = new();
     private List<YotoInternalTransferBox> _internalTransfers = new();
 
@@ -585,6 +621,7 @@
                     _containerDetails = IsOffloadingSummary ? new() : await Svc.GetCompletedOffloadingDetailAsync(monthStart, monthEnd);
                     _pending = await Svc.GetPendingOffloadingAsync();
                     _pendingDetails = IsOffloadingSummary ? new() : await Svc.GetPendingOffloadingDetailAsync();
+                    _ediContainers = await Svc.GetEdiEnabledContainersAsync();
                     _periodRows = await Svc.GetMonthlyInboundSummaryAsync(_selectedYear);
                 }
                 else if (IsWeeklyAgg)
@@ -596,6 +633,7 @@
                     _containerDetails = IsOffloadingSummary ? new() : await Svc.GetCompletedOffloadingDetailAsync(monthStart, monthEnd);
                     _pending = await Svc.GetPendingOffloadingAsync();
                     _pendingDetails = IsOffloadingSummary ? new() : await Svc.GetPendingOffloadingDetailAsync();
+                    _ediContainers = await Svc.GetEdiEnabledContainersAsync();
 
                     var weeksInMonth = Weeks.Where(w => w.Start < monthEnd && w.End >= monthStart).ToList();
                     var periodRows = new List<YotoInboundPeriodRow>();
@@ -613,6 +651,7 @@
                     _containerDetails = IsOffloadingSummary ? new() : await Svc.GetCompletedOffloadingDetailAsync(rangeStart, rangeEnd);
                     _pending = await Svc.GetPendingOffloadingAsync();
                     _pendingDetails = IsOffloadingSummary ? new() : await Svc.GetPendingOffloadingDetailAsync();
+                    _ediContainers = await Svc.GetEdiEnabledContainersAsync();
 
                     var daysInRange = (int)(rangeEnd - rangeStart).TotalDays;
                     var periodRows = new List<YotoInboundPeriodRow>();
@@ -631,6 +670,7 @@
                     _containerDetails = IsOffloadingSummary ? new() : await Svc.GetCompletedOffloadingDetailAsync(weekStart, weekEnd);
                     _pending = await Svc.GetPendingOffloadingAsync();
                     _pendingDetails = IsOffloadingSummary ? new() : await Svc.GetPendingOffloadingDetailAsync();
+                    _ediContainers = await Svc.GetEdiEnabledContainersAsync();
                     _periodRows = new List<YotoInboundPeriodRow> { await Svc.GetInboundSummaryForRangeAsync(weekStart, weekEnd, SelectedPeriodLabel, SelectedWeekNum) };
                 }
             }
@@ -639,7 +679,7 @@
                 // Offloading Shipment Summary / Total Inbound Summary are YOTO-only (they read
                 // usa.dbo.UsaPallets/KNBBoxes, which don't exist for JAFZA/TECHNO) and are hidden
                 // in the markup for any other warehouse -- nothing to fetch for them here.
-                _completed = new(); _containerDetails = new(); _pending = new(); _pendingDetails = new();
+                _completed = new(); _containerDetails = new(); _pending = new(); _pendingDetails = new(); _ediContainers = new();
                 _periodRows = new();
             }
 
@@ -874,6 +914,18 @@
             ws.Cell(row, 1).Value = "Total"; ws.Cell(row, 3).Value = _pendingDetails.Sum(r => r.Qty);
             ws.Row(row).Style.Font.Bold = true; row += 2;
         }
+
+        row = WriteSectionTitle(ws, row, $"EDI Enabled Containers (not pending, since {PendingFloorLabel})");
+        ws.Cell(row, 1).Value = "Container ID"; ws.Cell(row, 2).Value = "Receipt Date"; ws.Cell(row, 3).Value = "Order Qty"; ws.Cell(row, 4).Value = "PO Number";
+        ws.Row(row).Style.Font.Bold = true; row++;
+        foreach (var r in _ediContainers)
+        {
+            ws.Cell(row, 1).Value = r.Contno; ws.Cell(row, 2).Value = r.ReceiptDt; ws.Cell(row, 2).Style.DateFormat.Format = "dd-MMM-yyyy";
+            ws.Cell(row, 3).Value = r.Qty; ws.Cell(row, 4).Value = r.PoNumbers;
+            row++;
+        }
+        ws.Cell(row, 1).Value = "Total"; ws.Cell(row, 3).Value = _ediContainers.Sum(r => r.Qty);
+        ws.Row(row).Style.Font.Bold = true; row += 2;
 
         return row;
     }
