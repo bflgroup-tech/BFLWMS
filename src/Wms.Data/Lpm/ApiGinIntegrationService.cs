@@ -20,8 +20,8 @@ namespace Wms.Data.Lpm;
 ///   - GINs (POST /v1/store-inbounds) — one call per GIN with its line items
 ///     (quantities from TransferDetail). Tracked via ApiUpdate/ApiResponse.
 ///
-/// SendPendingAsync is the single entry point ("Send Now" on the Nightly Batches
-/// admin page — no timer yet): one dbo.WmsRptJobRun row covering both, products
+/// SendPendingAsync is the single entry point (hourly via ApiGinIntegrationBatchService,
+/// or "Send Now" on the Nightly Batches admin page): one dbo.WmsRptJobRun row covering both, products
 /// always run first because the receiving system needs a SKU's product master
 /// record before an inbound referencing that SKU makes sense on its end.
 ///

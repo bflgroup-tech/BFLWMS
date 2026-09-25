@@ -158,8 +158,9 @@ public class Program
         builder.Services.AddScoped<GenerateEan13Service>();
 
         // Pushes GIN-linked shop-issue transfers to the external store-inbounds API.
-        // Step 1 (enqueue into bfldata.dbo.APICallGIN) is stubbed pending confirmation;
-        // Step 2 (POST queued GINs, "Send Now") is live. On-demand only — no timer yet.
+        // Each run enqueues new GINs into LPMSIM.dbo.APICallGIN, then POSTs unsent ones.
+        // Hourly via ApiGinIntegrationBatchService (gated by its Nightly Batches toggle),
+        // plus "Send Now" on demand.
         //
         // ApiKey is shared with ApiEpcIntegration below — both Altavant endpoints take
         // the same key — so it's read from the single top-level "apikey" App
@@ -193,6 +194,7 @@ public class Program
         builder.Services.AddHostedService<Wms.Web.Hosting.BoxesToWmsProdScheduledService>();
         builder.Services.AddHostedService<Wms.Web.Hosting.GenerateEan13BatchService>();
         builder.Services.AddHostedService<Wms.Web.Hosting.ApiEpcIntegrationBatchService>();
+        builder.Services.AddHostedService<Wms.Web.Hosting.ApiGinIntegrationBatchService>();
         builder.Services.AddHostedService<Wms.Web.Hosting.PendingGoodsReceiptEmailScheduledService>();
         builder.Services.AddScoped<Wms.Web.Hosting.PendingGoodsReceiptEmailSender>();
         builder.Services.AddScoped<Wms.Data.Notifications.PendingGoodsReceiptEmailService>();
