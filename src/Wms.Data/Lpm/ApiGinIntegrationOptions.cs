@@ -13,7 +13,10 @@ public sealed class ApiGinIntegrationOptions
     /// <summary>Product master endpoint URL.</summary>
     public string ProductsUrl { get; set; } = "https://api.bfl.altavantconsulting.eu/v1/products";
 
-    /// <summary>Sent as the raw "apikey" request header (API Key auth, not Bearer).</summary>
+    /// <summary>Sent as the raw "apikey" request header (API Key auth, not Bearer).
+    /// Overridden in Program.cs from the top-level "Oct_ApiKey" App Service setting
+    /// (shared with ApiEpcIntegrationOptions — both Altavant endpoints take the same
+    /// key), not read from the "ApiGinIntegration" section below.</summary>
     public string ApiKey { get; set; } = "";
 
     public bool IsConfigured => !string.IsNullOrWhiteSpace(ApiKey);
