@@ -66,7 +66,7 @@ public class JafzaExportCheckingService(IOnPremConnectionResolver resolver)
         return c;
     }
 
-    private const string CountSql = @"
+    internal const string CountSql = @"   // also shown by the page's Admin view
         SELECT p.TrnDate, p.EmpCode,
                Cnt = SUM(ISNULL(p.HR0A,0)+ISNULL(p.HR1A,0)+ISNULL(p.HR2A,0)+ISNULL(p.HR3A,0)+ISNULL(p.HR4A,0)+
                          ISNULL(p.HR5A,0)+ISNULL(p.HR6A,0)+ISNULL(p.HR7A,0)+ISNULL(p.HR8A,0)+ISNULL(p.HR9A,0)+
@@ -80,7 +80,7 @@ public class JafzaExportCheckingService(IOnPremConnectionResolver resolver)
          GROUP BY p.TrnDate, p.EmpCode
          ORDER BY p.TrnDate, p.EmpCode;";
 
-    private const string AmountSql = @"
+    internal const string AmountSql = @"
         SELECT Trndate, EmpCode, TotalAmount = SUM(Amount)
           FROM BFLDATA.dbo.CheckingAmountJafza
          WHERE CheckType = 'AUTO'
