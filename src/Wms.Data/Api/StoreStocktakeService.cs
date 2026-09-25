@@ -14,7 +14,7 @@ public class StoreStocktakeService(IOnPremConnectionResolver resolver)
     private record StoreLookupRow(string? DataName);
 
     /// <summary>Resolves a store's DataName from BFLDATA.dbo.DataSettings on
-    /// OnPremBackup, keyed by StoreID — same source/validation store/grn uses.</summary>
+    /// OnPremBackup, keyed by RMSStoreID — same source/validation store/grn uses.</summary>
     private async Task<StoreLookupRow?> ResolveStoreAsync(string storeId, CancellationToken ct)
     {
         var b = new SqlConnectionStringBuilder(resolver.GetOnPremBackupConnectionString())
@@ -25,7 +25,7 @@ public class StoreStocktakeService(IOnPremConnectionResolver resolver)
         return await conn.QuerySingleOrDefaultAsync<StoreLookupRow>(new CommandDefinition(@"
             SELECT DataName
               FROM BFLDATA.dbo.DataSettings
-             WHERE StoreID = @storeId",
+             WHERE RMSStoreID = @storeId",
             new { storeId }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
     }
 
