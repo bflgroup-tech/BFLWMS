@@ -268,6 +268,8 @@ public class ApiGinIntegrationService(
         UPDATE #items SET selling_price = b.SalesRate
           FROM #items a, HODATA.dbo.SalesPrice b WHERE a.sku = b.itemcode;
 
+        UPDATE #items SET selling_price = 0 WHERE selling_price IS NULL;
+
         UPDATE #items SET image_url = '' WHERE image_url IS NULL;
 
         SELECT
