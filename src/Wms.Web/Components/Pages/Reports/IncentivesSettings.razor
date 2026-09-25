@@ -170,7 +170,7 @@
             {
                 <div style="margin-top:4px;">
                     Excel (.xlsx) with header row <b>Category, TargetAuto, TargetManual, IncentiveBase, Add_IncentiveRate</b>.
-                    Saved to DATAREPORTING..INC_Target.
+                    Saved to LPMSIM..WMS_INC_Target.
                 </div>
             }
         </div>
@@ -231,11 +231,12 @@
     <div class="incset-help-row" style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; margin-bottom:10px;">
         <div style="color:var(--text-secondary); font-size:12px; line-height:1.6;">
             <div>* One row per DedType; DedPercent is required — a number from 0 to 100 with up to 2 decimals.</div>
+            <div>* DeductionFormula (up to 50 characters) can be left blank.</div>
             <div>* A DedType that already exists is rejected — nothing is saved.</div>
             @if (_isAdmin)
             {
                 <div style="margin-top:4px;">
-                    Excel (.xlsx) with header row <b>DedType, DedPercent</b>. Saved to DATAREPORTING..INC_DeductionType.
+                    Excel (.xlsx) with header row <b>DedType, DedPercent, DeductionFormula</b>. Saved to LPMSIM..WMS_INC_DeductionType.
                 </div>
             }
         </div>
@@ -254,12 +255,12 @@
         <div style="max-height:260px; overflow:auto; margin-top:8px;">
             <table class="aiwms-table aiwms-table-dense">
                 <thead style="position:sticky; top:0; z-index:1;">
-                    <tr><th>DedType</th><th style="text-align:right;">Ded %</th></tr>
+                    <tr><th>DedType</th><th style="text-align:right;">Ded %</th><th>Deduction Formula</th></tr>
                 </thead>
                 <tbody>
                     @foreach (var r in _dedUpload)
                     {
-                        <tr><td>@r.DedType</td><td style="text-align:right;">@r.DedPercent.ToString("N2")</td></tr>
+                        <tr><td>@r.DedType</td><td style="text-align:right;">@r.DedPercent.ToString("N2")</td><td>@r.DeductionFormula</td></tr>
                     }
                 </tbody>
             </table>
@@ -478,13 +479,13 @@
         <div style="max-height:360px; overflow:auto;">
             <table class="aiwms-table aiwms-table-dense">
                 <thead style="position:sticky; top:0; z-index:1;">
-                    <tr><th>DedType</th><th style="text-align:right;">Ded %</th><th>Uploaded By</th><th>Uploaded On</th></tr>
+                    <tr><th>DedType</th><th style="text-align:right;">Ded %</th><th>Deduction Formula</th><th>Uploaded By</th><th>Uploaded On</th></tr>
                 </thead>
                 <tbody>
                     @foreach (var r in _deductionTypes)
                     {
                         <tr>
-                            <td>@r.DedType</td><td style="text-align:right;">@(r.DedPercent?.ToString("N2"))</td>
+                            <td>@r.DedType</td><td style="text-align:right;">@(r.DedPercent?.ToString("N2"))</td><td>@r.DeductionFormula</td>
                             <td>@r.UploadedUser</td><td>@(r.CreateTS?.ToString("dd-MMM-yyyy HH:mm") ?? "")</td>
                         </tr>
                     }
@@ -1057,9 +1058,9 @@
         using var wb = new XLWorkbook(stream);
         var ws = wb.Worksheet(1);
         var cols = HeaderMap(ws);
-        foreach (var col in new[] { "dedtype", "dedpercent" })
+        foreach (var col in new[] { "dedtype", "dedpercent", "deductionformula" })
             if (!cols.ContainsKey(col))
-                problems.Add($"Header row is missing column '{col}'. Expected: DedType, DedPercent.");
+                problems.Add($"Header row is missing column '{col}'. Expected: DedType, DedPercent, DeductionFormula.");
         if (problems.Count > 0) return new();
 
         var rows = new List<IncDeductionTypeUploadRow>();
@@ -1084,17 +1085,21 @@
             else if (decimal.Round(v.Value, 2) != v.Value) Bad($"DedPercent {v} has more than 2 decimals.");
             else pct = v.Value;
 
+            // Optional (NULL-able), but the column must be in the file.
+            var formula = ws.Cell(r, cols["deductionformula"]).GetFormattedString().Trim();
+            if (formula.Length > 50) Bad($"DeductionFormula '{formula}' is longer than 50 characters.");
+
             if (!rowOk) continue;
             if (seen.TryGetValue(type, out var firstRow)) { Bad($"DedType {type} is repeated (also on row {firstRow})."); continue; }
             seen[type] = r;
-            rows.Add(new IncDeductionTypeUploadRow(type, pct));
+            rows.Add(new IncDeductionTypeUploadRow(type, pct, formula.Length == 0 ? null : formula));
         }
         return rows;
     }
 
     private Task DownloadDeductionTemplateAsync() =>
         DownloadTemplateAsync("Deduction_Type_Template.xlsx", "Deduction Types",
-            ["DedType", "DedPercent"], ["LateComing", "10.00"]);
+            ["DedType", "DedPercent", "DeductionFormula"], ["LateComing", "10.00", ""]);
 
     // ===================== shared Excel helpers =====================
 
