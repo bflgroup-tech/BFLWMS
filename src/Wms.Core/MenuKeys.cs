@@ -58,6 +58,7 @@ public static class MenuKeys
     public const string ADMIN_RD_RS_AGEING_EMAIL  = "ADMIN_RD_RS_AGEING_EMAIL";
     public const string ADMIN_API                 = "ADMIN_API";
     public const string ADMIN_API_CLIENT_APPS     = "ADMIN_API_CLIENT_APPS";
+    public const string ADMIN_API_LOG             = "ADMIN_API_LOG";
 
     public const string TCM_LABORATORY             = "TCM_LABORATORY";
 
@@ -137,6 +138,7 @@ public static class MenuKeys
 
         new MenuEntry(ADMIN_API,             "Admin",               "Overview",                   "admin/api",                 new[] { Roles.Admin }, "API"),
         new MenuEntry(ADMIN_API_CLIENT_APPS, "Admin",               "Client Apps",                "admin/api/client-apps",     new[] { Roles.Admin }, "API"),
+        new MenuEntry(ADMIN_API_LOG,         "Admin",               "API Log",                    "admin/api/log",             new[] { Roles.Admin }, "API"),
         new MenuEntry(ADMIN_USERS,           "Admin",               "Users & Roles",             "admin/users",               new[] { Roles.Admin }),
         new MenuEntry(RPT_REPORT_ASSISTANT,  "Admin",               "Report Assistant (Chat)",   "reports/report-assistant",  new[] { Roles.Admin }),
         new MenuEntry(ADMIN_WH_MASTER,       "Admin",               "WH Master",                 "admin/wh-master",           new[] { Roles.Admin }),

@@ -1,4 +1,5 @@
 using Wms.Core;
+using Wms.Core.Entities;
 using Wms.Data;
 using Wms.Data.Auditing;
 using Wms.Data.Configuration;
@@ -336,6 +337,54 @@ public class Program
 
         app.UseAuthentication();
         app.UseAuthorization();
+
+        // Logs every /api/v1/* call — method, path, status code, client identity, timing.
+        // Deliberately never reads request/response bodies, so it never touches the JSON payload.
+        app.Use(async (context, next) =>
+        {
+            if (!context.Request.Path.StartsWithSegments("/api/v1", out _))
+            {
+                await next();
+                return;
+            }
+
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            Exception? thrown = null;
+            try
+            {
+                await next();
+            }
+            catch (Exception ex)
+            {
+                thrown = ex;
+                throw;
+            }
+            finally
+            {
+                sw.Stop();
+                try
+                {
+                    var dbFactory = context.RequestServices.GetRequiredService<IDbContextFactory<WmsDbContext>>();
+                    await using var db = await dbFactory.CreateDbContextAsync();
+                    db.ApiRequestLogs.Add(new ApiRequestLog
+                    {
+                        Timestamp = DateTime.UtcNow,
+                        Method = context.Request.Method,
+                        Path = context.Request.Path.Value ?? "",
+                        StatusCode = thrown is null ? context.Response.StatusCode : 500,
+                        ClientId = context.User.FindFirst("client_id")?.Value,
+                        ClientName = context.User.FindFirst("name")?.Value,
+                        ClientIp = context.Connection.RemoteIpAddress?.ToString(),
+                        DurationMs = (int)sw.ElapsedMilliseconds,
+                    });
+                    await db.SaveChangesAsync();
+                }
+                catch
+                {
+                    // Logging must never break the actual API response.
+                }
+            }
+        });
 
         // Microsoft.Identity.Web.UI controllers + razor pages handle /MicrosoftIdentity/Account/*.
         app.MapControllers();
