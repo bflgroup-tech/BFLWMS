@@ -58,6 +58,8 @@ internal sealed record EpcApiResponse(
 ///          barcode = SerializedCode, serial_number = '', [function] = '',
 ///          creation_date = SYSUTCDATETIME(), printer = '', anti_theft = NULL
 ///     FROM DATAREPORTING.dbo.EPCBarcodes a
+///    WHERE a.Srno NOT IN (SELECT SerializedCode FROM LPMSIM.dbo.EPCBarcodes_ApiCallDetails
+///                           WHERE CreateTS >= DATEADD(day, -1, GETDATE()))
 ///
 /// anti_theft is sent as JSON null (mapped from a nullable bool here), not '' —
 /// the API rejected an empty string ("expected one of boolean, null, got
@@ -71,12 +73,13 @@ internal sealed record EpcApiResponse(
 /// from GETDATE() (SQL Server local time) to SYSUTCDATETIME(), since the 'Z'
 /// suffix would otherwise be claiming a UTC time that it wasn't.
 ///
-/// KNOWN GAP, pending confirmation before this should run unattended: no
-/// "already sent" filter — EPCBarcodes was said to carry a status/sent column,
-/// but its name hasn't been given yet, so the query pulls (and will re-POST)
-/// every row in the table on every call. Wire the filter + a post-send UPDATE
-/// once that column is confirmed. On-demand only ("Send Now" on Nightly
-/// Batches) — no timer, specifically because of this gap.
+/// The "already sent" filter excludes rows whose Srno already appears in
+/// LPMSIM.dbo.EPCBarcodes_ApiCallDetails.SerializedCode within the last day —
+/// but this service never writes to that table itself, so it relies entirely
+/// on something else populating it after a successful send. If nothing does,
+/// the same rows will be re-pulled and re-POSTed on every call despite the
+/// filter. On-demand only ("Send Now" on Nightly Batches) — no timer, since
+/// that dependency hasn't been confirmed.
 /// </summary>
 public class ApiEpcIntegrationService(
     IOnPremConnectionResolver resolver, ScheduledJobService jobs, HttpClient http, IOptions<ApiEpcIntegrationOptions> opts)
@@ -113,7 +116,10 @@ public class ApiEpcIntegrationService(
                CreationDateUtc = SYSUTCDATETIME(),
                Printer      = '',
                AntiTheft    = CAST(NULL AS BIT)
-          FROM DATAREPORTING.dbo.EPCBarcodes a";
+          FROM DATAREPORTING.dbo.EPCBarcodes a
+         WHERE a.Srno NOT IN (
+                   SELECT SerializedCode FROM LPMSIM.dbo.EPCBarcodes_ApiCallDetails
+                    WHERE CreateTS >= DATEADD(day, -1, GETDATE()))";
 
     /// <summary>
     /// Reads eligible rows from DATAREPORTING.dbo.EPCBarcodes (see class doc for the
