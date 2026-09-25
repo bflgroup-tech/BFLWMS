@@ -39,7 +39,7 @@ public class RfidProductionService(IOnPremConnectionResolver resolver)
         return c;
     }
 
-    private const string ReportSql = @"
+    internal const string ReportSql = @"   // also shown by the page's Admin view
         SELECT TrnDate = t.TrnDate, Username = pu.UserName, Qty = SUM(t.Quantity)
           FROM BFLDATA.dbo.TransferNoReturn t
           LEFT JOIN BFLDATA.dbo.PDAUSERS pu ON pu.UserId = t.UserId

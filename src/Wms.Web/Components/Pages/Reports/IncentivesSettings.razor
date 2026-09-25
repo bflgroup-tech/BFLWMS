@@ -90,7 +90,7 @@
         <div>* Shift timings like <b>6AM</b> / <b>8PM</b> (or 06:00 / 20:00). DiscrepancyType must be <b>Earlygoing</b>, <b>LateComing</b> or <b>Absent</b>.</div>
         <div>* DiscrepancyDuration (minutes): a whole number from 1 to 540 for Earlygoing / LateComing; leave blank for Absent.</div>
         <div>* Every EmpCode must already be in the Employee Master.</div>
-        @if (_isAdmin)
+        @if (ShowAdminText)
         {
             <div style="margin-top:4px;">
                 Excel (.xlsx) with header row <b>EmpCode, AttendanceDate, ShiftTimingFrom, ShiftTimingTo, DiscrepancyType, DiscrepancyDuration</b>.
@@ -164,7 +164,7 @@
             <div>* One row per Category — no date period; a target stays in force until it is changed.</div>
             <div>* TargetAuto, TargetManual, IncentiveBase and Add_IncentiveRate are all required — numbers with up to 2 decimals.</div>
             <div>* A Category that already has a target is rejected — nothing is saved — unless <b>Update existing</b> is ticked, which replaces its values.</div>
-            @if (_isAdmin)
+            @if (ShowAdminText)
             {
                 <div style="margin-top:4px;">
                     Excel (.xlsx) with header row <b>Category, TargetAuto, TargetManual, IncentiveBase, Add_IncentiveRate</b>.
@@ -411,6 +411,9 @@
 
     [CascadingParameter] private Task<AuthenticationState>? AuthState { get; set; }
     private bool _isAdmin;
+    /// <summary>Set by the page's "Hide admin controls" tick box (preview the user view).</summary>
+    [Parameter] public bool HideAdminControls { get; set; }
+    private bool ShowAdminText => _isAdmin && !HideAdminControls;
     private bool _busy;
     private bool _empCollapsed;
     private bool _attCollapsed;

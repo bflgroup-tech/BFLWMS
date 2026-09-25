@@ -91,6 +91,18 @@ public class TechnoTeamProductionService(IOnPremConnectionResolver resolver)
     public async Task<List<TechnoTeamProductionRow>> GetReportAsync(
         DateTime fromDate, DateTime toDate, string shiftTiming, bool useMultiplier, CancellationToken ct = default)
     {
+        var sql = BuildSql(shiftTiming, useMultiplier);
+        await using var c = OpenOnPremBackup();
+        var rows = await c.QueryAsync<TechnoTeamProductionRow>(new CommandDefinition(
+            sql, new { fromDate, toDate }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        return rows.AsList();
+    }
+
+    /// <summary>The report SQL for one Morning Shift Timing / Multiplier choice — the
+    /// AM/PM hour columns and the multiplier wrap depend on both. Public so the page's
+    /// Admin view shows the exact query for the options currently selected.</summary>
+    public static string BuildSql(string shiftTiming, bool useMultiplier)
+    {
         if (!ShiftAmHourCount.TryGetValue(shiftTiming, out var amHours))
             throw new ArgumentException($"Unknown shift timing '{shiftTiming}'.", nameof(shiftTiming));
 
@@ -147,10 +159,6 @@ public class TechnoTeamProductionService(IOnPremConnectionResolver resolver)
               LEFT JOIN ProdAuto pra     ON pra.TrnDate = ds.TrnDate
              ORDER BY ds.TrnDate
              OPTION (MAXRECURSION 366);";
-
-        await using var c = OpenOnPremBackup();
-        var rows = await c.QueryAsync<TechnoTeamProductionRow>(new CommandDefinition(
-            sql, new { fromDate, toDate }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
-        return rows.AsList();
+        return sql;
     }
 }
