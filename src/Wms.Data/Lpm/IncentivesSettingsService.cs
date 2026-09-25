@@ -21,6 +21,10 @@ public record IncAttendanceUploadRow(
 
 public record IncUploadResult(bool Ok, int RowsSaved, string? Error, List<string> Problems);
 
+public record IncDeductionTypeRow(string DedType, decimal? DedPercent, string? DeductionFormula, string? UploadedUser, DateTime? CreateTS);
+
+public record IncDeductionTypeUploadRow(string DedType, decimal DedPercent, string? DeductionFormula);
+
 public record IncTargetRow(
     string Category, decimal? TargetAuto, decimal? TargetManual, decimal? IncentiveBase,
     decimal? Add_IncentiveTgt, decimal? Add_IncentiveRate,
@@ -41,7 +45,7 @@ public record IncTargetUploadRow(
 
 /// <summary>
 /// Settings tab of Warehouse Incentives (Admin / Payroll only): Excel uploads into
-/// DATAREPORTING.dbo.INC_EmployeeMaster and DATAREPORTING.dbo.INC_EmployeeAttendance,
+/// LPMSIM.dbo.WMS_INC_EmployeeMaster and LPMSIM.dbo.WMS_INC_EmployeeAttendance,
 /// stamped with the uploading user (UploadedUser) and UAE time (CreateTS).
 ///
 /// Both uploads are append-only and all-or-nothing: if any row clashes with what is
@@ -50,11 +54,10 @@ public record IncTargetUploadRow(
 /// user can drop them from the file and upload again. Attendance is only accepted for
 /// EmpCodes already in INC_EmployeeMaster.
 ///
-/// Uses the WmsProductionDb connection (not OnPremBackupDB): the OnPremBackupDB login
-/// could read DATAREPORTING but was denied INSERT on the INC_ tables in production,
-/// same as it was denied UPDATE on BFLDATA for GIN Trailer Update. WmsProductionDb is
-/// the connection the other on-prem-writing features use (GinTrailerUpdateService,
-/// GenerateEan13Service, TechnoBuildingService, ...).
+/// The tables live in LPMSIM as LPMSIM.dbo.WMS_INC_* (moved from DATAREPORTING.dbo.INC_*).
+/// Uses OnPremBackupDB_ConnectionString — the connection every other LPMSIM writer in this
+/// app uses (ContainerAllocationService's WMS_ContAllocationDraft*, DivStoresTurnsService,
+/// ApiGinIntegrationService).
 /// </summary>
 public class IncentivesSettingsService(IOnPremConnectionResolver resolver)
 {
@@ -70,7 +73,7 @@ public class IncentivesSettingsService(IOnPremConnectionResolver resolver)
 
     private SqlConnection Open()
     {
-        var b = new SqlConnectionStringBuilder(resolver.GetWmsProductionDbConnectionString()) { ConnectTimeout = ConnectTimeoutSeconds };
+        var b = new SqlConnectionStringBuilder(resolver.GetOnPremBackupConnectionString()) { ConnectTimeout = ConnectTimeoutSeconds };
         var c = new SqlConnection(b.ConnectionString);
         c.Open();
         return c;
@@ -85,7 +88,7 @@ public class IncentivesSettingsService(IOnPremConnectionResolver resolver)
         await using var c = Open();
         var rows = await c.QueryAsync<IncEmployeeRow>(new CommandDefinition(@"
             SELECT EmpCode, EmpName, Country, Warehouse, Category, UploadedUser, CreateTS
-              FROM DATAREPORTING.dbo.INC_EmployeeMaster WITH (NOLOCK)
+              FROM LPMSIM.dbo.WMS_INC_EmployeeMaster WITH (NOLOCK)
              WHERE (@empCode IS NULL OR EmpCode LIKE '%' + @empCode + '%')
              ORDER BY EmpCode",
             new { empCode = Blank(empCode) }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
@@ -104,7 +107,7 @@ public class IncentivesSettingsService(IOnPremConnectionResolver resolver)
             var existing = new List<string>();
             foreach (var chunk in rows.Select(r => r.EmpCode).Chunk(ChunkSize))
                 existing.AddRange(await c.QueryAsync<string>(new CommandDefinition(@"
-                    SELECT EmpCode FROM DATAREPORTING.dbo.INC_EmployeeMaster WITH (UPDLOCK, HOLDLOCK)
+                    SELECT EmpCode FROM LPMSIM.dbo.WMS_INC_EmployeeMaster WITH (UPDLOCK, HOLDLOCK)
                      WHERE EmpCode IN @codes",
                     new { codes = chunk }, tx, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)));
             if (existing.Count > 0)
@@ -125,7 +128,7 @@ public class IncentivesSettingsService(IOnPremConnectionResolver resolver)
                 table.Rows.Add(r.EmpCode, (object?)r.EmpName ?? DBNull.Value, (object?)r.Country ?? DBNull.Value,
                                (object?)r.Warehouse ?? DBNull.Value, (object?)r.Category ?? DBNull.Value, uploadedUser, now);
 
-            await BulkInsertAsync(c, tx, "DATAREPORTING.dbo.INC_EmployeeMaster", table, ct);
+            await BulkInsertAsync(c, tx, "LPMSIM.dbo.WMS_INC_EmployeeMaster", table, ct);
             await tx.CommitAsync(ct);
             return new(true, rows.Count, null, []);
         }
@@ -144,7 +147,7 @@ public class IncentivesSettingsService(IOnPremConnectionResolver resolver)
         await using var c = Open();
         var rows = await c.QueryAsync<IncAttendanceRow>(new CommandDefinition(@"
             SELECT EmpCode, AttendanceDate, ShiftTimingFrom, ShiftTimingTo, DiscrepancyType, DiscrepancyDuration, UploadedUser, CreateTS
-              FROM DATAREPORTING.dbo.INC_EmployeeAttendance WITH (NOLOCK)
+              FROM LPMSIM.dbo.WMS_INC_EmployeeAttendance WITH (NOLOCK)
              WHERE AttendanceDate >= @from AND AttendanceDate <= @to
                AND (@empCode IS NULL OR EmpCode LIKE '%' + @empCode + '%')
              ORDER BY AttendanceDate, EmpCode",
@@ -170,7 +173,7 @@ public class IncentivesSettingsService(IOnPremConnectionResolver resolver)
         var found = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var chunk in wanted.Chunk(ChunkSize))
             foreach (var code in await c.QueryAsync<string>(new CommandDefinition(@"
-                SELECT EmpCode FROM DATAREPORTING.dbo.INC_EmployeeMaster WITH (NOLOCK)
+                SELECT EmpCode FROM LPMSIM.dbo.WMS_INC_EmployeeMaster WITH (NOLOCK)
                  WHERE EmpCode IN @codes",
                 new { codes = chunk }, tx, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
                 found.Add(code.Trim());
@@ -202,7 +205,7 @@ public class IncentivesSettingsService(IOnPremConnectionResolver resolver)
             var stored = new HashSet<(string, DateTime)>();
             foreach (var chunk in codes.Chunk(ChunkSize))
                 foreach (var k in await c.QueryAsync<EmpDateKey>(new CommandDefinition(@"
-                    SELECT EmpCode, AttendanceDate FROM DATAREPORTING.dbo.INC_EmployeeAttendance WITH (UPDLOCK, HOLDLOCK)
+                    SELECT EmpCode, AttendanceDate FROM LPMSIM.dbo.WMS_INC_EmployeeAttendance WITH (UPDLOCK, HOLDLOCK)
                      WHERE EmpCode IN @codes AND AttendanceDate >= @minDate AND AttendanceDate <= @maxDate",
                     new { codes = chunk, minDate, maxDate }, tx, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
                     stored.Add((k.EmpCode.Trim().ToUpperInvariant(), k.AttendanceDate.Date));
@@ -235,7 +238,7 @@ public class IncentivesSettingsService(IOnPremConnectionResolver resolver)
                                r.DiscrepancyDuration.HasValue ? r.DiscrepancyDuration.Value : (object)DBNull.Value,
                                uploadedUser, now);
 
-            await BulkInsertAsync(c, tx, "DATAREPORTING.dbo.INC_EmployeeAttendance", table, ct);
+            await BulkInsertAsync(c, tx, "LPMSIM.dbo.WMS_INC_EmployeeAttendance", table, ct);
             await tx.CommitAsync(ct);
             return new(true, rows.Count, null, []);
         }
@@ -247,7 +250,7 @@ public class IncentivesSettingsService(IOnPremConnectionResolver resolver)
     }
 
     // ===================== Targets (per Category, no date period) =====================
-    // One row per Category in DATAREPORTING.dbo.INC_Target; stays in force until it is
+    // One row per Category in LPMSIM.dbo.WMS_INC_Target; stays in force until it is
     // changed. By default a Category already stored rejects the file; with
     // "Update existing" ticked, stored Categories get the new values (needs UPDATE).
     // INC_Target only has UploadedUser / CreateTS — the first uploader, never changed by an
@@ -262,7 +265,7 @@ public class IncentivesSettingsService(IOnPremConnectionResolver resolver)
         await using var c = Open();
         var rows = await c.QueryAsync<IncTargetRow>(new CommandDefinition($@"
             SELECT {TargetColumns}
-              FROM DATAREPORTING.dbo.INC_Target WITH (NOLOCK)
+              FROM LPMSIM.dbo.WMS_INC_Target WITH (NOLOCK)
              ORDER BY Category",
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         return rows.AsList();
@@ -281,7 +284,7 @@ public class IncentivesSettingsService(IOnPremConnectionResolver resolver)
         {
             var oldRows = (await c.QueryAsync<IncTargetRow>(new CommandDefinition($@"
                 SELECT {TargetColumns}
-                  FROM DATAREPORTING.dbo.INC_Target WITH (UPDLOCK, HOLDLOCK)
+                  FROM LPMSIM.dbo.WMS_INC_Target WITH (UPDLOCK, HOLDLOCK)
                  WHERE Category IN @cats",
                 new { cats = rows.Select(r => r.Category).ToList() }, tx, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
                 .GroupBy(o => o.Category.Trim(), StringComparer.OrdinalIgnoreCase)
@@ -303,19 +306,19 @@ public class IncentivesSettingsService(IOnPremConnectionResolver resolver)
             // UPDATE overwrites it (new Categories aren't logged — there's nothing to replace).
             if (updates.Count > 0)
                 await c.ExecuteAsync(new CommandDefinition(@"
-                    INSERT INTO DATAREPORTING.dbo.INC_Target_Log
+                    INSERT INTO LPMSIM.dbo.WMS_INC_Target_Log
                         (Category, TargetAuto, TargetManual, IncentiveBase, Add_IncentiveTgt, Add_IncentiveRate,
                          UploadedUser, CreateTS, ModifiedUser, ModifiedTS)
                     SELECT Category, TargetAuto, TargetManual, IncentiveBase, Add_IncentiveTgt, Add_IncentiveRate,
                            UploadedUser, CreateTS, @uploadedUser, @now
-                      FROM DATAREPORTING.dbo.INC_Target
+                      FROM LPMSIM.dbo.WMS_INC_Target
                      WHERE Category IN @cats",
                     new { cats = updates.Select(r => r.Category).ToList(), uploadedUser, now },
                     tx, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
 
             if (updates.Count > 0)
                 await c.ExecuteAsync(new CommandDefinition(@"
-                    UPDATE DATAREPORTING.dbo.INC_Target
+                    UPDATE LPMSIM.dbo.WMS_INC_Target
                        SET TargetAuto = @TargetAuto, TargetManual = @TargetManual, IncentiveBase = @IncentiveBase,
                            Add_IncentiveRate = @Add_IncentiveRate
                      WHERE Category = @Category",   // Add_IncentiveTgt isn't uploaded for now: leave the stored value as it is
@@ -324,7 +327,7 @@ public class IncentivesSettingsService(IOnPremConnectionResolver resolver)
 
             if (inserts.Count > 0)
                 await c.ExecuteAsync(new CommandDefinition(@"
-                    INSERT INTO DATAREPORTING.dbo.INC_Target
+                    INSERT INTO LPMSIM.dbo.WMS_INC_Target
                         (Category, TargetAuto, TargetManual, IncentiveBase, Add_IncentiveTgt, Add_IncentiveRate,
                          UploadedUser, CreateTS)
                     VALUES (@Category, @TargetAuto, @TargetManual, @IncentiveBase, @Add_IncentiveTgt, @Add_IncentiveRate,
@@ -349,10 +352,63 @@ public class IncentivesSettingsService(IOnPremConnectionResolver resolver)
         var rows = await c.QueryAsync<IncTargetLogRow>(new CommandDefinition(@"
             SELECT Category, TargetAuto, TargetManual, IncentiveBase, Add_IncentiveTgt, Add_IncentiveRate,
                    UploadedUser, CreateTS, ModifiedUser, ModifiedTS
-              FROM DATAREPORTING.dbo.INC_Target_Log WITH (NOLOCK)
+              FROM LPMSIM.dbo.WMS_INC_Target_Log WITH (NOLOCK)
              ORDER BY ModifiedTS DESC, Category",
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         return rows.AsList();
+    }
+
+    // ===================== Deduction types =====================
+    // One row per DedType in LPMSIM.dbo.WMS_INC_DeductionType (PK DedType). Append only:
+    // a DedType already stored rejects the whole file.
+
+    public async Task<List<IncDeductionTypeRow>> GetDeductionTypesAsync(CancellationToken ct = default)
+    {
+        await using var c = Open();
+        var rows = await c.QueryAsync<IncDeductionTypeRow>(new CommandDefinition(@"
+            SELECT DedType, DedPercent, DeductionFormula, UploadedUser, CreateTS
+              FROM LPMSIM.dbo.WMS_INC_DeductionType WITH (NOLOCK)
+             ORDER BY DedType",
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        return rows.AsList();
+    }
+
+    public async Task<IncUploadResult> UploadDeductionTypesAsync(
+        IReadOnlyList<IncDeductionTypeUploadRow> rows, string uploadedUser, CancellationToken ct = default)
+    {
+        if (rows.Count == 0) return new(false, 0, "No rows to upload.", []);
+
+        await using var c = Open();
+        await using var tx = (SqlTransaction)await c.BeginTransactionAsync(ct);
+        try
+        {
+            var existing = (await c.QueryAsync<string>(new CommandDefinition(@"
+                SELECT DedType FROM LPMSIM.dbo.WMS_INC_DeductionType WITH (UPDLOCK, HOLDLOCK)
+                 WHERE DedType IN @types",
+                new { types = rows.Select(r => r.DedType).ToList() }, tx, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
+                .Select(x => x.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(x => x).ToList();
+            if (existing.Count > 0)
+            {
+                await tx.RollbackAsync(ct);
+                return new(false, 0,
+                    $"{existing.Count} deduction type(s) already exist — nothing was saved. Remove them from the file and upload again.",
+                    existing.Select(x => $"DedType {x} already exists").ToList());
+            }
+
+            var now = NowUae();
+            await c.ExecuteAsync(new CommandDefinition(@"
+                INSERT INTO LPMSIM.dbo.WMS_INC_DeductionType (DedType, DedPercent, DeductionFormula, UploadedUser, CreateTS)
+                VALUES (@DedType, @DedPercent, @DeductionFormula, @uploadedUser, @now)",
+                rows.Select(r => new { r.DedType, r.DedPercent, r.DeductionFormula, uploadedUser, now }),
+                tx, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            await tx.CommitAsync(ct);
+            return new(true, rows.Count, null, []);
+        }
+        catch (Exception ex)
+        {
+            await tx.RollbackAsync(CancellationToken.None);
+            return new(false, 0, ex.Message, []);
+        }
     }
 
     // ===================== helpers =====================
