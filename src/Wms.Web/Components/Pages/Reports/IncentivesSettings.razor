@@ -233,7 +233,7 @@
             <div>* One row per DedType; DedPercent is required — a number from 0 to 100 with up to 2 decimals.</div>
             <div>* DeductionFormula (up to 50 characters) can be left blank.</div>
             <div>* A DedType that already exists is rejected — nothing is saved.</div>
-            @if (_isAdmin)
+            @if (ShowAdminText)
             {
                 <div style="margin-top:4px;">
                     Excel (.xlsx) with header row <b>DedType, DedPercent, DeductionFormula</b>. Saved to LPMSIM..WMS_INC_DeductionType.
