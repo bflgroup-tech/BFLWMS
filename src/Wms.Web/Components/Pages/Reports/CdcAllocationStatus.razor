@@ -1,0 +1,211 @@
+@page "/reports/cdc-allocation-status"
+@rendermode RenderMode.InteractiveServer
+@using Wms.Core
+@using Wms.Data.Lpm
+@using ClosedXML.Excel
+@attribute [Authorize(Policy = MenuKeys.RPT_CDC_ALLOCATION_STATUS)]
+@inject CdcStoreAllocationService Svc
+@inject IJSRuntime JS
+
+<PageTitle>WMS - CDC Allocation Status</PageTitle>
+
+<div class="aiwms-page-header">
+    <h2>CDC Allocation Status</h2>
+    <p>Stock held at the central DC, by container and PO — what has been released to stores and what is still waiting.</p>
+    <AuthorizeView Roles="Admin">
+        <p>
+            Reads <code>racks.dbo.whboxitems</code> where <code>PalletType = 'CD'</code>, left-joined to
+            <code>LPMSIM.dbo.WMS_CDC_Allocation_Header</code>. A row with no header row is Pending.
+        </p>
+    </AuthorizeView>
+</div>
+
+@if (!string.IsNullOrEmpty(_message))
+{
+    <div class="aiwms-alert @(_isError ? "error" : "info")">@_message</div>
+}
+
+<div class="aiwms-section">
+    <div style="display:flex; gap:14px; align-items:end; flex-wrap:wrap">
+        <div style="min-width:200px">
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">LPM MONTH</label>
+            <select @bind="_lpmMonth" disabled="@_loading"
+                    style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;">
+                <option value="">-- All months --</option>
+                @foreach (var m in _lpmMonths)
+                {
+                    <option value="@m.ToString("yyyy-MM-dd")">@CdcStoreAllocationService.LpmLabel(m)</option>
+                }
+            </select>
+        </div>
+        <div style="min-width:180px">
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">CONTAINER NO</label>
+            <input @bind="_contNo" @bind:event="oninput" placeholder="all" disabled="@_loading"
+                   style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-family:var(--font-mono); font-size:13px; background:white;" />
+        </div>
+        <label style="display:inline-flex; align-items:center; gap:6px; font-size:12px; cursor:pointer; padding-bottom:8px">
+            <input type="checkbox" @bind="_pendingOnly" disabled="@_loading" /> Pending only
+        </label>
+        <button class="aiwms-btn aiwms-btn-primary" @onclick="LoadAsync" disabled="@_loading">
+            @(_loading ? "Loading..." : "Load")
+        </button>
+        <button class="aiwms-btn aiwms-btn-secondary" @onclick="ExportExcelAsync" disabled="@(_exporting || _rows.Count == 0)">
+            @(_exporting ? "Exporting..." : "Export Excel")
+        </button>
+    </div>
+</div>
+
+@if (_loaded)
+{
+    <div class="aiwms-section" style="padding:0; overflow:hidden">
+        <div class="aiwms-card-header" style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px">
+            <span>@_rows.Count.ToString("N0") row(s)</span>
+            <span style="font-size:11px; color:var(--text-secondary)">
+                Pending @PendingRows.ToString("N0") (@PendingQty.ToString("N0") pcs) ·
+                Allocated @AllocatedRows.ToString("N0") (@AllocatedQty.ToString("N0") pcs)
+            </span>
+        </div>
+        @if (_rows.Count == 0)
+        {
+            <p style="color:var(--text-secondary); font-size:13px; padding:14px">No CD stock matches these filters.</p>
+        }
+        else
+        {
+            <div style="max-height:640px; overflow:auto">
+                <table class="aiwms-table aiwms-table-dense" style="font-size:12px">
+                    <thead style="position:sticky; top:0; background:white; z-index:1">
+                        <tr>
+                            <th>Status</th>
+                            <th>LPM Month</th>
+                            <th>Cont No</th>
+                            <th>PO No</th>
+                            <th style="text-align:right">Items</th>
+                            <th style="text-align:right">CD Qty</th>
+                            <th style="text-align:right">Allocated</th>
+                            <th style="text-align:right">Rows</th>
+                            <th>Batch</th>
+                            <th>Processed</th>
+                            <th>By</th>
+                            <th>Approved</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var r in SortedRows)
+                        {
+                            <tr>
+                                <td><span class="aiwms-pill @(r.IsPending ? "tier2" : r.IsShort ? "tier3" : "tier1")">@(r.Status ?? "Pending")</span></td>
+                                <td>@r.LpmLabel</td>
+                                <td style="font-family:var(--font-mono)">@r.ContNo</td>
+                                <td style="font-family:var(--font-mono)">@r.OraPONo</td>
+                                <td style="text-align:right">@r.Items.ToString("N0")</td>
+                                <td style="text-align:right">@r.CdQty.ToString("N0")</td>
+                                <td style="text-align:right">@(r.AllocatedQty?.ToString("N0") ?? "")</td>
+                                <td style="text-align:right">@(r.AllocatedRows?.ToString("N0") ?? "")</td>
+                                <td>@(r.BatchNo?.ToString() ?? "")</td>
+                                <td>@(r.ProcessedTS?.ToString("dd/MM/yyyy HH:mm") ?? "")</td>
+                                <td>@r.ProcessedBy</td>
+                                <td>@(r.ApprovedDt?.ToString("dd/MM/yyyy HH:mm") ?? "")</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </div>
+}
+
+@code {
+    private List<CdcAllocationStatusRow> _rows = new();
+    private List<DateTime> _lpmMonths = new();
+    private string _lpmMonth = "";
+    private string _contNo   = "";
+    private bool   _pendingOnly;
+    private bool   _loading, _exporting, _loaded, _isError;
+    private string _message = "";
+
+    // Chronological by LPM month. Sorting the MMM-yyyy label as text would put
+    // JAN-2027 before SEP-2026.
+    private IEnumerable<CdcAllocationStatusRow> SortedRows =>
+        _rows.OrderBy(r => r.LpmSortKey).ThenBy(r => r.ContNo).ThenBy(r => r.OraPONo);
+
+    private int PendingRows   => _rows.Count(r => r.IsPending);
+    private int PendingQty    => _rows.Where(r => r.IsPending).Sum(r => r.CdQty);
+    private int AllocatedRows => _rows.Count(r => !r.IsPending);
+    private int AllocatedQty  => _rows.Where(r => !r.IsPending).Sum(r => r.AllocatedQty ?? 0);
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Only the cheap month lookup on arrival — the report itself is an explicit
+        // Load, as everywhere else in Reports.
+        try { _lpmMonths = await Svc.GetCdcLpmMonthsAsync(); } catch { _lpmMonths = new(); }
+    }
+
+    private async Task LoadAsync()
+    {
+        _loading = true; _message = ""; _isError = false;
+        try
+        {
+            DateTime? from = null, to = null;
+            if (DateTime.TryParse(_lpmMonth, out var m))
+            {
+                from = new DateTime(m.Year, m.Month, 1);
+                to   = from.Value.AddMonths(1).AddDays(-1);
+            }
+            _rows = await Svc.GetCdcAllocationStatusAsync(from, to, _contNo, _pendingOnly);
+            _loaded = true;
+            if (_rows.Count == 0) _message = "No CD stock matches these filters.";
+        }
+        catch (Exception ex) { _message = $"Load failed: {ex.Message}"; _isError = true; }
+        finally { _loading = false; }
+    }
+
+    private async Task ExportExcelAsync()
+    {
+        _exporting = true;
+        try
+        {
+            using var wb = new XLWorkbook();
+            var ws = wb.AddWorksheet("CDC Allocation Status");
+            string[] headers =
+            {
+                "Status", "LPM Month", "Cont No", "PO No", "Items", "CD Qty",
+                "Allocated Qty", "Allocated Rows", "Batch", "Processed", "By", "Approved",
+            };
+            for (int i = 0; i < headers.Length; i++) ws.Cell(1, i + 1).Value = headers[i];
+            ws.Row(1).Style.Font.Bold = true;
+
+            var row = 2;
+            foreach (var r in SortedRows)
+            {
+                ws.Cell(row, 1).Value  = r.Status ?? "Pending";
+                ws.Cell(row, 2).Value  = r.LpmLabel;
+                ws.Cell(row, 3).Value  = r.ContNo;
+                ws.Cell(row, 4).Value  = r.OraPONo;
+                ws.Cell(row, 5).Value  = r.Items;
+                ws.Cell(row, 6).Value  = r.CdQty;
+                if (r.AllocatedQty  is int aq) ws.Cell(row, 7).Value = aq;
+                if (r.AllocatedRows is int ar) ws.Cell(row, 8).Value = ar;
+                if (r.BatchNo       is int bn) ws.Cell(row, 9).Value = bn;
+                if (r.ProcessedTS   is DateTime p) ws.Cell(row, 10).Value = p;
+                ws.Cell(row, 11).Value = r.ProcessedBy ?? "";
+                if (r.ApprovedDt    is DateTime ap) ws.Cell(row, 12).Value = ap;
+                row++;
+            }
+            // PO numbers are digit strings — let Excel keep them as text rather than
+            // stripping leading zeros.
+            ws.Column(4).Style.NumberFormat.Format = "@";
+            ws.Column(10).Style.DateFormat.Format  = "dd-mmm-yyyy hh:mm";
+            ws.Column(12).Style.DateFormat.Format  = "dd-mmm-yyyy hh:mm";
+            ws.Columns().AdjustToContents();
+
+            using var ms = new MemoryStream();
+            wb.SaveAs(ms);
+            await JS.InvokeVoidAsync("downloadFileWithPicker",
+                $"cdc-allocation-status-{DateTime.UtcNow.AddHours(4):yyyyMMdd-HHmm}.xlsx",
+                Convert.ToBase64String(ms.ToArray()),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        }
+        catch (Exception ex) { _message = $"Export failed: {ex.Message}"; _isError = true; }
+        finally { _exporting = false; }
+    }
+}
