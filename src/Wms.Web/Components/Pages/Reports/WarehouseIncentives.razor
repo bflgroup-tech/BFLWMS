@@ -16,6 +16,11 @@
 @inject IJSRuntime JS
 @inject IDialogService DialogService
 
+<style>
+    /* Report result title bars: centred on light yellow (same shade as the info alerts). */
+    .incv-result-header { text-align: center; justify-content: center; background: var(--bfl-yellow-lite); border-bottom: 1px solid rgba(255,209,0,.5); }
+</style>
+
 <PageTitle>WMS - Warehouse Incentives</PageTitle>
 
 <div class="aiwms-page-header">
@@ -109,7 +114,7 @@ else if (_activeTab == TechnoTeamProduction)
     @if (_tpLoaded)
     {
         <div class="aiwms-section">
-            <div class="aiwms-card-header">Techno Team Production - @_tpRows.Count.ToString("N0") day(s)</div>
+            <div class="aiwms-card-header incv-result-header">Techno Team Production - @_tpRows.Count.ToString("N0") day(s)</div>
             <div style="overflow-x:auto">
             <table class="aiwms-table aiwms-table-dense">
                 <thead>
@@ -229,7 +234,7 @@ else if (_activeTab == TechnoChecking)
     @if (_loaded)
     {
         <div class="aiwms-section">
-            <div class="aiwms-card-header">Techno Checking - @_rows.Count.ToString("N0") row(s)</div>
+            <div class="aiwms-card-header incv-result-header">Techno Checking - @_rows.Count.ToString("N0") row(s)</div>
             <div style="overflow-x:auto">
             <table class="aiwms-table aiwms-table-dense">
                 <thead>
@@ -334,7 +339,7 @@ else if (_activeTab == TechnoPairing)
     @if (_pLoaded)
     {
         <div class="aiwms-section">
-            <div class="aiwms-card-header">Techno Pairing - @_pRows.Count.ToString("N0") row(s)</div>
+            <div class="aiwms-card-header incv-result-header">Techno Pairing - @_pRows.Count.ToString("N0") row(s)</div>
             <div style="overflow-x:auto">
             <table class="aiwms-table aiwms-table-dense">
                 <thead>
@@ -429,7 +434,7 @@ else if (_activeTab == TechnoBuilding)
     @if (_bLoaded)
     {
         <div class="aiwms-section">
-            <div class="aiwms-card-header">Techno Building - @_bRows.Count.ToString("N0") row(s)</div>
+            <div class="aiwms-card-header incv-result-header">Techno Building - @_bRows.Count.ToString("N0") row(s)</div>
             <div style="overflow-x:auto">
             <table class="aiwms-table aiwms-table-dense">
                 <thead>
@@ -520,7 +525,7 @@ else if (_activeTab == TechnoPricing)
     @if (_prLoaded)
     {
         <div class="aiwms-section">
-            <div class="aiwms-card-header">Techno Pricing - @_prRows.Count.ToString("N0") row(s)</div>
+            <div class="aiwms-card-header incv-result-header">Techno Pricing - @_prRows.Count.ToString("N0") row(s)</div>
             <div style="overflow-x:auto">
             <table class="aiwms-table aiwms-table-dense">
                 <thead>
@@ -610,7 +615,7 @@ else if (_activeTab == RfidProduction)
     @if (_rfLoaded)
     {
         <div class="aiwms-section">
-            <div class="aiwms-card-header">RFID Production - @_rfRows.Count.ToString("N0") row(s)</div>
+            <div class="aiwms-card-header incv-result-header">RFID Production - @_rfRows.Count.ToString("N0") row(s)</div>
             <div style="overflow-x:auto">
             <table class="aiwms-table aiwms-table-dense">
                 <thead>
@@ -689,7 +694,7 @@ else if (_activeTab == JafzaExportChecking)
     @if (_jcLoaded)
     {
         <div class="aiwms-section">
-            <div class="aiwms-card-header">Jafza Export Checking - @_jcRows.Count.ToString("N0") row(s)</div>
+            <div class="aiwms-card-header incv-result-header">Jafza Export Checking - @_jcRows.Count.ToString("N0") row(s)</div>
             <div style="overflow-x:auto">
             <table class="aiwms-table aiwms-table-dense">
                 <thead>
@@ -771,7 +776,7 @@ else if (_activeTab == JafzaExportPairing)
     @if (_jpLoaded)
     {
         <div class="aiwms-section">
-            <div class="aiwms-card-header">Jafza Export Pairing & R1 Sorting - @_jpRows.Count.ToString("N0") row(s)</div>
+            <div class="aiwms-card-header incv-result-header">Jafza Export Pairing & R1 Sorting - @_jpRows.Count.ToString("N0") row(s)</div>
             <div style="overflow-x:auto">
             <table class="aiwms-table aiwms-table-dense">
                 <thead>
