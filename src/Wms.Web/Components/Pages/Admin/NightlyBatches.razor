@@ -131,7 +131,7 @@
     <table class="aiwms-table aiwms-table-dense">
         <thead>
             <tr>
-                <th>RunId</th><th>Job</th><th>Country</th><th>Mode</th><th>Started</th><th>Ended</th>
+                <th></th><th>RunId</th><th>Job</th><th>Country</th><th>Mode</th><th>Started</th><th>Ended</th>
                 <th>Status</th><th style="text-align:right">Rows</th>
                 <th style="text-align:right">Days</th><th>Triggered By</th><th>Error</th>
             </tr>
@@ -139,7 +139,15 @@
         <tbody>
             @foreach (var r in FilteredRuns)
             {
+                var calls = TryParseCallResults(r.ErrorMessage);
+                var expanded = _expandedRunIds.Contains(r.RunId);
                 <tr>
+                    <td style="width:20px">
+                        @if (calls is { Count: > 0 })
+                        {
+                            <button class="aiwms-btn aiwms-btn-secondary" style="font-size:10px; padding:2px 6px" @onclick="@(() => ToggleExpand(r.RunId))">@(expanded ? "▾" : "▸")</button>
+                        }
+                    </td>
                     <td>@r.RunId</td>
                     <td>@r.JobName</td>
                     <td>@r.Country</td>
@@ -150,12 +158,46 @@
                     <td style="text-align:right">@r.RowsProcessed</td>
                     <td style="text-align:right">@r.DatesProcessed</td>
                     <td>@r.TriggeredBy</td>
-                    <td style="max-width:380px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap" title="@r.ErrorMessage">@r.ErrorMessage</td>
+                    @if (calls is { Count: > 0 })
+                    {
+                        <td style="max-width:380px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">
+                            @(calls.Count(x => !x.Success)) failed / @calls.Count total
+                        </td>
+                    }
+                    else
+                    {
+                        <td style="max-width:380px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap" title="@r.ErrorMessage">@r.ErrorMessage</td>
+                    }
                 </tr>
+                @if (expanded && calls is { Count: > 0 })
+                {
+                    <tr>
+                        <td></td>
+                        <td colspan="10" style="background:var(--bg-subtle, #f7f7f8); padding:8px 12px">
+                            <table class="aiwms-table aiwms-table-dense" style="margin:0">
+                                <thead>
+                                    <tr><th>Endpoint</th><th>GIN</th><th>Shop</th><th>Result</th><th>Message</th></tr>
+                                </thead>
+                                <tbody>
+                                    @foreach (var call in calls)
+                                    {
+                                        <tr>
+                                            <td>@call.Endpoint</td>
+                                            <td>@call.GinNo</td>
+                                            <td>@call.ShopName</td>
+                                            <td><span class="aiwms-pill @(call.Success ? "tier1" : "tier4")">@(call.Success ? "Success" : "Failed")</span></td>
+                                            <td style="max-width:480px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap" title="@call.Message">@call.Message</td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        </td>
+                    </tr>
+                }
             }
             @if (FilteredRuns.Count == 0)
             {
-                <tr><td colspan="11" style="font-style:italic; color:var(--text-secondary)">No runs @(_jobFilter == "" ? "yet" : "for this process").</td></tr>
+                <tr><td colspan="12" style="font-style:italic; color:var(--text-secondary)">No runs @(_jobFilter == "" ? "yet" : "for this process").</td></tr>
             }
         </tbody>
     </table>
@@ -185,6 +227,25 @@
     private string _message = "";
     private bool _isError;
     private string _jobFilter = "";
+    private readonly HashSet<long> _expandedRunIds = new();
+
+    // Matches ApiGinIntegrationService's private GinCallResult shape — deserialized
+    // structurally since that type isn't public. Only APIGinIntegration runs currently
+    // populate ErrorMessage with this JSON array; every other job's ErrorMessage is
+    // plain text and TryParseCallResults returns null for it, so it renders as before.
+    private sealed record CallResultRow(string Endpoint, string GinNo, string ShopName, bool Success, string? Message);
+
+    private static List<CallResultRow>? TryParseCallResults(string? errorMessage)
+    {
+        if (string.IsNullOrWhiteSpace(errorMessage) || errorMessage[0] != '[') return null;
+        try { return System.Text.Json.JsonSerializer.Deserialize<List<CallResultRow>>(errorMessage); }
+        catch { return null; }
+    }
+
+    private void ToggleExpand(long runId)
+    {
+        if (!_expandedRunIds.Add(runId)) _expandedRunIds.Remove(runId);
+    }
 
     // Every job actually configured, unioned with anything else seen in the log,
     // so a job that's been removed from _jobs still shows up as a filter option
@@ -350,15 +411,16 @@
                 active => ToggleSingleAsync(GenerateEan13Service.JobName, active),
                 new() { ("Generate Now", EventCallback.Factory.Create(this, GenerateEan13NowAsync)) }));
 
-            // 11. APIGinIntegration — on-demand only, no timer yet. Step 1 only: enqueues
-            //     eligible GINs into bfldata.dbo.APICallGIN. No activation state to
-            //     toggle, so the checkbox is disabled.
+            // 11. APIGinIntegration — on-demand only, no timer yet. One button runs
+            //     both external pushes in order (products, then GINs) from
+            //     LPMSIM.dbo.APICallGIN — see ApiGinIntegrationService.SendPendingAsync.
+            //     No activation state to toggle, so the checkbox is disabled.
             list.Add(new JobVm(
                 ApiGinIntegrationService.JobName, "On-demand", null,
                 true, default, "",
                 null,
                 active => Task.CompletedTask,
-                new() { ("Enqueue Now", EventCallback.Factory.Create(this, EnqueueApiGinNowAsync)) },
+                new() { ("Send Now", EventCallback.Factory.Create(this, SendApiGinNowAsync)) },
                 "on-demand only"));
 
             // 12. APIEpcIntegration — on-demand only, no timer yet. The source query
@@ -498,14 +560,14 @@
         finally { _busy = false; await RefreshLogAsync(); }
     }
 
-    private async Task EnqueueApiGinNowAsync()
+    private async Task SendApiGinNowAsync()
     {
-        _busy = true; Show("Enqueuing eligible GINs…", false); await InvokeAsync(StateHasChanged);
+        _busy = true; Show("Sending queued GINs — products first, then inbounds…", false); await InvokeAsync(StateHasChanged);
         try
         {
-            var (rows, err) = await ApiGin.EnqueuePendingGinsAsync("OnDemand", CurrentUser.Name ?? "");
-            if (err is null) Show($"APIGinIntegration enqueue done — {rows:N0} GINs queued.", false);
-            else             Show($"APIGinIntegration enqueue failed: {err}", true);
+            var (sent, failed, err) = await ApiGin.SendPendingAsync("OnDemand", CurrentUser.Name ?? "");
+            if (failed == 0) Show($"APIGinIntegration send done — {sent:N0} sent.", false);
+            else             Show($"APIGinIntegration send: {sent:N0} sent, {failed:N0} failed. {err}", true);
         }
         finally { _busy = false; await RefreshLogAsync(); }
     }
