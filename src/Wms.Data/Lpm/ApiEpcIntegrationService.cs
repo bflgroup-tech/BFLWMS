@@ -21,7 +21,7 @@ public sealed class ApiEpcIntegrationOptions
 // Column aliases in SourceQuery are PascalCase to match these property names —
 // Dapper maps them case-insensitively regardless, kept PascalCase for readability.
 internal sealed record EpcSourceRow(
-    string Srno, string? Site, string? SubLocation, string? Epc, string? Sku, string? LotNumber,
+    string? Site, string? SubLocation, string? Epc, string? Sku, string? LotNumber,
     int Quantity, string? Ean, string? Barcode, string? SerialNumber, string? Function,
     DateTime CreationDateUtc, string? Printer, bool? AntiTheft);
 
@@ -58,7 +58,7 @@ internal sealed record EpcApiResponse(
 ///          barcode = SerializedCode, serial_number = '', [function] = '',
 ///          creation_date = SYSUTCDATETIME(), printer = '', anti_theft = NULL
 ///     FROM DATAREPORTING.dbo.EPCBarcodes a
-///    WHERE a.Srno NOT IN (SELECT SerializedCode FROM LPMSIM.dbo.EPCBarcodes_ApiCallDetails
+///    WHERE a.SerializedCode NOT IN (SELECT SerializedCode FROM LPMSIM.dbo.EPCBarcodes_ApiCallDetails
 ///                           WHERE CreateTS >= DATEADD(day, -1, GETDATE()))
 ///
 /// anti_theft is sent as JSON null (mapped from a nullable bool here), not '' —
@@ -73,11 +73,12 @@ internal sealed record EpcApiResponse(
 /// from GETDATE() (SQL Server local time) to SYSUTCDATETIME(), since the 'Z'
 /// suffix would otherwise be claiming a UTC time that it wasn't.
 ///
-/// The "already sent" filter excludes rows whose Srno already appears in
+/// The "already sent" filter excludes rows whose SerializedCode already appears in
 /// LPMSIM.dbo.EPCBarcodes_ApiCallDetails within the last day. After each batch the
 /// API accepts, that batch's rows are inserted there (Srno, SerializedCode, EPC,
-/// GETDATE()), so a repeat run only picks up new rows. On-demand only ("Send Now"
-/// on Nightly Batches) — no timer yet.
+/// GETDATE()), so a repeat run only picks up new rows. Runs hourly via
+/// Wms.Web.Hosting.ApiEpcIntegrationBatchService when its Nightly Batches toggle is
+/// active, and on demand via "Send Now".
 /// </summary>
 public class ApiEpcIntegrationService(
     IOnPremConnectionResolver resolver, ScheduledJobService jobs, HttpClient http, IOptions<ApiEpcIntegrationOptions> opts)
@@ -101,8 +102,7 @@ public class ApiEpcIntegrationService(
     }
 
     private const string SourceQuery = @"
-        SELECT Srno         = CAST(a.Srno AS VARCHAR(50)),
-               Site         = (SELECT StoreID FROM BFLDATA.dbo.DataSettings WHERE ShopName = a.ShopName),
+        SELECT Site         = (SELECT StoreID FROM BFLDATA.dbo.DataSettings WHERE ShopName = a.ShopName),
                SubLocation  = (SELECT StoreID FROM BFLDATA.dbo.DataSettings WHERE ShopName = a.ShopName),
                Epc          = a.EPC,
                Sku          = a.Itemcode,
@@ -116,18 +116,20 @@ public class ApiEpcIntegrationService(
                Printer      = '',
                AntiTheft    = CAST(NULL AS BIT)
           FROM DATAREPORTING.dbo.EPCBarcodes a
-         WHERE a.Srno NOT IN (
+         WHERE a.SerializedCode NOT IN (
                    SELECT SerializedCode FROM LPMSIM.dbo.EPCBarcodes_ApiCallDetails
                     WHERE CreateTS >= DATEADD(day, -1, GETDATE()))";
 
-    // Same shape as the supplied statement, but scoped to the Srnos of one batch
-    // the API just accepted, so a failed batch is never recorded as sent.
+    // Same shape as the supplied statement, but scoped to the SerializedCodes of one
+    // batch the API just accepted, so a failed batch is never recorded as sent.
+    // Matched on SerializedCode (varchar) — comparing the int Srno against it
+    // overflowed on long codes.
     private const string MarkSentSql = @"
         INSERT INTO LPMSIM.dbo.EPCBarcodes_ApiCallDetails
         SELECT a.Srno, a.SerializedCode, a.EPC, GETDATE()
           FROM DATAREPORTING.dbo.EPCBarcodes a
-         WHERE a.Srno IN @srnos
-           AND a.Srno NOT IN (
+         WHERE a.SerializedCode IN @codes
+           AND a.SerializedCode NOT IN (
                    SELECT SerializedCode FROM LPMSIM.dbo.EPCBarcodes_ApiCallDetails
                     WHERE CreateTS >= DATEADD(day, -1, GETDATE()))";
 
@@ -201,7 +203,7 @@ public class ApiEpcIntegrationService(
                 await using (var c = OpenOnPremBackup())
                 {
                     await c.ExecuteAsync(new CommandDefinition(
-                        MarkSentSql, new { srnos = chunk.Select(r => r.Srno).ToList() },
+                        MarkSentSql, new { codes = chunk.Select(r => r.Barcode).ToList() },
                         commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
                 }
 

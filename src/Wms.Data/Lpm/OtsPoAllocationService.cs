@@ -647,11 +647,6 @@ public class OtsPoAllocationService(IOnPremConnectionResolver resolver, ICurrent
             .GroupBy(b => (b.Country, b.DivCode))
             .ToDictionary(g => g.Key, g => g.First().NoOfLeadWeeks);
 
-        // Country-level view, used only where a value genuinely cannot be per
-        // division (the per-country Lead queries below pick their own cutoffs).
-        int LeadWeeksFor(string country, int divCode) =>
-            weeksByKey.TryGetValue((country, divCode), out var w) ? w : 1;
-
         // PER-COUNTRY TARGET EOM MONTH
         // Each country's "last week of sales" (currentWk + N — the Target Week) can
         // fall into a calendar month AFTER the picked month. E.g. Qatar N=3,

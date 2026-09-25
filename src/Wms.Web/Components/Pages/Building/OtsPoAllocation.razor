@@ -119,6 +119,12 @@
 
 @if (_rows.Count > 0)
 {
+    @* Filter + sort ONCE per render, at the top of the block that needs it.
+       The KPI tiles and the grid below sit in different <div> scopes and each
+       used to call FilteredSortedRows separately, so every render sorted all
+       2,360 rows twice. *@
+    var vRows = FilteredSortedRows.ToList();
+
     <div class="aiwms-section">
         <div class="aiwms-card-header">Filter rows (in memory)</div>
         <div style="display:grid; grid-template-columns: 1.2fr 1.8fr 2fr 1fr auto; gap:12px; align-items:end">
@@ -177,7 +183,7 @@
     </div>
     <div class="aiwms-section" style="padding:14px">
         @{
-            var fRows = FilteredSortedRows.ToList();
+            var fRows = vRows;
             var fEOM  = fRows.Sum(r => r.TgtEOM);
             var fSOH  = fRows.Sum(r => r.SOHToday);
             var fWS   = fRows.Sum(r => r.WeekSales);
@@ -285,9 +291,25 @@
                     </tr>
                 </thead>
                 <tbody>
-                    @foreach (var r in FilteredSortedRows)
-                    {
-                        var req = Math.Max(0, r.OtsQtyToday);
+                    @* Virtualized: a BFLGroup run is ~2,360 rows at 51 columns, so
+                       rendering every row put ~120,000 cells in the DOM and pushed
+                       that whole diff down the Blazor Server circuit — on Load AND
+                       on every sort click, filter change and re-render. Only the
+                       rows on screen are rendered now.
+
+                       The scrollable ancestor Virtualize needs is the
+                       max-height:640px / overflow:auto wrapper this table already
+                       sits in. ItemSize matches the dense row height; it only has
+                       to be close, and being slightly under is the safe direction
+                       (it renders a few extra rows rather than leaving a gap).
+
+                       The totals row in <tfoot> is unaffected: it sums vRows, which
+                       is still the complete filtered set. Virtualization changes how
+                       many rows are DRAWN, not which rows exist. *@
+                    <Virtualize Items="vRows" ItemSize="24" Context="r">
+                        @{
+                            var req = Math.Max(0, r.OtsQtyToday);
+                        }
                         <tr>
                             <td>@r.Country</td>
                             <td style="font-family:var(--font-mono)">@r.StoreID</td>
@@ -319,13 +341,15 @@
                             <td style="text-align:right">@r.LeadIntransit.ToString("N0")</td>
                             <td style="text-align:right">@r.LeadDCSOH.ToString("N0")</td>
                         </tr>
-                    }
+                    </Virtualize>
                 </tbody>
                 <tfoot style="position:sticky; bottom:0; background:#f3f4f6; z-index:1; font-weight:800">
                     @{
                         // Totals reflect the currently-filtered rows so the footer
                         // stays in sync with the ribbon and the visible grid.
-                        var tRows       = FilteredSortedRows.ToList();
+                        // Reuses vRows rather than re-filtering and re-sorting a
+                        // third time — this was the third full pass per render.
+                        var tRows       = vRows;
                         var tTgtEOM     = tRows.Sum(r => r.TgtEOM);
                         var tPrevEOM    = tRows.Sum(r => r.PrevMonthEOM);
                         var tCurEOW     = tRows.Sum(r => r.CurrentEOW);

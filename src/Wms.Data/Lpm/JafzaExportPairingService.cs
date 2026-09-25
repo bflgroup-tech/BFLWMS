@@ -62,7 +62,7 @@ public class JafzaExportPairingService(IOnPremConnectionResolver resolver)
         return c;
     }
 
-    private const string RawCountSql = @"
+    internal const string RawCountSql = @"   // also shown by the page's Admin view
         ;WITH RawCounts AS (
             SELECT EntryDate, EmpCode, RfPaircnt = COUNT(Itemcode), PairCnt = 0, BuildingCnt = 0
               FROM BFLDATA.dbo.rfPairDetail
@@ -86,7 +86,7 @@ public class JafzaExportPairingService(IOnPremConnectionResolver resolver)
           FROM RawCounts
          GROUP BY EntryDate, EmpCode;";
 
-    private const string PairAssignSql = @"
+    internal const string PairAssignSql = @"
         SELECT TrnDate, EmpCode1, EmpCode2
           FROM BFLDATA.dbo.PairAssign
          WHERE TrnDate >= @fromDate AND TrnDate <= @toDate;";

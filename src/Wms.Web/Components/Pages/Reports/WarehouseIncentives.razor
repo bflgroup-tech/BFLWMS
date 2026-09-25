@@ -14,6 +14,12 @@
 @inject JafzaExportCheckingService JafzaCheckingSvc
 @inject JafzaExportPairingService JafzaPairingSvc
 @inject IJSRuntime JS
+@inject IDialogService DialogService
+
+<style>
+    /* Report result title bars: centred on light yellow (same shade as the info alerts). */
+    .incv-result-header { text-align: center; justify-content: center; background: var(--bfl-yellow-lite); border-bottom: 1px solid rgba(255,209,0,.5); }
+</style>
 
 <PageTitle>WMS - Warehouse Incentives</PageTitle>
 
@@ -30,11 +36,26 @@
             @t
         </button>
     }
+    @if (ShowAdminControls && TabQueryEntries(_activeTab).Count > 0)
+    {
+        <button type="button" title="View the SQL behind this tab" @onclick="ShowTabQueryAsync"
+                style="margin-left:auto; align-self:center; display:inline-flex; align-items:center; gap:6px; padding:4px 8px;
+                       border:none; background:none; cursor:pointer; font-size:11px; color:var(--text-secondary);">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                <ellipse cx="9" cy="5" rx="6" ry="2.3" />
+                <path d="M3 5v10c0 1.27 2.69 2.3 6 2.3s6-1.03 6-2.3V5" />
+                <path d="M3 10.5c0 1.27 2.69 2.3 6 2.3s6-1.03 6-2.3" />
+                <circle cx="17.5" cy="16.5" r="3.6" />
+                <line x1="20" y1="19" x2="22.5" y2="21.5" />
+            </svg>
+            Admin view
+        </button>
+    }
 </div>
 
 @if (_activeTab == Settings && _canSeeSettings)
 {
-    <IncentivesSettings />
+    <IncentivesSettings HideAdminControls="@(!ShowAdminControls)" />
 }
 else if (_activeTab == TechnoTeamProduction)
 {
@@ -93,7 +114,7 @@ else if (_activeTab == TechnoTeamProduction)
     @if (_tpLoaded)
     {
         <div class="aiwms-section">
-            <div class="aiwms-card-header">Techno Team Production - @_tpRows.Count.ToString("N0") day(s)</div>
+            <div class="aiwms-card-header incv-result-header">Techno Team Production - @_tpRows.Count.ToString("N0") day(s)</div>
             <div style="overflow-x:auto">
             <table class="aiwms-table aiwms-table-dense">
                 <thead>
@@ -106,19 +127,11 @@ else if (_activeTab == TechnoTeamProduction)
                         <th style="text-align:right">Production Manual PM</th>
                         <th style="text-align:right">Production Auto AM</th>
                         <th style="text-align:right">Production Auto PM</th>
+                        <th style="text-align:right" title="Pairing Auto AM + Production Manual AM + Production Auto AM">Total AM</th>
+                        <th style="text-align:right" title="Pairing Auto PM + Production Manual PM + Production Auto PM">Total PM</th>
                     </tr>
                 </thead>
                 <tbody>
-                    <tr style="font-weight:700; background:var(--surface-1, #f7f7f5);">
-                        <td>Total</td>
-                        <td style="text-align:right">@_tpRows.Sum(r => r.PairingAutoAMShift).ToString("N0")</td>
-                        <td style="text-align:right">@_tpRows.Sum(r => r.PairingAutoPMShift).ToString("N0")</td>
-                        <td style="text-align:right">@_tpRows.Sum(r => r.PairingManualAMShift).ToString("N0")</td>
-                        <td style="text-align:right">@_tpRows.Sum(r => r.ProductionManualAMShift).ToString("N0")</td>
-                        <td style="text-align:right">@_tpRows.Sum(r => r.ProductionManualPMShift).ToString("N0")</td>
-                        <td style="text-align:right">@_tpRows.Sum(r => r.ProductionAutoAMShift).ToString("N0")</td>
-                        <td style="text-align:right">@_tpRows.Sum(r => r.ProductionAutoPMShift).ToString("N0")</td>
-                    </tr>
                     @foreach (var r in _tpRows)
                     {
                         <tr>
@@ -130,11 +143,28 @@ else if (_activeTab == TechnoTeamProduction)
                             <td style="text-align:right">@r.ProductionManualPMShift.ToString("N0")</td>
                             <td style="text-align:right">@r.ProductionAutoAMShift.ToString("N0")</td>
                             <td style="text-align:right">@r.ProductionAutoPMShift.ToString("N0")</td>
+                            <td style="text-align:right; font-weight:700;">@TpTotalAm(r).ToString("N0")</td>
+                            <td style="text-align:right; font-weight:700;">@TpTotalPm(r).ToString("N0")</td>
+                        </tr>
+                    }
+                    @if (_tpRows.Count > 0)
+                    {
+                        <tr style="font-weight:700; background:var(--surface-1, #f7f7f5);">
+                            <td>Total</td>
+                            <td style="text-align:right">@_tpRows.Sum(r => r.PairingAutoAMShift).ToString("N0")</td>
+                            <td style="text-align:right">@_tpRows.Sum(r => r.PairingAutoPMShift).ToString("N0")</td>
+                            <td style="text-align:right">@_tpRows.Sum(r => r.PairingManualAMShift).ToString("N0")</td>
+                            <td style="text-align:right">@_tpRows.Sum(r => r.ProductionManualAMShift).ToString("N0")</td>
+                            <td style="text-align:right">@_tpRows.Sum(r => r.ProductionManualPMShift).ToString("N0")</td>
+                            <td style="text-align:right">@_tpRows.Sum(r => r.ProductionAutoAMShift).ToString("N0")</td>
+                            <td style="text-align:right">@_tpRows.Sum(r => r.ProductionAutoPMShift).ToString("N0")</td>
+                            <td style="text-align:right">@_tpRows.Sum(TpTotalAm).ToString("N0")</td>
+                            <td style="text-align:right">@_tpRows.Sum(TpTotalPm).ToString("N0")</td>
                         </tr>
                     }
                     @if (_tpRows.Count == 0)
                     {
-                        <tr><td colspan="8" style="color:var(--text-secondary)">No rows for the selected filters.</td></tr>
+                        <tr><td colspan="10" style="color:var(--text-secondary)">No rows for the selected filters.</td></tr>
                     }
                 </tbody>
             </table>
@@ -204,7 +234,7 @@ else if (_activeTab == TechnoChecking)
     @if (_loaded)
     {
         <div class="aiwms-section">
-            <div class="aiwms-card-header">Techno Checking - @_rows.Count.ToString("N0") row(s)</div>
+            <div class="aiwms-card-header incv-result-header">Techno Checking - @_rows.Count.ToString("N0") row(s)</div>
             <div style="overflow-x:auto">
             <table class="aiwms-table aiwms-table-dense">
                 <thead>
@@ -309,7 +339,7 @@ else if (_activeTab == TechnoPairing)
     @if (_pLoaded)
     {
         <div class="aiwms-section">
-            <div class="aiwms-card-header">Techno Pairing - @_pRows.Count.ToString("N0") row(s)</div>
+            <div class="aiwms-card-header incv-result-header">Techno Pairing - @_pRows.Count.ToString("N0") row(s)</div>
             <div style="overflow-x:auto">
             <table class="aiwms-table aiwms-table-dense">
                 <thead>
@@ -404,7 +434,7 @@ else if (_activeTab == TechnoBuilding)
     @if (_bLoaded)
     {
         <div class="aiwms-section">
-            <div class="aiwms-card-header">Techno Building - @_bRows.Count.ToString("N0") row(s)</div>
+            <div class="aiwms-card-header incv-result-header">Techno Building - @_bRows.Count.ToString("N0") row(s)</div>
             <div style="overflow-x:auto">
             <table class="aiwms-table aiwms-table-dense">
                 <thead>
@@ -495,7 +525,7 @@ else if (_activeTab == TechnoPricing)
     @if (_prLoaded)
     {
         <div class="aiwms-section">
-            <div class="aiwms-card-header">Techno Pricing - @_prRows.Count.ToString("N0") row(s)</div>
+            <div class="aiwms-card-header incv-result-header">Techno Pricing - @_prRows.Count.ToString("N0") row(s)</div>
             <div style="overflow-x:auto">
             <table class="aiwms-table aiwms-table-dense">
                 <thead>
@@ -585,7 +615,7 @@ else if (_activeTab == RfidProduction)
     @if (_rfLoaded)
     {
         <div class="aiwms-section">
-            <div class="aiwms-card-header">RFID Production - @_rfRows.Count.ToString("N0") row(s)</div>
+            <div class="aiwms-card-header incv-result-header">RFID Production - @_rfRows.Count.ToString("N0") row(s)</div>
             <div style="overflow-x:auto">
             <table class="aiwms-table aiwms-table-dense">
                 <thead>
@@ -664,7 +694,7 @@ else if (_activeTab == JafzaExportChecking)
     @if (_jcLoaded)
     {
         <div class="aiwms-section">
-            <div class="aiwms-card-header">Jafza Export Checking - @_jcRows.Count.ToString("N0") row(s)</div>
+            <div class="aiwms-card-header incv-result-header">Jafza Export Checking - @_jcRows.Count.ToString("N0") row(s)</div>
             <div style="overflow-x:auto">
             <table class="aiwms-table aiwms-table-dense">
                 <thead>
@@ -746,7 +776,7 @@ else if (_activeTab == JafzaExportPairing)
     @if (_jpLoaded)
     {
         <div class="aiwms-section">
-            <div class="aiwms-card-header">Jafza Export Pairing & R1 Sorting - @_jpRows.Count.ToString("N0") row(s)</div>
+            <div class="aiwms-card-header incv-result-header">Jafza Export Pairing & R1 Sorting - @_jpRows.Count.ToString("N0") row(s)</div>
             <div style="overflow-x:auto">
             <table class="aiwms-table aiwms-table-dense">
                 <thead>
@@ -789,6 +819,16 @@ else
     </div>
 }
 
+@* Bottom of the page on purpose, so it stays out of screenshots sent to users. *@
+@if (_isAdminUser)
+{
+    <div style="margin-top:28px; padding-top:10px; border-top:1px solid var(--border-default);">
+        <label style="display:inline-flex; align-items:center; gap:6px; cursor:pointer; font-size:12px; color:var(--text-secondary);">
+            <input type="checkbox" @bind="_hideAdminControls" /> Hide admin controls (preview user view)
+        </label>
+    </div>
+}
+
 @code {
     private const string TechnoTeamProduction = "Techno Team Production";
     private const string TechnoChecking = "Techno Checking";
@@ -802,6 +842,50 @@ else
     private const string Settings = "AdminPanel";
     [CascadingParameter] private Task<AuthenticationState>? AuthState { get; set; }
     private bool _canSeeSettings;
+
+    // ---------------- Admin view (SQL per tab) ----------------
+    // Admin-only, and hidden by the "Hide admin controls" tick box at the bottom of the page.
+    private bool _isAdminUser;
+    private bool _hideAdminControls;
+    private bool ShowAdminControls => _isAdminUser && !_hideAdminControls;
+
+    // ReportQueryCatalogue subsections belonging to each tab (a tab can have several queries).
+    private static readonly Dictionary<string, string> TabQueryPrefix = new()
+    {
+        [TechnoTeamProduction] = "Techno Team Production",
+        [TechnoChecking]       = "Techno Checking",
+        [TechnoPairing]        = "Techno Pairing",
+        [TechnoBuilding]       = "Techno Building",
+        [TechnoPricing]        = "Techno Pricing",
+        [RfidProduction]       = "RFID Production",
+        [JafzaExportChecking]  = "Jafza Export Checking",
+        [JafzaExportPairing]   = "Jafza Export Pairing & R1 Sorting",
+    };
+
+    private static List<ReportQueryCatalogue.QueryEntry> TabQueryEntries(string tab) =>
+        TabQueryPrefix.TryGetValue(tab, out var prefix)
+            ? ReportQueryCatalogue.All
+                .Where(e => e.Report == "Warehouse Incentives" && e.Subsection.StartsWith(prefix, StringComparison.Ordinal))
+                .ToList()
+            : new();
+
+    private async Task ShowTabQueryAsync()
+    {
+        var entries = TabQueryEntries(_activeTab);
+        // Team Production's SQL depends on Morning Shift Timing / Multiplier — show the one for the current choice.
+        var sql = _activeTab == TechnoTeamProduction
+            ? $"-- Techno Team Production — Morning Shift Timing {_tpShiftTiming}, Multiplier {(_tpMultiplier ? "on" : "off")} " +
+              $"(@fromDate / @toDate = the From / To dates)\n{TechnoTeamProductionService.BuildSql(_tpShiftTiming, _tpMultiplier)}"
+            : string.Join("\n\n", entries.Select(e => $"-- {e.Subsection} ({e.SourceNote})\n{e.Sql}"));
+        var title = $"Warehouse Incentives — {_activeTab} — query";
+        var parameters = new DialogParameters<QueryViewerDialog>
+        {
+            { x => x.Title, title },
+            { x => x.Sql, sql },
+        };
+        var options = new DialogOptions { MaxWidth = MaxWidth.Large, FullWidth = true, CloseOnEscapeKey = true };
+        await DialogService.ShowAsync<QueryViewerDialog>(title, parameters, options);
+    }
     private IEnumerable<string> VisibleTabs => _canSeeSettings ? Tabs.Prepend(Settings) : Tabs;
     private static readonly string[] Tabs =
         [TechnoTeamProduction, TechnoChecking, TechnoPairing, TechnoBuilding, TechnoPricing, RfidProduction, JafzaExportChecking, JafzaExportPairing, "Jafza Production"];
@@ -835,6 +919,7 @@ else
         {
             var user = (await AuthState).User;
             _canSeeSettings = user.IsInRole(Roles.Admin) || user.IsInRole(Roles.Payroll);
+            _isAdminUser = user.IsInRole(Roles.Admin);
         }
 
         try { _divisions = await Svc.GetDivisionsAsync(); }
@@ -1146,6 +1231,11 @@ else
     }
 
     // ---------------- Techno Team Production ----------------
+    // Shift totals across Pairing Auto + Production Manual + Production Auto. Pairing Manual
+    // has no AM/PM split, so it's in neither.
+    private static int TpTotalAm(TechnoTeamProductionRow r) => r.PairingAutoAMShift + r.ProductionManualAMShift + r.ProductionAutoAMShift;
+    private static int TpTotalPm(TechnoTeamProductionRow r) => r.PairingAutoPMShift + r.ProductionManualPMShift + r.ProductionAutoPMShift;
+
     private DateTime _tpFrom = DateTime.Today.AddDays(-6);
     private DateTime _tpTo = DateTime.Today;
     private string _tpShiftTiming = "6AM-8PM";
@@ -1194,6 +1284,7 @@ else
             {
                 "Date", "Pairing Auto AM", "Pairing Auto PM", "Pairing Manual",
                 "Production Manual AM", "Production Manual PM", "Production Auto AM", "Production Auto PM",
+                "Total AM", "Total PM",
             };
             for (int i = 0; i < headers.Length; i++) ws.Cell(1, i + 1).Value = headers[i];
             ws.Row(1).Style.Font.Bold = true;
@@ -1209,6 +1300,8 @@ else
                 ws.Cell(row, 6).Value = r.ProductionManualPMShift;
                 ws.Cell(row, 7).Value = r.ProductionAutoAMShift;
                 ws.Cell(row, 8).Value = r.ProductionAutoPMShift;
+                ws.Cell(row, 9).Value = TpTotalAm(r);
+                ws.Cell(row, 10).Value = TpTotalPm(r);
                 row++;
             }
             ws.Columns().AdjustToContents();

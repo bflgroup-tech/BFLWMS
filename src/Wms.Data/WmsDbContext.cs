@@ -20,6 +20,7 @@ public class WmsDbContext(DbContextOptions<WmsDbContext> options) : DbContext(op
     public DbSet<WmsUserSectionAccess> UserSectionAccess => Set<WmsUserSectionAccess>();
     public DbSet<WmsUserStoreAccess> UserStoreAccess => Set<WmsUserStoreAccess>();
     public DbSet<ApiClientApp> ApiClientApps => Set<ApiClientApp>();
+    public DbSet<ApiRequestLog> ApiRequestLogs => Set<ApiRequestLog>();
 
     protected override void OnModelCreating(ModelBuilder mb)
     {
@@ -193,6 +194,18 @@ public class WmsDbContext(DbContextOptions<WmsDbContext> options) : DbContext(op
             e.Property(x => x.SecretHash).HasMaxLength(200);
             e.Property(x => x.CreatedBy).HasMaxLength(100);
             e.Property(x => x.CreateTS).HasColumnType("datetime2(0)");
+        });
+
+        mb.Entity<ApiRequestLog>(e =>
+        {
+            e.ToTable("ApiRequestLog");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Timestamp).HasColumnType("datetime2(0)");
+            e.Property(x => x.Method).HasMaxLength(10);
+            e.Property(x => x.Path).HasMaxLength(300);
+            e.Property(x => x.ClientId).HasMaxLength(64);
+            e.Property(x => x.ClientName).HasMaxLength(200);
+            e.Property(x => x.ClientIp).HasMaxLength(45);
         });
     }
 }

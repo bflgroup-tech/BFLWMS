@@ -1963,6 +1963,42 @@ SELECT
            AND NOT EXISTS (
                SELECT 1 FROM usa.dbo.UsaPallets a WITH (NOLOCK) WHERE a.Contno = cr.RefNo
            )
+           AND NOT EXISTS (   -- EDI-enabled containers never get UsaPallets rows, but aren't pending
+               SELECT 1 FROM BFLDATA..ContColorHeader a WITH (NOLOCK) WHERE a.Contno = cr.RefNo AND EDI = 'Y'
+           )
+         GROUP BY cr.RefNo
+         ORDER BY ReceiptDt, cr.RefNo"),
+
+        new QueryEntry("YOTO VNA Dashboard", "Offloading Shipment Summary — EDI Enabled Containers", "bfldata.dbo.ContReceipt, usa.dbo.UsaPallets, BFLDATA.dbo.ContColorHeader, hodata.dbo.vUSAOrder -- YotoVnaDashboardService.GetEdiEnabledContainersAsync (same as the detailed pending query, but EDI = 'Y' EXISTS)", @"
+        WITH OrderPo AS (
+            SELECT refno, ORAPONo, Qty = SUM(ISNULL(Qty, 0))
+            FROM hodata.dbo.vUSAOrder WITH (NOLOCK)
+            WHERE refno IS NOT NULL
+            GROUP BY refno, ORAPONo
+        ),
+        OrderAgg AS (
+            SELECT refno,
+                   Qty       = SUM(Qty),
+                   PoNumbers = STRING_AGG(CAST(ORAPONo AS VARCHAR(50)), ', ') WITHIN GROUP (ORDER BY ORAPONo)
+            FROM OrderPo
+            GROUP BY refno
+        )
+        SELECT
+            cr.RefNo  AS Contno,
+            ReceiptDt = MIN(cr.ReceiptDt),
+            Qty       = MAX(oa.Qty),
+            PoNumbers = MAX(oa.PoNumbers)
+          FROM bfldata.dbo.ContReceipt cr WITH (NOLOCK)
+          JOIN OrderAgg oa ON oa.refno = cr.RefNo
+         WHERE cr.Warehouse = @wh
+           AND cr.ReceiptDt >= @floor
+           AND (cr.RefNo LIKE 'AEINT%' OR cr.RefNo LIKE 'AELOC%')
+           AND NOT EXISTS (
+               SELECT 1 FROM usa.dbo.UsaPallets a WITH (NOLOCK) WHERE a.Contno = cr.RefNo
+           )
+           AND EXISTS (   -- EDI-enabled containers never get UsaPallets rows, but aren't pending
+               SELECT 1 FROM BFLDATA..ContColorHeader a WITH (NOLOCK) WHERE a.Contno = cr.RefNo AND EDI = 'Y'
+           )
          GROUP BY cr.RefNo
          ORDER BY ReceiptDt, cr.RefNo"),
 
@@ -1984,6 +2020,9 @@ SELECT
               AND (cr.RefNo LIKE 'AEINT%' OR cr.RefNo LIKE 'AELOC%')
               AND NOT EXISTS (
                   SELECT 1 FROM usa.dbo.UsaPallets a WITH (NOLOCK) WHERE a.Contno = cr.RefNo
+              )
+              AND NOT EXISTS (   -- EDI-enabled containers never get UsaPallets rows, but aren't pending
+                  SELECT 1 FROM BFLDATA..ContColorHeader a WITH (NOLOCK) WHERE a.Contno = cr.RefNo AND EDI = 'Y'
               )
             GROUP BY CASE WHEN cr.RefNo LIKE 'AEINT%' THEN 'AEINT' ELSE 'AELOC' END"),
 
@@ -2249,6 +2288,25 @@ SELECT
          WHERE (@noDivisionFilter = 1 OR Division IN @divisions)
            AND (@empCodeFilter IS NULL OR EmpCode = @empCodeFilter)
          ORDER BY TrnDate, EmpCode;"),
+
+        // The four below read the SQL straight from the services, so they can't drift.
+        new QueryEntry("Warehouse Incentives", "Techno Team Production", "BFLDATA.dbo.RFPairingCount, BFLDATA.dbo.DailyCountCategoryTrf, BFLDATA.dbo.DailyCountCategoryTrfRobo -- TechnoTeamProductionService.BuildSql (shown for 6AM-8PM with Multiplier; the AM/PM hour columns change with Morning Shift Timing, and the Multiplier wraps the Production sums)",
+            TechnoTeamProductionService.BuildSql("6AM-8PM", true)),
+
+        new QueryEntry("Warehouse Incentives", "RFID Production", "BFLDATA.dbo.TransferNoReturn, BFLDATA.dbo.PDAUSERS -- RfidProductionService.GetReportAsync (OnPremBackupDB)",
+            RfidProductionService.ReportSql),
+
+        new QueryEntry("Warehouse Incentives", "Jafza Export Checking — counts", "ONLINE.dbo.RFPairingCountPhotoCheckBuild (WmsProductionDb) -- JafzaExportCheckingService.CountSql (part 1 of 2)",
+            JafzaExportCheckingService.CountSql),
+
+        new QueryEntry("Warehouse Incentives", "Jafza Export Checking — incentive amount", "BFLDATA.dbo.CheckingAmountJafza (OnPremBackupDB) -- JafzaExportCheckingService.AmountSql (part 2 of 2; joined in memory on EmpCode + TrnDate)",
+            JafzaExportCheckingService.AmountSql),
+
+        new QueryEntry("Warehouse Incentives", "Jafza Export Pairing & R1 Sorting — counts", "BFLDATA.dbo.rfPairDetail, ROBOTICS.dbo.PairDetail, BFLDATA.dbo.DataSettings (JafazaRoboDb) -- JafzaExportPairingService.RawCountSql (part 1 of 2)",
+            JafzaExportPairingService.RawCountSql),
+
+        new QueryEntry("Warehouse Incentives", "Jafza Export Pairing & R1 Sorting — pair assignments", "BFLDATA.dbo.PairAssign (OnPremBackupDB) -- JafzaExportPairingService.PairAssignSql (part 2 of 2; pairs EmpCode1-EmpCode2 in memory)",
+            JafzaExportPairingService.PairAssignSql),
 
         // ============================== Ecom Production Report ==============================
         new QueryEntry("Ecom Production Report", "Online WH Users (table)", "LPMSIM.dbo.UserWHDetail -- EcomProductionReportsService.GetUsersAsync", @"
