@@ -257,6 +257,9 @@ public class ApiGinIntegrationService(
         UPDATE #items SET product_id = b.Style, brand = b.Vendor, season = b.ItemType, color = b.Color, size = b.Size1, description = b.itemname
           FROM #items a, usa.dbo.UPCBarCodes b WHERE a.sku = b.itemcode;
 
+        -- The API rejects an empty product_id, and one bad item fails the whole batch.
+        UPDATE #items SET product_id = sku WHERE ISNULL(LTRIM(RTRIM(product_id)), '') = '';
+
         UPDATE #items SET image_url = b.FileLoc
           FROM #items a, usa.dbo.upcAddress b WHERE a.sku = b.upc;
 
@@ -264,6 +267,8 @@ public class ApiGinIntegrationService(
 
         UPDATE #items SET selling_price = b.SalesRate
           FROM #items a, HODATA.dbo.SalesPrice b WHERE a.sku = b.itemcode;
+
+        UPDATE #items SET selling_price = 0 WHERE selling_price IS NULL;
 
         UPDATE #items SET image_url = '' WHERE image_url IS NULL;
 
