@@ -1,6 +1,7 @@
 /* =============================================================================
    AIWMS — Column existence QA
-   Checks every column reference in BuildingService.cs against the actual schemas
+   Checks every column reference in BuildingService.cs — plus the racks..whboxitems
+   columns CDC store allocation depends on — against the actual schemas
    on the connected SQL server. Run this against the server configured in /setup.
 
    For each row:
@@ -132,7 +133,19 @@ INSERT INTO @refs(db_name, schema_name, object_name, column_name, used_for) VALU
 ('lpm','dbo','PhotocheckingLPM','Season',           'item season'),
 ('lpm','dbo','PhotocheckingLPM','ToteID',           'staged tote'),
 ('lpm','dbo','PhotocheckingLPM','RoboStatus',       'hardcoded N'),
-('lpm','dbo','PhotocheckingLPM','BarCode',          'empty');
+('lpm','dbo','PhotocheckingLPM','BarCode',          'empty'),
+
+/* racks — CDC store allocation reads its PO lines from here, so a renamed column
+   fails the whole feature at runtime rather than degrading. LPMDt is listed
+   because the repo has contradicted itself about its type: it is a real `date`,
+   despite a comment in WarehouseSohSummaryService calling it a dd/MM/yyyy string. */
+('racks','dbo','whboxitems','ContNo',               'CDC allocation: container scope'),
+('racks','dbo','whboxitems','OraPoNo',              'CDC allocation: PO scope (varchar(25))'),
+('racks','dbo','whboxitems','PalletType',           'CDC allocation: ''CD'' selects held stock'),
+('racks','dbo','whboxitems','ItemCode',             'CDC allocation: line item'),
+('racks','dbo','whboxitems','Qty',                  'CDC allocation: summed to PO-line grain'),
+('racks','dbo','whboxitems','LPMDt',                'CDC allocation: grouping key + report month'),
+('racks','dbo','whboxitems','LPM',                  'CDC allocation: display label');
 
 DECLARE @sql NVARCHAR(MAX) = N'';
 
