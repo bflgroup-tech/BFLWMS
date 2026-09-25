@@ -270,6 +270,8 @@
                     </tbody>
                 </table>
                 }
+                @if (!IsOffloadingSummary)
+                {
                 <table class="aiwms-table aiwms-table-dense" style="text-align:center; width:100%; margin-top:14px;">
                     <thead>
                         <tr><th colspan="4" style="text-align:center; position:relative;">EDI Enabled Containers (since @PendingFloorLabel) @AdminQueryButton("Offloading Shipment Summary — EDI Enabled Containers")</th></tr>
@@ -304,6 +306,7 @@
                         }
                     </tbody>
                 </table>
+                }
             </div>
         </div>
         }
@@ -499,7 +502,8 @@
     private List<YotoOffloadContainerRow> _containerDetails = new();
     private List<YotoPendingGroupRow> _pending = new();
     private List<YotoPendingContainerRow> _pendingDetails = new();
-    // Received, not in UsaPallets, but EDI = 'Y' in BFLDATA..ContColorHeader — not pending, listed under it.
+    // Received, not in UsaPallets, but EDI = 'Y' in BFLDATA..ContColorHeader — not pending, listed under
+    // it in the Detailed view only (not loaded for Summary).
     private List<YotoPendingContainerRow> _ediContainers = new();
     private List<YotoInboundPeriodRow> _periodRows = new();
     private List<YotoInternalTransferBox> _internalTransfers = new();
@@ -621,7 +625,7 @@
                     _containerDetails = IsOffloadingSummary ? new() : await Svc.GetCompletedOffloadingDetailAsync(monthStart, monthEnd);
                     _pending = await Svc.GetPendingOffloadingAsync();
                     _pendingDetails = IsOffloadingSummary ? new() : await Svc.GetPendingOffloadingDetailAsync();
-                    _ediContainers = await Svc.GetEdiEnabledContainersAsync();
+                    _ediContainers = IsOffloadingSummary ? new() : await Svc.GetEdiEnabledContainersAsync();
                     _periodRows = await Svc.GetMonthlyInboundSummaryAsync(_selectedYear);
                 }
                 else if (IsWeeklyAgg)
@@ -633,7 +637,7 @@
                     _containerDetails = IsOffloadingSummary ? new() : await Svc.GetCompletedOffloadingDetailAsync(monthStart, monthEnd);
                     _pending = await Svc.GetPendingOffloadingAsync();
                     _pendingDetails = IsOffloadingSummary ? new() : await Svc.GetPendingOffloadingDetailAsync();
-                    _ediContainers = await Svc.GetEdiEnabledContainersAsync();
+                    _ediContainers = IsOffloadingSummary ? new() : await Svc.GetEdiEnabledContainersAsync();
 
                     var weeksInMonth = Weeks.Where(w => w.Start < monthEnd && w.End >= monthStart).ToList();
                     var periodRows = new List<YotoInboundPeriodRow>();
@@ -651,7 +655,7 @@
                     _containerDetails = IsOffloadingSummary ? new() : await Svc.GetCompletedOffloadingDetailAsync(rangeStart, rangeEnd);
                     _pending = await Svc.GetPendingOffloadingAsync();
                     _pendingDetails = IsOffloadingSummary ? new() : await Svc.GetPendingOffloadingDetailAsync();
-                    _ediContainers = await Svc.GetEdiEnabledContainersAsync();
+                    _ediContainers = IsOffloadingSummary ? new() : await Svc.GetEdiEnabledContainersAsync();
 
                     var daysInRange = (int)(rangeEnd - rangeStart).TotalDays;
                     var periodRows = new List<YotoInboundPeriodRow>();
@@ -670,7 +674,7 @@
                     _containerDetails = IsOffloadingSummary ? new() : await Svc.GetCompletedOffloadingDetailAsync(weekStart, weekEnd);
                     _pending = await Svc.GetPendingOffloadingAsync();
                     _pendingDetails = IsOffloadingSummary ? new() : await Svc.GetPendingOffloadingDetailAsync();
-                    _ediContainers = await Svc.GetEdiEnabledContainersAsync();
+                    _ediContainers = IsOffloadingSummary ? new() : await Svc.GetEdiEnabledContainersAsync();
                     _periodRows = new List<YotoInboundPeriodRow> { await Svc.GetInboundSummaryForRangeAsync(weekStart, weekEnd, SelectedPeriodLabel, SelectedWeekNum) };
                 }
             }
@@ -915,6 +919,8 @@
             ws.Row(row).Style.Font.Bold = true; row += 2;
         }
 
+        if (!IsOffloadingSummary)
+        {
         row = WriteSectionTitle(ws, row, $"EDI Enabled Containers (not pending, since {PendingFloorLabel})");
         ws.Cell(row, 1).Value = "Container ID"; ws.Cell(row, 2).Value = "Receipt Date"; ws.Cell(row, 3).Value = "Order Qty"; ws.Cell(row, 4).Value = "PO Number";
         ws.Row(row).Style.Font.Bold = true; row++;
@@ -926,6 +932,7 @@
         }
         ws.Cell(row, 1).Value = "Total"; ws.Cell(row, 3).Value = _ediContainers.Sum(r => r.Qty);
         ws.Row(row).Style.Font.Bold = true; row += 2;
+        }
 
         return row;
     }
