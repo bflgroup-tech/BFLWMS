@@ -74,6 +74,10 @@ public class ApiEpcIntegrationService(
     public const string JobName = "APIEpcIntegration";
     private const string ApiUrl = "https://api.bfl.altavantconsulting.eu/v1/epc/imports";
 
+    // The API rejects a request with more than 500 items ("expect array to have
+    // at most 500 items"), so a full EPCBarcodes pull is sent in chunks.
+    private const int MaxItemsPerRequest = 500;
+
     // WmsProductionDb, not OnPremBackup — same as GenerateEan13Service for
     // DATAREPORTING writes: the OnPremBackup login has been denied UPDATE
     // there before. Used here for the read too, so the eventual "mark sent"
@@ -150,25 +154,31 @@ public class ApiEpcIntegrationService(
                 Printer:      r.Printer ?? "",
                 AntiTheft:    r.AntiTheft ?? "")).ToList();
 
-            using var req = new HttpRequestMessage(HttpMethod.Post, ApiUrl);
-            req.Headers.Add("apikey", opts.Value.ApiKey);
-            req.Content = JsonContent.Create(new EpcApiRequest(items));
-
-            using var res = await http.SendAsync(req, ct);
-            var body = await res.Content.ReadAsStringAsync(ct);
-
-            if (!res.IsSuccessStatusCode)
+            var sent = 0;
+            foreach (var chunk in items.Chunk(MaxItemsPerRequest))
             {
-                var error = $"HTTP {(int)res.StatusCode}: {body}";
-                await jobs.FinishRunAsync(runId, "Failed", 0, error, ct);
-                return (0, error);
+                using var req = new HttpRequestMessage(HttpMethod.Post, ApiUrl);
+                req.Headers.Add("apikey", opts.Value.ApiKey);
+                req.Content = JsonContent.Create(new EpcApiRequest(chunk.ToList()));
+
+                using var res = await http.SendAsync(req, ct);
+                var body = await res.Content.ReadAsStringAsync(ct);
+
+                if (!res.IsSuccessStatusCode)
+                {
+                    var error = $"HTTP {(int)res.StatusCode}: {body} (sent {sent} of {items.Count} before this failure)";
+                    await jobs.FinishRunAsync(runId, "Failed", sent, error, ct);
+                    return (sent, error);
+                }
+
+                sent += chunk.Length;
             }
 
             // TODO: once the EPCBarcodes status/sent column is confirmed (see class
             // doc gap #1), mark these rows as sent here so a repeat run doesn't
             // re-POST them.
-            await jobs.FinishRunAsync(runId, "Success", rows.Count, null, ct);
-            return (rows.Count, null);
+            await jobs.FinishRunAsync(runId, "Success", sent, null, ct);
+            return (sent, null);
         }
         catch (Exception ex)
         {
