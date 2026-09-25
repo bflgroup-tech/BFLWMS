@@ -19,12 +19,14 @@
     .incset-group-emp { background: #eef4ff; border: 1px solid #d6e3fb; }
     .incset-group-att { background: #fff6e8; border: 1px solid #f6e2c0; }
     .incset-group-tgt { background: #ecfbf1; border: 1px solid #cdeed8; }
+    .incset-group-ded { background: #f5f0ff; border: 1px solid #e2d8fb; }
     /* The three upload sections side by side; stacked again on narrow screens. */
-    .incset-upload-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; align-items: stretch; margin-bottom: 18px; }
+    .incset-upload-row { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; align-items: stretch; margin-bottom: 18px; }
     .incset-upload-row > .incset-group { margin-bottom: 0; display: flex; flex-direction: column; }
     .incset-upload-row > .incset-group > .aiwms-section { flex: 1; margin-bottom: 11px; }
     .incset-upload-row .incset-help-row { flex-direction: column; }
-    @@media (max-width: 1200px) { .incset-upload-row { grid-template-columns: minmax(0, 1fr); } }
+    @@media (max-width: 1500px) { .incset-upload-row { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+    @@media (max-width: 900px)  { .incset-upload-row { grid-template-columns: minmax(0, 1fr); } }
     .incset-area-title { font-family: var(--font-display); font-weight: 800; font-size: 14px; text-transform: uppercase; letter-spacing: .5px; color: var(--text-secondary); margin: 6px 2px 8px 2px; }
 </style>
 
@@ -208,6 +210,56 @@
                             <td style="text-align:right;">@r.IncentiveBase.ToString("N2")</td>
                             <td style="text-align:right;">@(r.Add_IncentiveRate?.ToString("N2"))</td>
                         </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+    </div>
+    }
+</div>
+</div>
+<div class="incset-group incset-group-ded">
+<div class="aiwms-section" style="padding:0; overflow:hidden;">
+    <div class="incset-header">
+        <span>Deduction Type Upload</span>
+        @Toggle(_dedCollapsed, () => _dedCollapsed = !_dedCollapsed)
+    </div>
+    @if (!_dedCollapsed)
+    {
+    <div style="padding:16px 20px;">
+    <div class="incset-help-row" style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; margin-bottom:10px;">
+        <div style="color:var(--text-secondary); font-size:12px; line-height:1.6;">
+            <div>* One row per DedType; DedPercent is required — a number from 0 to 100 with up to 2 decimals.</div>
+            <div>* A DedType that already exists is rejected — nothing is saved.</div>
+            @if (_isAdmin)
+            {
+                <div style="margin-top:4px;">
+                    Excel (.xlsx) with header row <b>DedType, DedPercent</b>. Saved to DATAREPORTING..INC_DeductionType.
+                </div>
+            }
+        </div>
+        <button class="aiwms-btn aiwms-btn-secondary" style="white-space:nowrap;" @onclick="DownloadDeductionTemplateAsync">Download template</button>
+    </div>
+    <InputFile OnChange="OnDeductionFileSelected" accept=".xlsx" disabled="@_busy" @key="_dedFileKey" />
+    @Message(DedArea)
+
+    @if (_dedUpload.Count > 0)
+    {
+        <div style="margin-top:12px; display:flex; align-items:center; gap:12px;">
+            <b>Preview — @_dedUpload.Count.ToString("N0") deduction type(s)</b>
+            <button class="aiwms-btn aiwms-btn-primary" @onclick="SaveDeductionTypesAsync" disabled="@_busy">Save</button>
+            <button class="aiwms-btn aiwms-btn-secondary" @onclick="() => { _dedUpload = new(); _dedFileKey++; }" disabled="@_busy">Cancel</button>
+        </div>
+        <div style="max-height:260px; overflow:auto; margin-top:8px;">
+            <table class="aiwms-table aiwms-table-dense">
+                <thead style="position:sticky; top:0; z-index:1;">
+                    <tr><th>DedType</th><th style="text-align:right;">Ded %</th></tr>
+                </thead>
+                <tbody>
+                    @foreach (var r in _dedUpload)
+                    {
+                        <tr><td>@r.DedType</td><td style="text-align:right;">@r.DedPercent.ToString("N2")</td></tr>
                     }
                 </tbody>
             </table>
@@ -404,6 +456,46 @@
     }
 </div>
 </div>
+<div class="incset-group incset-group-ded">
+<div class="aiwms-section" style="padding:0; overflow:hidden;">
+    <div class="incset-header">
+        <span>Deduction Types @(_dedLoaded ? $"({_deductionTypes.Count:N0})" : "")</span>
+        @Toggle(_dedGridCollapsed, () => _dedGridCollapsed = !_dedGridCollapsed)
+    </div>
+    @if (!_dedGridCollapsed)
+    {
+    <div style="padding:16px 20px;">
+    <div style="display:flex; justify-content:flex-start; align-items:end; gap:12px; flex-wrap:wrap; margin-bottom:10px;">
+        <button class="aiwms-btn aiwms-btn-secondary" @onclick="LoadDeductionTypesAsync" disabled="@_busy">Show all</button>
+    </div>
+    @Message(DedGridArea)
+    @if (_dedLoaded && _deductionTypes.Count == 0)
+    {
+        <p style="color:var(--text-secondary); margin:0;">No deduction types uploaded yet.</p>
+    }
+    else if (_deductionTypes.Count > 0)
+    {
+        <div style="max-height:360px; overflow:auto;">
+            <table class="aiwms-table aiwms-table-dense">
+                <thead style="position:sticky; top:0; z-index:1;">
+                    <tr><th>DedType</th><th style="text-align:right;">Ded %</th><th>Uploaded By</th><th>Uploaded On</th></tr>
+                </thead>
+                <tbody>
+                    @foreach (var r in _deductionTypes)
+                    {
+                        <tr>
+                            <td>@r.DedType</td><td style="text-align:right;">@(r.DedPercent?.ToString("N2"))</td>
+                            <td>@r.UploadedUser</td><td>@(r.CreateTS?.ToString("dd-MMM-yyyy HH:mm") ?? "")</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+    </div>
+    }
+</div>
+</div>
 
 @code {
     private const int MaxProblemsShown = 25;
@@ -424,6 +516,12 @@
     private bool _tgtUpdateExisting;
     private bool _tgtLogCollapsed = true;   // Target Update Log starts minimized; loads on first expand
     private bool _tgtLogLoaded;
+    private bool _dedCollapsed;
+    private bool _dedGridCollapsed;
+    private int _dedFileKey;
+    private List<IncDeductionTypeUploadRow> _dedUpload = new();
+    private List<IncDeductionTypeRow> _deductionTypes = new();
+    private bool _dedLoaded;
     private List<IncTargetLogRow> _tgtLog = new();
     private bool TgtIsStored(string category) => _targets.Any(t => string.Equals(t.Category.Trim(), category, StringComparison.OrdinalIgnoreCase));
     private int TgtUpdateCount => _tgtUpload.Count(r => TgtIsStored(r.Category));
@@ -457,6 +555,7 @@
         await LoadEmployeesAsync();
         await LoadAttendanceAsync();
         await LoadTargetsAsync();
+        await LoadDeductionTypesAsync();
     }
 
     private string Uploader => Me.Email ?? Me.Name ?? "";
@@ -465,7 +564,8 @@
     // controls), not in one banner at the top of the tab that is off screen by the time
     // you reach the Attendance section.
     private const string EmpArea = "emp", AttArea = "att", EmpGridArea = "empgrid", AttGridArea = "attgrid",
-                         TgtArea = "tgt", TgtGridArea = "tgtgrid", TgtLogArea = "tgtlog";
+                         TgtArea = "tgt", TgtGridArea = "tgtgrid", TgtLogArea = "tgtlog",
+                         DedArea = "ded", DedGridArea = "dedgrid";
     private string _msgArea = "";
     private void ShowError(string msg, List<string>? problems = null) { _message = msg; _isError = true;  _problems = problems ?? new(); }
     private void ShowInfo(string msg)                                  { _message = msg; _isError = false; _problems = new(); }
@@ -892,6 +992,109 @@
         DownloadTemplateAsync("Target_Template.xlsx", "Targets",
             ["Category", "TargetAuto", "TargetManual", "IncentiveBase", "Add_IncentiveRate"],
             ["Checking", "1000.00", "800.00", "150.00", "0.50"]);
+
+
+    // ===================== Deduction type upload =====================
+
+    private async Task LoadDeductionTypesAsync()
+    {
+        StartIn(DedGridArea);
+        try { _deductionTypes = await Svc.GetDeductionTypesAsync(); _dedLoaded = true; }
+        catch (Exception ex) { ShowError($"Couldn't load deduction types: {ex.Message}"); }
+    }
+
+    private async Task OnDeductionFileSelected(InputFileChangeEventArgs e)
+    {
+        StartIn(DedArea);
+        _dedUpload = new();
+        _busy = true; StateHasChanged();
+        var ms = await ReadXlsxAsync(e.File);
+        if (ms is null) { _busy = false; return; }
+        try
+        {
+            var problems = new List<string>();
+            var rows = ParseDeductionTypes(ms, problems);
+            if (problems.Count > 0) { ShowError($"'{e.File.Name}' has {problems.Count} problem(s) — nothing was loaded. Fix them and choose the file again.", problems); _dedFileKey++; return; }
+            if (rows.Count == 0)     { ShowError($"No data rows found in '{e.File.Name}'."); _dedFileKey++; return; }
+
+            var stored = _deductionTypes.Select(d => d.DedType.Trim()).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var clashes = rows.Where(r => stored.Contains(r.DedType)).Select(r => r.DedType).ToList();
+            if (clashes.Count > 0)
+            {
+                ShowError($"{clashes.Count} deduction type(s) already exist — nothing was loaded. Remove them from the file and upload again.",
+                          clashes.Select(c => $"DedType {c} already exists").ToList());
+                _dedFileKey++;
+                return;
+            }
+            _dedUpload = rows;
+            ShowInfo($"Read {rows.Count:N0} deduction type(s). Check the preview, then click Save.");
+        }
+        catch (Exception ex) { ShowError($"Couldn't read the Excel: {ex.Message}"); _dedFileKey++; }
+        finally { _busy = false; }
+    }
+
+    private async Task SaveDeductionTypesAsync()
+    {
+        StartIn(DedArea);
+        _busy = true; StateHasChanged();
+        try
+        {
+            var r = await Svc.UploadDeductionTypesAsync(_dedUpload, Uploader);
+            if (r.Ok)
+            {
+                _dedUpload = new(); _dedFileKey++;
+                await LoadDeductionTypesAsync();
+                _msgArea = DedArea;
+                ShowInfo($"Saved {r.RowsSaved:N0} deduction type(s).");
+            }
+            else ShowError(r.Error ?? "Save failed.", r.Problems);
+        }
+        finally { _busy = false; }
+    }
+
+    private static List<IncDeductionTypeUploadRow> ParseDeductionTypes(Stream stream, List<string> problems)
+    {
+        using var wb = new XLWorkbook(stream);
+        var ws = wb.Worksheet(1);
+        var cols = HeaderMap(ws);
+        foreach (var col in new[] { "dedtype", "dedpercent" })
+            if (!cols.ContainsKey(col))
+                problems.Add($"Header row is missing column '{col}'. Expected: DedType, DedPercent.");
+        if (problems.Count > 0) return new();
+
+        var rows = new List<IncDeductionTypeUploadRow>();
+        var seen = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var last = ws.LastRowUsed()?.RowNumber() ?? 1;
+        for (var r = 2; r <= last; r++)
+        {
+            var type = ws.Cell(r, cols["dedtype"]).GetFormattedString().Trim();
+            var pctCell = ws.Cell(r, cols["dedpercent"]);
+            if (type.Length == 0 && pctCell.IsEmpty()) continue;   // blank line
+
+            var rowOk = true;
+            void Bad(string msg) { problems.Add($"Row {r}: {msg}"); rowOk = false; }
+
+            if (type.Length == 0) Bad("DedType is empty.");
+            else if (type.Length > 50) Bad($"DedType '{type}' is longer than 50 characters.");
+
+            decimal pct = 0;
+            if (!TryReadDecimal(pctCell, out var v)) Bad($"DedPercent '{pctCell.GetFormattedString()}' is not a number.");
+            else if (v is null) Bad("DedPercent is empty.");
+            else if (v < 0 || v > 100) Bad($"DedPercent {v} is out of range (0 to 100).");
+            else if (decimal.Round(v.Value, 2) != v.Value) Bad($"DedPercent {v} has more than 2 decimals.");
+            else pct = v.Value;
+
+            if (!rowOk) continue;
+            if (seen.TryGetValue(type, out var firstRow)) { Bad($"DedType {type} is repeated (also on row {firstRow})."); continue; }
+            seen[type] = r;
+            rows.Add(new IncDeductionTypeUploadRow(type, pct));
+        }
+        return rows;
+    }
+
+    private Task DownloadDeductionTemplateAsync() =>
+        DownloadTemplateAsync("Deduction_Type_Template.xlsx", "Deduction Types",
+            ["DedType", "DedPercent"], ["LateComing", "10.00"]);
 
     // ===================== shared Excel helpers =====================
 

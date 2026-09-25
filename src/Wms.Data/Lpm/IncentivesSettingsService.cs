@@ -21,6 +21,10 @@ public record IncAttendanceUploadRow(
 
 public record IncUploadResult(bool Ok, int RowsSaved, string? Error, List<string> Problems);
 
+public record IncDeductionTypeRow(string DedType, decimal? DedPercent, string? UploadedUser, DateTime? CreateTS);
+
+public record IncDeductionTypeUploadRow(string DedType, decimal DedPercent);
+
 public record IncTargetRow(
     string Category, decimal? TargetAuto, decimal? TargetManual, decimal? IncentiveBase,
     decimal? Add_IncentiveTgt, decimal? Add_IncentiveRate,
@@ -353,6 +357,59 @@ public class IncentivesSettingsService(IOnPremConnectionResolver resolver)
              ORDER BY ModifiedTS DESC, Category",
             commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         return rows.AsList();
+    }
+
+    // ===================== Deduction types =====================
+    // One row per DedType in DATAREPORTING.dbo.INC_DeductionType (PK DedType). Append only:
+    // a DedType already stored rejects the whole file.
+
+    public async Task<List<IncDeductionTypeRow>> GetDeductionTypesAsync(CancellationToken ct = default)
+    {
+        await using var c = Open();
+        var rows = await c.QueryAsync<IncDeductionTypeRow>(new CommandDefinition(@"
+            SELECT DedType, DedPercent, UploadedUser, CreateTS
+              FROM DATAREPORTING.dbo.INC_DeductionType WITH (NOLOCK)
+             ORDER BY DedType",
+            commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+        return rows.AsList();
+    }
+
+    public async Task<IncUploadResult> UploadDeductionTypesAsync(
+        IReadOnlyList<IncDeductionTypeUploadRow> rows, string uploadedUser, CancellationToken ct = default)
+    {
+        if (rows.Count == 0) return new(false, 0, "No rows to upload.", []);
+
+        await using var c = Open();
+        await using var tx = (SqlTransaction)await c.BeginTransactionAsync(ct);
+        try
+        {
+            var existing = (await c.QueryAsync<string>(new CommandDefinition(@"
+                SELECT DedType FROM DATAREPORTING.dbo.INC_DeductionType WITH (UPDLOCK, HOLDLOCK)
+                 WHERE DedType IN @types",
+                new { types = rows.Select(r => r.DedType).ToList() }, tx, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)))
+                .Select(x => x.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(x => x).ToList();
+            if (existing.Count > 0)
+            {
+                await tx.RollbackAsync(ct);
+                return new(false, 0,
+                    $"{existing.Count} deduction type(s) already exist — nothing was saved. Remove them from the file and upload again.",
+                    existing.Select(x => $"DedType {x} already exists").ToList());
+            }
+
+            var now = NowUae();
+            await c.ExecuteAsync(new CommandDefinition(@"
+                INSERT INTO DATAREPORTING.dbo.INC_DeductionType (DedType, DedPercent, UploadedUser, CreateTS)
+                VALUES (@DedType, @DedPercent, @uploadedUser, @now)",
+                rows.Select(r => new { r.DedType, r.DedPercent, uploadedUser, now }),
+                tx, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            await tx.CommitAsync(ct);
+            return new(true, rows.Count, null, []);
+        }
+        catch (Exception ex)
+        {
+            await tx.RollbackAsync(CancellationToken.None);
+            return new(false, 0, ex.Message, []);
+        }
     }
 
     // ===================== helpers =====================
