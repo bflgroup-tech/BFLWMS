@@ -57,6 +57,12 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
     // would leave it null. Store-keyed lookups (VolumeGroup, SkuMax band, SOH,
     // OTS) simply miss and fall back to their defaults, which is why the hold is
     // routed before the store universe is built and consults none of them.
+    /// <summary>
+    /// racks.dbo.whboxitems.PalletType for stock held at the central DC — the source
+    /// a CDC allocation reads. The column is varchar(2), so this fits exactly.
+    /// </summary>
+    public const string CdcPalletType = "CD";
+
     public const string CdcHoldStoreId = "CDC";
     public const string CdcHoldCountry = "UAE";
 
@@ -657,6 +663,144 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         bool futureLpmToCdc = false,
         CancellationToken ct = default)
     {
+        if (string.IsNullOrWhiteSpace(contno))
+            // Nothing ran, so there is nothing to trace.
+            return new(new List<AllocationRow>(), new List<BlockedItemRow>(), null);
+        contno = contno.Trim();
+
+        progress?.Report(new AllocationProgress(0, 0, "Prefetching: PO line items"));
+        var lines = await LoadPoLinesAsync(contno, ct);
+
+        return await ProcessAllocationCoreAsync(
+            AllocationScope.Container(contno), lines, progress, runOption, allocationCountries,
+            ecomManualPriority, traceEnabled, bypassPass1b, futureLpmToCdc, ct);
+    }
+
+    /// <summary>
+    /// CDC allocation — release the stock the future-LPMDt hold parked at the central
+    /// DC, for one (ContNo, OraPONo), using the same algorithm PO allocation uses.
+    ///
+    /// Always FillMinMinPlusOthers: it is the only run option whose OTS consumption
+    /// was specified for this flow. RunOption is still persisted on the header, so a
+    /// second CDC algorithm later is a data change rather than a schema change.
+    /// </summary>
+    public async Task<AllocationProcessResult> ProcessCdcAllocationAsync(
+        string contno, string oraPoNo,
+        IProgress<AllocationProgress>? progress = null,
+        IReadOnlyCollection<string>? allocationCountries = null,
+        bool traceEnabled = false,
+        bool bypassPass1b = true,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(contno) || string.IsNullOrWhiteSpace(oraPoNo))
+            return new(new List<AllocationRow>(), new List<BlockedItemRow>(), null);
+        contno  = contno.Trim();
+        oraPoNo = oraPoNo.Trim();
+
+        progress?.Report(new AllocationProgress(0, 0, "Prefetching: CDC box lines"));
+        var lines = await LoadCdcLinesAsync(contno, oraPoNo, ct);
+
+        return await ProcessAllocationCoreAsync(
+            AllocationScope.CdcPo(contno, oraPoNo), lines, progress,
+            RunOption.FillMinMinPlusOthers,
+            allocationCountries,
+            // OFF, deliberately. The ECOM manual sheet is container-wide; applied per
+            // PO it would hand ONLINE the full manual quantity once for every PO the
+            // same item appears on.
+            ecomManualPriority: false,
+            traceEnabled, bypassPass1b,
+            // OFF, deliberately. The hold is what put this stock at the CDC in the
+            // first place; re-applying it here would emit CDC -> CDC rows and send
+            // nothing to a shop.
+            futureLpmToCdc: false,
+            ct);
+    }
+
+    /// <summary>
+    /// CDC-held box stock for one (ContNo, OraPONo), shaped as PO lines.
+    ///
+    /// GRAIN IS THE POINT. whboxitems is at box grain; the engine expects PO-line
+    /// grain, because line.Qty is the SKU-Max band selector (PoQtyFrom..PoQtyTo),
+    /// not merely a quantity. Feeding box-sized quantities (24, 36) where PO-line
+    /// quantities (500, 1200) are expected would pick the wrong tier for every item
+    /// and produce a plausible-looking but wrong allocation. So: aggregate.
+    ///
+    /// LPMDt IS a grouping key — the allocation walk groups on
+    /// (OraPONo, Division, LPMDt), so it changes the order stock is placed in. LPM
+    /// is a display label only and can be MAX'd.
+    ///
+    /// Dapper maps value tuples POSITIONALLY, so the select-list order below must
+    /// stay (ContNo, OraPONo, ItemCode, Qty, LPM, LPMDt).
+    /// </summary>
+    private async Task<List<(string ContNo, string OraPONo, string ItemCode, int Qty, string? LPM, DateTime? LPMDt)>>
+        LoadCdcLinesAsync(string contno, string oraPoNo, CancellationToken ct)
+    {
+        await using var c = OpenOnPremBackup();
+        return (await c.QueryAsync<(string ContNo, string OraPONo, string ItemCode, int Qty, string? LPM, DateTime? LPMDt)>(
+            new CommandDefinition(@"
+                    SELECT ContNo   = w.ContNo,
+                           OraPONo  = @po,
+                           ItemCode = w.ItemCode,
+                           Qty      = CAST(SUM(CAST(ISNULL(w.Qty, 0) AS BIGINT)) AS INT),
+                           LPM      = MAX(w.LPM),
+                           LPMDt    = w.LPMDt
+                      FROM racks.dbo.whboxitems w WITH (NOLOCK)
+                     WHERE w.ContNo    = @c
+                       AND w.PalletType = @pt
+                       AND w.OraPoNo    = @po
+                       AND w.ItemCode  IS NOT NULL
+                     GROUP BY w.ContNo, w.ItemCode, w.LPMDt
+                    HAVING SUM(CAST(ISNULL(w.Qty, 0) AS BIGINT)) > 0
+                     ORDER BY MAX(w.LPM), w.ItemCode",
+                new { c = contno, po = oraPoNo, pt = CdcPalletType },
+                commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).AsList();
+    }
+
+    /// <summary>
+    /// A container's PO lines — the classic source. One row per (PO, item) line as
+    /// ordered, which is the grain the whole engine assumes: line.Qty is the SKU-Max
+    /// band selector, not merely a quantity.
+    /// </summary>
+    private async Task<List<(string ContNo, string OraPONo, string ItemCode, int Qty, string? LPM, DateTime? LPMDt)>>
+        LoadPoLinesAsync(string contno, CancellationToken ct)
+    {
+        await using var c0 = OpenOnPremBackup();
+        return (await c0.QueryAsync<(string ContNo, string OraPONo, string ItemCode, int Qty, string? LPM, DateTime? LPMDt)>(
+            new CommandDefinition(@"
+                    SELECT ContNo, OraPONo, ItemCode,
+                           CAST(ISNULL(orgqty,0) AS INT) AS Qty,
+                           LPM, LPMDt
+                    FROM usa.dbo.usaorgfile_LPM WITH (NOLOCK)
+                    WHERE ContNo = @c
+                    ORDER BY OraPONo, LPM, ItemCode",
+                new { c = contno }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).AsList();
+    }
+
+    /// <summary>
+    /// The allocation engine proper. It runs over whatever lines it is handed, for
+    /// whatever scope describes them — a whole container's PO lines (the classic
+    /// path) or one (ContNo, OraPONo) slice of CDC-held box stock.
+    ///
+    /// The body is scope-agnostic by construction: every identity it uses comes off
+    /// line.ContNo / line.OraPONo, never off the container argument. Only the three
+    /// audit-table deletes and the future-LPMDt hold have to know which scope they
+    /// are running under, and each collapses to the statement that shipped when
+    /// scope.OraPONo is null.
+    /// </summary>
+    private async Task<AllocationProcessResult> ProcessAllocationCoreAsync(
+        AllocationScope scope,
+        List<(string ContNo, string OraPONo, string ItemCode, int Qty, string? LPM, DateTime? LPMDt)> lines,
+        IProgress<AllocationProgress>? progress,
+        RunOption runOption,
+        IReadOnlyCollection<string>? allocationCountries,
+        bool ecomManualPriority,
+        bool traceEnabled,
+        bool bypassPass1b,
+        bool futureLpmToCdc,
+        CancellationToken ct)
+    {
+        // Every existing `contno` reference in the body below resolves through this.
+        var contno  = scope.ContNo;
         var result  = new List<AllocationRow>();
         var blocked = new List<BlockedItemRow>();
         // Trace is only meaningful for the two OTS-run based algorithms; the
@@ -671,8 +815,6 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         var pass1BypassAudit = (bypassPass1b && runOption == RunOption.FillMinMinPlusOthers)
             ? new List<(string PONo, string Itemcode, int PoQty, int ABCMax, int ABCSOH, int ABCReqdStock, decimal MinMinCoverPct)>()
             : null;
-        if (string.IsNullOrWhiteSpace(contno)) return new(result, blocked, trace);
-        contno = contno.Trim();
 
         // Everything in this method is prefetch-heavy — the per-line loop below
         // depends on ~15 on-prem lookups plus 3-4 Azure ones. We fan them out
@@ -698,27 +840,17 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         // AEINT7639 timed out twice — leaves flags behind describing a shortfall that
         // never happened. They were only cleared by Delete, so a later successful run
         // inherited them and Pass 5 then placed quantity the container was not short by.
+        //
+        // PO-scoped when scope.OraPONo is set, so a CDC run on one PO cannot wipe
+        // the flags its sibling POs are relying on. With @po NULL the predicate is
+        // the container-wide statement that shipped.
         await using (var cFlags = OpenOnPremBackup())
         {
             await cFlags.ExecuteAsync(new CommandDefinition(
-                "DELETE FROM LPMSIM.dbo.WmsPlanningFlag WHERE ContNo = @c",
-                new { c = contno }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+                "DELETE FROM LPMSIM.dbo.WmsPlanningFlag WHERE ContNo = @c AND (@po IS NULL OR PONo = @po)",
+                new { c = contno, po = scope.OraPONo }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         }
 
-        progress?.Report(new AllocationProgress(0, 0, "Prefetching: PO line items"));
-        List<(string ContNo, string OraPONo, string ItemCode, int Qty, string? LPM, DateTime? LPMDt)> lines;
-        await using (var c0 = OpenOnPremBackup())
-        {
-            lines = (await c0.QueryAsync<(string ContNo, string OraPONo, string ItemCode, int Qty, string? LPM, DateTime? LPMDt)>(
-                new CommandDefinition(@"
-                    SELECT ContNo, OraPONo, ItemCode,
-                           CAST(ISNULL(orgqty,0) AS INT) AS Qty,
-                           LPM, LPMDt
-                    FROM usa.dbo.usaorgfile_LPM WITH (NOLOCK)
-                    WHERE ContNo = @c
-                    ORDER BY OraPONo, LPM, ItemCode",
-                    new { c = contno }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct))).AsList();
-        }
         if (lines.Count == 0) return new(result, blocked, trace);
 
         var distinctItemCodes = lines.Select(l => l.ItemCode).Distinct().ToArray();
@@ -753,7 +885,10 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
         var futureLpmLines = lines
             .Where(l => l.Qty > 0 && IsFutureLpmForCdc(l.LPMDt, nowGst))
             .ToList();
-        if (futureLpmLines.Count > 0 && !futureLpmToCdc)
+        // Not enforced for a CDC run: that run is releasing stock the hold already
+        // parked at the CDC, so re-holding it would emit CDC -> CDC rows and send
+        // nothing to a shop.
+        if (scope.EnforceFutureLpmHold && futureLpmLines.Count > 0 && !futureLpmToCdc)
             throw new InvalidOperationException(
                 $"{futureLpmLines.Count:N0} PO line(s) ({futureLpmLines.Sum(l => (long)l.Qty):N0} pcs) on {contno} "
                 + $"have LPMDt on or after {FutureLpmCdcCutoff(nowGst):dd/MM/yyyy} — two or more months ahead. "
@@ -3063,8 +3198,13 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
             await using var ct1 = OpenOnPremBackup();
             ct1.ChangeDatabase("LPMSIM");
             await ct1.ExecuteAsync(new CommandDefinition(
-                "DELETE FROM dbo.WmsAllocationTrace WHERE ContNo = @c",
-                new { c = contno }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+                // PO-scoped for a CDC run; container-wide (the shipped statement)
+                // when @po is NULL. Rows written before WmsAllocationTrace had a
+                // PONo column carry NULL there and survive a PO-scoped delete —
+                // harmless, since they belong to the container path, which still
+                // clears everything.
+                "DELETE FROM dbo.WmsAllocationTrace WHERE ContNo = @c AND (@po IS NULL OR PONo = @po)",
+                new { c = contno, po = scope.OraPONo }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
 
             var tdt = new DataTable();
             tdt.Columns.Add("ContNo",             typeof(string));
@@ -3147,8 +3287,8 @@ public class ContainerAllocationService(IOnPremConnectionResolver resolver, ICur
             await using var cb = OpenOnPremBackup();
             cb.ChangeDatabase("LPMSIM");
             await cb.ExecuteAsync(new CommandDefinition(
-                "DELETE FROM dbo.Pass1ByPass WHERE ContNo = @c",
-                new { c = contno }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+                "DELETE FROM dbo.Pass1ByPass WHERE ContNo = @c AND (@po IS NULL OR PONo = @po)",
+                new { c = contno, po = scope.OraPONo }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
 
             var bdt = new DataTable();
             bdt.Columns.Add("ContNo",         typeof(string));

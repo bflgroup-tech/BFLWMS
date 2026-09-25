@@ -5,6 +5,7 @@
 @using Wms.Data.Lpm
 @attribute [Authorize(Policy = MenuKeys.CONTAINER_ALLOCATION)]
 @inject ContainerAllocationService Svc
+@inject CdcStoreAllocationService CdcSvc
 @inject BulkPoAllocationService BulkSvc
 @inject Pass5FlaggedAllocationService Pass5Svc
 @inject ICurrentUser CurrentUser
@@ -62,6 +63,62 @@
             <button class="aiwms-btn aiwms-btn-primary" disabled style="opacity:.5; cursor:not-allowed" title="Approved batch — locked">Process</button>
         }
     </div>
+
+    <!-- Row 1a: allocation mode. Defaults to Container, so nothing about the page
+         changes for anyone who never touches CDC. In CDC mode the source becomes
+         this container's CD-pallet counting boxes for ONE PO, so a PO picker
+         appears beside it and the run option is fixed. -->
+    <div style="display:flex; gap:16px; align-items:end; flex-wrap:wrap; margin-top:12px">
+        <div style="min-width:230px">
+            <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">ALLOCATION MODE</label>
+            <select @bind="_allocMode" @bind:after="OnAllocModeChangedAsync" disabled="@_busy"
+                    style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-size:13px; background:white;">
+                <option value="PO">Container (initial allocation)</option>
+                <option value="CDC">CDC — release held stock</option>
+            </select>
+        </div>
+        @if (IsCdcMode)
+        {
+            <div style="min-width:320px">
+                <label style="display:block; font-size:11px; font-weight:700; color:var(--text-secondary); margin-bottom:4px;">PO NO *</label>
+                <select @bind="_cdcPo" @bind:after="RefreshCdcStatusAsync" disabled="@(_busy || _cdcPoOptions.Count == 0)"
+                        style="width:100%; padding:8px 10px; border:1px solid var(--border-default); border-radius:var(--r-sm); font-family:var(--font-mono); font-size:13px; background:white;">
+                    <option value="">@(_cdcPoOptions.Count == 0 ? "-- no CD stock on this container --" : "-- Select a PO --")</option>
+                    @foreach (var p in _cdcPoOptions)
+                    {
+                        <option value="@p.OraPONo">@p.OraPONo — @p.Qty.ToString("N0") pcs, @p.Items.ToString("N0") item(s)@(string.IsNullOrEmpty(p.LpmRangeLabel) ? "" : $" · {p.LpmRangeLabel}")</option>
+                    }
+                </select>
+            </div>
+            <button class="aiwms-btn aiwms-btn-primary" @onclick="ProcessCdcAsync"
+                    disabled="@(_busy || string.IsNullOrWhiteSpace(_contno) || string.IsNullOrWhiteSpace(_cdcPo) || _allocCountries.Count == 0 || _cdcStatus.HasFinal)">
+                Process CDC
+            </button>
+            @if (_cdcStatus.HasFinal && !_cdcStatus.IsApproved)
+            {
+                <button class="aiwms-btn aiwms-btn-danger" @onclick="DeleteCdcAsync" disabled="@_busy"
+                        title="Removes the CDC allocation so this PO can be run again.">
+                    Delete CDC allocation (@_cdcStatus.Rows.ToString("N0") rows)
+                </button>
+            }
+            <span style="font-size:11px; color:var(--text-secondary); max-width:560px">
+                Source: <code>racks.dbo.whboxitems</code>, PalletType <code>CD</code>, for this container and PO.
+                Run option is fixed to <b>Fill Min-Min plus others</b>; the future-LPMDt hold does not apply,
+                since this run is releasing stock the hold already parked at the CDC.
+            </span>
+        }
+    </div>
+
+    @if (IsCdcMode && _cdcStatus.HasFinal)
+    {
+        <div class="aiwms-alert @(_cdcStatus.IsApproved ? "info" : "info")" style="margin-top:10px">
+            @_contno / PO @_cdcPo was CDC-allocated as batch @_cdcStatus.BatchNo on
+            @_cdcStatus.ProcessedTS?.ToString("dd/MM/yyyy HH:mm") by @_cdcStatus.ProcessedBy —
+            @_cdcStatus.Rows.ToString("N0") row(s), @_cdcStatus.TotalQty.ToString("N0") pcs.
+            @if (_cdcStatus.IsApproved) { <b>Approved @_cdcStatus.ApprovedDt?.ToString("dd/MM/yyyy HH:mm") — locked.</b> }
+            else { <text>Delete it first if you need to re-run.</text> }
+        </div>
+    }
 
     <!-- Row 1b: PO -> container lookup. Collapsed by default so it costs nothing
          visually; opened from the "find by PO" link on the Container No label. -->
@@ -1088,6 +1145,15 @@
     private string _contno = "";
     private string _runOption = "FillMinMinPlusOthers";
 
+    // CDC allocation mode. "PO" is the classic container run; "CDC" releases the
+    // stock the future-LPMDt hold parked at the central DC, one (ContNo, PO) at a
+    // time, from that PO's CD-pallet counting boxes.
+    private string _allocMode = "PO";
+    private bool   IsCdcMode => string.Equals(_allocMode, "CDC", StringComparison.OrdinalIgnoreCase);
+    private string _cdcPo = "";
+    private List<CdcPoOption>   _cdcPoOptions = new();
+    private CdcAllocationStatus _cdcStatus    = CdcAllocationStatus.None;
+
     // PO -> container lookup (the "find by PO" panel beside Container No)
     private bool _showPoLookup;
     private bool _poLookupBusy;
@@ -1412,6 +1478,8 @@
         // order's AllocationCountry.
         await ApplyContainerAllocCountriesAsync();
         await RefreshStatusAsync();
+        // No-ops unless the page is in CDC mode.
+        await RefreshCdcPoOptionsAsync();
     }
 
     // ---------- PO -> container lookup ----------
@@ -1696,6 +1764,143 @@
 
     private static string FmtElapsed(long ms) =>
         ms < 1000 ? $"{ms} ms" : $"{ms / 1000.0:F1}s";
+
+    // ===================== CDC allocation =====================
+
+    private async Task OnAllocModeChangedAsync()
+    {
+        _cdcPo = "";
+        _cdcStatus = CdcAllocationStatus.None;
+        _allocation = new(); _blocked = new(); _validation = null; _loadedBatch = null;
+        await RefreshCdcPoOptionsAsync();
+    }
+
+    private async Task RefreshCdcPoOptionsAsync()
+    {
+        if (!IsCdcMode || string.IsNullOrWhiteSpace(_contno)) { _cdcPoOptions = new(); return; }
+        try { _cdcPoOptions = await CdcSvc.GetCdcPoOptionsAsync(_contno); }
+        catch (Exception ex) { _cdcPoOptions = new(); ShowError($"Could not read CD stock for {_contno}: {ex.Message}"); }
+        // A PO that is no longer offered would otherwise leave the picker pointing
+        // at something the container does not have.
+        if (!_cdcPoOptions.Any(p => string.Equals(p.OraPONo, _cdcPo, StringComparison.OrdinalIgnoreCase)))
+            _cdcPo = "";
+        await RefreshCdcStatusAsync();
+    }
+
+    private async Task RefreshCdcStatusAsync()
+    {
+        if (!IsCdcMode || string.IsNullOrWhiteSpace(_contno) || string.IsNullOrWhiteSpace(_cdcPo))
+        {
+            _cdcStatus = CdcAllocationStatus.None; return;
+        }
+        try { _cdcStatus = await CdcSvc.GetCdcStatusAsync(_contno, _cdcPo); }
+        catch { _cdcStatus = CdcAllocationStatus.None; }
+
+        // Already allocated: show it rather than an empty grid, so the operator can
+        // see what was placed before deciding whether to delete and re-run.
+        if (_cdcStatus.HasFinal)
+        {
+            try
+            {
+                _allocation = await CdcSvc.LoadCdcFinalAsync(_contno, _cdcPo);
+                _totalPoQty = _allocation.Sum(r => (long)r.PoQty);
+            }
+            catch { /* the status banner already says the allocation exists */ }
+        }
+    }
+
+    private async Task ProcessCdcAsync()
+    {
+        if (_allocCountries.Count == 0) { ShowError("Pick at least one Allocation Country before Process."); return; }
+        if (string.IsNullOrWhiteSpace(_cdcPo)) { ShowError("Pick a PO before running a CDC allocation."); return; }
+
+        var picked = _cdcPoOptions.FirstOrDefault(p =>
+            string.Equals(p.OraPONo, _cdcPo, StringComparison.OrdinalIgnoreCase));
+        var sourceQty = picked?.Qty ?? 0;
+
+        var proceed = await JS.InvokeAsync<bool>("confirm",
+            $"CDC-allocate {_contno} / PO {_cdcPo}?\n\n" +
+            $"Source: {sourceQty:N0} pcs of PalletType 'CD' stock\n" +
+            $"Allocation Countries: {string.Join(", ", _allocCountries.OrderBy(s => s))}\n\n" +
+            "One CDC allocation is allowed per container + PO. Continue?");
+        if (!proceed) return;
+
+        _busy = true; _message = ""; _allocation = new(); _blocked = new(); _loadedBatch = null;
+        _progressCurrent = 0; _progressTotal = 0; _progressItem = null;
+        var totalSw = System.Diagnostics.Stopwatch.StartNew();
+        long validateMs = 0, algoMs = 0, saveMs = 0;
+        try
+        {
+            var progress = new Progress<AllocationProgress>(async p => {
+                _progressCurrent = p.Current; _progressTotal = p.Total; _progressItem = p.CurrentItem;
+                await InvokeAsync(StateHasChanged);
+            });
+
+            if (_validate)
+            {
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                _validation = await CdcSvc.ValidateCdcAsync(_contno, _cdcPo, progress);
+                validateMs = sw.ElapsedMilliseconds;
+                if (!_validation.Ok) { ShowError($"Validation failed — see steps below ({FmtElapsed(totalSw.ElapsedMilliseconds)})."); return; }
+            }
+            else _validation = null;
+
+            _progressCurrent = 0; _progressTotal = 0; _progressItem = null;
+            {
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                var res = await Svc.ProcessCdcAllocationAsync(_contno, _cdcPo, progress, _allocCountries, _traceEnabled, _bypassPass1b);
+                algoMs = sw.ElapsedMilliseconds;
+                _allocation = res.Allocations;
+                _blocked    = res.Blocked;
+            }
+
+            if (_allocation.Count == 0 && _blocked.Count == 0)
+            {
+                ShowError($"No allocation rows produced for {_contno} / PO {_cdcPo}. " +
+                          $"Check that the CD boxes carry item codes with SKU-Max band coverage ({FmtElapsed(totalSw.ElapsedMilliseconds)}).");
+                return;
+            }
+
+            _progressCurrent = 0; _progressTotal = 0; _progressItem = null;
+            await InvokeAsync(StateHasChanged);
+            {
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                await CdcSvc.SaveCdcFinalAsync(_country, _contno, _cdcPo, string.Join(",", _allocCountries),
+                                               _warehouse, _allocation, _blocked, sourceQty, progress);
+                saveMs = sw.ElapsedMilliseconds;
+            }
+            await RefreshCdcStatusAsync();
+            _totalPoQty = _allocation.Sum(r => (long)r.PoQty);
+
+            var placed = _allocation.Sum(r => r.AllocQty);
+            var shortBy = sourceQty - placed;
+            ShowInfo(
+                $"CDC allocation saved: {_allocation.Count:N0} rows, {placed:N0} of {sourceQty:N0} pcs placed, {_blocked.Count:N0} blocked. " +
+                (shortBy > 0 ? $"{shortBy:N0} pcs had no eligible store and were not placed. " : "") +
+                $"Total {FmtElapsed(totalSw.ElapsedMilliseconds)} — validate {FmtElapsed(validateMs)}, algorithm {FmtElapsed(algoMs)}, save {FmtElapsed(saveMs)}.");
+        }
+        catch (Exception ex) { ShowError($"CDC process failed after {FmtElapsed(totalSw.ElapsedMilliseconds)}: {ex.Message}"); }
+        finally { _busy = false; _progressTotal = 0; }
+    }
+
+    private async Task DeleteCdcAsync()
+    {
+        var proceed = await JS.InvokeAsync<bool>("confirm",
+            $"Delete the CDC allocation for {_contno} / PO {_cdcPo}?\n\n" +
+            $"{_cdcStatus.Rows:N0} row(s), {_cdcStatus.TotalQty:N0} pcs will be removed so the PO can be run again.");
+        if (!proceed) return;
+
+        _busy = true; _message = "";
+        try
+        {
+            await CdcSvc.ResetCdcAllocationAsync(_contno, _cdcPo);
+            _allocation = new(); _blocked = new(); _validation = null;
+            await RefreshCdcStatusAsync();
+            ShowInfo($"CDC allocation for {_contno} / PO {_cdcPo} deleted — it can be run again.");
+        }
+        catch (Exception ex) { ShowError($"Delete failed: {ex.Message}"); }
+        finally { _busy = false; }
+    }
 
     // ===================== Bulk PO Allocation =====================
 

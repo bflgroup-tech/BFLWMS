@@ -38,6 +38,7 @@ public static class MenuKeys
     public const string RPT_COUNTING_COMPLETION   = "RPT_COUNTING_COMPLETION";
     public const string RPT_PO_COUNTING           = "RPT_PO_COUNTING";
     public const string RPT_ORDER_SHEET           = "RPT_ORDER_SHEET";
+    public const string RPT_CDC_ALLOCATION_STATUS = "RPT_CDC_ALLOCATION_STATUS";
     public const string RPT_BULK_PO_ALLOCATION  = "RPT_BULK_PO_ALLOCATION";
     public const string RPT_JAFZA_DIVISION_PROD   = "RPT_JAFZA_DIVISION_PROD";
     public const string RPT_SYNC_DATA_COUNT       = "RPT_SYNC_DATA_COUNT";
@@ -123,6 +124,7 @@ public static class MenuKeys
         new MenuEntry(RPT_COUNTING_COMPLETION,"Reports",            "Counting Completion Report","reports/counting-completion",new[] { Roles.Admin, Roles.Reports }),
         new MenuEntry(RPT_PO_COUNTING,       "Reports",             "PO Counting Report",       "reports/po-counting",       new[] { Roles.Admin, Roles.Reports }),
         new MenuEntry(RPT_ORDER_SHEET,       "Reports",             "Order Sheet Report",       "reports/order-sheet",       new[] { Roles.Admin, Roles.Reports, Roles.WHManager, Roles.WHSupervisor }),
+        new MenuEntry(RPT_CDC_ALLOCATION_STATUS, "Reports",         "CDC Allocation Status",    "reports/cdc-allocation-status", new[] { Roles.Admin, Roles.Reports, Roles.WHManager, Roles.WHSupervisor }),
         new MenuEntry(RPT_BULK_PO_ALLOCATION, "Reports",            "Bulk PO Allocation Report", "reports/bulk-po-allocation", new[] { Roles.Admin, Roles.Reports, Roles.WHManager }),
         new MenuEntry(RPT_JAFZA_DIVISION_PROD,"Reports",            "JAFZA Production Report",  "reports/jafza-division-production",new[] { Roles.Admin, Roles.Reports }),
         new MenuEntry(RPT_SHIPMENT_STATUS,   "Reports",             "Shipment Status",           "reports/shipment-status",  new[] { Roles.Admin, Roles.Reports }, "Inbound"),
