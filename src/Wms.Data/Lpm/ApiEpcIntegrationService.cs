@@ -58,7 +58,7 @@ internal sealed record EpcApiResponse(
 ///          barcode = SerializedCode, serial_number = '', [function] = '',
 ///          creation_date = SYSUTCDATETIME(), printer = '', anti_theft = NULL
 ///     FROM DATAREPORTING.dbo.EPCBarcodes a
-///    WHERE a.Srno NOT IN (SELECT SerializedCode FROM LPMSIM.dbo.EPCBarcodes_ApiCallDetails
+///    WHERE a.SerializedCode NOT IN (SELECT SerializedCode FROM LPMSIM.dbo.EPCBarcodes_ApiCallDetails
 ///                           WHERE CreateTS >= DATEADD(day, -1, GETDATE()))
 ///
 /// anti_theft is sent as JSON null (mapped from a nullable bool here), not '' —
@@ -73,13 +73,12 @@ internal sealed record EpcApiResponse(
 /// from GETDATE() (SQL Server local time) to SYSUTCDATETIME(), since the 'Z'
 /// suffix would otherwise be claiming a UTC time that it wasn't.
 ///
-/// The "already sent" filter excludes rows whose Srno already appears in
-/// LPMSIM.dbo.EPCBarcodes_ApiCallDetails.SerializedCode within the last day —
-/// but this service never writes to that table itself, so it relies entirely
-/// on something else populating it after a successful send. If nothing does,
-/// the same rows will be re-pulled and re-POSTed on every call despite the
-/// filter. On-demand only ("Send Now" on Nightly Batches) — no timer, since
-/// that dependency hasn't been confirmed.
+/// The "already sent" filter excludes rows whose SerializedCode already appears in
+/// LPMSIM.dbo.EPCBarcodes_ApiCallDetails within the last day. After each batch the
+/// API accepts, that batch's rows are inserted there (Srno, SerializedCode, EPC,
+/// GETDATE()), so a repeat run only picks up new rows. Runs hourly via
+/// Wms.Web.Hosting.ApiEpcIntegrationBatchService when its Nightly Batches toggle is
+/// active, and on demand via "Send Now".
 /// </summary>
 public class ApiEpcIntegrationService(
     IOnPremConnectionResolver resolver, ScheduledJobService jobs, HttpClient http, IOptions<ApiEpcIntegrationOptions> opts)
@@ -117,13 +116,27 @@ public class ApiEpcIntegrationService(
                Printer      = '',
                AntiTheft    = CAST(NULL AS BIT)
           FROM DATAREPORTING.dbo.EPCBarcodes a
-         WHERE a.Srno NOT IN (
+         WHERE a.SerializedCode NOT IN (
+                   SELECT SerializedCode FROM LPMSIM.dbo.EPCBarcodes_ApiCallDetails
+                    WHERE CreateTS >= DATEADD(day, -1, GETDATE()))";
+
+    // Same shape as the supplied statement, but scoped to the SerializedCodes of one
+    // batch the API just accepted, so a failed batch is never recorded as sent.
+    // Matched on SerializedCode (varchar) — comparing the int Srno against it
+    // overflowed on long codes.
+    private const string MarkSentSql = @"
+        INSERT INTO LPMSIM.dbo.EPCBarcodes_ApiCallDetails
+        SELECT a.Srno, a.SerializedCode, a.EPC, GETDATE()
+          FROM DATAREPORTING.dbo.EPCBarcodes a
+         WHERE a.SerializedCode IN @codes
+           AND a.SerializedCode NOT IN (
                    SELECT SerializedCode FROM LPMSIM.dbo.EPCBarcodes_ApiCallDetails
                     WHERE CreateTS >= DATEADD(day, -1, GETDATE()))";
 
     /// <summary>
-    /// Reads eligible rows from DATAREPORTING.dbo.EPCBarcodes (see class doc for the
-    /// known gaps), POSTs them to the EPC imports API in one batch, and writes one
+    /// Reads not-yet-sent rows from DATAREPORTING.dbo.EPCBarcodes, POSTs them to the
+    /// EPC imports API in batches of 500, records each accepted batch in
+    /// LPMSIM.dbo.EPCBarcodes_ApiCallDetails, and writes one
     /// dbo.WmsRptJobRun row. Never throws — the outcome is in the returned tuple and
     /// in the run log, so a caller does not need its own try/catch.
     /// </summary>
@@ -155,44 +168,48 @@ public class ApiEpcIntegrationService(
                 return (0, null);
             }
 
-            var items = rows.Select(r => new EpcApiItem(
-                Site:         r.Site ?? "",
-                SubLocation:  r.SubLocation ?? "",
-                Epc:          r.Epc ?? "",
-                Sku:          r.Sku ?? "",
-                LotNumber:    r.LotNumber ?? "",
-                Quantity:     r.Quantity,
-                Ean:          r.Ean ?? "",
-                Barcode:      r.Barcode ?? "",
-                SerialNumber: r.SerialNumber ?? "",
-                Function:     r.Function ?? "",
-                CreationDate: r.CreationDateUtc.ToString("yyyy-MM-ddTHH:mm:ssZ", System.Globalization.CultureInfo.InvariantCulture),
-                Printer:      r.Printer ?? "",
-                AntiTheft:    r.AntiTheft)).ToList();
-
             var sent = 0;
-            foreach (var chunk in items.Chunk(MaxItemsPerRequest))
+            foreach (var chunk in rows.Chunk(MaxItemsPerRequest))
             {
+                var items = chunk.Select(r => new EpcApiItem(
+                    Site:         r.Site ?? "",
+                    SubLocation:  r.SubLocation ?? "",
+                    Epc:          r.Epc ?? "",
+                    Sku:          r.Sku ?? "",
+                    LotNumber:    r.LotNumber ?? "",
+                    Quantity:     r.Quantity,
+                    Ean:          r.Ean ?? "",
+                    Barcode:      r.Barcode ?? "",
+                    SerialNumber: r.SerialNumber ?? "",
+                    Function:     r.Function ?? "",
+                    CreationDate: r.CreationDateUtc.ToString("yyyy-MM-ddTHH:mm:ssZ", System.Globalization.CultureInfo.InvariantCulture),
+                    Printer:      r.Printer ?? "",
+                    AntiTheft:    r.AntiTheft)).ToList();
+
                 using var req = new HttpRequestMessage(HttpMethod.Post, ApiUrl);
                 req.Headers.Add("apikey", opts.Value.ApiKey);
-                req.Content = JsonContent.Create(new EpcApiRequest(chunk.ToList()));
+                req.Content = JsonContent.Create(new EpcApiRequest(items));
 
                 using var res = await http.SendAsync(req, ct);
                 var body = await res.Content.ReadAsStringAsync(ct);
 
                 if (!res.IsSuccessStatusCode)
                 {
-                    var error = $"HTTP {(int)res.StatusCode}: {body} (sent {sent} of {items.Count} before this failure)";
+                    var error = $"HTTP {(int)res.StatusCode}: {body} (sent {sent} of {rows.Count} before this failure)";
                     await jobs.FinishRunAsync(runId, "Failed", sent, error, ct);
                     return (sent, error);
+                }
+
+                await using (var c = OpenOnPremBackup())
+                {
+                    await c.ExecuteAsync(new CommandDefinition(
+                        MarkSentSql, new { codes = chunk.Select(r => r.Barcode).ToList() },
+                        commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
                 }
 
                 sent += chunk.Length;
             }
 
-            // TODO: once the EPCBarcodes status/sent column is confirmed (see class
-            // doc gap #1), mark these rows as sent here so a repeat run doesn't
-            // re-POST them.
             await jobs.FinishRunAsync(runId, "Success", sent, null, ct);
             return (sent, null);
         }
