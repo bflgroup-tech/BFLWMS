@@ -196,15 +196,25 @@
         finally { _busy = false; }
     }
 
+    // YOTO and ONLINE are the same physical warehouse, so GINs from / to either of them can
+    // share one trailer. Every other warehouse (JAFZA, TECHNO, ...) must still match exactly.
+    private static readonly HashSet<string> YotoOnline = new(StringComparer.OrdinalIgnoreCase) { "YOTO", "ONLINE" };
+
+    private static string SameSiteKey(string? warehouse)
+    {
+        var w = (warehouse ?? "").Trim();
+        return YotoOnline.Contains(w) ? "YOTO/ONLINE" : w.ToUpperInvariant();
+    }
+
     private async Task SubmitAsync()
     {
         if (_validRows.Count == 0 || string.IsNullOrWhiteSpace(_trailerNo)) return;
 
-        var distinctFrom = _validRows.Select(r => r.WarehouseFrom).Distinct().Count();
-        var distinctTo = _validRows.Select(r => r.WarehouseTo).Distinct().Count();
+        var distinctFrom = _validRows.Select(r => SameSiteKey(r.WarehouseFrom)).Distinct().Count();
+        var distinctTo = _validRows.Select(r => SameSiteKey(r.WarehouseTo)).Distinct().Count();
         if (distinctFrom > 1 || distinctTo > 1)
         {
-            await JS.InvokeVoidAsync("alert", "Trailer number cannot be changed — the selected GINs have different Warehouse From/To.");
+            await JS.InvokeVoidAsync("alert", "Trailer number cannot be changed — the selected GINs have different Warehouse From/To (only YOTO and ONLINE can be mixed).");
             return;
         }
 
