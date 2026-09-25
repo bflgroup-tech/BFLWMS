@@ -44,15 +44,14 @@ public class ApiGinIntegrationService(
     private const int CommandTimeoutSeconds = 60;
     public const string JobName = "APIGinIntegration";
 
-    // WmsProductionDb, not OnPremBackup — same as GinTrailerUpdateService/
-    // GenerateEan13Service/JafzaExportCheckingService/ContainerAllocationDataSyncService/
-    // TechnoBuildingService for BFLDATA writes: the OnPremBackup login has been denied
-    // UPDATE/INSERT there before. Every query here fully-qualifies its database
+    // OnPremBackup (the LOGBACKUP server), not WmsProductionDb — WmsProductionDb's
+    // connection doesn't resolve LPMSIM.dbo.APICallGIN ("Invalid object name"), while
+    // OnPremBackup does. Every query here fully-qualifies its database
     // (LPMSIM.dbo./BFLDATA.dbo./DATA2004.dbo.) rather than relying on a default
     // catalog, so one connection reaches all three.
-    private SqlConnection OpenWmsProductionDb()
+    private SqlConnection OpenOnPremBackup()
     {
-        var c = new SqlConnection(resolver.GetWmsProductionDbConnectionString());
+        var c = new SqlConnection(resolver.GetOnPremBackupConnectionString());
         c.Open();
         return c;
     }
@@ -422,7 +421,7 @@ public class ApiGinIntegrationService(
 
         try
         {
-            await using var c = OpenWmsProductionDb();
+            await using var c = OpenOnPremBackup();
 
             var (productsSent, productsFailed, productResults) = await SendProductsCoreAsync(c, opts, ct);
             var (ginsSent, ginsFailed, ginResults) = await SendGinsCoreAsync(c, opts, ct);
