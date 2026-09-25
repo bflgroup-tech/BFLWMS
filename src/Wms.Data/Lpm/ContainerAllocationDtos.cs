@@ -13,6 +13,32 @@ public record PoDataRow(
     string?   DestCountry);
 
 /// <summary>
+/// What one engine run covers, and which container-wide side effects it may touch.
+///
+/// OraPONo == null is the classic whole-container PO run: every scope-aware
+/// predicate in the engine collapses to exactly the statement that shipped before
+/// this record existed. A non-null OraPONo narrows the three audit-table deletes
+/// so a run on one PO cannot destroy its siblings' rows.
+///
+/// EnforceFutureLpmHold is off for a CDC run, which is releasing stock the hold
+/// already parked at the CDC.
+/// </summary>
+public sealed record AllocationScope(
+    string  ContNo,
+    string? OraPONo,
+    bool    EnforceFutureLpmHold,
+    string  SourceLabel)
+{
+    public static AllocationScope Container(string contNo) =>
+        new(contNo, null, true, "usa.dbo.usaorgfile_LPM");
+
+    public static AllocationScope CdcPo(string contNo, string oraPoNo) =>
+        new(contNo, oraPoNo, false, "racks.dbo.whboxitems (PalletType = 'CD')");
+
+    public bool IsPoScoped => OraPONo is not null;
+}
+
+/// <summary>
 /// One container carrying a given PO — the result of the "find by PO" lookup on
 /// the Container Allocation page. A PO almost always sits on exactly one
 /// container, but nothing in usaorgfile_LPM enforces that, so the lookup returns
