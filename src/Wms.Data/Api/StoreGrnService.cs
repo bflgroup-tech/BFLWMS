@@ -15,9 +15,8 @@ public class StoreGrnService(IOnPremConnectionResolver resolver)
     private record StoreLookupRow(string? DataName, string? CostCodeTo, string? LocCodeTo, string? ShopLetter);
 
     /// <summary>Resolves a store's DataName/CostCodeTo/LocCodeTo/ShopLetter from
-    /// BFLDATA.dbo.DataSettings on OnPremBackup, keyed by StoreID — same source
-    /// TransferGinGrnService resolves shops from, just keyed by StoreID here
-    /// instead of ShopName since that's what callers of this endpoint send.</summary>
+    /// BFLDATA.dbo.DataSettings on OnPremBackup, keyed by RMSStoreID — the caller's
+    /// storeId is matched against RMSStoreID rather than StoreID.</summary>
     private async Task<StoreLookupRow?> ResolveStoreAsync(string storeId, CancellationToken ct)
     {
         var b = new SqlConnectionStringBuilder(resolver.GetOnPremBackupConnectionString())
@@ -28,7 +27,7 @@ public class StoreGrnService(IOnPremConnectionResolver resolver)
         return await conn.QuerySingleOrDefaultAsync<StoreLookupRow>(new CommandDefinition(@"
             SELECT DataName, CostCodeTo, LocCodeTo, ShopLetter
               FROM BFLDATA.dbo.DataSettings
-             WHERE StoreID = @storeId",
+             WHERE RMSStoreID = @storeId",
             new { storeId }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
     }
 
