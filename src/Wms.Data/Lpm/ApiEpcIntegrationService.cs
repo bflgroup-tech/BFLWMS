@@ -12,7 +12,7 @@ public sealed class ApiEpcIntegrationOptions
     public const string SectionName = "ApiEpcIntegration";
 
     /// <summary>Sent as the raw "apikey" request header. Overridden in Program.cs
-    /// from the top-level "Oct_ApiKey" App Service setting (shared with
+    /// from the top-level "apikey" App Service setting (shared with
     /// ApiGinIntegrationOptions — both Altavant endpoints take the same key), not
     /// read from the "ApiEpcIntegration" section above.</summary>
     public string ApiKey { get; set; } = "";
