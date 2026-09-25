@@ -18,7 +18,7 @@ public sealed class ApiEpcIntegrationOptions
 internal sealed record EpcSourceRow(
     string? Site, string? SubLocation, string? Epc, string? Sku, string? LotNumber,
     int Quantity, string? Ean, string? Barcode, string? SerialNumber, string? Function,
-    DateTime CreationDate, string? Printer, bool? AntiTheft);
+    DateTime CreationDateUtc, string? Printer, bool? AntiTheft);
 
 internal sealed record EpcApiItem(
     [property: JsonPropertyName("site")]          string Site,
@@ -31,7 +31,7 @@ internal sealed record EpcApiItem(
     [property: JsonPropertyName("barcode")]       string Barcode,
     [property: JsonPropertyName("serial_number")] string SerialNumber,
     [property: JsonPropertyName("function")]      string Function,
-    [property: JsonPropertyName("creation_date")] DateTime CreationDate,
+    [property: JsonPropertyName("creation_date")] string CreationDate,
     [property: JsonPropertyName("printer")]       string Printer,
     [property: JsonPropertyName("anti_theft")]    bool?  AntiTheft);
 
@@ -51,12 +51,20 @@ internal sealed record EpcApiResponse(
 ///          sub_location = (SELECT StoreID FROM BFLDATA.dbo.DataSettings WHERE ShopName = a.ShopName),
 ///          epc, sku = Itemcode, lot_number = '', quantity = 1, ean = ean13,
 ///          barcode = SerializedCode, serial_number = '', [function] = '',
-///          creation_date = getdate(), printer = '', anti_theft = NULL
+///          creation_date = SYSUTCDATETIME(), printer = '', anti_theft = NULL
 ///     FROM DATAREPORTING.dbo.EPCBarcodes a
 ///
 /// anti_theft is sent as JSON null (mapped from a nullable bool here), not '' —
 /// the API rejected an empty string ("expected one of boolean, null, got
 /// string") since the query has no real source column for it yet.
+///
+/// creation_date is formatted as "yyyy-MM-ddTHH:mm:ssZ" (matching the API's
+/// documented example) rather than left to DateTime's default JSON
+/// serialization — the API rejected the default round-trip format ("expect
+/// valid date-time format but got: 2026-09-25T09:54:32.517") since it carries
+/// fractional seconds and no UTC/offset marker. The source column also moved
+/// from GETDATE() (SQL Server local time) to SYSUTCDATETIME(), since the 'Z'
+/// suffix would otherwise be claiming a UTC time that it wasn't.
 ///
 /// KNOWN GAP, pending confirmation before this should run unattended: no
 /// "already sent" filter — EPCBarcodes was said to carry a status/sent column,
@@ -98,7 +106,7 @@ public class ApiEpcIntegrationService(
                Barcode      = a.SerializedCode,
                SerialNumber = '',
                [Function]   = '',
-               CreationDate = GETDATE(),
+               CreationDateUtc = SYSUTCDATETIME(),
                Printer      = '',
                AntiTheft    = CAST(NULL AS BIT)
           FROM DATAREPORTING.dbo.EPCBarcodes a";
@@ -148,7 +156,7 @@ public class ApiEpcIntegrationService(
                 Barcode:      r.Barcode ?? "",
                 SerialNumber: r.SerialNumber ?? "",
                 Function:     r.Function ?? "",
-                CreationDate: r.CreationDate,
+                CreationDate: r.CreationDateUtc.ToString("yyyy-MM-ddTHH:mm:ssZ", System.Globalization.CultureInfo.InvariantCulture),
                 Printer:      r.Printer ?? "",
                 AntiTheft:    r.AntiTheft)).ToList();
 
