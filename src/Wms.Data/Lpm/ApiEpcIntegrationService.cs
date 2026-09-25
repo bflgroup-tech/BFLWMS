@@ -18,7 +18,7 @@ public sealed class ApiEpcIntegrationOptions
 internal sealed record EpcSourceRow(
     string? Site, string? SubLocation, string? Epc, string? Sku, string? LotNumber,
     int Quantity, string? Ean, string? Barcode, string? SerialNumber, string? Function,
-    DateTime CreationDate, string? Printer, string? AntiTheft);
+    DateTime CreationDate, string? Printer, bool? AntiTheft);
 
 internal sealed record EpcApiItem(
     [property: JsonPropertyName("site")]          string Site,
@@ -33,7 +33,7 @@ internal sealed record EpcApiItem(
     [property: JsonPropertyName("function")]      string Function,
     [property: JsonPropertyName("creation_date")] DateTime CreationDate,
     [property: JsonPropertyName("printer")]       string Printer,
-    [property: JsonPropertyName("anti_theft")]    string AntiTheft);
+    [property: JsonPropertyName("anti_theft")]    bool?  AntiTheft);
 
 internal sealed record EpcApiRequest([property: JsonPropertyName("items")] List<EpcApiItem> Items);
 
@@ -51,21 +51,19 @@ internal sealed record EpcApiResponse(
 ///          sub_location = (SELECT StoreID FROM BFLDATA.dbo.DataSettings WHERE ShopName = a.ShopName),
 ///          epc, sku = Itemcode, lot_number = '', quantity = 1, ean = ean13,
 ///          barcode = SerializedCode, serial_number = '', [function] = '',
-///          creation_date = getdate(), printer = '', anti_theft = ''
+///          creation_date = getdate(), printer = '', anti_theft = NULL
 ///     FROM DATAREPORTING.dbo.EPCBarcodes a
 ///
-/// KNOWN GAPS, both pending confirmation before this should run unattended:
-///  1. No "already sent" filter — EPCBarcodes was said to carry a status/sent
-///     column, but its name hasn't been given yet, so the query pulls (and
-///     will re-POST) every row in the table on every call. Wire the filter +
-///     a post-send UPDATE once that column is confirmed.
-///  2. anti_theft is hard-coded to '' (empty string) per the query above, but
-///     the API's documented example uses a JSON boolean (true/false) — sending
-///     a string there may fail API-side validation. Left as specified pending
-///     confirmation of the real source column/mapping.
+/// anti_theft is sent as JSON null (mapped from a nullable bool here), not '' —
+/// the API rejected an empty string ("expected one of boolean, null, got
+/// string") since the query has no real source column for it yet.
 ///
-/// On-demand only ("Send Now" on Nightly Batches) — no timer, specifically
-/// because of gap #1 above.
+/// KNOWN GAP, pending confirmation before this should run unattended: no
+/// "already sent" filter — EPCBarcodes was said to carry a status/sent column,
+/// but its name hasn't been given yet, so the query pulls (and will re-POST)
+/// every row in the table on every call. Wire the filter + a post-send UPDATE
+/// once that column is confirmed. On-demand only ("Send Now" on Nightly
+/// Batches) — no timer, specifically because of this gap.
 /// </summary>
 public class ApiEpcIntegrationService(
     IOnPremConnectionResolver resolver, ScheduledJobService jobs, HttpClient http, IOptions<ApiEpcIntegrationOptions> opts)
@@ -102,7 +100,7 @@ public class ApiEpcIntegrationService(
                [Function]   = '',
                CreationDate = GETDATE(),
                Printer      = '',
-               AntiTheft    = ''
+               AntiTheft    = CAST(NULL AS BIT)
           FROM DATAREPORTING.dbo.EPCBarcodes a";
 
     /// <summary>
@@ -152,7 +150,7 @@ public class ApiEpcIntegrationService(
                 Function:     r.Function ?? "",
                 CreationDate: r.CreationDate,
                 Printer:      r.Printer ?? "",
-                AntiTheft:    r.AntiTheft ?? "")).ToList();
+                AntiTheft:    r.AntiTheft)).ToList();
 
             var sent = 0;
             foreach (var chunk in items.Chunk(MaxItemsPerRequest))
