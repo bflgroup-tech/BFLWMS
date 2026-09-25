@@ -76,8 +76,9 @@ internal sealed record EpcApiResponse(
 /// The "already sent" filter excludes rows whose SerializedCode already appears in
 /// LPMSIM.dbo.EPCBarcodes_ApiCallDetails within the last day. After each batch the
 /// API accepts, that batch's rows are inserted there (Srno, SerializedCode, EPC,
-/// GETDATE()), so a repeat run only picks up new rows. On-demand only ("Send Now"
-/// on Nightly Batches) — no timer yet.
+/// GETDATE()), so a repeat run only picks up new rows. Runs hourly via
+/// Wms.Web.Hosting.ApiEpcIntegrationBatchService when its Nightly Batches toggle is
+/// active, and on demand via "Send Now".
 /// </summary>
 public class ApiEpcIntegrationService(
     IOnPremConnectionResolver resolver, ScheduledJobService jobs, HttpClient http, IOptions<ApiEpcIntegrationOptions> opts)

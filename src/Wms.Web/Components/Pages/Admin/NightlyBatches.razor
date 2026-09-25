@@ -423,17 +423,15 @@
                 new() { ("Send Now", EventCallback.Factory.Create(this, SendApiGinNowAsync)) },
                 "on-demand only"));
 
-            // 12. APIEpcIntegration — on-demand only, no timer yet. The source query
-            //     has no "already sent" filter yet (see ApiEpcIntegrationService doc),
-            //     so this is manual until that's wired. No activation state to toggle,
-            //     so the checkbox is disabled.
+            // 12. APIEpcIntegration — hourly (see Wms.Web.Hosting.ApiEpcIntegrationBatchService).
+            //     Pushes not-yet-sent EPCBarcodes rows to the EPC imports API.
+            var apiEpc = await Jobs.GetSingleRowAsync(ApiEpcIntegrationService.JobName);
             list.Add(new JobVm(
-                ApiEpcIntegrationService.JobName, "On-demand", null,
-                true, default, "",
-                null,
-                active => Task.CompletedTask,
-                new() { ("Send Now", EventCallback.Factory.Create(this, SendApiEpcNowAsync)) },
-                "on-demand only"));
+                ApiEpcIntegrationService.JobName, "Hourly", null,
+                apiEpc.IsActive, apiEpc.UpdatedTS, apiEpc.UpdatedBy,
+                apiEpc.IsActive ? NextHourGst() : null,
+                active => ToggleSingleAsync(ApiEpcIntegrationService.JobName, active),
+                new() { ("Send Now", EventCallback.Factory.Create(this, SendApiEpcNowAsync)) }));
         }
         catch (Exception ex) { Show($"Failed to load jobs: {ex.Message}", true); }
 

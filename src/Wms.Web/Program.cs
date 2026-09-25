@@ -171,8 +171,8 @@ public class Program
         builder.Services.AddHttpClient<ApiGinIntegrationService>();
 
         // Pushes EPC/RFID tag events (DATAREPORTING.dbo.EPCBarcodes) to the external
-        // EPC imports API. On-demand only ("Send Now") — no timer yet, since the
-        // source query has no "already sent" filter (see ApiEpcIntegrationService doc).
+        // EPC imports API. Hourly via ApiEpcIntegrationBatchService (gated by its
+        // Nightly Batches toggle), plus "Send Now" on demand.
         // Shares the same "apikey" setting as ApiGinIntegration above.
         builder.Services.Configure<Wms.Data.Lpm.ApiEpcIntegrationOptions>(
             builder.Configuration.GetSection(Wms.Data.Lpm.ApiEpcIntegrationOptions.SectionName));
@@ -192,6 +192,7 @@ public class Program
         builder.Services.AddHostedService<Wms.Web.Hosting.ToteMasterScheduledService>();
         builder.Services.AddHostedService<Wms.Web.Hosting.BoxesToWmsProdScheduledService>();
         builder.Services.AddHostedService<Wms.Web.Hosting.GenerateEan13BatchService>();
+        builder.Services.AddHostedService<Wms.Web.Hosting.ApiEpcIntegrationBatchService>();
         builder.Services.AddHostedService<Wms.Web.Hosting.PendingGoodsReceiptEmailScheduledService>();
         builder.Services.AddScoped<Wms.Web.Hosting.PendingGoodsReceiptEmailSender>();
         builder.Services.AddScoped<Wms.Data.Notifications.PendingGoodsReceiptEmailService>();
