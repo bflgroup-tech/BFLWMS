@@ -66,7 +66,7 @@ public class ApiGinIntegrationService(
         SELECT
             InboundReference      = a.TrfNo,
             SourceReference       = CAST(a.SrNo AS VARCHAR(50)),
-            DestinationLocationId = a.ShopIssue,
+            DestinationLocationId = (SELECT CAST(RMSStoreID AS VARCHAR(50)) FROM BFLDATA.dbo.DataSettings WHERE ShopName = a.ShopIssue),
             Sku                   = b.ItemCode,
             ExpectedQuantity      = SUM(b.Quantity),
             Parcel                = a.TrfNo,
@@ -154,7 +154,7 @@ public class ApiGinIntegrationService(
                         SourceReference        = i.SourceReference,
                         LineReference          = "",
                         SourceLocationId       = "",
-                        DestinationLocationId  = i.DestinationLocationId,
+                        DestinationLocationId  = i.DestinationLocationId ?? "",
                         SupplierId             = "",
                         Sku                    = i.Sku,
                         ExpectedQuantity       = i.ExpectedQuantity,
